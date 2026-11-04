@@ -4,6 +4,27 @@ Local workspace for AI-assisted game development. Build pipelines, manage teams 
 Claude Code and Codex agents, browse project files and extend the Studio with plugins.
 Includes an English/Russian web UI and a Windows desktop app.
 
+## Build a Windows installer
+
+On Windows x64, install Node.js 22.12+ (x64, with npm) and
+[uv](https://docs.astral.sh/uv/), both available on `PATH`. Double-click
+[`build-installer.bat`](build-installer.bat) or run it from the repository root:
+
+```powershell
+.\build-installer.bat
+```
+
+The script installs desktop dependencies from the lockfile, runs desktop tests and
+builds the NSIS installer, including the frontend, backend, built-in plugins and
+bundled Python/Node.js runtimes. The first build needs internet access for downloads;
+Python does not need to be installed separately. A failed step stops the build.
+
+The result is `desktop/dist/Voxarium-Studio-Setup-<build>.exe`, where `<build>` is
+the release tag or commit label. The script builds locally without publishing and
+pauses before closing so the result stays visible. Use
+`.\build-installer.bat --no-pause` in automation; failures return a nonzero exit code.
+See [desktop setup](desktop/README.md) for installer and update details.
+
 ## Run from source
 
 Requires Python 3.12+, Node.js 22.12+ and [uv](https://docs.astral.sh/uv/).

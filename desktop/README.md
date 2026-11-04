@@ -10,13 +10,17 @@ regenerate the tray icon, multi-size Windows ICO and web assets in `frontend/pub
 The same artwork appears in the title bar, project switcher, splash, browser tab,
 Windows executable, shortcuts and installer (dev spec §2.7).
 
-On Windows x64, install Node.js with npm and uv on the build machine, then:
+On Windows x64, install Node.js 22.12+ (x64, with npm) and uv on the build machine.
+
+Run [`build-installer.bat`](../build-installer.bat) from the repository root to
+install dependencies, run desktop tests and build the installer without publishing.
+It pauses before closing; use `--no-pause` for automation. To run the steps manually:
 
 ```powershell
 cd desktop
 npm ci
 npm test
-npm run dist
+npm run dist -- --publish never
 ```
 
 `node test/installer-smoke.cjs` additionally builds two tiny Windows installers with
