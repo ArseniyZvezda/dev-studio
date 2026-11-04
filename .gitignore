@@ -1,0 +1,94 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+# Each plugin gets its own isolated environment, built on demand (spec §2.1).
+backend/plugins_builtin/*/.venv/
+
+# Node
+node_modules/
+frontend/node_modules/.tmp/
+
+# Built SPA. Vite writes it straight into the Python package so the wheel can ship it
+# (see frontend/vite.config.ts `build.outDir`), but it is generated, never authored.
+backend/voxarium_studio/static/
+frontend/dist/
+desktop/build/
+desktop/dist/
+desktop/locales/
+
+# The commit stamp belongs to a wheel, not to a checkout: hatch_build.py force-includes
+# it from a temp dir, and one sitting here would outrank git in `voxarium_studio.build_info`.
+backend/voxarium_studio/_build_stamp.json
+
+# Local scratch space: demo project, smoke tests and probes.
+.scratch/
+
+# Local data and agent configuration. Keep backend/voxarium_studio/ as source.
+/voxarium_studio/
+/graphify-out/
+/output/
+/docs/
+/.claude/
+/.codex/
+/.Codex/
+/.developer/
+.mcp.json
+CLAUDE.local.md
+AGENTS.local.md
+
+# Credentials and local configuration. Sanitized examples can be committed.
+.env
+.env.*
+!.env.example
+!.env.sample
+.npmrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+credentials.json
+service-account*.json
+
+# Databases, logs, caches and build artifacts.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.log
+*.pid
+*.tsbuildinfo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+coverage.xml
+junit.xml
+.tox/
+.nox/
+dist/
+build/
+*.whl
+*.egg
+venv/
+env/
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

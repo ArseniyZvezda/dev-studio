@@ -1,0 +1,42 @@
+id: hunyuan3d
+name: Hunyuan3D
+version: 0.4.0
+author: Voxarium Studio
+description: >
+  Tencent's Hunyuan3D as a real plugin, plus the two nodes that carry its result into the
+  engine project (image -> mesh -> voxels -> engine asset). It exercises the parts a
+  production 3D plugin needs: out-of-process node scripts, an isolated venv, GPU/CPU/IO
+  resource classes, file artifacts flowing between nodes, and a plugin-contributed
+  settings page.
+
+  Hunyuan3D is image-to-3D and only that: the generation nodes take pictures and there is
+  no text field anywhere. One node per shape model — hunyuan3d-dit-v2-1 from a single
+  reference image, hunyuan3d-dit-v2-mv from up to four views of one object. Both are
+  reached either over a running Hunyuan3D API server — the default, which needs nothing
+  installed here and may sit on another machine — or imported into this plugin's own venv.
+  See README.md and the Hunyuan3D Settings page.
+enabled_by_default: true
+
+backend:
+  entry: plugin.py:register
+  python_env:
+    requirements: requirements.txt
+    python: "3.12"
+
+frontend:
+  nodes:
+    # One component for both: it draws whichever image ports its node's schema declares,
+    # so the two generation nodes cannot look like different things on the canvas. A
+    # plugin module is a single file (it is loaded with a `?token=`, which a relative
+    # import would drop), so sharing one is the only way to share at all.
+    - node_type: hunyuan3d.image_to_mesh
+      component: frontend/GenerateMeshNode.js
+    - node_type: hunyuan3d.multiview_to_mesh
+      component: frontend/GenerateMeshNode.js
+  pages:
+    - id: hunyuan3d-settings
+      title: Hunyuan3D Settings
+      icon: box
+      route: /plugins/hunyuan3d/settings
+      component: frontend/SettingsPage.js
+  dist: frontend

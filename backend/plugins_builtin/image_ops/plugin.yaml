@@ -1,0 +1,32 @@
+id: image_ops
+name: Image Ops
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Small 2D image nodes for the half of a generation pipeline that is still a picture.
+  "Remove Background" is a magic-wand key on a single colour — white by default — that
+  answers with a PNG carrying a real alpha channel. "Crop" is its usual sequel: it trims
+  to the bounding box of whatever alpha survived and frames that at a fixed output
+  resolution, the subject centred. "JPEG to PNG" re-containers a photo for the nodes
+  downstream that want one, this plugin's own included. "Trim 4x4" cuts a picture into
+  quarters and hands each corner to a port of its own.
+
+  It reads PNG on the standard library alone, so the keying node works before this
+  plugin's environment has ever been built. Pillow is what the environment adds, and it is
+  what every other container needs: JPEG, WebP, BMP, TGA, TIFF — so the converter is the
+  one node here that does not run until the environment is built.
+enabled_by_default: true
+
+backend:
+  entry: plugin.py:register
+  python_env:
+    requirements: requirements.txt
+    python: "3.12"
+
+frontend:
+  nodes:
+    - node_type: image_ops.remove_background
+      component: frontend/RemoveBackgroundNode.js
+    - node_type: image_ops.crop
+      component: frontend/CropNode.js
+  dist: frontend

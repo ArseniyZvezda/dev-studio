@@ -1,0 +1,27 @@
+id: preview3d
+name: 3D Preview
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  A "Preview 3D" node that shows the incoming file on the pipeline canvas, using the same
+  viewport the Explorer's preview pane uses.
+
+  It ships no viewer of its own, and that is the whole design. The Explorer already mounts
+  whatever previewer a plugin registered for a file's suffix (§6.2); this node asks the host
+  for that same component and mounts it inside itself. So it renders .vox through
+  `vox_preview` and .fbx through `fbx_preview` today, picks up every format a later plugin
+  claims with no change here, and — like the Explorer — leaves the Studio core with no 3D
+  dependency at all.
+
+  The Python half only resolves the path, checks it exists and passes it through, so it runs
+  in the Studio's own interpreter and declares no venv, like `core`.
+enabled_by_default: true
+
+backend:
+  entry: plugin.py:register
+
+frontend:
+  nodes:
+    - node_type: preview3d.view
+      component: frontend/Preview3DNode.js
+  dist: frontend

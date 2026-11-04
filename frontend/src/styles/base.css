@@ -1,0 +1,1811 @@
+/** App-wide element defaults, expressed purely in terms of the tokens. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--vxs-bg-canvas);
+  color: var(--vxs-text-primary);
+  font-family: var(--vxs-font-sans);
+  font-size: var(--vxs-text-size);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden; /* panes scroll individually; the shell itself never does */
+}
+
+:focus-visible {
+  outline: 2px solid var(--vxs-accent);
+  outline-offset: 1px;
+}
+
+/* A mix of the accent rather than `--vxs-accent-soft`, which is a grey step here: a selection
+   one step lighter than the page is a selection nobody can see. */
+::selection {
+  background: color-mix(in oklab, var(--vxs-accent) 35%, transparent);
+}
+
+/* Thin, themed scrollbars — the default chrome looks out of place against a dark
+   tool surface, and every pane in this app scrolls. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--vxs-gray-600) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--vxs-border);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--vxs-border-strong);
+  background-clip: content-box;
+}
+
+/* No `button { font: inherit; color: inherit }` here, and none for the fields: Tailwind's
+   preflight already says both, inside `@layer base`. This file is unlayered, and an unlayered
+   rule outranks every utility whatever its weight — so the copies that stood here until
+   2026-10-02 took `text-muted`, `hover:text-primary`, `text-small`, `font-medium` and
+   `font-mono` off every button and field in the app: a toolbar's quiet icons were as bright
+   as its title, a switcher's unchecked options as bright as the checked one, and a mono field
+   was set in the sans face. Anything added here for a bare element belongs in the layer
+   below, where a utility written on the element still wins. */
+@layer base {
+  /* A heading breaks into lines of like length, and a paragraph does not end on one word.
+     The longhand on purpose: `text-wrap` also sets the wrap *mode*, which is the half of
+     `white-space` that `truncate` and `whitespace-nowrap` rely on. Not inside the block
+     editor, where the last lines of a paragraph re-breaking under the caret would move the
+     word being typed. */
+  h1,
+  h2,
+  h3 {
+    text-wrap-style: balance;
+  }
+
+  p:not(.ProseMirror p) {
+    text-wrap-style: pretty;
+  }
+
+  /* A page title is the largest text on its page; at that size the face's default spacing
+     reads loose beside the body text under it. */
+  h1 {
+    letter-spacing: -0.011em;
+  }
+}
+
+/* The primary action — one per page: a grey with a lit edge and a button's corner, never an
+   accent fill, because on these greys the one filled accent block on screen would be the
+   loudest thing in the app. A class rather than utilities because the ground, the edge and the
+   lettering are one decision, and a plugin page gets the same button by naming it
+   (docs/plugins.md). Unlayered, so it wins over any `rounded-*`, `bg-*` or `text-*` utility
+   left beside it. */
+.vxs-btn-primary {
+  background: var(--vxs-accent-gradient);
+  color: var(--vxs-text-primary);
+  border-radius: var(--vxs-radius-md);
+  box-shadow: inset 0 0 0 1px var(--vxs-border-strong);
+}
+
+/* Under the pointer the ground steps up and so does the edge. The edge is already the strong
+   grey, so its step is a mix toward the lettering — one expression for both modes, which is
+   what keeps the light theme's step a darkening. */
+.vxs-btn-primary:hover:not(:disabled) {
+  background: var(--vxs-accent-gradient-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--vxs-border-strong), var(--vxs-text-primary) 12%);
+}
+
+.vxs-btn-primary:active:not(:disabled) {
+  background: var(--vxs-accent-gradient-pressed);
+}
+
+.vxs-btn-primary:disabled {
+  opacity: 0.5;
+}
+
+/* The status pill — one vocabulary on the board, in the task dialog and over a pipeline run
+   (`StatusBadge`), plus the board's folded column headers: a grey word in an outlined pill with
+   the status colour on its dot alone, because the dot is the indicator and indication is where
+   this palette spends its hue. `-bare` is the dot with no pill around it. */
+.vxs-badge {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--vxs-border);
+}
+
+.vxs-badge-bare {
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------ chrome
+
+   `.vxs-pane` and `.vxs-card` name the app's chrome — the rail, page headers and side panes;
+   dialog frames, settings panels, floating menus and chart tooltips — and `.vxs-sheet` and
+   `.vxs-tile` the task board's columns and cards. Global rather than scoped to an SFC, and
+   published in docs/plugins.md beside the `.vxs-node` family, because a plugin page gets no
+   Tailwind utilities but does get these. Unlayered, so each wins over the `bg-*` utility
+   written beside it.
+
+   The material is lines and a hairline lift (spec §7): a pane is a grey with an edge
+   (`--vxs-pane-border`), and a card is a one-pixel ring over `--vxs-card-fill` with ambient
+   darkness under it. The `border` a component wrote beside the ring goes transparent, or the
+   two stack into a line twice as heavy as the one drawn. The fills are tokens (`tokens.css`),
+   so the light theme restates them there and nothing here needs a light rule. */
+.vxs-rail {
+  background: var(--vxs-rail-fill);
+}
+
+header.vxs-pane {
+  background: var(--vxs-header-fill);
+}
+
+.vxs-main {
+  background: var(--vxs-page-fill);
+}
+
+:is(.vxs-card, .vxs-tile) {
+  border-color: transparent;
+  background: var(--vxs-card-fill);
+  box-shadow:
+    0 0 0 1px var(--vxs-border),
+    var(--vxs-shadow-md);
+}
+
+/* A dialog is the highest thing on the page, so its ambient darkness is the large one. */
+.vxs-card[role='dialog'] {
+  box-shadow:
+    0 0 0 1px var(--vxs-border),
+    var(--vxs-shadow-lg);
+}
+
+/* A board card under the pointer brightens its edge and deepens its shadow (and lifts — the
+   motion section below); the selected one is edged in the accent, since the fill has taken the
+   place of the tint its `bg-accent-soft` used to paint. */
+.vxs-tile:hover {
+  box-shadow:
+    0 0 0 1px var(--vxs-border-strong),
+    var(--vxs-shadow-lift);
+}
+
+.vxs-tile.vxs-tile-active {
+  box-shadow:
+    0 0 0 1px var(--vxs-accent),
+    var(--vxs-shadow-md);
+}
+
+.vxs-sheet {
+  background: var(--vxs-sheet-fill);
+  box-shadow: inset 0 0 0 1px var(--vxs-border);
+}
+
+/* The switcher: a well of the canvas grey with the checked option raised out of it on its own
+   edge — the same raised grey as the rail's current section, in a button's corners. The thumb
+   that carries the raise from option to option is the motion section's. */
+.vxs-segmented {
+  border-radius: var(--vxs-radius-md);
+  background-color: var(--vxs-bg-canvas);
+}
+
+.vxs-segmented > [role='radio'] {
+  border-radius: calc(var(--vxs-radius-md) - 2px);
+}
+
+.vxs-segmented > [aria-checked='true'],
+.vxs-segmented[data-thumb]::before {
+  background-color: var(--vxs-accent-container);
+  box-shadow: inset 0 0 0 1px var(--vxs-accent-border);
+}
+
+/* ------------------------------------------------------------------ motion
+
+   How the app answers the pointer and says what is alive: Graphite's motion (2026-09-16, the
+   "Graphite Motion" canvas from Claude Design), laid over the motion the app already had
+   (2026-09-13, at the user's request: smooth animation on every control, and hover effects).
+   Three speeds, one curve:
+
+     quick  90ms  linear    colour only — a hover's fill, an edge one step brighter, an icon
+                            tint. Linear, because a fill that eases in reads as lag.
+     fast  130ms  ease-out  geometry — a card lifting 2px, a row nudging 2px, a ring stepping up.
+     base  220ms  ease-out  state — a status changing, a thumb moving, a dialog arriving.
+     press  60ms            the one answer to a press, 3% smaller: shorter than any hover, so a
+                            button answers with a click and not with a spring.
+
+   Nothing lasts past `--vxs-motion-slow`; what would need longer is a progress indicator, and
+   says so. The loops — a run breathing, a bar's sweep, a skeleton's shimmer — are rhythms
+   rather than answers, so their periods are written out where they run and do not follow the
+   beats: retiming a hover must not change how fast a live run breathes.
+
+   Grey moves, colour breathes. A hover never scales a piece, text never slides in, nothing
+   rotates for decoration, and colour animates only where it means something — a run in flight,
+   a status that has just settled (the indication part below). Nothing costs anything at rest:
+   a transition is inert until a property changes, every transform is a hover or a press, and
+   every loop runs only while the thing it describes is alive.
+
+   Refreshed 2026-10-02, at the user's request (animations freshened and added). What changed
+   is where the old rules fell short of their own reasoning rather than the beats: movement
+   under the pointer is asked for only of a pointer that can hover; a floating panel unfolds
+   from the thing that opened it (`--vxs-origin`) instead of always from its top-left corner;
+   what a `v-if` removes can leave the way it came (`.vxs-leaving`, `lib/leave.ts`); a
+   notification and a board's cards ride transitions, which can be interrupted, where a
+   keyframe would start over; the search palette, which a keyboard opens all day, does not
+   animate at all; and reduced motion keeps the fades and drops the movement, rather than
+   dropping both.
+
+   **Every control fades between its states** rather than snapping: one rule names what is
+   interactive and the properties a state change may touch, and the hover utilities the
+   components already carry (`hover:bg-hover`, `hover:text-primary`) do the rest.
+   `[class*='hover:']` is on that list on purpose — a tree row is a `div` with a hover utility
+   and nothing a tag could name, and Tailwind v4 leaves the class in the markup, so "has a hover
+   state" is spelled right there. The transforms are the individual `translate` / `scale` /
+   `rotate` properties, never `transform`: Tailwind's `rotate-90` and `-translate-x-1/2` set
+   those, Vue Flow places its handles with `transform`, and the individual properties compose
+   with both where a `transform` here would replace them. No layout property is ever on the
+   list; a transitioned `width` is what makes a resize feel stuck. **Only a card rises**: a
+   board tile lifts two pixels, a row in a list nudges its content two pixels along, and a
+   button answers in colour and in the press. **A page arrives in bands, and a panel arrives
+   and leaves**: a dialog, a notification and the chat go out the way they came in, on the
+   fast beat — the user has already decided, so the way out is the shorter one. A menu still
+   only arrives: it is closed by picking from it, and the pick is what the eye is on.
+
+   The platform's checkbox, radio and slider are redrawn here, because the platform's take
+   no transition: a checkbox is a small box whose tick lands on the spring, a radio the same
+   with a dot, and a slider a track with a thumb that grows under the pointer — a grab target
+   saying it can be taken, which is the one growth on hover left, with a canvas handle's. What
+   the slider loses is Chromium's accent fill along the track's left — it has no pseudo-element
+   for it, and the value is the component's to know; Firefox keeps its own
+   (`::-moz-range-progress`).
+
+   Left alone: the block editor's menus and gutter, which `editor.css` already animates its
+   own way. `prefers-reduced-motion` stops all of this — the block at the end of the file
+   zeroes every transition, pseudo-elements included, and names every animation. */
+
+/* What answers the pointer, and how fast: colour, border, opacity and filter in the quick beat
+   and linearly, because a fill that eases in reads as lag; a shadow and a piece moving in the
+   fast beat on the curve, because a lift over in 90ms would read as a jump rather than a
+   rise. */
+:is(
+    button,
+    a,
+    label,
+    input,
+    select,
+    textarea,
+    [role='button'],
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='radio'],
+    [role='option'],
+    [class*='hover:'],
+    .vxs-tile,
+    .resize-handle
+  ) {
+  transition:
+    background-color var(--vxs-motion-quick) linear,
+    border-color var(--vxs-motion-quick) linear,
+    outline-color var(--vxs-motion-quick) linear,
+    color var(--vxs-motion-quick) linear,
+    opacity var(--vxs-motion-quick) linear,
+    filter var(--vxs-motion-quick) linear,
+    box-shadow var(--vxs-motion-fast) var(--vxs-ease-out),
+    translate var(--vxs-motion-fast) var(--vxs-ease-out),
+    scale var(--vxs-motion-fast) var(--vxs-ease-out),
+    rotate var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+/* A bordered button answers in colour: the fill its own `hover:bg-hover` paints, and an edge
+   one step brighter. It does not rise — only a card does, and a toolbar whose buttons lifted
+   one after another as the pointer crossed it would shimmer. `button.rounded-md.border` is the
+   app's secondary button — every one is written `rounded-md border border-line …
+   hover:bg-hover`. The primary button's step is the chrome section's. */
+button.rounded-md.border:hover:not(:disabled) {
+  border-color: var(--vxs-border-strong);
+}
+
+/* The press, and only on things shaped like buttons. A row that shrank under a click would
+   read as the list breaking, so a full-width button (a menu entry, a picker row), a
+   left-aligned one (a palette entry, a search result, the rail's search field) and a rail row
+   keep still and answer in colour, as they do on hover. Both classes are spelled in the markup
+   of every such row, which is why they are what the rule reads. The way back takes the fast
+   beat of the rule the press interrupted. */
+button:not(.w-full, .text-left, .nav-link):active:not(:disabled) {
+  scale: 0.97;
+  transition-duration: var(--vxs-motion-press);
+}
+
+/* The accent swatches and the colour well take a ring under the pointer rather than growing: the
+   swatch already carries its colour, and the ring is what says "this one would be picked". A
+   ring and not the border, which the chosen swatch writes inline. */
+:is(button.rounded-full.border-2, input[type='color']):hover:not(:disabled) {
+  box-shadow: 0 0 0 2px var(--vxs-border-strong);
+}
+
+/* Movement under the pointer is for a pointer that can hover. A touch screen reports `:hover`
+   on the tap and leaves it there, so a card would stay lifted and a row nudged until something
+   else was touched; colour may linger like that, a displaced piece may not. Everything that
+   *moves* on hover is therefore inside this query, and the fills and edges stay outside it.
+
+   A board tile lifts two pixels on the fast beat, together with the brighter edge and the
+   deeper shadow the chrome section gives it, so the card reads as one thing rising rather than
+   as an outline changing colour. */
+@media (hover: hover) and (pointer: fine) {
+  .vxs-tile:hover {
+    translate: 0 -2px;
+  }
+}
+
+/* Pressed to be dragged, a tile is picked up — a touch larger, in the quick beat, so it has
+   already risen by the time the browser takes the drag image. A running task's tile is not
+   draggable, and does not pretend to be. */
+.vxs-tile[draggable='true']:active {
+  scale: 1.02;
+  transition-duration: var(--vxs-motion-quick);
+}
+
+/* A row in a list — a tree row, a palette entry, a search result — nudges its content 2px
+   along its own axis under the pointer: cheaper than a lift, and it reads as "this one" in a
+   list of forty. The content moves and the row's fill stays put, because these rows are flush
+   with their pane, and a fill sliding past the pane's edge would hand the scroller a horizontal
+   scrollbar. `:where` keeps the rule's weight at zero, so a button among the content keeps the
+   colour transitions of the rule above as well as this one's move. */
+:where(.vxs-row) > * {
+  transition: translate var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .vxs-row:hover > * {
+    translate: 2px 0;
+  }
+}
+
+/* A chevron that says "open" turns to say it, rather than being swapped for another glyph: one
+   mark with two positions reads as the same control having changed state. The component puts
+   `rotate-90` (or `rotate-180`) on it; this is only how it gets there. */
+.vxs-chevron {
+  transition: rotate var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+/* The rail's mark travels. `SideNav` measures the current row and publishes where it sits,
+   and one mark crosses the rail to it on the spring — the one move in the app that links a
+   page to the next, which is why it is the longest. Named here so every motion rule stays in
+   this one section; how the mark is drawn is the rail's own. */
+.rail-mark {
+  transition: translate var(--vxs-motion-travel) var(--vxs-ease-spring);
+}
+
+/* The switcher's thumb is one piece that slides, not two options swapping colour.
+   `SegmentedControl` measures its checked option and publishes the geometry on the group
+   as `--vxs-thumb-x/y/w/h` (level 3 of the styling rules), stamping `data-thumb` with the
+   first measurement; the thumb is drawn from those under the options — which sit above it
+   in their own stacking context — and moves on the spring. Not drawn before the attribute:
+   an element that appears has no transition to run, so nothing slides in from zero. Until then
+   the checked option paints the raise itself (the chrome section), and hands it to the thumb
+   once there is one. */
+.vxs-segmented {
+  isolation: isolate;
+}
+
+.vxs-segmented > [role='radio'] {
+  position: relative;
+  z-index: 1;
+}
+
+.vxs-segmented[data-thumb]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: var(--vxs-thumb-w);
+  height: var(--vxs-thumb-h);
+  translate: var(--vxs-thumb-x) var(--vxs-thumb-y);
+  border-radius: calc(var(--vxs-radius-md) - 2px);
+  pointer-events: none;
+  transition:
+    translate var(--vxs-motion-base) var(--vxs-ease-spring),
+    width var(--vxs-motion-base) var(--vxs-ease-spring);
+}
+
+.vxs-segmented[data-thumb] > [aria-checked='true'] {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+/* A field brightens its edge under the pointer and, focused, takes a soft ring in the
+   accent in place of the hard outline — a ring can fade in, an outline cannot. The border
+   goes to the accent as well: most fields write `focus:border-accent` themselves, and the
+   ring alone on the rest would make the two read as different controls. The ring is a mix of
+   the accent, not `--vxs-accent-soft`, which is a grey step on this palette. */
+:is(input, select, textarea):not([type='checkbox'], [type='radio'], [type='range'], [type='color']):hover:not(
+    :disabled,
+    :focus
+  ) {
+  border-color: var(--vxs-border-strong);
+}
+
+:is(input, select, textarea):not([type='checkbox'], [type='radio'], [type='range'], [type='color']):focus-visible {
+  outline: none;
+  border-color: var(--vxs-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--vxs-accent) 25%, transparent);
+}
+
+/* The checkbox and the radio, redrawn. `appearance: none` is what makes any of it
+   stylable; the `::after` is the mark, which every engine renders on an unstyled input.
+   `accent-[…]` on the element is then unused and harmless. */
+input:is([type='checkbox'], [type='radio']) {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--vxs-border-strong);
+  border-radius: var(--vxs-radius-sm);
+  background-color: var(--vxs-bg-inset);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.15);
+  cursor: pointer;
+}
+
+input[type='radio'] {
+  border-radius: var(--vxs-radius-pill);
+}
+
+input:is([type='checkbox'], [type='radio'])::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: var(--vxs-text-on-accent);
+  scale: 0;
+  opacity: 0;
+  transition:
+    scale var(--vxs-motion-base) var(--vxs-ease-spring),
+    opacity var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+/* The tick is a mask, so it is drawn in the on-accent colour rather than baked white. */
+input[type='checkbox']::after {
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 12px 12px no-repeat;
+}
+
+input[type='radio']::after {
+  inset: 3.5px;
+  border-radius: var(--vxs-radius-pill);
+}
+
+input:is([type='checkbox'], [type='radio']):checked {
+  border-color: var(--vxs-accent);
+  background-color: var(--vxs-accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+input:is([type='checkbox'], [type='radio']):checked::after {
+  scale: 1;
+  opacity: 1;
+}
+
+/* The pointer anywhere on the label the box belongs to lights its edge. */
+input:is([type='checkbox'], [type='radio']):hover:not(:disabled, :checked),
+label:hover input:is([type='checkbox'], [type='radio']):not(:disabled, :checked) {
+  border-color: var(--vxs-accent);
+}
+
+input:is([type='checkbox'], [type='radio']):active:not(:disabled) {
+  scale: 0.9;
+  transition-duration: var(--vxs-motion-press);
+}
+
+input:is([type='checkbox'], [type='radio']):disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The slider. Both halves of the platform control are pseudo-elements and Chromium's take
+   a transition; the thumb is the accent under a lit rim, and grows under the pointer. The
+   thumb's negative margin centres it on the track, which is what a `runnable-track` of a
+   different height needs in WebKit and Blink. */
+input[type='range'] {
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--vxs-radius-pill);
+  background-color: var(--vxs-bg-inset);
+  box-shadow: inset 0 0 0 1px var(--vxs-border);
+}
+
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: var(--vxs-radius-pill);
+  background-color: var(--vxs-bg-inset);
+  box-shadow: inset 0 0 0 1px var(--vxs-border);
+}
+
+input[type='range']::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--vxs-radius-pill);
+  background-color: var(--vxs-accent);
+}
+
+input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: var(--vxs-radius-pill);
+  background-color: var(--vxs-accent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 1px 3px rgb(0 0 0 / 0.3);
+  transition:
+    scale var(--vxs-motion-base) var(--vxs-ease-spring),
+    box-shadow var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: var(--vxs-radius-pill);
+  background-color: var(--vxs-accent);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 1px 3px rgb(0 0 0 / 0.3);
+  transition:
+    scale var(--vxs-motion-base) var(--vxs-ease-spring),
+    box-shadow var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+input[type='range']:focus-visible::-webkit-slider-thumb {
+  scale: 1.25;
+}
+
+input[type='range']:focus-visible::-moz-range-thumb {
+  scale: 1.25;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  input[type='range']:hover::-webkit-slider-thumb {
+    scale: 1.25;
+  }
+
+  input[type='range']:hover::-moz-range-thumb {
+    scale: 1.25;
+  }
+}
+
+input[type='range']:active::-webkit-slider-thumb {
+  scale: 1.15;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 0 0 5px color-mix(in oklab, var(--vxs-accent) 25%, transparent);
+}
+
+input[type='range']:active::-moz-range-thumb {
+  scale: 1.15;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 0 0 5px color-mix(in oklab, var(--vxs-accent) 25%, transparent);
+}
+
+input[type='range']:focus-visible {
+  outline: none;
+}
+
+/* The canvas: a node's selection edge lights in the quick beat and its ring widens in the fast
+   one, an edge lights up under the pointer, and a handle grows toward it on the spring.
+   `scale` composes with the `transform` Vue Flow places the handle with — a `transform` here
+   would move it. */
+.vxs-node {
+  transition:
+    border-color var(--vxs-motion-quick) linear,
+    box-shadow var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+.vue-flow__edge-path {
+  transition: stroke var(--vxs-motion-quick) linear;
+}
+
+.vue-flow__handle {
+  transition:
+    scale var(--vxs-motion-base) var(--vxs-ease-spring),
+    border-color var(--vxs-motion-quick) linear,
+    background-color var(--vxs-motion-quick) linear;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .vue-flow__handle:hover {
+    scale: 1.35;
+  }
+}
+
+.vue-flow__controls-button {
+  transition: background-color var(--vxs-motion-quick) linear;
+}
+
+/* A panel arrives. The veil fades in the quick beat, so the page has dimmed before the panel
+   is there to read; the dialog comes up out of it from its centre in the state beat, with a
+   touch of scale; a menu unfolds from the corner it was placed at, in the fast beat because it
+   is answering a click. `[role='dialog']` rather than `.vxs-card[role='dialog']`, so the
+   Explorer's prompts, the confirm dialog and the chat arrive the same way as the task
+   dialog. */
+.vxs-veil {
+  animation: vxs-arrive-veil var(--vxs-motion-quick) linear;
+}
+
+:is([role='dialog'], [role='alertdialog']) {
+  animation: vxs-arrive-dialog var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+/* A menu and a picker's list unfold from what opened them. Top-left is right for a menu raised
+   at the pointer, which is where most are; one that hangs off a button's other edge, or was
+   moved to fit the window, says where its trigger is with `--vxs-origin` (and a list opened
+   upwards turns the 4px of travel round with `--vxs-arrive-y`) — level 3 of the styling rules,
+   set inline by the component that placed it. A panel growing out of a corner its trigger is
+   not at reads as having come from nowhere. */
+.vxs-card:is([role='menu'], [role='listbox'], [data-task-menu]) {
+  transform-origin: var(--vxs-origin, top left);
+  animation: vxs-arrive-menu var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+@keyframes vxs-arrive-veil {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes vxs-arrive-dialog {
+  from {
+    opacity: 0;
+    scale: 0.98;
+    translate: 0 6px;
+  }
+}
+
+@keyframes vxs-arrive-menu {
+  from {
+    opacity: 0;
+    scale: 0.96;
+    translate: 0 var(--vxs-arrive-y, -4px);
+  }
+}
+
+/* The search palette does not arrive, it is simply there. `Ctrl+K` opens it from the keyboard,
+   many times a day, with a query already in the fingers — 220ms of panel rising is 220ms of
+   typing into something still in motion, every time. `ModalDialog`'s `instant` stamps the
+   attribute; nothing else should need it. */
+.vxs-veil[data-instant],
+.vxs-veil[data-instant] > [role='dialog'] {
+  animation: none;
+}
+
+/* A panel leaves the way it came. `v-if` takes a dialog out of the document in one frame,
+   so the veil used to vanish under the eye while the page behind snapped back to full
+   brightness; `lib/leave.ts` puts the removed overlay back for one fast beat, inert, wearing
+   this class. The veil fades and takes the panel with it — the panel only adds the step back
+   down it rose by. Faster than the arrival: the user has already decided, and what they are
+   waiting for is the page. Everything inside holds still (a re-inserted element would otherwise
+   start its own entrance again), which is what the `!important` is for. */
+.vxs-leaving {
+  pointer-events: none;
+}
+
+.vxs-leaving * {
+  animation: none !important;
+}
+
+.vxs-veil.vxs-leaving {
+  animation: vxs-leave-veil var(--vxs-motion-fast) var(--vxs-ease-out) forwards;
+}
+
+.vxs-leaving > :is([role='dialog'], [role='alertdialog']) {
+  animation: vxs-leave-dialog var(--vxs-motion-fast) var(--vxs-ease-out) forwards !important;
+}
+
+@keyframes vxs-leave-veil {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes vxs-leave-dialog {
+  to {
+    scale: 0.98;
+    translate: 0 6px;
+  }
+}
+
+/* The chat (§10.9) folds out of its round button and back into it — the origin is the
+   button's centre, 24px in from the popup's right edge and 36px under it — rather than rising
+   from the middle of itself like a dialog, which it is in role only. Transitions, not a
+   keyframe: the button is a toggle, and a second click while the popup is still on its way
+   has to turn it round from where it is. */
+.vxs-chat > [role='dialog'] {
+  transform-origin: calc(100% - 24px) calc(100% + 36px);
+  animation: none;
+}
+
+.vxs-chat-panel-enter-active {
+  transition:
+    opacity var(--vxs-motion-base) var(--vxs-ease-out),
+    scale var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+.vxs-chat-panel-leave-active {
+  pointer-events: none;
+  transition:
+    opacity var(--vxs-motion-fast) var(--vxs-ease-out),
+    scale var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+.vxs-chat-panel-enter-from,
+.vxs-chat-panel-leave-to {
+  opacity: 0;
+  scale: 0.96;
+}
+
+/* A notification (§6.5) comes in from the edge its stack sits on and goes out through it, and
+   the ones under it close the gap instead of jumping up a row. Transitions rather than the
+   keyframe it used to borrow from the menu: notifications arrive in bursts and are dismissed
+   mid-flight, and a transition turns round from where it is. The one leaving is taken out of
+   the flow — at the width it had, since the stack is its containing block — so the others have
+   a gap to close while it is still fading; they are already on screen, hence the other curve. */
+.vxs-toast-enter-active {
+  transition:
+    opacity var(--vxs-motion-base) var(--vxs-ease-out),
+    translate var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+.vxs-toast-leave-active {
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+  transition:
+    opacity var(--vxs-motion-fast) var(--vxs-ease-out),
+    translate var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+
+.vxs-toast-enter-from,
+.vxs-toast-leave-to {
+  opacity: 0;
+  translate: 2rem 0;
+}
+
+.vxs-toast-move {
+  transition: transform var(--vxs-motion-base) var(--vxs-ease-in-out);
+}
+
+/* The board keeps track of its cards. One that lands in a column — dropped there, or moved by
+   an agent finishing — comes up into its place, and the cards around a gap close it or open
+   one, so a status changing while somebody watches reads as a card having moved rather than
+   as two lists redrawn. The card that left fades in the quick beat where it was, out of the
+   flow (`TaskBoard` pins its width first), which is what gives the others their gap. After
+   the rule that names what is interactive, because a tile is on that list and these have to
+   replace its transition while they run; `transform` for the move because that is what Vue's
+   FLIP writes — it composes with the `translate` a hovered tile carries. */
+.vxs-tile-list-enter-active {
+  transition:
+    opacity var(--vxs-motion-base) var(--vxs-ease-out),
+    translate var(--vxs-motion-base) var(--vxs-ease-out);
+}
+
+.vxs-tile-list-enter-from {
+  opacity: 0;
+  translate: 0 8px;
+}
+
+.vxs-tile-list-leave-active {
+  position: absolute;
+  pointer-events: none;
+  transition: opacity var(--vxs-motion-quick) linear;
+}
+
+.vxs-tile-list-leave-to {
+  opacity: 0;
+}
+
+.vxs-tile-list-move {
+  transition: transform var(--vxs-motion-base) var(--vxs-ease-in-out);
+}
+
+/* Something small that has just appeared because of what the user did or was sent — the tick
+   that replaces Copy, the chat button's unread count — lands on the spring, like a tick into
+   its box. From most of its size, never from nothing. */
+.vxs-pop {
+  animation: vxs-pop var(--vxs-motion-base) var(--vxs-ease-spring);
+}
+
+@keyframes vxs-pop {
+  from {
+    opacity: 0;
+    scale: 0.6;
+  }
+}
+
+/* A page arrives in bands. A route change re-mounts the view, so an entrance is all it takes,
+   and it plays on the page's own content — `.vxs-enter` on each top-level band: a row of tiles,
+   a panel, a board column, or the one content area of a page that is a pane and a canvas.
+   Never on the rail, a page header or a side pane: those did not change, so they do not
+   flicker. Each band comes up out of the canvas `--vxs-motion-stagger` after the one before
+   it, and the step stops growing at the fourth, so a page of any length has arrived before
+   `--vxs-motion-slow` is up. The count is of bands alone (`of .vxs-enter`): an error banner or
+   a header beside the first band must not make it wait its turn. `backwards`, so a band waiting
+   for its turn is not already on screen. */
+.vxs-enter {
+  animation: vxs-arrive-band var(--vxs-motion-page) var(--vxs-ease-out) backwards;
+}
+
+.vxs-enter:nth-child(2 of .vxs-enter) {
+  animation-delay: var(--vxs-motion-stagger);
+}
+
+.vxs-enter:nth-child(3 of .vxs-enter) {
+  animation-delay: calc(var(--vxs-motion-stagger) * 2);
+}
+
+.vxs-enter:nth-child(n + 4 of .vxs-enter) {
+  animation-delay: calc(var(--vxs-motion-stagger) * 3);
+}
+
+@keyframes vxs-arrive-band {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
+
+/* Loading is a grey shimmer across bars in the shape of what is coming, three to a block and a
+   step apart (`LoadingBars`): the eye gets the layout before the data, which reads faster than
+   the word does. No spinner in a content area — a spinner belongs in the control that is itself
+   waiting. The bars stay out of sight for their first 200ms, so a read that answers inside that
+   (most of them, from a local server) is never announced at all and the content simply
+   arrives; a skeleton shown for one frame is a flicker. */
+.vxs-skeleton {
+  display: block;
+  height: 9px;
+  border-radius: var(--vxs-radius-pill);
+  background: linear-gradient(
+    90deg,
+    var(--vxs-bg-surface),
+    var(--vxs-bg-hover),
+    var(--vxs-bg-surface)
+  );
+  background-size: 240px 100%;
+  animation:
+    vxs-arrive-veil var(--vxs-motion-quick) linear 200ms backwards,
+    vxs-skeleton 1.1s linear infinite;
+}
+
+.vxs-skeleton:nth-child(2 of .vxs-skeleton) {
+  animation-delay: 200ms, 120ms;
+}
+
+.vxs-skeleton:nth-child(3 of .vxs-skeleton) {
+  animation-delay: 200ms, 240ms;
+}
+
+@keyframes vxs-skeleton {
+  from {
+    background-position: -140px 0;
+  }
+  to {
+    background-position: 200px 0;
+  }
+}
+
+/* ------------------------------------------------------------------ indication
+
+   The only place colour is allowed to move, and it moves on the status colours alone, never on
+   the accent or the chrome. **Work in flight breathes**: a running task's tile and a running
+   status pill carry the running amber as their edge, with a halo that swells and settles every
+   1.6s, and a live dot breathes with them. **Work that has just finished flashes once**: the
+   edge lights in the success green and comes back to rest over `--vxs-motion-slow`, and then
+   nothing moves. A flash is for a change seen on screen — a board opened on forty finished
+   tasks announces none of them — so the components add `-settle` only when they watched the
+   status arrive, and take it off again at `animationend`.
+
+   On the canvas the edge is selection's and nothing else's (the node skin below), so a node
+   says both on its status strip: the strip pulses while the node runs and glows once when it
+   succeeds. */
+.vxs-tile-live {
+  animation: vxs-breathe-tile 1.6s ease-in-out infinite;
+}
+
+.vxs-tile-settle {
+  animation: vxs-settle-tile var(--vxs-motion-slow) var(--vxs-ease-out);
+}
+
+.vxs-badge-live {
+  animation: vxs-breathe-badge 1.6s ease-in-out infinite;
+}
+
+.vxs-badge-settle {
+  animation: vxs-settle-badge var(--vxs-motion-slow) var(--vxs-ease-out);
+}
+
+/* A dot on something alive — a running status, the rail's live connection. Opacity only, so it
+   is the same breath on any colour. */
+.vxs-dot-live {
+  animation: vxs-breathe-dot 1.6s ease-in-out infinite;
+}
+
+/* The shadow lists keep the same shape at every step, the edge first and the halo second —
+   a shadow list only interpolates against one of the same length and kind. */
+@keyframes vxs-breathe-tile {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px var(--vxs-status-running),
+      0 0 0 0 transparent,
+      var(--vxs-shadow-md);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--vxs-status-running),
+      0 0 0 5px color-mix(in oklab, var(--vxs-status-running) 16%, transparent),
+      var(--vxs-shadow-md);
+  }
+}
+
+@keyframes vxs-settle-tile {
+  0%,
+  30% {
+    box-shadow:
+      0 0 0 1px var(--vxs-status-success),
+      0 0 0 5px color-mix(in oklab, var(--vxs-status-success) 22%, transparent),
+      var(--vxs-shadow-md);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px var(--vxs-border),
+      0 0 0 0 transparent,
+      var(--vxs-shadow-md);
+  }
+}
+
+@keyframes vxs-breathe-badge {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 1px var(--vxs-status-running),
+      0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 1px var(--vxs-status-running),
+      0 0 0 4px color-mix(in oklab, var(--vxs-status-running) 16%, transparent);
+  }
+}
+
+@keyframes vxs-settle-badge {
+  0%,
+  30% {
+    box-shadow:
+      inset 0 0 0 1px var(--vxs-status-success),
+      0 0 0 4px color-mix(in oklab, var(--vxs-status-success) 22%, transparent);
+  }
+  100% {
+    box-shadow:
+      inset 0 0 0 1px var(--vxs-border),
+      0 0 0 0 transparent;
+  }
+}
+
+@keyframes vxs-breathe-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ------------------------------------------------------------------ Vue Flow skin */
+/* Vue Flow ships neutral defaults; repaint them from the tokens so the canvas belongs
+   to the same design system as the rest of the app. */
+.vue-flow__edge-path {
+  stroke: var(--vxs-border-strong);
+  stroke-width: 2;
+}
+
+.vue-flow__edge.selected .vue-flow__edge-path,
+.vue-flow__edge:hover .vue-flow__edge-path {
+  stroke: var(--vxs-accent);
+}
+
+.vue-flow__edge.animated .vue-flow__edge-path {
+  stroke: var(--vxs-accent);
+}
+
+.vue-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: var(--vxs-bg-elevated);
+  border: 2px solid var(--vxs-border-strong);
+  border-radius: 999px;
+}
+
+.vue-flow__handle:hover {
+  border-color: var(--vxs-accent);
+  background: var(--vxs-accent-soft);
+}
+
+.vue-flow__handle-connecting {
+  border-color: var(--vxs-accent);
+}
+
+.vue-flow__controls {
+  box-shadow: var(--vxs-shadow-md);
+  border-radius: var(--vxs-radius-md);
+  overflow: hidden;
+}
+
+.vue-flow__controls-button {
+  background: var(--vxs-bg-surface);
+  border-bottom: 1px solid var(--vxs-border-subtle);
+  fill: var(--vxs-text-muted);
+}
+
+.vue-flow__controls-button:hover {
+  background: var(--vxs-bg-hover);
+}
+
+.vue-flow__minimap {
+  background: var(--vxs-bg-inset);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-md);
+  overflow: hidden;
+}
+
+/* The minimap's own colours are props with light defaults — a near-white veil over what is
+   off screen and pale nodes — which on these greys was the brightest block on the canvas. They
+   arrive as presentation attributes, so a rule here outranks them: the veil is the canvas grey,
+   the nodes a step the eye can find on it, the selected one the accent, as on the canvas. */
+.vue-flow__minimap-mask {
+  fill: color-mix(in oklab, var(--vxs-bg-canvas) 72%, transparent);
+}
+
+.vue-flow__minimap-node {
+  fill: var(--vxs-border-strong);
+}
+
+.vue-flow__minimap-node.selected {
+  fill: var(--vxs-accent);
+}
+
+/* ------------------------------------------------------------------- canvas node skin
+
+   One chrome for every node on the pipeline canvas — the schema-driven `GenericNode` and
+   any component a plugin ships under `frontend.nodes[]` (§9.3). A node has three things to
+   say at once and they each get a channel of their own, so none of them can shout over
+   another:
+
+     selection  the border, and nothing else ever touches it
+     run status the strip along the top edge, plus whatever the header puts beside it
+     category   the header tint, from the `--node-accent` the canvas hands down
+
+   A fourth appears only while the node runs and says nothing when it is absent: progress,
+   the bar and stage line at the bottom (`.vxs-node-progress`, further down).
+
+   Selection used to share the border with run status, which meant a node reused from cache
+   was permanently outlined in `--vxs-status-cached` and could not show that it was selected
+   — while a plugin's own node, which never painted status onto its border, could. Two
+   renderers, two answers, one channel.
+
+   Global rather than scoped to the SFC because a plugin module is plain JavaScript building
+   inline styles through `h()`, and an inline style cannot hold a keyframe. This is the only
+   way the running pulse can reach a plugin's node at all. */
+
+/* A node is a card: `--vxs-card-fill` on an edge a step brighter than a pane's, lifted by
+   ambient darkness. */
+.vxs-node {
+  min-width: 180px;
+  border: 1px solid var(--vxs-accent-border);
+  border-radius: var(--vxs-radius-lg);
+  background: var(--vxs-card-fill);
+  box-shadow: var(--vxs-shadow-md);
+  overflow: hidden;
+}
+
+/* The ring is a shadow, so selecting a node never moves it or its neighbours. */
+.vxs-node-selected {
+  border-color: var(--vxs-accent);
+  box-shadow: var(--vxs-shadow-md), var(--vxs-ring);
+}
+
+.vxs-node-disabled {
+  opacity: 0.5;
+}
+
+.vxs-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: color-mix(in oklab, var(--node-accent) var(--vxs-node-tint, 16%), transparent);
+  border-bottom: 1px solid var(--vxs-border-subtle);
+}
+
+.vxs-node-body {
+  padding: 6px 10px 8px;
+}
+
+/* Set by the renderer from `statusColor()`; the element is only rendered when there is a
+   status to show, so there is no idle colour to pick. */
+.vxs-node-status {
+  height: 3px;
+  background: var(--node-status, transparent);
+}
+
+/* The pulse belongs to the status channel now. Animating the node's own box-shadow, as it
+   used to, meant a running node that was also selected had its ring overwritten twice a
+   second. On the breath everything alive in the app shares (the indication part of the motion
+   section), so a running node and a running task keep time. */
+.vxs-node-running .vxs-node-status {
+  animation: vxs-node-pulse 1.6s ease-in-out infinite;
+}
+
+/* Just succeeded, while on screen: the strip glows once down into the header and comes back to
+   rest — the canvas's version of a finished card's green flash, on the one channel a node's
+   status may use. `GenericNode` adds the class only for a change it watched arrive. */
+.vxs-node-settle .vxs-node-status {
+  animation: vxs-node-settle var(--vxs-motion-slow) var(--vxs-ease-out);
+}
+
+@keyframes vxs-node-settle {
+  0%,
+  30% {
+    box-shadow: 0 0 10px 2px var(--node-status);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes vxs-node-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.vxs-node-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--node-status, var(--vxs-text-faint));
+}
+
+.vxs-node-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* ------------------------------------------------------------------------- node ports
+
+   One row per port, handle centred on it. Here rather than in `GenericNode.vue` for the
+   same reason the status strip is: a plugin's own node component has to be able to draw the
+   identical row, and two copies of it drift.
+
+   Vue Flow positions a handle absolutely, so the row's `position: relative` is what makes
+   the row its containing block — the handle then centres itself on the row with no pixel
+   offsets to keep in step with whatever the node draws above it. */
+
+.vxs-node-ports {
+  padding: 2px 0 6px;
+  border-top: 1px solid var(--vxs-border-subtle);
+}
+
+.vxs-node-port {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 10px;
+  font-size: 11px;
+  color: var(--vxs-text-secondary);
+}
+
+.vxs-node-port-out {
+  justify-content: flex-end;
+}
+
+.vxs-node-port .vue-flow__handle {
+  background: var(--node-accent);
+}
+
+/* ------------------------------------------------------------------------ node progress
+
+   What a running node says about itself (`node.progress`): a bar and one line naming the
+   stage. Here rather than in the renderer because a plugin's own node component has to be
+   able to draw the same thing — `hunyuan3d.image_to_mesh` does — and two copies of a
+   progress bar drift the way the status strip once did.
+
+   The whole block is `pointer-events: none`: it sits inside the node's drag surface, and a
+   bar that swallowed a press would make the node look stuck to the canvas. */
+.vxs-node-progress {
+  padding: 0 10px 8px;
+  pointer-events: none;
+}
+
+.vxs-node-progress-track {
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--vxs-text-faint) 25%, transparent);
+}
+
+/* Each new figure is reached on the curve and inside the ceiling: most of the way at once, then
+   a soft landing, so a bar fed a frame at a time moves rather than steps. */
+.vxs-node-progress-fill {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--node-accent, var(--vxs-accent));
+  transition: width var(--vxs-motion-slow) var(--vxs-ease-out);
+}
+
+/* A highlight runs along the fill while the node works. The block exists only while its node
+   is running, so the sweep stops the moment the work does — a bar that still shimmered after
+   the run ended would be a lie. */
+.vxs-node-progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.18), transparent);
+  animation: vxs-sweep 1.1s linear infinite;
+}
+
+@keyframes vxs-sweep {
+  from {
+    translate: -120% 0;
+  }
+  to {
+    translate: 320% 0;
+  }
+}
+
+/* A node that names its stage but cannot put a number on it — "remeshing", with no idea
+   how long that takes. A bar frozen at 0% reads as stalled, so it sweeps instead; the
+   whole bar is already the moving thing, so it carries no highlight of its own. It travels by
+   `translate`, in percentages of its own 35% — one bar-width off the left edge to one past the
+   right — and not by `margin-left` as it used to: a margin is layout, recomputed on every
+   frame of a loop that runs for as long as the node does, where a translate is the
+   compositor's alone and keeps time while the page is busy with the run. */
+.vxs-node-progress-unknown .vxs-node-progress-fill {
+  width: 35%;
+  transition: none;
+  animation: vxs-node-progress-sweep 1.6s ease-in-out infinite;
+}
+
+.vxs-node-progress-unknown .vxs-node-progress-fill::after {
+  content: none;
+}
+
+@keyframes vxs-node-progress-sweep {
+  0% {
+    translate: -100% 0;
+  }
+  100% {
+    translate: 286% 0;
+  }
+}
+
+.vxs-node-progress-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 4px 0 0;
+  font-size: 10px;
+  font-family: var(--vxs-font-mono);
+  color: var(--vxs-text-faint);
+}
+
+/* The stage name gives up the pixels: the percentage is short, fixed and the part that is
+   read at a glance, so it is the half that must never be the one cut off. */
+.vxs-node-progress-text > :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vxs-node-progress-text > :last-child {
+  margin-left: auto;
+  flex: none;
+  color: var(--vxs-text-secondary);
+}
+
+/* ---------------------------------------------------------------- document typography
+
+   What a *document* looks like, shared by anything that shows one. Today that is the block
+   editor, whose content ProseMirror owns — so its elements cannot carry utility classes and
+   these rules are their stylesheet. Every value is a token, so a document rethemes with
+   everything else (§7). What an editable document adds is in `editor.css`. */
+
+.markdown-body {
+  line-height: 1.7;
+  max-width: 46rem;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.6em 0 0.5em;
+  scroll-margin-top: var(--vxs-space-4);
+}
+
+.markdown-body h1 {
+  font-size: 1.7em;
+}
+.markdown-body h2 {
+  font-size: 1.35em;
+  border-bottom: 1px solid var(--vxs-border-subtle);
+  padding-bottom: 0.25em;
+}
+.markdown-body h3 {
+  font-size: 1.15em;
+}
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 1em;
+  color: var(--vxs-text-secondary);
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body table {
+  margin: 0.75em 0;
+}
+
+/* That gap is the space *between blocks*. The editor wraps the text of every table cell,
+   list item and quote in a `<p>` of its own, and a block gap inside a cell is a cell twice
+   as tall as its text — so where a block is the content of something inline-sized rather
+   than a sibling in the column, it carries no margin. Callout and toggle bodies are real
+   block containers and keep theirs. Nested lists keep their own tighter rule below. */
+.markdown-body :is(td, th, li, blockquote) > :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.5em;
+}
+.markdown-body ul {
+  list-style: disc;
+}
+.markdown-body ol {
+  list-style: decimal;
+}
+.markdown-body li {
+  margin: 0.2em 0;
+}
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin: 0.2em 0;
+}
+
+/* Both fall back to the accent. `--vxs-md-color` is set only inside a coloured span, and
+   without the fallback a link inside one would keep the accent while the words around it
+   changed — the `a:hover` rule alone outranks the colour rule below. */
+.markdown-body a {
+  color: var(--vxs-md-color, var(--vxs-accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body a:hover {
+  color: var(--vxs-md-color, var(--vxs-accent-hover));
+}
+
+.markdown-body code {
+  font-family: var(--vxs-font-mono);
+  font-size: 0.9em;
+  background: var(--vxs-bg-inset);
+  border: 1px solid var(--vxs-border-subtle);
+  border-radius: var(--vxs-radius-sm);
+  padding: 0.1em 0.35em;
+}
+
+.markdown-body pre {
+  background: var(--vxs-bg-inset);
+  border: 1px solid var(--vxs-border-subtle);
+  border-radius: var(--vxs-radius-md);
+  padding: var(--vxs-space-3);
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--vxs-border-strong);
+  padding-left: var(--vxs-space-3);
+  color: var(--vxs-text-muted);
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--vxs-border);
+  margin: 1.5em 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--vxs-border);
+  padding: 0.35em 0.7em;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--vxs-bg-elevated);
+  font-weight: 600;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: var(--vxs-radius-md);
+}
+
+.markdown-body strong {
+  font-weight: 600;
+}
+.markdown-body em {
+  font-style: italic;
+}
+.markdown-body del {
+  text-decoration: line-through;
+  color: var(--vxs-text-faint);
+}
+
+/* ---------------------------------------------------------------- author-chosen colour
+
+   `[Not shipped]{.red}` — a span whose class name is the colour word itself (block-editor
+   spec §3.2). Eleven names, closed: ten colours and the British spelling of one of them.
+
+   Scoped to `.markdown-body`, which the block editor also carries (`BlockEditor.vue` mounts
+   `markdown-body block-editor`), because a bare `.green` in the global namespace is a class
+   any component could collide with. It is also the answer to a class name arriving from a
+   document these agents wrote: the parser refuses a word outside the list, and this
+   stylesheet defines nothing for one either.
+
+   The colour is handed over as a custom property rather than set with `color:` alone, so
+   that a link inside a coloured run takes it too — see the two `a` rules above. Same
+   arrangement as `--callout-*` and `--node-accent` (`.claude/rules/styling.md`, level 3). */
+.markdown-body :is(.red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink, .brown, .gray, .grey) {
+  color: var(--vxs-md-color);
+}
+
+.markdown-body .red {
+  --vxs-md-color: var(--vxs-md-red);
+}
+.markdown-body .orange {
+  --vxs-md-color: var(--vxs-md-orange);
+}
+.markdown-body .yellow {
+  --vxs-md-color: var(--vxs-md-yellow);
+}
+.markdown-body .green {
+  --vxs-md-color: var(--vxs-md-green);
+}
+.markdown-body .cyan {
+  --vxs-md-color: var(--vxs-md-cyan);
+}
+.markdown-body .blue {
+  --vxs-md-color: var(--vxs-md-blue);
+}
+.markdown-body .purple {
+  --vxs-md-color: var(--vxs-md-purple);
+}
+.markdown-body .pink {
+  --vxs-md-color: var(--vxs-md-pink);
+}
+.markdown-body .brown {
+  --vxs-md-color: var(--vxs-md-brown);
+}
+/* One colour, two spellings — the file keeps whichever the author wrote. */
+.markdown-body :is(.gray, .grey) {
+  --vxs-md-color: var(--vxs-md-gray);
+}
+
+/* ---------------------------------------------------------------- a message, not a document
+
+   The same typography, tightened, for agent prose in a transcript card (`MarkdownText.vue`).
+   A document is read on a page; a message is read in a 340px rail, several to a screen — so
+   document leading, 1.6em heading margins and the 46rem measure turn a three-line answer
+   into a scroll. Only spacing and scale are touched: code, tables, links and quotes stay
+   exactly what they are everywhere else. */
+
+.markdown-chat {
+  line-height: 1.55;
+  max-width: none;
+}
+
+/* The card supplies the padding. Anything else leaves a gap above the first line that reads
+   as the message starting late. */
+.markdown-chat > :first-child {
+  margin-top: 0;
+}
+.markdown-chat > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-chat p,
+.markdown-chat ul,
+.markdown-chat ol,
+.markdown-chat blockquote,
+.markdown-chat pre,
+.markdown-chat table {
+  margin: 0.5em 0;
+}
+.markdown-chat :is(td, th, li, blockquote) > :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0;
+}
+
+.markdown-chat h1,
+.markdown-chat h2,
+.markdown-chat h3,
+.markdown-chat h4,
+.markdown-chat h5,
+.markdown-chat h6 {
+  margin: 0.9em 0 0.3em;
+  font-size: 1em;
+}
+/* A heading in a message is one line of emphasis, not a section of a document — hence one
+   size for all six and no rule under h2, which in a card reads as the card being divided. */
+.markdown-chat h1,
+.markdown-chat h2 {
+  font-size: 1.1em;
+}
+.markdown-chat h2 {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.markdown-chat ul,
+.markdown-chat ol {
+  padding-left: 1.25em;
+}
+
+.markdown-chat pre {
+  padding: var(--vxs-space-2);
+}
+
+.markdown-chat th,
+.markdown-chat td {
+  padding: 0.2em 0.5em;
+}
+
+/* A checked box the reader cannot uncheck: the message is a record of what was written. */
+.markdown-chat li.task-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+  list-style: none;
+  margin-left: -1.25em;
+}
+.markdown-chat li.task-item input[type='checkbox'] {
+  accent-color: var(--vxs-accent);
+}
+.markdown-chat .task-done {
+  color: var(--vxs-text-faint);
+  text-decoration: line-through;
+}
+
+/* What an agent is doing right now, flashed once per line.
+
+   Global rather than scoped to one SFC because two surfaces show the same line for the same
+   reason: the board card, and the last line under the task transcript. One flash, not a loop
+   — the element is re-created whenever the agent does something (`:key` is a counter), so
+   the animation runs from the start again; a line that keeps flashing is a session still
+   moving, and one that goes quiet has stopped. Animating to `inherit` lands on whatever
+   faint colour the row it sits in already had. */
+.vxs-task-activity {
+  animation: vxs-task-activity-pulse 900ms ease-out;
+}
+
+@keyframes vxs-task-activity-pulse {
+  0% {
+    color: var(--vxs-accent);
+    opacity: 0.35;
+  }
+  20% {
+    color: var(--vxs-accent);
+    opacity: 1;
+  }
+  100% {
+    color: inherit;
+    opacity: 1;
+  }
+}
+
+/* A sub-agent or workflow that is still working (§10.3).
+
+   The opposite shape to the line above, on purpose: that one flashes once because it marks
+   an *event*, and this one repeats because it marks a *state*. A session waiting on five
+   agents can sit for minutes with nothing else on the screen changing, and a still dot
+   beside "running" is indistinguishable from a stale one. */
+.vxs-subagent-running {
+  animation: vxs-subagent-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vxs-subagent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Reduced motion is the reader's own setting and no longer a project one: `theme.reduce_motion`
+   and the `data-motion` attribute beside this were removed on 2026-09-11 with the rest of the
+   knobs the two looks replaced, and what they did was folded in here — so the OS setting now
+   gets the *whole* treatment rather than the animations alone, which is what that attribute
+   had over it. Everything that moves on its own is listed here, so a new animation has to
+   opt in.
+
+   Fewer and gentler, not none (2026-10-02): what is asked for is less *movement*, and a layer
+   that appears with no transition at all is its own kind of jolt. So a dialog, a menu, a
+   notification and the chat still fade — opacity only, their travel and scale dropped — and a
+   leaving dialog's veil still fades out. Everything that loops, slides or flashes stops. */
+@media (prefers-reduced-motion: reduce) {
+  .vxs-task-activity,
+  .vxs-subagent-running,
+  .vxs-node-running .vxs-node-status,
+  .vxs-node-settle .vxs-node-status,
+  .vxs-node-progress-unknown .vxs-node-progress-fill,
+  .vxs-node-progress-fill::after,
+  .animate-pulse,
+  .vxs-enter,
+  .vxs-pop,
+  .vxs-tile-live,
+  .vxs-tile-settle,
+  .vxs-badge-live,
+  .vxs-badge-settle,
+  .vxs-dot-live {
+    animation: none;
+  }
+
+  /* The panels keep their timing and swap the keyframe for the veil's, which is opacity alone. */
+  :is([role='dialog'], [role='alertdialog']),
+  .vxs-card:is([role='menu'], [role='listbox'], [data-task-menu]) {
+    animation-name: vxs-arrive-veil;
+  }
+
+  /* A leaving panel fades with its veil and does not step back down. */
+  .vxs-leaving > :is([role='dialog'], [role='alertdialog']) {
+    animation: none !important;
+  }
+
+  /* The transitions that carry a notification, the chat and a board card in and out keep their
+     fade, in the quick beat: with only `opacity` on the list, the travel lands at once. Named
+     with `!important` because the blanket rule below is, and has to be. */
+  :is(
+      .vxs-toast-enter-active,
+      .vxs-toast-leave-active,
+      .vxs-chat-panel-enter-active,
+      .vxs-chat-panel-leave-active,
+      .vxs-tile-list-enter-active,
+      .vxs-tile-list-leave-active
+    ) {
+    transition: opacity var(--vxs-motion-quick) linear !important;
+  }
+
+  /* Still, a running thing has to *read* as running: the colour stays and the movement goes,
+     so its edge is the running amber, held. */
+  .vxs-tile.vxs-tile-live {
+    box-shadow:
+      0 0 0 1px var(--vxs-status-running),
+      var(--vxs-shadow-md);
+  }
+
+  .vxs-badge.vxs-badge-live {
+    box-shadow: inset 0 0 0 1px var(--vxs-status-running);
+  }
+
+  /* The bars keep their late arrival, so a quick read still never flashes them, and lose the
+     shimmer. */
+  .vxs-skeleton {
+    animation: vxs-arrive-veil 1ms linear 200ms backwards;
+  }
+
+  /* The pseudo-elements are named because `*` does not reach them: the switcher's thumb,
+     a checkbox's tick and a slider's thumb move on transitions of their own. */
+  *,
+  *::before,
+  *::after,
+  ::-webkit-slider-thumb {
+    transition-duration: 0s !important;
+  }
+}
+
+/* ---- the chat popup (§10.9) -------------------------------------------------------- */
+
+/* Three dots that breathe while a member is answering — the transcript's "typing" sign. */
+.vxs-chat-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 1em;
+}
+
+.vxs-chat-typing i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: vxs-chat-typing var(--vxs-motion-slow, 320ms) ease-in-out infinite alternate;
+}
+
+.vxs-chat-typing i:nth-child(2) {
+  animation-delay: 110ms;
+}
+
+.vxs-chat-typing i:nth-child(3) {
+  animation-delay: 220ms;
+}
+
+@keyframes vxs-chat-typing {
+  to {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vxs-chat-typing i {
+    animation: none;
+    opacity: 0.7;
+  }
+}

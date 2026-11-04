@@ -1,0 +1,13 @@
+# Dependencies for the image_ops plugin's isolated environment.
+#
+# Nothing here is needed for PNG: `nodes/imaging.py` decodes and encodes it on zlib
+# alone, so "Remove Background" runs against a .png before this environment exists —
+# which is the case that matters, because the node's own output is a .png.
+#
+# Pillow is what every other container needs (JPEG, WebP, BMP, TGA, TIFF), and it is
+# also the faster PNG decoder once it is here. Preferring it for PNG changes no pixel:
+# PNG decoding is defined bit-exactly by the format, so both decoders agree by
+# construction. That is the difference from `hunyuan3d/nodes/imaging.py`, which refuses
+# to let Pillow near a JPEG for exactly the opposite reason — two IDCTs need not agree,
+# and the §8.2 cache key cannot see which one ran.
+pillow>=10.0

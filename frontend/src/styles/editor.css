@@ -1,0 +1,984 @@
+/**
+ * The block editor's own styling (block-editor spec §4.10).
+ *
+ * Everything a *document* looks like already exists as `.markdown-body` in `base.css`, and
+ * the editor wears that class — headings, lists, tables, quotes and code are shared with the
+ * rest of the app on purpose, because "the same document" should not look like two things.
+ * What is here is only what an *editable* document adds: the content column, placeholders,
+ * and the four node types Markdown has that the app had no styling for.
+ *
+ * Colours, radii and spacing come from `--vxs-*` tokens. No literal ones — see
+ * `.claude/rules/styling.md`.
+ */
+
+.block-editor-scroller {
+  scroll-padding-top: var(--vxs-space-4);
+  /* Room to bring the last line up to the middle of the pane, on the scroller rather than at
+     the foot of the column. */
+  padding-bottom: 40vh;
+  /* What the gutter occupies, declared once and read by both the thing that reserves the
+     room and the thing that sits in it. Two buttons of 1.25rem, their 1px gap, and a little
+     air. Keeping it in one place is the whole lesson of the bug below. */
+  --vxs-doc-gutter-reserve: 2.75rem;
+}
+
+/* §4.10: a fixed, centred column, with room in the margins for the gutter and the drag
+   indicators that arrive in PR 3. The margin is what stops those from shifting the text. */
+.block-editor-column {
+  margin: 0 auto;
+  max-width: 72rem;
+  /* The side padding has to be at least the gutter's reserve, or on a narrow pane there is
+     no margin for the gutter to sit in and it lands on the first characters of every line —
+     which is what a 32px padding against a 44px gutter did. Wide enough and the centring
+     provides the room anyway; this only bites once the column stops reaching its maximum. */
+  padding: var(--vxs-space-5) max(var(--vxs-space-6), calc(var(--vxs-doc-gutter-reserve) + var(--vxs-space-1)));
+  /* The reading size. Declared here rather than inherited, because a document is prose and
+     the app around it is chrome: unset, it is one point *above* whatever the §7 density
+     knob makes `--vxs-text-size`, and the Documents header's stepper overrides that with
+     `--vxs-doc-text-size` when somebody picks a number (persisted in `config.yaml`).
+     Everything `.markdown-body` sizes is in `em`, so headings, code and tables follow this
+     one value. The column stays `rem`-wide on purpose — the measure is a layout decision,
+     and letting it grow with the text would put the same words on a much wider line. */
+  font-size: var(--vxs-doc-text-size, calc(var(--vxs-text-size) + 1px));
+  /* The leading, by the same arrangement: `--vxs-doc-line-height` when somebody picked one,
+     otherwise the default below — tighter than `.markdown-body`'s reading leading, because
+     a document here is edited block by block and a tall leading leaves a page of short
+     blocks looking sparse. Unitless so it multiplies the size above rather than fighting
+     it. The default is a property of its own so the header's stepper can read it back. */
+  --vxs-doc-line-height-default: 1.5;
+  line-height: var(--vxs-doc-line-height, var(--vxs-doc-line-height-default));
+}
+
+/* `.markdown-body` states its own leading and would otherwise win over the column's.
+   Headings keep their tighter leading from `base.css` — only body text is stepped. */
+.block-editor-column .block-editor {
+  line-height: inherit;
+}
+
+.block-editor {
+  outline: none;
+  max-width: none;
+}
+
+.block-editor :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+
+/* ------------------------------------------------------------------ placeholders */
+
+.block-editor .is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--vxs-text-faint);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ task items */
+
+/* Tiptap's task item is drawn by a node view, which puts `data-checked` on the `li` and no
+   `data-type` — the `data-type` only exists on the list. Selectors here follow the DOM that
+   is actually produced, not the one `renderHTML` describes. */
+.block-editor ul[data-type='taskList'] {
+  list-style: none;
+  padding-left: 1.5em;
+}
+
+.block-editor ul[data-type='taskList'] > li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+.block-editor ul[data-type='taskList'] > li > label {
+  flex: none;
+}
+
+.block-editor ul[data-type='taskList'] > li > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* The task item's text sits one wrapper deeper than a plain list item's, so `base.css`'s
+   "no block gap inside a list item" rule does not reach it. */
+.block-editor ul[data-type='taskList'] > li > div > :is(p, ul, ol) {
+  margin: 0;
+}
+
+.block-editor ul[data-type='taskList'] input[type='checkbox'] {
+  accent-color: var(--vxs-accent);
+  cursor: pointer;
+}
+
+.block-editor ul[data-type='taskList'] > li[data-checked='true'] > div {
+  color: var(--vxs-text-faint);
+  text-decoration: line-through;
+}
+
+/* A plain item inside a task list — GFM allows the mix, and it has no checkbox in the
+   file, so it has none here either. `'null'` rather than a missing attribute because the
+   node view stringifies the value. The bullet comes back so it still reads as a list. */
+.block-editor ul[data-type='taskList'] > li[data-checked='null'] > label {
+  display: none;
+}
+.block-editor ul[data-type='taskList'] > li[data-checked='null']::before {
+  content: '•';
+  color: var(--vxs-text-faint);
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ wiki links */
+
+.block-editor .wiki-link {
+  cursor: pointer;
+  border-radius: var(--vxs-radius-sm);
+  padding: 0 0.1em;
+}
+
+.block-editor .wiki-link-resolved {
+  color: var(--vxs-accent);
+  border-bottom: 1px solid var(--vxs-accent-border);
+}
+
+.block-editor .wiki-link-missing {
+  color: var(--vxs-text-faint);
+  border-bottom: 1px dashed var(--vxs-text-faint);
+}
+
+.block-editor .wiki-link:hover {
+  background: var(--vxs-accent-soft);
+}
+
+.block-editor .wiki-link-selected {
+  background: var(--vxs-accent-soft);
+  outline: 1px solid var(--vxs-accent-border);
+}
+
+/* ------------------------------------------------------------------ images */
+
+/* A picture is inline in Markdown — it lives inside a paragraph — so the wrapper is inline
+   too, and a picture on a line of its own needs no promotion to a block: the `img` inside is
+   `display: block`, so the line box collapses onto it and the paragraph's own box ends up
+   exactly the picture's, with no descender gap under it.
+
+   Do not reach for `p > .doc-image:only-child` here. ProseMirror appends its own
+   `img.ProseMirror-separator` and `br.ProseMirror-trailingBreak` after a trailing inline
+   atom, so the wrapper is never an only child — and CSS cannot see the text node that
+   distinguishes a lone picture from one after a sentence. */
+.block-editor .doc-image {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+  border-radius: var(--vxs-radius-md);
+}
+
+.block-editor .doc-image-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: inherit;
+  /* Visible while a photograph decodes, and behind anything with transparency in it. */
+  background: var(--vxs-bg-inset);
+}
+
+.block-editor .doc-image-selected {
+  outline: 2px solid var(--vxs-accent-border);
+  outline-offset: 2px;
+}
+
+/* The width control a selected picture carries (§3.4): a slider written to the file as
+   `{width=…}`. Over the picture rather than under it, so selecting one does not push the text
+   below it down; and on a scrim of its own, because it has to read on any picture in either
+   theme, where a `--vxs-bg-*` surface would be the document's own grey over a photograph.
+
+   Pinned to the picture's top-left corner at a fixed width, and never sized or placed by the
+   picture: the picture changes size under it while it is dragged. The first version sat centred
+   on the lower edge at 60% of the picture's width, so every step moved and stretched the slider
+   under a still pointer, the pointer then stood over a different value, and a drag flickered
+   between two sizes until it was let go. The top-left corner is the one point of an inline
+   picture that does not move when it is resized. */
+.block-editor .doc-image-size {
+  position: absolute;
+  top: var(--vxs-space-2);
+  left: var(--vxs-space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--vxs-space-2);
+  width: 15rem;
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+  border-radius: var(--vxs-radius-pill);
+  background: color-mix(in srgb, var(--vxs-gray-950) 72%, transparent);
+  color: var(--vxs-white);
+  font-family: var(--vxs-font-sans);
+  font-size: var(--vxs-text-small);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+.block-editor .doc-image-size-range {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--vxs-accent);
+  cursor: pointer;
+}
+
+.block-editor .doc-image-size-value {
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.block-editor .doc-image-size-reset {
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  border-radius: var(--vxs-radius-sm);
+  opacity: 0.85;
+}
+
+.block-editor .doc-image-size-reset:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--vxs-white) 16%, transparent);
+}
+
+.block-editor .doc-image-size-reset:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* A file is being dragged over the document. On the scroller rather than the column, because
+   the margins take a drop too — `BlockEditor.onDrop` is what catches the ones ProseMirror
+   never sees. `inset` so the ring is drawn inside a box that scrolls. */
+.block-editor-dropping {
+  box-shadow: inset 0 0 0 2px var(--vxs-accent-border);
+  border-radius: var(--vxs-radius-md);
+}
+
+/* The placeholder a pending upload leaves where the picture will go. A widget decoration, so
+   it is mapped through every edit made while the bytes are still travelling. */
+.block-editor .doc-image-uploading {
+  display: inline-block;
+  padding: 0.1em 0.4em;
+  border-radius: var(--vxs-radius-sm);
+  border: 1px dashed var(--vxs-accent-border);
+  background: var(--vxs-accent-soft);
+  color: var(--vxs-text-muted);
+  font-size: 0.9em;
+}
+
+/* Not fetched, on purpose: these documents are written by agents, and an `<img>` would call a
+   host the model chose. Same treatment as the task transcript's — a link, in words. */
+.block-editor .doc-image-remote,
+.block-editor .doc-image-missing {
+  display: inline-block;
+  padding: 0.1em 0.4em;
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-bg-inset);
+  font-size: 0.9em;
+}
+
+.block-editor .doc-image-remote {
+  color: var(--vxs-accent);
+  border-bottom: 1px solid var(--vxs-accent-border);
+}
+
+.block-editor .doc-image-missing {
+  color: var(--vxs-text-faint);
+  border: 1px dashed var(--vxs-border-strong);
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ callouts */
+
+.block-editor .callout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--vxs-space-2);
+  margin: 1em 0;
+  padding: var(--vxs-space-3);
+  border: 1px solid var(--callout-border);
+  border-left-width: 3px;
+  border-radius: var(--vxs-radius-md);
+  background: var(--callout-bg);
+}
+
+/* One custom property per kind rather than four rule sets — the same pattern the pipeline
+   canvas uses for node categories (see `.claude/rules/styling.md`). */
+.block-editor .callout[data-kind='note'] {
+  --callout-border: var(--vxs-border-strong);
+  --callout-bg: var(--vxs-bg-inset);
+  --callout-icon: var(--vxs-text-muted);
+}
+.block-editor .callout[data-kind='tip'] {
+  --callout-border: var(--vxs-status-success, var(--vxs-accent-border));
+  --callout-bg: var(--vxs-bg-inset);
+  --callout-icon: var(--vxs-status-success, var(--vxs-accent));
+}
+.block-editor .callout[data-kind='warning'] {
+  --callout-border: var(--vxs-status-warning, var(--vxs-border-strong));
+  --callout-bg: var(--vxs-bg-inset);
+  --callout-icon: var(--vxs-status-warning, var(--vxs-text-muted));
+}
+.block-editor .callout[data-kind='danger'] {
+  --callout-border: var(--vxs-danger-border, var(--vxs-border-strong));
+  --callout-bg: var(--vxs-danger-soft, var(--vxs-bg-inset));
+  --callout-icon: var(--vxs-danger, var(--vxs-text-muted));
+}
+
+.block-editor .callout-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.15em;
+  color: var(--callout-icon);
+}
+
+.block-editor .callout-body > :first-child,
+.block-editor .toggle-body > :first-child {
+  margin-top: 0;
+}
+.block-editor .callout-body > :last-child,
+.block-editor .toggle-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* ------------------------------------------------------------------ directive titles */
+
+.block-editor [data-directive-title] {
+  font-weight: 600;
+  margin-bottom: 0.35em;
+}
+
+/* §3.3: no label in the file means no header row. The node stays — it is where a title
+   would be typed — so it is hidden rather than removed. */
+.block-editor .callout.is-untitled [data-directive-title] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ toggles */
+
+.block-editor .toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--vxs-space-2);
+  margin: 1em 0;
+}
+
+.block-editor .toggle-chevron {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.5rem;
+  margin-top: 0.05em;
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-faint);
+  transition: transform var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+.block-editor .toggle-chevron:hover {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+}
+.block-editor .toggle.is-open .toggle-chevron {
+  transform: rotate(90deg);
+}
+
+/* Hidden, not unmounted: ProseMirror needs the content in the document for positions to
+   stay valid, and a collapsed toggle must not swallow the blocks inside it. */
+.block-editor .toggle.is-collapsed .toggle-body > *:not([data-directive-title]) {
+  display: none;
+}
+
+/* An untitled toggle still needs something to click and to type into (§3.3). */
+.block-editor .toggle.is-untitled [data-directive-title]::before {
+  content: attr(data-placeholder);
+  color: var(--vxs-text-faint);
+}
+
+/* ------------------------------------------------------------------ unsupported */
+
+.block-editor .unsupported-block {
+  display: block;
+  margin: 1em 0;
+  padding: var(--vxs-space-2) var(--vxs-space-3);
+  border: 1px dashed var(--vxs-border-strong);
+  border-radius: var(--vxs-radius-md);
+  background: var(--vxs-bg-inset);
+  cursor: default;
+}
+
+.block-editor .unsupported-label {
+  display: block;
+  margin-bottom: 0.25em;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vxs-text-faint);
+}
+
+.block-editor .unsupported-source {
+  display: block;
+  white-space: pre-wrap;
+  font-family: var(--vxs-font-mono);
+  font-size: 0.85em;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vxs-text-muted);
+}
+
+.block-editor .unsupported-inline {
+  border-bottom: 1px dashed var(--vxs-border-strong);
+  color: var(--vxs-text-muted);
+}
+.block-editor .unsupported-inline .unsupported-source {
+  display: inline;
+}
+
+.block-editor .unsupported-selected {
+  outline: 2px solid var(--vxs-accent-border);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------------------ gutter (§4.1) */
+
+/* Positioned in the scroller's left margin, outside the content column, so it never takes
+   part in layout — appearing cannot shift a single character of text. The column's own
+   padding is what reserves the space it sits in.
+
+   `--vxs-doc-column-left` is the *measured* left edge of the text, set per-row by
+   `BlockEditor`. It replaced `calc(50% - 24rem - …)`, which derived the same edge from the
+   column's half-width written out as a constant — and that constant said 24rem while the
+   column is 72rem, so on any window wide enough for the column to reach its maximum the
+   gutter sat about 108px inside the text instead of beside it. Two numbers describing one
+   width in two files is what broke it; there is one now, and it is measured. */
+.block-gutter {
+  position: absolute;
+  left: max(var(--vxs-space-1), calc(var(--vxs-doc-column-left, 0px) - var(--vxs-doc-gutter-reserve)));
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  /* On the app's quick beat and linear, like every other fade of colour (the motion section of
+     `base.css`): the gutter comes up under the pointer on every row it crosses, so its arrival
+     has to be over before it is noticed. */
+  animation: block-gutter-in var(--vxs-motion-quick) linear forwards;
+}
+
+/* The row under the pointer (§4.1). An outline and a wash so faint it cannot compete with
+   the text it sits over — this says "this is the block the gutter will act on", and a fill
+   heavy enough to be noticed would be a selection, which is a different state with a
+   different colour. `content-box` plus matching padding and negative margins is what lets
+   the inline style carry the row's exact box while the breathing room stays here. */
+.block-hover {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: content-box;
+  margin: -2px -8px;
+  padding: 2px 8px;
+  border-radius: var(--vxs-radius-sm);
+  background: color-mix(in oklab, var(--vxs-text-primary) 4%, transparent);
+  box-shadow: inset 0 0 0 1px var(--vxs-border-subtle);
+}
+
+@keyframes block-gutter-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.block-gutter-button {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.5rem;
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-faint);
+}
+
+.block-gutter-button:hover {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+}
+
+/* §10: the gutter is reachable by keyboard, and the focus ring has to be visible. */
+.block-gutter-button:focus-visible {
+  outline: 2px solid var(--vxs-accent);
+  outline-offset: 1px;
+  color: var(--vxs-text-primary);
+}
+
+.block-gutter-handle {
+  cursor: grab;
+}
+
+body.is-dragging-block,
+body.is-dragging-block * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ drag (§4.2) */
+
+.block-drop-indicator {
+  position: absolute;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--vxs-accent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.block-drag-preview {
+  position: fixed;
+  z-index: 60;
+  max-width: 20rem;
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-md);
+  background: var(--vxs-bg-elevated);
+  box-shadow: var(--vxs-shadow-lg, 0 8px 24px rgb(0 0 0 / 0.3));
+  color: var(--vxs-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.block-drag-count {
+  margin-left: var(--vxs-space-2);
+  padding: 0 0.35em;
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-accent);
+  color: var(--vxs-text-on-accent);
+}
+
+.block-editor .block-dragging {
+  opacity: 0.4;
+}
+
+.block-marquee {
+  position: absolute;
+  border: 1px solid var(--vxs-accent-border);
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-accent-soft);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ------------------------------------------------------------------ block selection (§4.7) */
+
+.block-editor .block-selected {
+  background: var(--vxs-accent-soft);
+  border-radius: var(--vxs-radius-sm);
+  box-shadow: 0 0 0 2px var(--vxs-accent-soft);
+}
+
+/* ------------------------------------------------------------------ slash menu (§4.3) */
+
+/* Fixed and teleported to the body: inside the scroller it would be clipped by
+   `overflow: auto`, which is the usual way a caret-anchored popup goes wrong. */
+.slash-menu {
+  position: fixed;
+  z-index: 50;
+  width: 19rem;
+  overflow: hidden;
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-lg);
+  background: var(--vxs-bg-elevated);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+
+.slash-menu-list {
+  max-height: 19rem;
+  overflow-y: auto;
+  padding: var(--vxs-space-1) 0;
+}
+
+.slash-menu-group {
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vxs-text-faint);
+}
+
+.slash-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--vxs-space-2);
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+  text-align: left;
+  color: var(--vxs-text-secondary);
+}
+
+.slash-menu-item:hover {
+  background: var(--vxs-bg-hover);
+}
+
+.slash-menu-item.is-active {
+  background: var(--vxs-accent-soft);
+  color: var(--vxs-text-primary);
+}
+
+.slash-menu-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  color: var(--vxs-text-faint);
+}
+
+.slash-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-menu-hint {
+  flex: none;
+  font-family: var(--vxs-font-mono);
+  font-size: 11px;
+  color: var(--vxs-text-faint);
+}
+
+/* ------------------------------------------------------------------ selection toolbar (§4.4) */
+
+.selection-toolbar {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: var(--vxs-space-1);
+  transform: translateX(-50%);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-md);
+  background: var(--vxs-bg-elevated);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.3);
+}
+
+.selection-toolbar-button {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-muted);
+}
+
+.selection-toolbar-button:hover {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+}
+
+.selection-toolbar-button.is-active {
+  background: var(--vxs-accent-soft);
+  color: var(--vxs-text-primary);
+}
+
+.selection-toolbar-button:focus-visible {
+  outline: 2px solid var(--vxs-accent);
+  outline-offset: 1px;
+}
+
+/* The picker's own button, tinted by the colour the selection already carries. `is-active`
+   would say only "there is one"; the tint says which, without opening the strip. */
+.selection-toolbar-color.is-active {
+  color: var(--vxs-md-color);
+}
+.selection-toolbar-color.is-active:hover {
+  color: var(--vxs-md-color);
+}
+
+.selection-toolbar-link {
+  display: flex;
+  align-items: center;
+  gap: var(--vxs-space-1);
+}
+
+/* The colour strip takes the toolbar over, as the link field does (§4.4). Eleven controls
+   at 1.25rem come to about 17rem — narrower than the link field beside it. */
+.selection-toolbar-colors {
+  display: flex;
+  align-items: center;
+  gap: var(--vxs-space-1);
+  padding: 0 var(--vxs-space-1);
+}
+
+.selection-toolbar-swatch {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--vxs-radius-pill);
+  background: var(--vxs-md-color);
+  /* A transparent ring at rest, so selecting a colour does not move the swatches. */
+  box-shadow: 0 0 0 2px transparent;
+}
+
+.selection-toolbar-swatch:hover {
+  box-shadow: 0 0 0 2px var(--vxs-border-strong);
+}
+
+.selection-toolbar-swatch.is-active {
+  box-shadow: 0 0 0 2px var(--vxs-text-primary);
+}
+
+.selection-toolbar-swatch:focus-visible {
+  outline: 2px solid var(--vxs-accent);
+  outline-offset: 1px;
+}
+
+/* "No colour" is the one control with no colour to show, so it is drawn as a control. */
+.selection-toolbar-swatch-none {
+  background: var(--vxs-bg-inset);
+  border: 1px solid var(--vxs-border);
+  color: var(--vxs-text-muted);
+}
+
+.selection-toolbar-input {
+  width: 16rem;
+  padding: 0.15rem var(--vxs-space-2);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-bg-inset);
+  outline: none;
+}
+
+.selection-toolbar-input:focus {
+  border-color: var(--vxs-accent);
+}
+
+.selection-toolbar-apply {
+  padding: 0.15rem var(--vxs-space-2);
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-accent);
+  color: var(--vxs-text-on-accent);
+}
+
+.selection-toolbar-divider {
+  width: 1px;
+  height: 1.25rem;
+  margin: 0 var(--vxs-space-1);
+  background: var(--vxs-border);
+}
+
+.selection-toolbar-turn {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 1.75rem;
+  padding: 0 var(--vxs-space-2);
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-muted);
+}
+
+.selection-toolbar-turn:hover {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+}
+
+/* ------------------------------------------------------------------ block menu (§4.5) */
+
+.block-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+}
+
+.block-menu {
+  position: fixed;
+  z-index: 56;
+  width: 14.5rem;
+  max-height: min(24rem, 80vh);
+  overflow-y: auto;
+  padding-bottom: var(--vxs-space-1);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-lg);
+  background: var(--vxs-bg-elevated);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
+}
+
+.block-menu-title {
+  padding: var(--vxs-space-2) var(--vxs-space-2) var(--vxs-space-1);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vxs-text-faint);
+}
+
+.block-menu-section + .block-menu-section {
+  margin-top: var(--vxs-space-1);
+  padding-top: var(--vxs-space-1);
+  border-top: 1px solid var(--vxs-border-subtle);
+}
+
+.block-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--vxs-space-2);
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+  text-align: left;
+  color: var(--vxs-text-secondary);
+}
+
+.block-menu-item:hover,
+.block-menu-item:focus-visible {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+  outline: none;
+}
+
+.block-menu-item.is-danger:hover,
+.block-menu-item.is-danger:focus-visible {
+  background: var(--vxs-danger-soft);
+  color: var(--vxs-danger);
+}
+
+.block-menu-item.is-current {
+  color: var(--vxs-accent);
+}
+
+.block-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.block-menu-shortcut {
+  flex: none;
+  font-family: var(--vxs-font-mono);
+  font-size: 11px;
+  color: var(--vxs-text-faint);
+}
+
+.block-menu-chevron {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+  color: var(--vxs-text-faint);
+  transition: transform var(--vxs-motion-fast) var(--vxs-ease-out);
+}
+.block-menu-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.block-menu-submenu {
+  padding-left: var(--vxs-space-2);
+  border-left: 1px solid var(--vxs-border-subtle);
+  margin-left: var(--vxs-space-2);
+}
+
+.block-menu-property {
+  display: flex;
+  align-items: center;
+  gap: var(--vxs-space-2);
+  flex-wrap: wrap;
+  padding: var(--vxs-space-1) var(--vxs-space-2);
+}
+
+.block-menu-property-label {
+  flex: none;
+  min-width: 4.5rem;
+  color: var(--vxs-text-faint);
+}
+
+.block-menu-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.1rem var(--vxs-space-1);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-bg-inset);
+  color: var(--vxs-text-primary);
+  outline: none;
+}
+.block-menu-control:focus {
+  border-color: var(--vxs-accent);
+}
+
+.block-menu-options {
+  flex: 1 1 100%;
+  max-height: 9rem;
+  overflow-y: auto;
+  margin-top: var(--vxs-space-1);
+}
+
+.block-menu-option {
+  display: block;
+  width: 100%;
+  padding: 0.1rem var(--vxs-space-1);
+  text-align: left;
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-secondary);
+}
+.block-menu-option:hover {
+  background: var(--vxs-bg-hover);
+}
+.block-menu-option.is-current {
+  color: var(--vxs-accent);
+}
+
+.block-menu-switch input {
+  accent-color: var(--vxs-accent);
+  cursor: pointer;
+}
+
+.block-menu-buttons {
+  display: flex;
+  gap: var(--vxs-space-1);
+}
+
+.block-menu-small {
+  padding: 0.1rem var(--vxs-space-1);
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-sm);
+  color: var(--vxs-text-muted);
+}
+.block-menu-small:hover,
+.block-menu-small:focus-visible {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block-menu-chevron {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------------ selection */
+
+.block-editor .ProseMirror-selectednode {
+  outline: 2px solid var(--vxs-accent-border);
+  outline-offset: 2px;
+  border-radius: var(--vxs-radius-sm);
+}
+
+.block-editor .ProseMirror-gapcursor::after {
+  border-top-color: var(--vxs-text-primary);
+}
+
+/* §4.10 */
+@media (prefers-reduced-motion: reduce) {
+  .block-editor .toggle-chevron {
+    transition: none;
+  }
+  .block-gutter {
+    animation: none;
+    opacity: 1;
+  }
+  .block-drag-preview {
+    display: none;
+  }
+}

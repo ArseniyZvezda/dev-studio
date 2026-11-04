@@ -1,0 +1,30 @@
+id: graphify
+name: Graphify
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Keeps a graphify knowledge graph of the project's code and documents — functions,
+  classes, calls, imports, and what the team wrote about them — at the agent launch root,
+  and makes it searchable from the rail. The index is rebuilt when the project is opened
+  and each time a task finishes: the code from the local AST alone, no model, no API key;
+  the Documents section (voxarium_studio/docs) read through Claude Code on your own subscription,
+  changed documents only, into a graph of its own that is merged with the code's for
+  agents and search. Agents are told to
+  query the graph before grepping (Settings → Agent prompts → Code graph). Needs the
+  `graphify` command on PATH — `uv tool install graphifyy` — and `claude` for the
+  documents.
+enabled_by_default: true
+skills:
+  - skills/graphify
+
+backend:
+  entry: plugin.py:register
+
+frontend:
+  pages:
+    - id: graphify-settings
+      title: Graphify
+      icon: waypoints
+      route: /plugins/graphify/settings
+      component: frontend/SettingsPage.js
+  dist: frontend

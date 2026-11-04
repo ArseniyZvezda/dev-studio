@@ -1,0 +1,11 @@
+/**
+ * Single stylesheet entry point. Order matters: tokens first so the values exist,
+ * then Tailwind (whose `@theme inline` block references them), then our element
+ * defaults so they can win over Tailwind's preflight where we want them to.
+ */
+
+@import './tokens.css';
+@import './theme.css';
+@import './base.css';
+/* Last: the block editor wears `.markdown-body` and adds to it, so it has to win. */
+@import './editor.css';

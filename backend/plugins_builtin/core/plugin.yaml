@@ -1,0 +1,10 @@
+id: core
+name: Core Nodes
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Built-in node types available in every project: inputs, text handling, file I/O and
+  generic HTTP calls. Runs in the Studio's own interpreter, so it declares no venv.
+enabled_by_default: true
+backend:
+  entry: plugin.py:register

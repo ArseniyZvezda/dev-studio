@@ -1,0 +1,24 @@
+id: angelscript
+name: AngelScript
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Teaches the Explorer to highlight AngelScript. At this stage that is all it does —
+  `.as` files are coloured, and nothing else about the language is understood. More of
+  the language will follow; syntax highlighting is the first step, not the whole plan.
+
+  Highlighting comes from the TextMate grammar shipped beside this manifest — the same
+  format VS Code loads — so the plugin runs no code of its own: no backend entry, no
+  isolated environment, no JavaScript. Any other language is taught the same way, by a
+  plugin carrying its `.tmLanguage.json`.
+enabled_by_default: true
+
+frontend:
+  grammars:
+    - id: angelscript
+      name: AngelScript
+      extensions: ['.as']
+      scope_name: source.angelscript
+      grammar: frontend/angelscript.tmLanguage.json
+      aliases: [as, angelscript]
+  dist: frontend

@@ -1,0 +1,27 @@
+id: preview2d
+name: 2D Preview
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  A "Preview 2D" node that shows the incoming image on the pipeline canvas — the flat
+  counterpart of `preview3d`, for the half of a generation pipeline that is still a picture.
+
+  It draws an image itself where `preview3d` cannot, because an image *is* something the
+  Studio core already renders: `/api/explorer/file` answers with a data URL and the Explorer's
+  preview pane paints it, with no plugin involved and no dependency to avoid. What it still
+  asks the host for first is a registered previewer (§6.2), so a format a later plugin claims
+  — a layered or an HDR one — arrives here the day that plugin is installed rather than
+  needing a branch in this node.
+
+  The Python half only resolves the path, checks it exists and passes it through, so it runs
+  in the Studio's own interpreter and declares no venv, like `core` and `preview3d`.
+enabled_by_default: true
+
+backend:
+  entry: plugin.py:register
+
+frontend:
+  nodes:
+    - node_type: preview2d.view
+      component: frontend/Preview2DNode.js
+  dist: frontend

@@ -1,0 +1,18 @@
+# Normalise line endings in the repository to LF regardless of the developer's OS.
+# Without this, a Windows checkout commits CRLF and every file looks rewritten to
+# everyone else.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to stay executable there.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Generated; keep it out of diffs and language statistics.
+frontend/package-lock.json -diff linguist-generated
+
+# Binary assets produced by pipeline nodes.
+*.vox binary
+*.stl binary
+*.png binary
+*.woff2 binary

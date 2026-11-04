@@ -1,0 +1,14 @@
+id: pdf_preview
+name: PDF Preview
+version: 0.1.0
+author: Voxarium Studio
+description: Displays PDF documents in the Explorer using the browser's built-in PDF viewer.
+enabled_by_default: true
+
+frontend:
+  previewers:
+    - id: pdf-document
+      label: PDF
+      extensions: ['.pdf']
+      component: frontend/PdfPreview.js
+  dist: frontend

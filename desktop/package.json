@@ -1,0 +1,91 @@
+{
+  "name": "voxarium-studio",
+  "productName": "Voxarium Studio",
+  "version": "5.0.0",
+  "description": "AI game development studio",
+  "author": "Voxarium Studio",
+  "license": "MIT",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-icons.ps1",
+    "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
+    "dist": "npm run prepare:runtime && electron-builder --config electron-builder.cjs --win nsis --x64",
+    "pack": "npm run prepare:runtime && electron-builder --config electron-builder.cjs --win --x64 --dir"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "studio.voxarium.desktop",
+    "electronLanguages": [
+      "en-US",
+      "ru"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "policy.cjs",
+      "preload.cjs",
+      "window-controls.cjs",
+      "producer-attention.cjs",
+      "assets/notification.png",
+      "tray.cjs",
+      "assets/tray.png",
+      "assets/logo.png",
+      "assets/icon.ico",
+      "locales/*.json",
+      "updates.cjs",
+      "update-feed.cjs",
+      "startup.cjs",
+      "backend-version.cjs",
+      "splash.html",
+      "splash.js"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/stop-backend.ps1",
+        "to": "stop-backend.ps1"
+      },
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!python-download{,/**}"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": "nsis",
+      "signExecutable": false
+    },
+    "nsis": {
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "installer/update.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "en_US",
+        "ru_RU"
+      ],
+      "differentialPackage": false,
+      "useZip": true
+    },
+    "compression": "normal"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

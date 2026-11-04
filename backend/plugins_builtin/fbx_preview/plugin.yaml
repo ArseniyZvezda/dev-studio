@@ -1,0 +1,23 @@
+id: fbx_preview
+name: FBX Model Preview
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Renders binary .fbx meshes in the Explorer preview pane. The file is parsed in the
+  browser — node records, zlib-compressed vertex arrays, polygon indices, per-model
+  transforms — triangulated and drawn flat-shaded in a small WebGL viewer you can
+  orbit, pan and zoom.
+
+  Scope is deliberately "look at the geometry": no materials, textures, skinning or
+  animation, and ASCII FBX is reported rather than parsed. Pivot and pre/post-rotation
+  edge cases of the FBX transform stack are ignored, which is visible only on scenes
+  that keep them un-baked.
+enabled_by_default: true
+
+frontend:
+  previewers:
+    - id: fbx-model
+      label: FBX mesh
+      extensions: ['.fbx']
+      component: frontend/FbxPreview.js
+  dist: frontend

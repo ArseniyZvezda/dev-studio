@@ -1,0 +1,21 @@
+# Dependencies for the hunyuan3d plugin's isolated environment.
+#
+# The node scripts are written to work on the stdlib alone and use numpy only when it
+# is importable, so the pipeline still runs before this environment is provisioned.
+# That includes Hunyuan3D in `server` mode: it is an HTTP call over urllib and needs
+# nothing here.
+#
+# Hunyuan3D in `local` mode is the case each plugin gets its own venv for (spec §2.1) —
+# torch plus several GB of model code. It is intentionally NOT pinned here, because
+# "Build environment" on the Hunyuan3D Settings page has to stay cheap for everyone
+# reaching the model over a server. Add it yourself when you want local inference; see
+# README.md for what to append and why the CUDA wheel index matters.
+numpy>=1.26
+
+# Optional, and deliberately not pinned. `nodes/imaging.py` decodes PNG and baseline
+# JPEG on the stdlib alone, which covers everything Hunyuan3D bakes; Pillow is only needed
+# for a texture in some third container — WebP, BMP, TGA. Uncomment it if you hit that,
+# and rebuild the environment. Note it changes nothing for PNG or JPEG: those never go
+# through Pillow even when it is installed, so that one mesh always voxelises to one
+# result (the §8.2 cache key does not know what is in the venv).
+# pillow>=10.0

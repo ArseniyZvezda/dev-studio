@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- The theme store re-stamps the mode from config.yaml; dark is the default, here so the
+     first paint does not snap into it (§7). -->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <!-- UI typeface (`--vxs-font-sans`). Variable 400-700 + italic, latin and
+         cyrillic; `display=swap` so a cold or offline load falls back to the
+         system stack instead of blocking on the network. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Google+Sans:ital,wght@0,400..700;1,400..700&display=swap"
+    />
+    <title>Voxarium Studio</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

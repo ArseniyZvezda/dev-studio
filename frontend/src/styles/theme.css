@@ -1,0 +1,91 @@
+/**
+ * Level 2 of the styling system (spec §7): Tailwind v4's utility layer, configured in
+ * CSS and pointed at the very same tokens `tokens.css` defines.
+ *
+ * `@theme inline` is the important bit — it makes `bg-surface` compile to
+ * `background-color: var(--vxs-bg-surface)` rather than copying the value at build
+ * time. Retheming at runtime (or per-subtree, for a node category) therefore works
+ * through utility classes too, not just handwritten CSS. One source of truth, which is
+ * exactly what v3's parallel JS config could not give us.
+ */
+
+@import 'tailwindcss';
+
+/* Tailwind generates only the utilities it finds in the sources it scans, and the
+   built-in plugins live outside `frontend/`. Without this their pages would reference
+   classes that were never emitted. It covers the plugins that ship in this wheel only —
+   a third-party plugin cannot be scanned at build time and must style itself through the
+   `--vxs-*` custom properties (or ship its own CSS). See docs/plugins.md. */
+@source '../../../backend/plugins_builtin';
+
+@theme inline {
+  --color-canvas: var(--vxs-bg-canvas);
+  --color-surface: var(--vxs-bg-surface);
+  --color-elevated: var(--vxs-bg-elevated);
+  --color-inset: var(--vxs-bg-inset);
+  --color-hover: var(--vxs-bg-hover);
+  --color-active: var(--vxs-bg-active);
+
+  --color-primary: var(--vxs-text-primary);
+  --color-secondary: var(--vxs-text-secondary);
+  --color-muted: var(--vxs-text-muted);
+  --color-faint: var(--vxs-text-faint);
+  --color-on-accent: var(--vxs-text-on-accent);
+
+  --color-line: var(--vxs-border);
+  --color-line-subtle: var(--vxs-border-subtle);
+  --color-line-strong: var(--vxs-border-strong);
+
+  --color-accent: var(--vxs-accent);
+  --color-accent-hover: var(--vxs-accent-hover);
+  --color-accent-soft: var(--vxs-accent-soft);
+  --color-accent-border: var(--vxs-accent-border);
+
+  --color-success: var(--vxs-success);
+  --color-warning: var(--vxs-warning);
+  --color-danger: var(--vxs-danger);
+  --color-info: var(--vxs-info);
+  --color-success-soft: var(--vxs-success-soft);
+  --color-warning-soft: var(--vxs-warning-soft);
+  --color-danger-soft: var(--vxs-danger-soft);
+  --color-info-soft: var(--vxs-info-soft);
+
+  --radius-sm: var(--vxs-radius-sm);
+  --radius-md: var(--vxs-radius-md);
+  --radius-lg: var(--vxs-radius-lg);
+  --radius-xl: var(--vxs-radius-xl);
+
+  --shadow-sm: var(--vxs-shadow-sm);
+  --shadow-md: var(--vxs-shadow-md);
+  --shadow-lg: var(--vxs-shadow-lg);
+
+  --font-sans: var(--vxs-font-sans);
+  --font-mono: var(--vxs-font-mono);
+
+  --spacing-pane: var(--vxs-pane-pad);
+  --spacing-row: var(--vxs-row-height);
+  --spacing-rail: var(--vxs-rail-width);
+
+  /* The chrome tokens (§7): the rail, the page headers and the side panes meet the content
+     through `border-pane`, a card through `border-card` and `shadow-card`, never through
+     `border-line` directly — so how chrome meets content stays one decision, in `tokens.css`. */
+  --color-pane: var(--vxs-pane-border);
+  --color-card: var(--vxs-card-border);
+  --color-column: var(--vxs-column-border);
+  --radius-pill: var(--vxs-radius-pill);
+  --shadow-card: var(--vxs-card-shadow);
+
+  /* Density-scaled type: a caption and a page title keep their ratio to the body text. */
+  --text-small: var(--vxs-text-small);
+  --text-title: var(--vxs-title-size);
+
+  /* What a bare `transition-*` utility runs on: the app's fast beat and its one curve (§7),
+     rather than Tailwind's own 150ms on a curve nothing else here uses. */
+  --default-transition-duration: var(--vxs-motion-fast);
+  --default-transition-timing-function: var(--vxs-ease-out);
+}
+
+/* Tailwind's `dark:` variant should follow our explicit attribute rather than the OS
+   setting — `theme.mode: "system"` is resolved to a concrete attribute by the theme
+   store, so the attribute is always authoritative. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));

@@ -1,0 +1,445 @@
+/**
+ * Level 1 of the styling system (spec §7): raw primitives plus the semantic tokens
+ * layered on top of them.
+ *
+ * Everything the UI paints with reads a `--vxs-*` custom property, never a literal
+ * colour. Switching theme is therefore a matter of reassigning this handful of
+ * semantic values on `:root` — no rebuild, no class regeneration, and plugin-supplied
+ * UI inherits the same palette for free.
+ *
+ * The `--vxs-` prefix keeps these clear of Tailwind's own `--color-*` / `--radius-*`
+ * namespaces; `theme.css` bridges the two.
+ *
+ * The values are Graphite (2026-09-16, the "Studio Redesign" canvas), the app's one look since
+ * Flat, Frutiger Glass and Material were deleted the same day. Every knob left on Settings →
+ * Appearance is an attribute the theme store stamps on `<html>` — `data-theme` (mode),
+ * `data-sidebar`, `data-font`, `data-mono` and `data-status-palette` — and the blocks below are
+ * those attributes' values; the store never writes a colour itself, apart from the accent and
+ * whatever `custom_tokens` names.
+ */
+
+:root {
+  /* ---------------------------------------------------------------- primitives
+
+     The ramp the status vocabulary and a few fixed paints are drawn from (a scrollbar, the
+     scrim under a picture's width slider). The chrome does not read it: its greys are the
+     semantic tokens below, which are pure greys where this ramp leans blue. */
+  --vxs-gray-950: #0b0c0f;
+  --vxs-gray-900: #0e0f12;
+  --vxs-gray-850: #131418;
+  --vxs-gray-800: #17181c;
+  --vxs-gray-750: #1c1e23;
+  --vxs-gray-700: #24262c;
+  --vxs-gray-600: #32353d;
+  --vxs-gray-500: #474b55;
+  --vxs-gray-400: #6b6e76;
+  --vxs-gray-300: #9a9ca3;
+  --vxs-gray-200: #c4c6cb;
+  --vxs-gray-100: #e8e9ec;
+  --vxs-gray-50: #f4f5f7;
+  --vxs-white: #ffffff;
+
+  --vxs-violet: #7c5cff;
+  --vxs-green: #3fb950;
+  --vxs-amber: #d29922;
+  --vxs-red: #f85149;
+  --vxs-blue: #58a6ff;
+  --vxs-cyan: #39c5cf;
+  --vxs-pink: #db61a2;
+
+  /* Loaded from Google Fonts in `index.html`; the rest of the stack is what the
+     OS already has, so the UI still reads correctly offline. `[data-font]` and
+     `[data-mono]` below swap the family when a project picks another one; the store
+     loads that face's stylesheet on demand. */
+  --vxs-font-sans: 'Google Sans', 'Google Sans Text', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --vxs-font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+
+  /* ---------------------------------------------------------------- semantic: dark (default)
+
+     Graphite's rule: every surface, border and letterform is a pure grey (R=G=B, no hue at
+     all), and colour is spent on exactly two things — indication (the status vocabulary below,
+     the connection dot, a run's progress, the heatmap and the cost line) and icons (the rail's
+     per-section tints further down, and a member's own `avatar_color`). That split is what lets
+     the chrome be grey and still say what state everything is in. */
+  --vxs-bg-canvas: #111111;
+  --vxs-bg-surface: #181818;
+  --vxs-bg-elevated: #1d1d1d;
+  --vxs-bg-inset: #151515;
+  --vxs-bg-hover: #242424;
+  --vxs-bg-active: #2b2b2b;
+
+  --vxs-text-primary: #ededed;
+  --vxs-text-secondary: #d4d4d4;
+  --vxs-text-muted: #b4b4b4;
+  /* 4.5:1 on the canvas (4.2 on a surface): the faint step carries captions, timestamps and
+     gutters, so it is held to body contrast on the ground most of them sit on rather than to
+     the border greys it lies between. The canvas drew it at #767676, which measures 4.2:1 —
+     six levels lighter is the smallest step that keeps what its own note promised. */
+  --vxs-text-faint: #7c7c7c;
+  /* Lettering on a saturated fill — a Delete in the danger red, an Approve in the success
+     green, a member's initials on their colour. White in both modes: the light theme's
+     status colours are the darkened ones (5.1:1 and 5.4:1 against white, 3.4–3.5:1 against a
+     near-black), and the app's own primary actions are grey and letter themselves
+     (`.vxs-btn-primary` in `base.css`), so nothing grey reads this. */
+  --vxs-text-on-accent: var(--vxs-white);
+
+  --vxs-border: #2c2c2c;
+  --vxs-border-subtle: #232323;
+  --vxs-border-strong: #4a4a4a;
+
+  /* The seed is overwritten at runtime from config.yaml `theme.accent`, and `--vxs-accent` is
+     what gets painted; every accent shade that is still a colour derives from it via
+     color-mix, so one hex is enough to retheme the app. Violet because that is the Graphite
+     canvas's own. It is a *mark* here and never a ground — a focus ring, a selected edge, a
+     run's progress, a folder's icon, a link — which is why the soft, border, container and
+     gradient steps below are greys rather than mixes of it: the one filled accent block on
+     screen would be the loudest thing in the app. */
+  --vxs-accent-seed: #a394e8;
+  --vxs-accent: var(--vxs-accent-seed);
+  --vxs-accent-hover: color-mix(in oklab, var(--vxs-accent) 82%, white);
+  --vxs-accent-pressed: color-mix(in oklab, var(--vxs-accent) 82%, black);
+  /* "Selected": a tree row, a toggle that is on, the task a message bubble belongs to. The
+     canvas draws a selection as one grey step up, and hover is already `--vxs-bg-hover`, so
+     the selected step is the active one — a selected row under the pointer must not go
+     *darker* than one merely hovered. */
+  --vxs-accent-soft: #2b2b2b;
+  --vxs-accent-border: #3d3d3d;
+  /* The primary button: a grey with a lit edge (`base.css`), not an accent fill — its ground at
+     rest, under the pointer and pressed. */
+  --vxs-accent-gradient: linear-gradient(180deg, #2a2a2a, #212121);
+  --vxs-accent-gradient-hover: #2f2f2f;
+  --vxs-accent-gradient-pressed: #262626;
+  /* The tonal container that says "current": the rail's active row and a segmented control's
+     checked option. */
+  --vxs-accent-container: #242424;
+  --vxs-text-on-accent-container: #ededed;
+
+  --vxs-success: var(--vxs-green);
+  --vxs-warning: var(--vxs-amber);
+  --vxs-danger: var(--vxs-red);
+  --vxs-info: var(--vxs-blue);
+  --vxs-success-soft: color-mix(in oklab, var(--vxs-success) 15%, transparent);
+  --vxs-warning-soft: color-mix(in oklab, var(--vxs-warning) 15%, transparent);
+  --vxs-danger-soft: color-mix(in oklab, var(--vxs-danger) 15%, transparent);
+  --vxs-info-soft: color-mix(in oklab, var(--vxs-info) 15%, transparent);
+
+  /* Node-run and task statuses share one vocabulary so a pipeline node and a team task
+     read identically in the UI (spec §3 — same infrastructure, same UX). */
+  /* Quieter than `pending`, which now means "released and runnable": the two columns sit
+     next to each other on the board, so a task nobody has let go of yet has to read as the
+     dimmer of the pair (§10.4). */
+  --vxs-status-todo: var(--vxs-gray-500);
+  --vxs-status-pending: var(--vxs-gray-400);
+  /* Amber rather than blue: on the canvas the accent is the selection colour and blue
+     read as "this node is selected". `--vxs-warning` and not the raw `--vxs-amber`
+     because only the semantic token darkens for the light theme. */
+  --vxs-status-running: var(--vxs-warning);
+  --vxs-status-success: var(--vxs-success);
+  --vxs-status-error: var(--vxs-danger);
+  --vxs-status-cancelled: var(--vxs-gray-400);
+  --vxs-status-skipped: var(--vxs-gray-500);
+  --vxs-status-cached: var(--vxs-cyan);
+  /* Pink is also `blocked` on the task board, and deliberately: both mean "this is waiting
+     on a person", which is the one thing the shared vocabulary exists to make read alike. */
+  --vxs-status-paused: var(--vxs-pink);
+  --vxs-status-review: var(--vxs-amber);
+  --vxs-status-blocked: var(--vxs-pink);
+
+  /* ---------------------------------------------------------------- markdown text colour
+
+     `[Do not ship this]{.red}` in a document (block-editor spec §3.2). The class name in
+     the file *is* the colour word, so this is the one vocabulary in the app where a colour
+     is chosen literally rather than derived from what a thing is.
+
+     Which is why none of these is an alias of `--vxs-success` and friends: the semantic
+     four move under `[data-status-palette='accessible']`, and a reader who asked for
+     Okabe–Ito *status* colours never asked for their prose to be recoloured — nor for it to
+     become unreadable, which is what would happen, since that palette's `--vxs-info` is
+     3.6:1 on the dark canvas. They are equally not bare aliases of the primitives, which are
+     stated once and never restated for light, where most of them fall under 3:1. Hence a
+     pair per colour, and the dark half reusing a primitive only where the primitive is
+     already the right colour, so there is one red in this app rather than two.
+
+     Both halves clear 4.5:1 against the canvas, surface, elevated and inset greys of their
+     mode — at the least 5.0:1 in dark (pink on the elevated grey) and 4.6:1 in light (pink on
+     the inset). The inset is in that set deliberately: it is what a callout and a code span
+     are drawn on. */
+  --vxs-md-red: var(--vxs-red);
+  --vxs-md-orange: #f0883e;
+  --vxs-md-yellow: #e3b341;
+  --vxs-md-green: var(--vxs-green);
+  --vxs-md-cyan: var(--vxs-cyan);
+  --vxs-md-blue: var(--vxs-blue);
+  /* Not `--vxs-violet`: 4.3:1 on the dark canvas, so the one primitive naming a purple cannot
+     carry text. Not `--vxs-accent` either — that is assigned at runtime from `config.yaml`,
+     and a word that changes when somebody picks a new accent is not a colour. */
+  --vxs-md-purple: #bc8cff;
+  --vxs-md-pink: var(--vxs-pink);
+  --vxs-md-brown: #b58a63;
+  /* The ramp step the muted text used to be, deliberately: `.gray` should read as
+     de-emphasised prose, which is what people mean when they write it. */
+  --vxs-md-gray: var(--vxs-gray-300);
+
+  --vxs-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
+  --vxs-shadow-md: 0 6px 18px rgb(0 0 0 / 0.45);
+  --vxs-shadow-lg: 0 24px 60px rgb(0 0 0 / 0.6);
+  /* Under a card lifted by the pointer: deeper than the resting `md`, far short of a dialog's
+     `lg`, so the card reads as having risen two pixels rather than as having come loose. */
+  --vxs-shadow-lift: 0 12px 26px rgb(0 0 0 / 0.55);
+  --vxs-ring: 0 0 0 2px var(--vxs-accent-border);
+
+  --vxs-canvas-dot: #262626;
+
+  /* ---------------------------------------------------------------- chrome
+
+     The rail, the page headers and the side panes meet the content through lines, and a
+     card is a one-pixel ring over a shallow gradient (`base.css`). Components read these
+     rather than `--vxs-border` directly, which is what keeps how chrome meets content one
+     decision, made here. */
+  --vxs-pane-border: var(--vxs-border);
+  --vxs-card-border: var(--vxs-border);
+  --vxs-card-shadow: var(--vxs-shadow-sm);
+  --vxs-column-border: var(--vxs-border-subtle);
+
+  /* The grounds that are not flat. The rail and a page header are a shallow vertical gradient,
+     which is what separates them from a pane at a glance; a card, a board tile and a canvas
+     node are a gradient 5% of a step deep under their ring — enough for an edge to read as a
+     piece of something rather than as a painted outline; a board column sits a step *under*
+     the surface, so the tiles on it are lifted by their ground as well as by their edge; and
+     the page keeps a faint light in its top-left corner, gone by 60% of the way across, so the
+     canvas reads as a lit ground rather than a hole between the panes. */
+  --vxs-rail-fill: linear-gradient(180deg, #1e1e1e 0%, #181818 40%, #161616 100%);
+  --vxs-header-fill: linear-gradient(180deg, #1f1f1f, #181818);
+  --vxs-card-fill: linear-gradient(180deg, #1d1d1d, #181818);
+  --vxs-sheet-fill: #161616;
+  --vxs-page-fill: radial-gradient(120% 90% at 30% 0%, #171717 0%, #111111 60%), #111111;
+
+  /* How strongly a canvas node's header takes its category colour (`theme.node_tint`). */
+  --vxs-node-tint: 16%;
+
+  /* ---------------------------------------------------------------- the rail's section tints
+
+     The rail's colour, and the only hue in the chrome: each built-in section's icon wears its
+     own (`SideNav.vue`), plugin pages share one, and the update row's icon is the green of
+     news. Muted enough to sit on the rail at 16px without glowing (6.2–7.8:1 on its top),
+     distinct enough to be learnable. A new section needs one here and one in the light block. */
+  --vxs-nav-explorer: #d9a85c;
+  --vxs-nav-documents: #7fb2cf;
+  --vxs-nav-pipelines: #a394e8;
+  --vxs-nav-tasks: #7fbfa2;
+  --vxs-nav-teams: #e0847e;
+  --vxs-nav-statistics: #c095b8;
+  --vxs-nav-automations: #e8935a;
+  --vxs-nav-vcs: #8fb56b;
+  --vxs-nav-skills: #de8aac;
+  --vxs-nav-mcp: #6fa8b8;
+  --vxs-nav-plugins: #c2a86a;
+  --vxs-nav-plugin-page: #a394e8;
+  --vxs-nav-update: #7fbfa2;
+
+  /* ---------------------------------------------------------------- scales */
+  --vxs-space-1: 4px;
+  --vxs-space-2: 8px;
+  --vxs-space-3: 12px;
+  --vxs-space-4: 16px;
+  --vxs-space-5: 24px;
+  --vxs-space-6: 32px;
+
+  --vxs-radius-sm: 4px;
+  --vxs-radius-md: 8px;
+  --vxs-radius-lg: 12px;
+  --vxs-radius-xl: 16px;
+  /* Never scaled: a pill is a pill at every corner setting. */
+  --vxs-radius-pill: 999px;
+
+  /* The one scale: the row height and padding every list/tree/board row honours, with the
+     title and small sizes following so a page header and a caption keep their ratio to the
+     body text. These were the `comfortable` end of a density knob until 2026-09-11, when
+     that knob was removed and its chosen value became the only one; `--vxs-text-size` alone
+     is still overridable, through `theme.text_size`. */
+  --vxs-row-height: 34px;
+  --vxs-row-pad-x: 12px;
+  --vxs-pane-pad: 22px;
+  --vxs-text-size: 14px;
+  --vxs-text-small: 12px;
+  --vxs-title-size: 17px;
+
+  /* The rail's width; `data-sidebar="icons"` narrows it to its icons. */
+  --vxs-rail-width: 192px;
+
+  /* ---------------------------------------------------------------- motion
+
+     How long the app takes to answer, and along what curve — Graphite's motion (2026-09-16, the
+     "Graphite Motion" canvas): three speeds, one curve. The motion section of `base.css` reads
+     these, and they are on the root so a plugin can too; retiming the app is an edit here. The
+     spring overshoots a few percent and is spent only on what travels a known distance between
+     two known places — the rail's mark, the switcher's thumb, a tick into its box — never on
+     colour, which cannot overshoot. */
+  /* Colour only: a hover's fill, an edge one step brighter, an icon tint. Linear and under the
+     threshold where a pointer notices a delay, because a cursor must never wait for an
+     acknowledgement. */
+  --vxs-motion-quick: 90ms;
+  /* Geometry: a card lifting, a row nudging, a ring widening. */
+  --vxs-motion-fast: 130ms;
+  /* State: a status changing, a thumb moving, a dialog arriving. */
+  --vxs-motion-base: 220ms;
+  /* The ceiling. Something that needs longer is not an animation but a progress indicator, and
+     should say so. */
+  --vxs-motion-slow: 320ms;
+  /* A press lands at once and the release takes the fast beat: the `:active` rules set only
+     this, so the way back keeps the durations of the rule they interrupt. */
+  --vxs-motion-press: 60ms;
+  /* A page's bands coming up after a route change, and the step between one band and the
+     next — together still inside the ceiling for a page of any length (`base.css`). */
+  --vxs-motion-page: 170ms;
+  --vxs-motion-stagger: 45ms;
+  /* The rail's mark travelling from the section left to the one arrived at: the longest move
+     in the app, because it is the one thing that crosses the rail. */
+  --vxs-motion-travel: 280ms;
+  --vxs-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --vxs-ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+  /* For what is already on screen and moves to make room — a board's cards closing a gap, a
+     stack of notifications closing up. Slow at both ends, because a piece that was at rest and
+     comes to rest again has to start and stop; `--vxs-ease-out` is for what arrives or leaves. */
+  --vxs-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* -------------------------------------------------------------------- light theme */
+[data-theme='light'] {
+  --vxs-bg-canvas: #f6f6f6;
+  --vxs-bg-surface: #ffffff;
+  --vxs-bg-elevated: #ffffff;
+  --vxs-bg-inset: #ededed;
+  --vxs-bg-hover: #e8e8e8;
+  --vxs-bg-active: #dcdcdc;
+
+  --vxs-text-primary: #171717;
+  --vxs-text-secondary: #333333;
+  --vxs-text-muted: #525252;
+  --vxs-text-faint: #6a6a6a;
+
+  --vxs-border: #dcdcdc;
+  --vxs-border-subtle: #ebebeb;
+  --vxs-border-strong: #9a9a9a;
+
+  /* Between hover and active, for the dark block's reason turned round: in light a step up is
+     a step darker, and a selected row under the pointer still must not lighten. */
+  --vxs-accent-soft: #e2e2e2;
+  --vxs-accent-border: #c4c4c4;
+  --vxs-accent-gradient: linear-gradient(180deg, #f2f2f2, #e6e6e6);
+  --vxs-accent-gradient-hover: #e4e4e4;
+  --vxs-accent-gradient-pressed: #dcdcdc;
+  --vxs-accent-container: #ebebeb;
+  --vxs-text-on-accent-container: #171717;
+
+  --vxs-success: #1a7f37;
+  --vxs-warning: #9a6700;
+  --vxs-danger: #cf222e;
+  --vxs-info: #0969da;
+
+  /* The one status token the light theme has to restate. `todo` reads as dimmer than
+     `pending` by being *darker* on the dark theme, so on white it has to go the other way
+     or the pair inverts and the released column becomes the quiet one. */
+  --vxs-status-todo: #a8abb3;
+
+  /* The markdown text colours, restated — see `--vxs-md-*` above. There is nothing to
+     inherit: the dark half measures 1.8–3.1:1 on this canvas. Grey cannot take the ramp
+     either (`--vxs-gray-300` is 2.5:1 here). */
+  --vxs-md-red: #cd222e;
+  --vxs-md-orange: #b34800;
+  --vxs-md-yellow: #8f6000;
+  --vxs-md-green: #197a35;
+  --vxs-md-cyan: #00696f;
+  --vxs-md-blue: #0a66d0;
+  --vxs-md-purple: #7d49de;
+  --vxs-md-pink: #b73783;
+  --vxs-md-brown: #794e35;
+  --vxs-md-gray: #5f6068;
+
+  --vxs-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --vxs-shadow-md: 0 4px 12px rgb(0 0 0 / 0.08);
+  --vxs-shadow-lg: 0 12px 32px rgb(0 0 0 / 0.12);
+  --vxs-shadow-lift: 0 8px 20px rgb(0 0 0 / 0.11);
+
+  --vxs-canvas-dot: #d6d6d6;
+
+  --vxs-rail-fill: linear-gradient(180deg, #ffffff 0%, #fafafa 40%, #f4f4f4 100%);
+  --vxs-header-fill: linear-gradient(180deg, #ffffff, #f7f7f7);
+  --vxs-card-fill: #ffffff;
+  --vxs-sheet-fill: #fbfbfb;
+  --vxs-page-fill: radial-gradient(120% 90% at 30% 0%, #ffffff 0%, #f6f6f6 60%), #f6f6f6;
+
+  /* One step darker so the tint still reads as itself on white at 16px. */
+  --vxs-nav-explorer: #a9701f;
+  --vxs-nav-documents: #3d7f9f;
+  --vxs-nav-pipelines: #6a56c4;
+  --vxs-nav-tasks: #3d8a68;
+  --vxs-nav-teams: #b3504a;
+  --vxs-nav-statistics: #92628a;
+  --vxs-nav-automations: #b35a1c;
+  --vxs-nav-vcs: #5c8438;
+  --vxs-nav-skills: #a64a73;
+  --vxs-nav-mcp: #3a7788;
+  --vxs-nav-plugins: #8f7524;
+  --vxs-nav-plugin-page: #6a56c4;
+  --vxs-nav-update: #3d8a68;
+}
+
+/* -------------------------------------------------------------------- status palette
+
+   Okabe–Ito hues for a reader who cannot tell the default green from the default red.
+   The whole vocabulary moves at once — VCS marks, node strips and task badges — because a
+   board and a canvas that disagreed about "running" would be worse than either palette. */
+[data-status-palette='accessible'] {
+  --vxs-success: #009e73;
+  --vxs-warning: #e69f00;
+  --vxs-danger: #d55e00;
+  --vxs-info: #0072b2;
+  --vxs-status-cached: #56b4e9;
+  --vxs-status-paused: #cc79a7;
+  --vxs-status-blocked: #cc79a7;
+  --vxs-status-review: #e69f00;
+}
+
+[data-theme='light'][data-status-palette='accessible'] {
+  --vxs-success: #007a59;
+  --vxs-warning: #b07800;
+  --vxs-danger: #b34a00;
+  --vxs-info: #005b8f;
+  --vxs-status-cached: #2b8fc6;
+  --vxs-status-review: #b07800;
+}
+
+/* -------------------------------------------------------------------- fonts knob */
+[data-font='inter'] {
+  --vxs-font-sans: 'Inter', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+}
+
+[data-font='ibm-plex'] {
+  --vxs-font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+}
+
+[data-font='roboto'] {
+  --vxs-font-sans: 'Roboto', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+}
+
+[data-font='system'] {
+  --vxs-font-sans: ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+}
+
+[data-mono='jetbrains'] {
+  --vxs-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+}
+
+[data-mono='fira'] {
+  --vxs-font-mono: 'Fira Code', ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+}
+
+[data-mono='system'] {
+  --vxs-font-mono: ui-monospace, 'Consolas', 'Menlo', monospace;
+}
+
+/* -------------------------------------------------------------------- sidebar knob */
+[data-sidebar='icons'] {
+  --vxs-rail-width: 48px;
+}

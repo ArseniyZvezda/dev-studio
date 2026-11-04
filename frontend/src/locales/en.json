@@ -1,0 +1,2429 @@
+{
+  "attachments": {
+    "add": "Attach files",
+    "hint": "Drop files or paste an image · up to 20 MiB each",
+    "uploading": "Uploading…",
+    "tooLarge": "Each file must be 20 MiB or smaller.",
+    "remove": "Remove {name}"
+  },
+  "installer": {
+    "unknownVersion": "unknown",
+    "updateTitle": "Update Voxarium Studio",
+    "updateSubtitle": "An existing installation was found.",
+    "updateVersions": "Installed version: {installedVersion}\nInstaller version: {version}",
+    "updateDirectory": "Installation folder: {directory}",
+    "updateData": "The application will be updated in this folder. If this version is already installed, it will be reinstalled. Your projects and application settings will be kept.\n\nIf Voxarium Studio is still running, setup can close its processes after your confirmation.",
+    "updateButton": "Update",
+    "appBusy": "Voxarium Studio processes are preventing installation. End them and continue?\n\nRunning tasks will be interrupted and unsaved changes may be lost. Only processes from this installation folder will be stopped.\n\nYes — end processes and continue.\nNo — check again after you close Studio yourself.\nCancel — cancel setup.",
+    "checkFailed": "Setup could not check whether Voxarium Studio is running. Close the application and try again. No application files have been replaced.",
+    "closeFailed": "Setup could not end all Voxarium Studio processes. Close the remaining processes yourself, then click Retry. No application files have been replaced."
+  },
+  "desktop": {
+    "backendVersionMismatch": "Version mismatch: interface {frontend}, backend {backend}. Stopping the old processes and restarting Studio…",
+    "unknownBackendVersion": "The backend version could not be verified. Rebuild or reinstall Studio.",
+    "desktopTooOld": "A newer Studio backend is already running. Update this desktop application before opening it again.",
+    "restartProjectUnknown": "Studio could not read the current project for a safe restart. If the server requires a token, provide VOXARIUM_STUDIO_TOKEN before launching the desktop.",
+    "backendChanged": "The backend changed during the version check. Open Studio again to recheck it.",
+    "updateAccess": "Access to the private GitHub repository is required. Sign in with GitHub CLI (gh auth login), or set GH_TOKEN for your account with read access to the configured update repository, then restart the application.",
+    "installUpdate": "Install the update and restart? Running tasks in this application will be stopped.",
+    "installAndRestart": "Install and restart",
+    "stopFailed": "The server could not be stopped. Try again.",
+    "minimize": "Minimize",
+    "minimizeToTray": "Minimize to system tray",
+    "openWindow": "Open Voxarium Studio",
+    "maximize": "Maximize",
+    "restore": "Restore window",
+    "closeWindow": "Close window",
+    "startFailed": "Studio could not start. See launcher.log and backend.err.log in the folder below.",
+    "portBusy": "Port 8765 is occupied by another application. Close it and try again.",
+    "close": "Quit Studio? Running pipelines and agent tasks will be stopped.",
+    "cancel": "Cancel",
+    "quit": "Quit",
+    "loading": "Loading your workspace…",
+    "updateNotConfigured": "The Voxarium Studio update source has not been configured.",
+    "producerWaiting": "Producer Mode is waiting for your reply"
+  },
+  "common": {
+    "add": "Add",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "close": "Close",
+    "copied": "Copied",
+    "copy": "Copy",
+    "create": "Create",
+    "delete": "Delete",
+    "deleting": "Deleting…",
+    "disable": "Disable",
+    "done": "Done",
+    "edit": "Edit",
+    "enable": "Enable",
+    "loading": "Loading…",
+    "open": "Open",
+    "refresh": "Refresh",
+    "reload": "Reload",
+    "remove": "Remove",
+    "rename": "Rename",
+    "reset": "Reset",
+    "retry": "Retry",
+    "save": "Save",
+    "saved": "Saved",
+    "saving": "Saving…",
+    "search": "Search",
+    "showLess": "Show less",
+    "showMore": "Show more"
+  },
+  "app": {
+    "name": "Voxarium Studio",
+    "connecting": "Connecting to the Studio…",
+    "tokenTitle": "Access token required",
+    "tokenBody": "This Studio was started with {flag}. Paste it below, or reopen the link the CLI printed.",
+    "tokenPlaceholder": "Token",
+    "connect": "Connect",
+    "unreachable": "Cannot reach the Studio backend",
+    "versionMismatch": {
+      "title": "Frontend and backend versions do not match",
+      "body": "Studio will restart the outdated backend and reload the interface. Work can continue once both versions match.",
+      "frontend": "Frontend",
+      "backend": "Running backend",
+      "unknown": "Unknown",
+      "unknownBackend": "The backend did not report its version. Update and restart Studio.",
+      "checking": "Checking the installed files…",
+      "restarting": "Stopping the old processes and restarting Studio…",
+      "reloading": "Reloading the interface…",
+      "unsupported": "This backend is too old to restart automatically from the browser. Restart Studio or launch the updated desktop application.",
+      "timeout": "Studio did not return with the expected version. Check the launcher logs and try again.",
+      "repeated": "Automatic recovery already ran, but the versions still differ. Update or rebuild Studio, then retry."
+    }
+  },
+  "nav": {
+    "section": {
+      "chats": "Chats",
+      "explorer": "Explorer",
+      "documents": "Documents",
+      "documentsGraph": "Graph",
+      "pipelines": "Pipelines",
+      "tasks": "Tasks",
+      "teams": "Teams",
+      "statistics": "Statistics",
+      "automations": "Automations",
+      "vcs": "Version Control",
+      "skills": "Skills",
+      "mcp": "MCP Servers",
+      "plugins": "Plugins",
+      "settings": "Settings"
+    },
+    "pluginPages": "Plugins",
+    "switchProject": "Click to open another project",
+    "search": {
+      "label": "Search…",
+      "title": "Search the code graph (Ctrl+K)"
+    },
+    "changelog": {
+      "label": "Changelog",
+      "title": "What each release of the Studio changed"
+    },
+    "vcs": "VCS: {name}",
+    "connection": {
+      "live": "Live — receiving events",
+      "connecting": "Connecting…",
+      "disconnected": "Disconnected — retrying",
+      "state": {
+        "open": "open",
+        "connecting": "connecting",
+        "closed": "closed"
+      }
+    },
+    "build": {
+      "tag": "Tag {tag}",
+      "commit": "Commit {commit}",
+      "commitOnBranch": "Commit {commit} ({branch})",
+      "noCommit": "Built outside a repository — no commit recorded",
+      "committed": "Committed {time}",
+      "dirty": "* built with uncommitted changes"
+    },
+    "update": {
+      "label": "Update",
+      "updating": "Updating…",
+      "updatingTitle": "The Studio is updating itself — click to watch",
+      "available": "A newer Voxarium Studio is available: {version}",
+      "current": "This one is {version}",
+      "upstream": "From {upstream}",
+      "dirty": "The checkout has uncommitted changes — it will ask first",
+      "click": "Click to pull, rebuild and restart"
+    }
+  },
+  "ui": {
+    "notFound": {
+      "title": "Page not found",
+      "hint": "That route does not exist in this Studio.",
+      "back": "Back to Explorer"
+    },
+    "resize": {
+      "drag": "Drag to resize",
+      "dragOrReset": "Drag to resize · double-click to reset"
+    },
+    "treeRow": {
+      "changesUnder": {
+        "one": "Contains {count} changed file",
+        "other": "Contains {count} changed files"
+      }
+    }
+  },
+  "api": {
+    "networkError": "Network error",
+    "renameNoBody": "The rename answered without a body",
+    "streamCutOff": "The stream was cut off",
+    "renameUnfinished": "The rename stopped before it said it was done",
+    "ws": {
+      "error": "WebSocket error",
+      "unauthorised": "Not authorised — check the access token."
+    }
+  },
+  "project": {
+    "taskCounts": {
+      "inProgress": "{count} in progress",
+      "needsReview": "{count} needs review"
+    },
+    "session": {
+      "tokenRequired": "This Studio requires an access token."
+    },
+    "open": {
+      "title": "Open project",
+      "dialogUnavailable": "The folder dialog is not available.",
+      "waitingForDialog": "Waiting for the folder dialog…",
+      "browseComputer": "Browse this computer…",
+      "pickerUnavailable": "{reason} Use the folder browser below.",
+      "dialogBehind": "The dialog may have opened behind this window.",
+      "recent": "Recent",
+      "missing": "missing",
+      "current": "open",
+      "forget": "Remove from the list",
+      "browse": "Browse",
+      "showHidden": "Show hidden folders",
+      "up": "Up one level",
+      "projectTag": "project",
+      "noSubfolders": "No subfolders here.",
+      "truncated": "Too many subfolders to list — type the path below instead.",
+      "folder": "Folder",
+      "notAFolder": "{path} is not a folder.",
+      "alreadyOpen": "This project is already open.",
+      "willInitialise": "Not a Studio project yet — {dir} will be created in {name}.",
+      "opensExisting": "Opens the existing project in {name}.",
+      "createAndOpen": "Create and open"
+    },
+    "changelog": {
+      "title": "Changelog",
+      "thisBuild": "This build is {version}",
+      "reading": "Reading the changelog…"
+    }
+  },
+  "updates": {
+    "desktop": {
+      "unchecked": "Check for a new application version.",
+      "intro": "Download the new application version, then install and restart when you are ready.",
+      "checking": "Checking for updates…",
+      "upToDate": "The application is up to date.",
+      "downloading": "Downloading update… {percent}%",
+      "ready": "The update is downloaded and ready to install.",
+      "download": "Download update",
+      "install": "Install and restart",
+      "restarting": "Installing and restarting the application…",
+      "schedule": "Checks for new releases at startup and every 3 hours. Download and installation start only when you choose them."
+    },
+    "label": "Update → {version}",
+    "waiting": {
+      "stop": "Waiting for the Studio to stop…",
+      "restarting": "Restarting — waiting for the Studio to come back…",
+      "comeBack": "Waiting for the Studio to come back…",
+      "didNotComeBack": "The Studio did not come back. Start it again with run.cmd.",
+      "reloading": "Reloading…"
+    },
+    "dialog": {
+      "label": "Update Voxarium Studio",
+      "update": "Update",
+      "updatingFromTo": "Updating {from} → {to}",
+      "updatingTo": "Updating to {to}",
+      "stopped": "The update stopped.",
+      "restarting": "Rebuilt. Restarting the Studio…",
+      "working": "Working…",
+      "heldBack": "The Studio held this back.",
+      "intro": "Pull, rebuild and restart.",
+      "updateAnyway": "Update anyway",
+      "willPull": "The Studio will pull {release}, rebuild what changed and start again on the same port. This page reloads itself once it is back.",
+      "newRelease": "the new release",
+      "tracking": "· tracking {upstream}",
+      "tryAgain": "Try again"
+    }
+  },
+  "search": {
+    "placeholder": "Search the code graph — a symbol, a file, a question…",
+    "hint": "Type a symbol, a file or a question. {arrows} to move, {enter} to open — or, with nothing highlighted, to ask the graph.",
+    "openInDocuments": "Open {path} in Documents",
+    "openInExplorer": "Open {path} in the Explorer",
+    "outsideProject": "Outside the project — cannot be opened here",
+    "answer": "{provider} — the graph's answer",
+    "nothing": "Nothing matches.",
+    "footer": {
+      "move": "{keys} move",
+      "open": "{key} open",
+      "ask": "{key} with nothing highlighted asks the graph"
+    }
+  },
+  "status": {
+    "blocked": "Blocked",
+    "cached": "Cached",
+    "cancelled": "Cancelled",
+    "done": "Done",
+    "error": "Error",
+    "failed": "Failed",
+    "in_progress": "In progress",
+    "needs_review": "Needs review",
+    "paused": "Paused",
+    "pending": "Pending",
+    "running": "Running",
+    "skipped": "Skipped",
+    "success": "Success",
+    "todo": "Todo"
+  },
+  "resultType": {
+    "label": "Result",
+    "done": "Done",
+    "question": "Question",
+    "error": "Error",
+    "missing": "Not reported",
+    "missingHint": "The session ended without saying how the work ended.",
+    "hint": {
+      "done": "The work is complete and ready to approve.",
+      "question": "You stopped on something the reviewer has to decide.",
+      "error": "The work could not be done — say why."
+    }
+  },
+  "units": {
+    "seconds": "{s}s",
+    "minutesSeconds": "{m}m {s}s",
+    "hoursMinutes": "{h}h {m}m",
+    "now": "now",
+    "bytes": "{value} B",
+    "kilobytes": "{value} KB",
+    "megabytes": "{value} MB",
+    "gigabytes": "{value} GB"
+  },
+  "explorer": {
+    "view": {
+      "title": "Project files",
+      "newFileHere": "New file in the selected folder",
+      "newFolderHere": "New folder in the selected folder",
+      "dismiss": "Dismiss",
+      "empty": "This project is empty.",
+      "clipboardCut": {
+        "one": "Cut {count} item — paste into a folder, or {clear}.",
+        "other": "Cut {count} items — paste into a folder, or {clear}."
+      },
+      "clipboardCopied": {
+        "one": "Copied {count} item — paste into a folder, or {clear}.",
+        "other": "Copied {count} items — paste into a folder, or {clear}."
+      },
+      "clipboardClear": "clear",
+      "dataDirHidden": "{dir} is hidden — enable it in Settings.",
+      "clipboardDenied": "The browser would not give the page access to the clipboard."
+    },
+    "prompt": {
+      "newFile": "New file",
+      "newFolder": "New folder",
+      "inFolder": "in {folder}",
+      "inProjectRoot": "in the project root"
+    },
+    "confirmDelete": {
+      "items": {
+        "one": "Delete {count} item? A folder goes with everything inside it, and nothing here can be undone.",
+        "other": "Delete these {count} items? A folder goes with everything inside it, and nothing here can be undone."
+      },
+      "folder": "Delete this folder and everything inside it? This cannot be undone.",
+      "file": "Delete this file? This cannot be undone."
+    },
+    "conflict": {
+      "title": "Already there",
+      "replace": "Replace",
+      "replaceIn": "{detail} Replace what is already in {folder}?",
+      "replaceInRoot": "{detail} Replace what is already in the project root?"
+    },
+    "menu": {
+      "projectRoot": "Project root",
+      "items": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "actionsFor": "Actions for {subject}",
+      "newFile": "New file…",
+      "newFolder": "New folder…",
+      "cut": "Cut",
+      "paste": "Paste",
+      "pasteMove": {
+        "one": "Paste (move item)",
+        "other": "Paste (move {count} items)"
+      },
+      "pasteCopy": {
+        "one": "Paste (copy item)",
+        "other": "Paste (copy {count} items)"
+      },
+      "rename": "Rename…",
+      "duplicate": "Duplicate",
+      "copyPath": "Copy path",
+      "copyRelativePath": "Copy relative path",
+      "openInSystem": "Open in system explorer",
+      "delete": "Delete…"
+    },
+    "preview": {
+      "loading": "Loading preview…",
+      "selectFile": "Select a file to preview it",
+      "download": "Download",
+      "unavailable": "No preview available for this file type.",
+      "truncated": "Preview truncated — the file is larger than the configured limit.",
+      "plainSize": "Shown plain — syntax highlighting stops above {size}.",
+      "plainLines": "Shown plain — syntax highlighting stops above {lines} lines."
+    },
+    "tree": {
+      "empty": "empty"
+    },
+    "partialFailure": "{message} These did land: {paths}."
+  },
+  "docs": {
+    "title": "Documents",
+    "newDocument": "New document",
+    "pane": {
+      "createHint": "Path inside {dir}. Folders are created as needed; {ext} is added if you leave it off.",
+      "searchPlaceholder": "Search all documents",
+      "noMatches": "Nothing matches.",
+      "empty": "No documents yet. Team members write them here with their {tool} tool, or you can add one."
+    },
+    "banner": {
+      "dismiss": "Dismiss",
+      "changedOnDisk": "This document changed on disk — an agent wrote to it, or the working copy moved.",
+      "keepMine": "Keep mine",
+      "renamedReferrers": {
+        "one": "Renamed. {count} document still links to the old name: {paths}",
+        "other": "Renamed. {count} documents still link to the old name: {paths}"
+      }
+    },
+    "header": {
+      "renameOrMove": "Rename or move",
+      "sidePanel": "Outline and backlinks"
+    },
+    "emptyState": {
+      "title": "No document open",
+      "hint": "Pick a document on the left. Agents write specs and test plans here, and everyone else works against them."
+    },
+    "saveState": {
+      "saved": "All changes saved",
+      "dirty": "Unsaved",
+      "failed": "Not saved",
+      "conflict": "This document changed on disk. Reload it, or force a save to replace it."
+    },
+    "textSize": {
+      "label": "Text size",
+      "smaller": "Smaller text",
+      "larger": "Larger text",
+      "following": "Text size {size}px — following the app's density",
+      "picked": "Text size {size}px — click to follow the app's density again"
+    },
+    "lineSpacing": {
+      "label": "Line spacing",
+      "tighter": "Tighter lines",
+      "looser": "Looser lines",
+      "following": "Line spacing {value} — the default",
+      "picked": "Line spacing {value} — click to go back to the default"
+    },
+    "menu": {
+      "folderLabel": "Folder {name}",
+      "documentLabel": "Document {name}",
+      "newDocument": "New document…",
+      "rename": "Rename…",
+      "delete": "Delete…",
+      "colour": "Colour",
+      "noColour": "No colour",
+      "icon": "Icon",
+      "plainFolder": "Folder"
+    },
+    "folderColors": {
+      "red": "Red",
+      "orange": "Orange",
+      "yellow": "Yellow",
+      "green": "Green",
+      "cyan": "Cyan",
+      "blue": "Blue",
+      "purple": "Purple",
+      "pink": "Pink",
+      "brown": "Brown",
+      "gray": "Gray"
+    },
+    "folderIcons": {
+      "book-open": "Book",
+      "notebook": "Notebook",
+      "file-text": "Document",
+      "scroll": "Scroll",
+      "clipboard-list": "Checklist",
+      "bookmark": "Bookmark",
+      "archive": "Archive",
+      "lightbulb": "Idea",
+      "target": "Goal",
+      "flag": "Milestone",
+      "calendar": "Calendar",
+      "users": "Team",
+      "message-square": "Discussion",
+      "pen-tool": "Design",
+      "palette": "Art",
+      "code": "Code",
+      "terminal": "Terminal",
+      "bug": "Bugs",
+      "flask-conical": "Tests",
+      "wrench": "Tools",
+      "cpu": "Engine",
+      "database": "Data",
+      "layers": "Layers",
+      "gamepad-2": "Gameplay",
+      "swords": "Combat",
+      "shield": "Defence",
+      "map": "World",
+      "castle": "Levels",
+      "crown": "Characters",
+      "gem": "Items",
+      "trophy": "Progression",
+      "image": "Images",
+      "film": "Video",
+      "music": "Audio",
+      "sparkles": "Effects",
+      "zap": "Abilities",
+      "star": "Favourite",
+      "heart": "Heart",
+      "rocket": "Launch"
+    },
+    "create": {
+      "in": "In {path}",
+      "nameLabel": "Document name",
+      "namePlaceholder": "name",
+      "createdAs": "Created as {path}, headed “{title}”.",
+      "nameHint": "The name is the file's name and its heading; {ext} is added if you leave it off."
+    },
+    "delete": {
+      "folderTitle": "Delete folder",
+      "documentTitle": "Delete document",
+      "folderBody": {
+        "one": "{name} and everything in it are removed from disk: {count} document, and the pictures and any other files beside them.",
+        "other": "{name} and everything in it are removed from disk: {count} documents, and the pictures and any other files beside them."
+      },
+      "documentBody": "{name} is removed from disk. Pictures beside it stay where they are.",
+      "linksFolder": "Links to these documents from other documents are left as they are, and will point at nothing.",
+      "linksDocument": "Links to it from other documents are left as they are, and will point at nothing."
+    },
+    "folderRename": {
+      "title": "Rename folder",
+      "renamed": "Renamed {from} → {to}",
+      "renaming": "Renaming {from} → {to}",
+      "settling": "Saving the open document first…",
+      "moving": "Moving the folder…",
+      "updating": {
+        "one": "Updating links · {handled} of {count} document",
+        "other": "Updating links · {handled} of {count} documents"
+      },
+      "looking": "Looking for links into it…",
+      "interrupted": "The folder was renamed, but mending its links stopped part-way.",
+      "failed": {
+        "one": "{count} document could not be updated and still links to the old name.",
+        "other": "{count} documents could not be updated and still link to the old name."
+      },
+      "nothingLinked": "No document linked into it by path, so nothing else changed.",
+      "updatedLinks": {
+        "one": "Updated {count} link in {documents}.",
+        "other": "Updated {count} links in {documents}."
+      },
+      "updatedLinksIn": {
+        "one": "{count} document",
+        "other": "{count} documents"
+      },
+      "unsaved": "The open document has changes that could not be saved. Save or reload it, then rename.",
+      "nameLabel": "Folder name",
+      "hint": "The folder is renamed on disk. Links that name a document inside it by its path — {link} — are updated to the new name.",
+      "progress": "Documents updated",
+      "movedWith": {
+        "one": "{count} document moved with the folder.",
+        "other": "{count} documents moved with the folder."
+      },
+      "linking": {
+        "one": "One document links into it by path:",
+        "other": "{count} documents link into it by path:"
+      },
+      "noChange": "no change",
+      "notUpdated": "not updated",
+      "links": {
+        "one": "{count} link",
+        "other": "{count} links"
+      }
+    },
+    "sidePanel": {
+      "outline": "Outline",
+      "noHeadings": "No headings yet.",
+      "backlinks": "Backlinks",
+      "noBacklinks": "Nothing links here yet.",
+      "unresolved": "Unresolved links"
+    },
+    "graph": {
+      "title": "Link graph",
+      "hops": {
+        "count": {
+          "one": "{count} hop",
+          "other": "{count} hops"
+        },
+        "all": "All",
+        "oneHint": "This document and everything directly linked either way",
+        "twoHint": "Those, plus their own neighbours",
+        "allHint": "Every document in the project",
+        "wholeProject": "whole project"
+      },
+      "summary": {
+        "empty": "Link graph.",
+        "text": "Link graph for {title}. {inbound}, {outbound}. Every document shown is listed below.",
+        "withNearby": "Link graph for {title}. {inbound}, {outbound}, {nearby}. Every document shown is listed below.",
+        "inbound": {
+          "one": "{count} document links here",
+          "other": "{count} documents link here"
+        },
+        "outbound": {
+          "one": "{count} linked from here",
+          "other": "{count} linked from here"
+        },
+        "nearby": {
+          "one": "plus {count} more nearby",
+          "other": "plus {count} more nearby"
+        }
+      },
+      "showing": {
+        "one": "Showing {shown} of {count} document · {reach}",
+        "other": "Showing {shown} of {count} documents · {reach}"
+      },
+      "node": "{title} — {inbound}, {outbound}",
+      "nodeLinksIn": {
+        "one": "{count} link here",
+        "other": "{count} links here"
+      },
+      "nodeLinksOut": {
+        "one": "{count} link out",
+        "other": "{count} links out"
+      },
+      "loadFailed": "Couldn't load the link graph.",
+      "tryAgain": "Try again",
+      "building": "Building the link graph…",
+      "none": "No link graph yet.",
+      "barren": "Nothing links to or from this document yet.",
+      "stale": "This may be out of date — the last refresh failed.",
+      "legend": {
+        "inbound": "links here",
+        "outbound": "linked from here",
+        "further": "further away"
+      },
+      "linksFromHere": "Links from here"
+    },
+    "graphPage": {
+      "title": "Graph",
+      "subtitle": "Every document and the links between them",
+      "forces": {
+        "linkStrength": "Link pull",
+        "linkStrengthHint": "How hard a [[link]] pulls two documents together",
+        "folderStrength": "Folder pull",
+        "folderStrengthHint": "How hard documents of one folder pull towards each other",
+        "unlinkedRepel": "Unlinked repulsion",
+        "unlinkedRepelHint": "How hard documents with no link between them push each other apart",
+        "nodeSize": "Node size",
+        "nodeSizeHint": "The radius of a document with no links; the most linked one is drawn up to 175% of it",
+        "linkDistance": "Link distance",
+        "linkDistanceHint": "How long a link between two documents rests"
+      },
+      "percent": "{value}%",
+      "resetHint": "Back to the default forces",
+      "fit": "Fit to screen",
+      "documents": {
+        "one": "{count} document",
+        "other": "{count} documents"
+      },
+      "links": {
+        "one": "{count} link",
+        "other": "{count} links"
+      },
+      "counts": "{documents} · {links}",
+      "summary": "Graph of {documents} and {links}. Every document is also in the Documents tree.",
+      "help": "Drag a document to move it · drag the background to pan · scroll to zoom · click to read",
+      "emptyTitle": "No documents yet",
+      "emptyHint": "Once a document is written, it appears here with a line to everything it links to.",
+      "loadFailed": "Couldn't load the graph.",
+      "reader": {
+        "label": "Document",
+        "readOnly": "Reading",
+        "readOnlyHint": "Read-only here — edit it in Documents",
+        "goToDocuments": "Go to Documents",
+        "goToDocumentsHint": "Open this document in Documents to edit it",
+        "loadFailed": "Couldn't open this document."
+      }
+    }
+  },
+  "editor": {
+    "placeholder": {
+      "text": "Write, or press / for commands",
+      "heading": "Heading",
+      "title": "Title"
+    },
+    "blocks": {
+      "paragraph": "Text",
+      "heading1": "Heading 1",
+      "heading2": "Heading 2",
+      "heading3": "Heading 3",
+      "bulletList": "Bulleted list",
+      "orderedList": "Numbered list",
+      "taskList": "To-do list",
+      "blockquote": "Quote",
+      "codeBlock": "Code",
+      "table": "Table",
+      "horizontalRule": "Divider",
+      "callout": "Callout",
+      "toggle": "Toggle",
+      "heading": "Heading",
+      "listItem": "List item",
+      "taskItem": "To-do",
+      "unsupported": "Unsupported block"
+    },
+    "callouts": {
+      "note": "Note",
+      "tip": "Tip",
+      "warning": "Warning",
+      "danger": "Danger"
+    },
+    "colors": {
+      "red": "Red",
+      "orange": "Orange",
+      "yellow": "Yellow",
+      "green": "Green",
+      "cyan": "Cyan",
+      "blue": "Blue",
+      "purple": "Purple",
+      "pink": "Pink",
+      "brown": "Brown",
+      "gray": "Gray"
+    },
+    "gutter": {
+      "insert": "Insert a block below",
+      "handle": "Drag to move, click for actions"
+    },
+    "slash": {
+      "label": "Insert a block",
+      "groups": {
+        "basic": "Basic",
+        "lists": "Lists",
+        "advanced": "Advanced"
+      }
+    },
+    "wiki": {
+      "label": "Link to a document",
+      "create": "Create “{name}”",
+      "missing": "{target} — not created yet"
+    },
+    "blockMenu": {
+      "turnInto": "Turn into",
+      "duplicate": "Duplicate",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "copyMarkdown": "Copy as markdown",
+      "selectBlock": "Select block",
+      "cut": "Cut",
+      "paste": "Paste",
+      "level": "Level",
+      "headingLevel": "Heading {level}",
+      "list": "List",
+      "startsAt": "Starts at",
+      "language": "Language",
+      "calloutType": "Type",
+      "title": "Title",
+      "openByDefault": "Open by default",
+      "table": {
+        "column": "Column {number}",
+        "alignDefault": "Default",
+        "alignLeft": "Left",
+        "alignCenter": "Centre",
+        "alignRight": "Right",
+        "row": "Row",
+        "above": "Above",
+        "below": "Below",
+        "columns": "Column",
+        "before": "Before",
+        "after": "After"
+      }
+    },
+    "toolbar": {
+      "label": "Format selection",
+      "bold": "Bold  (Ctrl+B)",
+      "italic": "Italic  (Ctrl+I)",
+      "strike": "Strikethrough  (Ctrl+Shift+X)",
+      "code": "Code  (Ctrl+E)",
+      "link": "Link  (Ctrl+K)",
+      "textColor": "Text colour",
+      "noColor": "No colour",
+      "turnIntoHint": "Turn the block into another type"
+    },
+    "image": {
+      "missing": "{label} — no such file beside this document",
+      "uploading": "{name} — adding…",
+      "onlyPictures": "Only pictures can be dropped into a document: {suffixes}",
+      "width": "Picture width",
+      "widthReset": "Back to its own size"
+    },
+    "unsupported": {
+      "hint": "Kept exactly as written. It can be moved or deleted, but not edited here."
+    },
+    "languages": {
+      "plainText": "Plain text"
+    }
+  },
+  "pipelines": {
+    "title": "Pipelines",
+    "newPipeline": "New pipeline",
+    "namePlaceholder": "Pipeline name",
+    "confirmDelete": "Delete pipeline “{name}”? The YAML file is removed from the project.",
+    "empty": {
+      "title": "No pipelines yet",
+      "hint": "Pipelines are YAML files in {dir} — create one to start wiring nodes together."
+    },
+    "counts": {
+      "nodes": {
+        "one": "{count} node",
+        "other": "{count} nodes"
+      },
+      "edges": {
+        "one": "{count} edge",
+        "other": "{count} edges"
+      }
+    },
+    "editor": {
+      "back": "Back to pipelines",
+      "unsaved": "unsaved",
+      "history": "History",
+      "pausedAt": "Paused at {nodes}",
+      "continue": "Continue",
+      "cancelRun": "Cancel",
+      "run": "Run",
+      "fitView": "Fit view"
+    },
+    "palette": {
+      "search": "Search nodes…",
+      "noMatch": "No node types match “{query}”."
+    },
+    "logs": {
+      "title": "Logs",
+      "noOutput": "No output from this node.",
+      "runToSee": "Run the pipeline to see logs here."
+    },
+    "history": {
+      "empty": "This pipeline has not been run yet.",
+      "fromNode": "from {node}"
+    },
+    "pathPicker": {
+      "label": "Choose a path in the project",
+      "title": {
+        "file": "Choose a file",
+        "directory": "Choose a folder",
+        "path": "Choose a file or folder"
+      },
+      "projectRoot": "Project",
+      "openFolder": "Open {name}",
+      "emptyFolder": "This folder is empty.",
+      "path": "Path",
+      "pathPlaceholder": "relative to the project root",
+      "select": "Select",
+      "selectFolder": "Select this folder"
+    },
+    "node": {
+      "unknownType": "Unknown type",
+      "notRegistered": "{type} is not registered",
+      "pausedHint": "Holding the run — continue it from the toolbar",
+      "cachedHint": "Reused a cached result",
+      "iterates": "Runs everything to its right once per {item}",
+      "pausesOnComplete": "Holds the run here once it succeeds",
+      "disabled": "Disabled"
+    },
+    "config": {
+      "deleteNode": "Delete node",
+      "notRegistered": "This node type is not registered. Enable the plugin that provides it, or delete the node.",
+      "skip": "Skip this node when the pipeline runs",
+      "pauseOnComplete": "Pause on complete",
+      "pauseOnCompleteHint": "The run stops here once this node succeeds and waits for Continue — which is what makes it possible to iterate over one stretch of a pipeline.",
+      "inputs": "Inputs",
+      "connected": "Supplied by a connected node",
+      "outputs": "Outputs",
+      "execution": "Execution",
+      "iterates": "Everything downstream of this node runs once per {item}.",
+      "neverCached": "Results are never cached.",
+      "runFromHere": "Run from this node",
+      "pin": {
+        "show": "Show this input as a pin on the canvas",
+        "hideConnected": "Hide this pin — the connection into it is removed",
+        "hide": "Hide this pin; the value below is used instead"
+      }
+    },
+    "field": {
+      "required": "Required",
+      "defaultValue": "default: {value}",
+      "invalidJson": "Invalid JSON",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "pickColour": "Pick a colour from anywhere on screen",
+      "browse": "Browse the project"
+    }
+  },
+  "tasks": {
+    "title": "Tasks",
+    "newTask": "New task",
+    "archived": "Archived",
+    "assignTo": "Assign to",
+    "dialogLabel": "Task {id}",
+    "header": {
+      "doneCostHint": "What the finished work has cost: every task in Done, archived ones included, summed. Tasks still in flight are not counted.",
+      "autostart": "Autostart Tasks",
+      "autostartHint": "Automatically release current and incoming Todo tasks for agents, even when this page is closed. Dependencies and Solo Mode still apply. Saved for this team; turning it off leaves queued and running tasks in place.",
+      "startAll": "Start All",
+      "startAllHint": "Start all agent tasks in Todo and Pending. Tasks wait for dependencies and busy Solo Mode members.",
+      "showArchived": "Show the Archived column after Done",
+      "hideArchived": "Hide the Archived column",
+      "newTaskHint": "Assign a new task",
+      "needsMembers": "Add a team member first — Teams is where the roster lives"
+    },
+    "empty": {
+      "title": "No tasks yet",
+      "hint": "Assign someone something. Move it from Todo to Pending, use Start All, or enable Autostart Tasks to release work automatically. The roster lives under Teams."
+    },
+    "board": {
+      "waiting": "Waiting",
+      "columnHint": {
+        "todo": "Every new task lands here, including ones an agent creates. Nothing runs from this column.",
+        "waiting": "Released and waiting to start, waiting for review, or blocked — the badge on each card says which. Dropping a card here releases it to Pending.",
+        "in_progress": "A session is running, or a person has claimed the task.",
+        "done": "Approved or closed. Archive a card here to take it off the board; it keeps counting toward the cost.",
+        "cancelled": "Stopped before it finished. Shown only while something is here.",
+        "archived": "Finished work put away. It still counts toward the cost. Drop a Done card here to archive it."
+      },
+      "dropHere": "Drop here",
+      "onlyDone": "Only Done goes here",
+      "nothingHere": "Nothing here.",
+      "card": {
+        "renameHint": "Double-click to rename",
+        "person": "Assigned to a person",
+        "waitsFor": {
+          "one": "Waits for {count} task",
+          "other": "Waits for {count} tasks"
+        },
+        "subagents": {
+          "one": "Waiting on {count} sub-agent or workflow",
+          "other": "Waiting on {count} sub-agents or workflows"
+        },
+        "cost": "This task has cost {cost} so far",
+        "archive": "Archive",
+        "archiveHint": "Take this task off the board. It keeps counting toward the cost, and the Archived column brings it back. Verbose-only messages are permanently removed on archive.",
+        "unarchive": "Unarchive",
+        "unarchiveHint": "Put this task back in Done.",
+        "locked": "Running — cancel it to move it",
+        "drag": "Drag to another column",
+        "actions": "Task actions"
+      },
+      "menu": {
+        "moveTo": "Move to",
+        "current": "now",
+        "person": "{name} (person)",
+        "delete": "Delete task",
+        "deleteWarning": "Deletes the task and its transcript.",
+        "keep": "Keep"
+      }
+    },
+    "composer": {
+      "intro": "Lands in {todo}. Move it to {pending}, use Start All, or enable Autostart Tasks to release it automatically.",
+      "titleField": "Title",
+      "titlePlaceholder": "What needs doing",
+      "actingAs": "Acting as",
+      "actingAsYou": "You (no restrictions)",
+      "actingAsHint": "Whose routes the assignment is checked against",
+      "brief": "Brief — this becomes the agent's first prompt",
+      "briefPlaceholder": "What to do, what to touch, what done looks like",
+      "dependsOnHint": "honoured once the task is released to Pending",
+      "autoStart": "Start automatically once in Pending",
+      "autoStartHint": "Once this task is in Pending, run the session as soon as it is unblocked",
+      "autoStartHuman": "A person picks the task up from their inbox themselves",
+      "create": "Create task"
+    },
+    "dependencies": {
+      "label": "Waits for",
+      "labelWithHint": "Waits for — {hint}",
+      "remove": "Stop waiting for {title}",
+      "add": "Add a task to wait for…",
+      "option": "{id} · {title} — {assignee}"
+    },
+    "overrides": {
+      "model": "Model",
+      "effort": "Effort",
+      "sameAsMember": "Same as the member",
+      "sameAsMemberValue": "Same as the member ({value})"
+    },
+    "changes": {
+      "touched": "Files touched",
+      "changed": "Changed files",
+      "refresh": "Read the changes again",
+      "rowTitle": "{kind} — {path}",
+      "binary": "bin",
+      "noneWritten": "No file edits or disk changes have been recorded for this task yet.",
+      "observed": "Observed",
+      "observedHint": "Changed on disk during this run; author unknown. These files are excluded from the automatic commit draft. Observation covers the managed project, subject to folder exclusions.",
+      "both": "Tool + disk",
+      "bothHint": "Named by a writing tool and observed changing on disk. Other writers may also have edited it; line totals are unavailable.",
+      "noneChanged": "Nothing changed in this task's checkout yet.",
+      "isolated": "· isolated checkout",
+      "group": {
+        "project": "Project",
+        "studio": "Studio",
+        "temp": "Temp",
+        "tempHint": "Temporary task files in {path}. Deleted when the task moves to Done.",
+        "outside": "Outside project",
+        "outsideHint": "Files outside the directory the task's session worked in: {workdir}",
+        "empty": "none"
+      }
+    },
+    "commit": {
+      "heading": "Commit",
+      "titleLabel": "Title",
+      "messageLabel": "Description",
+      "messagePlaceholder": "What this commit changes and why",
+      "files": {
+        "one": "{count} file",
+        "other": "{count} files"
+      },
+      "noFiles": "No files inside the project to commit.",
+      "generating": "Writing the description…",
+      "generatedBy": "Drafted by {model}",
+      "disabled": "Commit drafts are switched off in this project's settings; the description is yours to write.",
+      "regenerate": "Draft again",
+      "commit": "Commit",
+      "committing": "Committing…",
+      "committed": "Committed as {revision}",
+      "committedPlain": "Committed",
+      "nothingLeft": "Nothing to commit: these files are already committed or undone.",
+      "skipped": {
+        "one": "{count} file left out: not changed in the workspace.",
+        "other": "{count} files left out: not changed in the workspace."
+      },
+      "noVcs": "This project is under no version control the Studio recognises.",
+      "toolUnusable": "{name} is not usable: {reason}",
+      "waitingForReview": "Drafted when the task reaches Needs review."
+    },
+    "diff": {
+      "reading": "Reading the diff…",
+      "empty": "No diff for this file. It may have been changed and changed back, or the change may already be committed past the point this task branched from.",
+      "plain": "Shown without syntax highlighting — this change is too large to highlight."
+    }
+  },
+  "taskDetail": {
+    "compression": {
+      "inProgress": "Context compression is in progress. The task itself has not been started.",
+      "cancel": "Cancel compression",
+      "cancelHint": "Stop compression and keep the existing dialogue.",
+      "button": "Compress",
+      "busy": "Compressing…",
+      "summary": "compressed summary",
+      "hint": "Replace the entire previous dialogue with one summary and continue in a fresh agent session.",
+      "wait": "Wait for the current run to finish or stop it before compressing."
+    },
+    "you": "You",
+    "header": {
+      "person": "(person)",
+      "from": "from {name}",
+      "reviewedBy": "reviewed by {name}",
+      "edit": "Edit this task",
+      "move": "Move this task",
+      "archived": "Archived",
+      "archivedHint": "Archived — hidden from the board, still counted toward the cost. Moving it off Done brings it back. Verbose-only messages are permanently removed on archive.",
+      "telemetry": "{duration} · API Cost: {cost}",
+      "costEstimateHint": "Approximate token cost at standard API rates, including cached input. This is not a ChatGPT subscription charge; service tiers, long-context premiums and tool fees may differ.",
+      "context": "Context: {tokens}",
+      "contextHint": "How full the session's context window was at its last request — the prompt, the cache it created and the cache it read.",
+      "isolatedWorktree": "isolated worktree"
+    },
+    "runSettings": {
+      "effort": "{effort} effort",
+      "overridden": "Set on this task",
+      "overriddenBy": "Set on this task; {name} otherwise runs on {usual}",
+      "overriddenByMember": "Set on this task; the member otherwise runs on {usual}",
+      "inherited": "{name}'s settings — nothing is overridden on this task",
+      "inheritedMember": "the member's settings — nothing is overridden on this task"
+    },
+    "limit": {
+      "resetsIn": "Limit resets in {time}",
+      "resumingIn": "Resuming in {time}",
+      "resetPassed": "Usage limit reset",
+      "resetsAt": "The usage window resets at {time}.",
+      "resetUnknown": "The runtime did not say when the usage window resets.",
+      "resumesAt": "This task starts again at {time}.",
+      "tickToResume": "Tick Resume on Limit reset to have it start again by itself.",
+      "resumeOnReset": "Resume on Limit reset",
+      "resumeOnResetHint": "Running out of usage blocks the task. Ticked, it waits for the window to reset and starts itself again a couple of minutes later (teams.limit_resume_grace)."
+    },
+    "delegated": {
+      "title": "Delegated work",
+      "running": "{count} running",
+      "done": "{count} done",
+      "failed": "{count} failed",
+      "stopped": "{count} stopped",
+      "heldOpen": {
+        "one": "The session is held open until it finishes — it is woken again as each one does.",
+        "other": "The session is held open until they finish — it is woken again as each one does."
+      },
+      "hint": "Sub-agents and workflows this session started.",
+      "status": {
+        "completed": "completed",
+        "failed": "failed",
+        "stopped": "stopped"
+      },
+      "calls": "{count} calls"
+    },
+    "edit": {
+      "titlePlaceholder": "Task title",
+      "briefPlaceholder": "Brief",
+      "assignedTo": "Assigned to",
+      "reassignWhileRunning": "Cancel the run before handing it to someone else",
+      "autoStart": "Start automatically once in Pending",
+      "autoStartPerson": "A person picks the task up from their inbox themselves",
+      "autoStartAgent": "Once this task is in Pending, run the session as soon as it is unblocked",
+      "briefHint": "The brief saves itself as it is typed; the other fields wait for Save",
+      "briefFailedHint": "The brief could not be saved",
+      "briefFailed": "Brief not saved",
+      "briefSaving": "Saving the brief…",
+      "briefSaved": "Brief saved"
+    },
+    "view": {
+      "transcript": "Transcript",
+      "diff": "Diff"
+    },
+    "sections": {
+      "brief": "Brief",
+      "waitsFor": "Waits for",
+      "startsAfterRelease": "Release it to Pending and it will start on its own once these are done.",
+      "startsOnItsOwn": "Starts on its own once these are done.",
+      "documentsWritten": "Documents written"
+    },
+    "history": {
+      "created": "created",
+      "edited": "Edited {fields}",
+      "committed": {
+        "one": "Committed {count} file",
+        "other": "Committed {count} files"
+      },
+      "reason": {
+        "approved": "approved",
+        "changesRequested": "changes requested",
+        "claimed": "claimed",
+        "reset": "reset",
+        "submitted": "submitted",
+        "usageLimitReset": "usage limit reset"
+      }
+    },
+    "transcript": {
+      "tokens": "{tokens} tokens",
+      "tokensHint": "Tokens the model has written across this task — its thinking, its answers and its tool calls. The header above counts the whole bill, cache reads and the prompt included.",
+      "emptyPerson": "No messages yet. Claim the task to pick it up.",
+      "emptyTodo": "No messages yet. Release the task to Pending to hand it to the agent.",
+      "emptyAgent": "No messages yet. Start the task to hand it to the agent."
+    },
+    "verbosity": {
+      "label": "Verbosity",
+      "level": {
+        "compact": "Compact",
+        "advanced": "Advanced",
+        "verbose": "Verbose"
+      },
+      "hint": {
+        "compact": "A block per message, MCP call or skill loaded; file edits and the other tool calls fold onto the line below.",
+        "advanced": "Every message and tool call, one row each.",
+        "verbose": "Everything, tool results and system notices included."
+      }
+    },
+    "follow": {
+      "label": "Follow",
+      "hint": "Scroll to each new message. Scrolling up pauses it until you come back down.",
+      "latest": "Latest",
+      "latestHint": "Scroll to the latest message"
+    },
+    "remote": {
+      "title": "Remote control",
+      "person": "A person has no agent session to control remotely.",
+      "linked": "Open the link on any device signed in to your Claude account.",
+      "notRunning": "Start or resume the task first — Remote Control attaches to a live session.",
+      "ready": "The same as /remote-control in a terminal: drive this session from claude.ai/code.",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "disconnectHint": "Take this session back off claude.ai",
+      "noLink": "No session link yet",
+      "copyLink": "Copy the link",
+      "openLink": "Open this session on claude.ai"
+    },
+    "review": {
+      "commentPlaceholder": "Review comment (required to request changes)",
+      "summaryPlaceholder": "What you did — this becomes the summary your reviewer reads",
+      "approve": "Approve",
+      "requestChanges": "Request changes",
+      "attach": "Attach",
+      "attachHint": "Attach images or files — or drop them onto the comment, or paste with Ctrl+V",
+      "attachments": "Attachments",
+      "dropHere": "Drop files to attach them",
+      "remove": "Remove {name}",
+      "uploading": "Uploading…"
+    },
+    "actions": {
+      "waitingFor": "Waiting for: {tasks}",
+      "claim": "Claim",
+      "claimHint": "Take this task on",
+      "submit": "Submit for review",
+      "submitHint": "Hands it to {name} for review",
+      "markDone": "Mark done",
+      "markDoneHint": "Marks it done",
+      "release": "Release to Pending",
+      "releaseBack": "Back to Pending",
+      "releaseHint": "Moves it to Pending, ready for you to press Start.",
+      "releaseHintWaits": "Moves it to Pending; the session starts once the tasks it waits for are done.",
+      "releaseHintStarts": "Moves it to Pending and starts the agent session right away.",
+      "start": "Start",
+      "startHint": "Hand the brief to the agent and start a session.",
+      "resume": "Resume",
+      "resumeHint": "Carry on in the existing session — it already has the brief, so only notes added since it stopped are sent.",
+      "cancelRun": "Cancel",
+      "cancelRunFirst": "Cancel the run first",
+      "resetHint": "Reset — clears the session and transcript, keeps the task and its brief",
+      "resetConfirm": "Clear the session, transcript, summary and cost? The title, brief, assignee and dependencies stay, and the task goes back to Todo to be run from scratch.",
+      "deleteHint": "Delete this task",
+      "deleteConfirm": "Delete this task and its transcript? Tasks waiting on it are released.",
+      "keep": "Keep"
+    },
+    "subagent": {
+      "type": {
+        "local_agent": "sub-agent",
+        "local_workflow": "workflow",
+        "background_shell": "shell",
+        "remote_agent": "remote agent",
+        "teammate": "teammate",
+        "observer": "observer",
+        "monitor": "monitor"
+      },
+      "untyped": "task",
+      "unnamed": "delegated work",
+      "started": "{label} started",
+      "ended": {
+        "completed": "{label} completed",
+        "failed": "{label} failed",
+        "stopped": "{label} stopped",
+        "killed": "{label} killed"
+      },
+      "finished": "{label} finished",
+      "endedAs": "{label} {status}"
+    },
+    "activity": {
+      "unnamedTool": "tool"
+    }
+  },
+  "teams": {
+    "kind": {
+      "agent": "Agent",
+      "aiAgent": "AI agent",
+      "person": "Person"
+    },
+    "fields": {
+      "name": "Name",
+      "role": "Role",
+      "kind": "Kind",
+      "reportsTo": "Reports to"
+    },
+    "page": {
+      "fallbackTitle": "Team",
+      "savesAsYouGo": "Changes save as you make them",
+      "addMemberTitle": "Add a team member",
+      "addMember": "Add member",
+      "lockTitle": "Lock the chart again",
+      "editTitle": "Rearrange the team, connect members and change their settings",
+      "rolePlaceholder": "e.g. 3D Artist",
+      "noManager": "No manager",
+      "emptyTitle": "No team members yet",
+      "emptyHintEditing": "Add one above, or define them in {dir} — that file is the team, and the editor writes back to it.",
+      "emptyHintLocked": "Press Edit to add one, or define them in {dir} — that file is the team, and the editor writes back to it."
+    },
+    "chart": {
+      "reportsToEdge": "{target} reports to {source}",
+      "mayAssignEdge": "{source} may assign work to {target}",
+      "circular": "That would make the reporting line circular.",
+      "alreadyAnyone": "{name} may already assign to anyone on the team.",
+      "cannotJoin": "A reporting line runs top to bottom; a sideways route runs side to side. They cannot be joined.",
+      "legendReportsTo": "reports to",
+      "legendMayAssign": "may assign to",
+      "tidy": "Tidy up",
+      "tidyTitle": "Forget the positions everyone has been dragged to and re-derive the layout",
+      "disconnect": "Disconnect",
+      "editingHelp": "Drag a handle onto another member to connect them · click a line to disconnect · moving a node is remembered",
+      "lockedHelp": "Locked — drag to pan, scroll to zoom. Press Edit to rearrange the team."
+    },
+    "node": {
+      "settingsFor": "Settings for {name}",
+      "skillMissing": "{name} — not in the skills folder any more",
+      "inbox": "{count} inbox",
+      "inboxHint": {
+        "one": "{count} task waiting to be picked up",
+        "other": "{count} tasks waiting to be picked up"
+      },
+      "active": "{count} active",
+      "activeHint": {
+        "one": "{count} task in progress",
+        "other": "{count} tasks in progress"
+      },
+      "review": "{count} review",
+      "reviewHint": {
+        "one": "{count} task waiting on review",
+        "other": "{count} tasks waiting on review"
+      },
+      "anyone": "→ anyone",
+      "anyoneTitle": "May assign work to anyone on the team — no single line to draw",
+      "handleManager": "Reports to — drop a manager's line here",
+      "handleRouteIn": "May be assigned work by — drop a sideways route here",
+      "handleReports": "Manages — drag onto someone to make them a report",
+      "handleRouteOut": "May assign work to — drag onto a peer to open a sideways route"
+    },
+    "editor": {
+      "unnamed": "Unnamed",
+      "identity": "Identity",
+      "rolePlaceholder": "Game Designer",
+      "agentKindHint": "Runs through an agent backend when a task starts.",
+      "personKindHint": "No session: tasks wait in their inbox until they claim them.",
+      "tags": "Tags",
+      "colour": "Colour",
+      "clearColour": "Clear",
+      "clearColourTitle": "Fall back to the accent colour",
+      "icon": "Icon",
+      "iconHint": "What this member does, drawn in front of their name on the team chart, on their cards and wherever work is handed to someone. Without one they show their initials.",
+      "placeInTeam": "Place in the team",
+      "nobodyTop": "Nobody — top of the team",
+      "reportsToHint": "Their manager reviews their work. Members beneath them are not offered here.",
+      "mayAlsoAssign": "May also assign work to",
+      "anyone": "Anyone on the team",
+      "always": "always",
+      "routesHint": "Their own manager and reports are always reachable; this adds sideways routes, like a tester sending a fix straight to the developer.",
+      "responsibility": "Responsibility",
+      "responsibilityAgentHint": "Folded into the agent's system prompt — write it as instructions, not a job ad.",
+      "responsibilityPersonHint": "Shown to whoever assigns them work.",
+      "skills": "Skills",
+      "skillMissing": "Not in {folder} any more, so this agent is not told about it",
+      "takeOffSkill": "Take {skill} off {member}",
+      "takeOffSkillUnnamed": "Take {skill} off this member",
+      "addSkill": "Add a skill…",
+      "noSkills": "The project has no skills yet — {link}.",
+      "noSkillsLink": "create one on the Skills page",
+      "skillsHint": "Named in this agent's system prompt with their descriptions, for task runs and chats alike; the agent reads a skill's SKILL.md when its work calls for it. A skill in {folder} reaches nobody it is not given to here.",
+      "agentSection": "Agent",
+      "backend": "Backend",
+      "backendUnavailable": "{name} (unavailable)",
+      "codexHint": "Runs each task as `codex exec`. Permission mode picks the sandbox (Plan reads only, Bypass permissions drops it, the rest write inside the working directory); Max turns, the tool list and the Studio's own tools do not apply, so the agent describes hand-offs in its summary. The project's MCP servers are passed on.",
+      "qwenHint": "Runs tasks and chats through Qwen Code with session resumption and Studio/project MCP tools. Uses Qwen authentication and the configured model by default. Plan only analyzes; Bypass permissions approves all tools; Accept edits approves file edits. Effort, Max turns, Claude plugins and named agents do not apply. Images are passed as file paths.",
+      "model": "Model",
+      "somethingElse": "Something else…",
+      "modelId": "Model id",
+      "modelIdHint": "Passed to the backend as typed, so a model newer than this build works here.",
+      "runsAs": "Runs as",
+      "runsAsNamed": "Runs as the agent {agent}, which this project or your machine must already define. The team context is still added on top of its own instructions.",
+      "runsAsGenerated": "Blank: the Studio writes {file} from this member, so {command} works in your terminal too. Name an existing agent here to run as that instead.",
+      "permissionMode": "Permission mode",
+      "maxTurns": "Max turns",
+      "effort": "Effort",
+      "effortDefault": "Leave it to the model",
+      "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows whatever the model does by default.",
+      "soloMode": "Solo Mode — one task at a time",
+      "soloModeHint": "A released task waits in Pending while another of this member's tasks is in progress, and starts by itself when that one ends — lowest number first. Off, every released task runs at once.",
+      "isolate": "Isolate in a separate checkout",
+      "isolateHint": "Each task gets its own branch so parallel members cannot collide. Ignored unless the project's version control system can provide one — git can, and tasks fall back to serialising overlapping paths where it cannot.",
+      "tools": "Tools",
+      "otherTools": "Other tools, comma separated",
+      "studioTools": "The Studio's own tools ({prefix}*) for delegation and documents are always available and need no entry here.",
+      "confirmRemove": "Remove {name} from the team? Their tasks and reports must be moved first.",
+      "nameNeeded": "A name is needed before this saves",
+      "notSaved": "Not saved — see above",
+      "savedToYaml": "Saved to the team's YAML",
+      "removeTitle": "Remove from the team",
+      "keep": "Keep",
+      "builtinProducer": "Built-in Producer: settings are editable; this agent cannot be deleted."
+    },
+    "mark": {
+      "person": "Person — works outside the Studio"
+    },
+    "iconPicker": {
+      "change": "{label} — click to change",
+      "pick": "Pick what this member does",
+      "none": "No icon",
+      "listLabel": "What this member does",
+      "noneOption": "No icon — initials and a plain dot"
+    },
+    "select": {
+      "placeholder": "Pick someone",
+      "label": "Member"
+    },
+    "departments": {
+      "production": "Production",
+      "design": "Design",
+      "writing": "Writing",
+      "art": "Art",
+      "audio": "Audio",
+      "engineering": "Engineering",
+      "quality": "Quality",
+      "outreach": "Outreach",
+      "general": "General"
+    },
+    "icons": {
+      "director": "Director",
+      "producer": "Producer",
+      "projectManager": "Project manager",
+      "planning": "Planning",
+      "strategy": "Strategy",
+      "teamLead": "Team lead",
+      "gameDesign": "Game design",
+      "levelDesign": "Level design",
+      "systemsDesign": "Systems design",
+      "prototyping": "Prototyping",
+      "economyDesign": "Economy design",
+      "balancing": "Balancing",
+      "writer": "Writer",
+      "narrativeDesign": "Narrative design",
+      "dialogue": "Dialogue",
+      "lore": "Lore",
+      "localisation": "Localisation",
+      "artist": "Artist",
+      "conceptArt": "Concept art",
+      "modelling3d": "3D modelling",
+      "environmentArt": "Environment art",
+      "animation": "Animation",
+      "rigging": "Rigging",
+      "vfx": "VFX",
+      "technicalArt": "Technical art",
+      "uiUx": "UI / UX",
+      "cinematics": "Cinematics",
+      "soundDesign": "Sound design",
+      "composer": "Composer",
+      "voice": "Voice",
+      "mixing": "Mixing",
+      "audioLead": "Audio lead",
+      "developer": "Developer",
+      "engineProgrammer": "Engine programmer",
+      "gameplayProgrammer": "Gameplay programmer",
+      "toolsProgrammer": "Tools programmer",
+      "data": "Data",
+      "scripting": "Scripting",
+      "aiProgrammer": "AI programmer",
+      "buildAndRelease": "Build and release",
+      "infrastructure": "Infrastructure",
+      "qaTester": "QA tester",
+      "testAutomation": "Test automation",
+      "security": "Security",
+      "performance": "Performance",
+      "analytics": "Analytics",
+      "research": "Research",
+      "marketing": "Marketing",
+      "community": "Community",
+      "publishing": "Publishing",
+      "support": "Support",
+      "launch": "Launch",
+      "aiAgent": "AI agent",
+      "person": "Person",
+      "ideas": "Ideas",
+      "goals": "Goals",
+      "anythingElse": "Anything else"
+    }
+  },
+  "statistics": {
+    "title": "Statistics",
+    "subtitle": "What the team's work has cost, and when it happened. Every task counts, archived ones included.",
+    "noTeam": "No team yet",
+    "noTeamHint": "Statistics are about a team's work. Add members under Teams and give them something to do.",
+    "views": {
+      "chart": "Chart",
+      "table": "Table"
+    },
+    "tiles": {
+      "spent": "Spent",
+      "spentNote": "Every task, whatever its status",
+      "spentTitle": "Everything the team’s agent runs have cost, including work still in flight and work that was cancelled.",
+      "finished": "Finished work",
+      "finishedNote": {
+        "one": "{count} task in Done",
+        "other": "{count} tasks in Done"
+      },
+      "finishedNoteArchived": {
+        "one": "{count} task in Done, {archived} archived",
+        "other": "{count} tasks in Done, {archived} archived"
+      },
+      "finishedTitle": "The figure over the board: every task in Done, archived ones included.",
+      "inFlight": "In flight",
+      "inFlightNote": "Not finished, not cancelled",
+      "inFlightTitle": "Spent so far on tasks that are still open — this moves while agents work.",
+      "tasks": "Tasks",
+      "cancelledNote": "{cost} on cancelled work",
+      "nothingCancelled": "Nothing cancelled",
+      "tasksTitle": "How many tasks the team has ever had, archived ones included."
+    },
+    "activity": {
+      "title": "Activity",
+      "hint": "Each cell is a day, shaded by how many agent runs landed and tasks were finished on it. Weeks run left to right and end today; hover a day for what it was made of.",
+      "ariaLabel": "Activity by day. {caption}",
+      "empty": {
+        "one": "No activity in the last {count} week — the grid fills with the first agent run.",
+        "other": "No activity in the last {count} weeks — the grid fills with the first agent run."
+      },
+      "caption": {
+        "one": "{days} in the last {count} week: {summary}.",
+        "other": "{days} in the last {count} weeks: {summary}."
+      },
+      "activeDays": {
+        "one": "{count} active day",
+        "other": "{count} active days"
+      },
+      "runs": {
+        "one": "{count} run",
+        "other": "{count} runs"
+      },
+      "tasksFinished": {
+        "one": "{count} task finished",
+        "other": "{count} tasks finished"
+      },
+      "noActivity": "No activity",
+      "less": "Less",
+      "more": "More"
+    },
+    "chart": {
+      "title": "Project cost over time",
+      "hint": "Running total of what every agent run has cost, by the day it landed. A day nobody spent anything on has no point; the line runs flat to today.",
+      "empty": "Nothing spent yet — the curve starts with the first agent run.",
+      "summaryEmpty": "Project cost over time: nothing spent yet.",
+      "summary": {
+        "one": "Project cost over time: {total} in total across {count} day, from {from} to {to}.",
+        "other": "Project cost over time: {total} in total across {count} days, from {from} to {to}."
+      },
+      "runningTotal": "running total",
+      "thatDay": "that day",
+      "runs": {
+        "one": "run",
+        "other": "runs"
+      }
+    },
+    "table": {
+      "day": "Day",
+      "spent": "Spent",
+      "runningTotal": "Running total",
+      "runs": "Runs",
+      "nothingSpent": "Nothing spent yet."
+    },
+    "byModel": {
+      "title": "By model",
+      "hint": "Costs by recorded run model, most expensive first. Costs without a recorded model are shown as Unknown model.",
+      "empty": "Nothing spent yet.",
+      "unknown": "Unknown model"
+    },
+    "byMember": {
+      "title": "By member",
+      "hint": "What each member's tasks have cost, most expensive first.",
+      "noTasks": "No tasks yet.",
+      "person": "(person)",
+      "finishedTitle": {
+        "one": "{done} of {count} task finished",
+        "other": "{done} of {count} tasks finished"
+      },
+      "doneRatio": "{done}/{tasks} done"
+    }
+  },
+  "automations": {
+    "title": "Automations",
+    "notCreated": "{path} — created with the first automation",
+    "intro": "What the project does by itself. Each automation is one trigger and one action — when a task reaches review, send a notification; when a folder changes, run a pipeline. They live in a file that is committed with the project, and the Studio runs them for as long as it has the project open.",
+    "parseError": {
+      "title": "The automations file could not be read",
+      "hint": "Nothing runs until {file} parses again. Fix it in an editor — the Studio will not write over it."
+    },
+    "list": {
+      "title": "Automations",
+      "add": "Add automation",
+      "disabled": "disabled",
+      "lastRun": "Last ran {when} · {cause}",
+      "running": "In progress since {when} · {cause}",
+      "neverRan": "Has not run yet",
+      "runNow": "Run now",
+      "runNowTitle": "Run the action now, as if the trigger had fired — works while disabled too",
+      "confirmDelete": "Delete?",
+      "emptyTitle": "No automations yet",
+      "emptyHint": "Add one to have the project react to a task changing status, a folder changing, or a pipeline finishing.",
+      "entryNumber": "Entry {index}",
+      "notRun": "not run; kept in the file as it is"
+    },
+    "subject": {
+      "task": "On task",
+      "directory": "On directory",
+      "pipeline": "On pipeline"
+    },
+    "trigger": {
+      "category": {
+        "task": "Task",
+        "directory": "Directory",
+        "pipeline": "Pipeline"
+      },
+      "event": {
+        "statusChanged": "Status changed",
+        "created": "Created",
+        "filesChanged": "Files changed",
+        "runFinished": "Run finished"
+      }
+    },
+    "action": {
+      "notify": "Send notification",
+      "runPipeline": "Execute pipeline",
+      "plugin": "Plugin action"
+    },
+    "change": {
+      "added": "Added",
+      "modified": "Modified",
+      "deleted": "Deleted"
+    },
+    "sentence": {
+      "statusTo": "Status changed to: {status}",
+      "statusAny": "Status changed",
+      "taskCreated": "Created",
+      "pathUpdated": "{path} updated",
+      "anyPipeline": "any pipeline",
+      "runFinished": "Run of {pipeline} finished",
+      "runSucceeded": "Run of {pipeline} succeeded",
+      "runFailed": "Run of {pipeline} failed",
+      "notify": "Send notification",
+      "runPipeline": "Execute pipeline “{pipeline}”"
+    },
+    "form": {
+      "addTitle": "New automation",
+      "editTitle": "Edit automation",
+      "name": "Name",
+      "namePlaceholder": "Optional — the sentence below is shown either way",
+      "when": "When",
+      "then": "Do",
+      "category": "Category",
+      "event": "Event",
+      "statusTo": "Changed to",
+      "anyStatus": "Any status",
+      "path": "Folder or file, relative to the project",
+      "pattern": "Only files matching",
+      "pathHint": "Fires once the folder has been quiet for two seconds, naming everything that changed. Folders the Explorer ignores are not watched.",
+      "pipeline": "Pipeline",
+      "anyPipeline": "Any pipeline",
+      "outcome": "Ended",
+      "outcomeAny": "Any way, cancelled included",
+      "outcomeSuccess": "Successfully",
+      "outcomeFailed": "With an error",
+      "notifyTitle": "Title",
+      "notifyMessage": "Message",
+      "notifyAuto": "Left empty, the Studio words it",
+      "placeholders": "Available:",
+      "noPipelines": "This project has no pipelines yet",
+      "useCache": "Reuse cached node results",
+      "loopHint": "Files this run writes into the watched folder do not start it again.",
+      "pluginAction": "Action",
+      "enabled": "Enabled",
+      "pathOutside": "The path must stay inside the project, e.g. ./models/",
+      "noChanges": "Pick at least one kind of change",
+      "noPipeline": "Pick a pipeline to run",
+      "noPluginAction": "No enabled plugin offers an action"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "inApp": "A notification appears in the corner of every open Studio window.",
+      "desktop": "Also as system notifications",
+      "desktopHint": "With this on, this browser also raises a system notification while the Studio is not the window in front. The choice is kept in this browser, not in the project.",
+      "denied": "This browser has blocked notifications for the Studio. Allow them in the site's settings to turn this on.",
+      "unsupported": "This browser cannot raise system notifications."
+    },
+    "notification": {
+      "statusTitle": "{task} → {status}",
+      "createdTitle": "{task} was created",
+      "pathTitle": "{folder} changed",
+      "pathCount": {
+        "one": "{count} file",
+        "other": "{count} files"
+      },
+      "runSucceeded": "{pipeline} finished",
+      "runFailed": "{pipeline} failed",
+      "runCancelled": "{pipeline} was cancelled",
+      "testTitle": "Automation",
+      "testMessage": "A test run from the Automations page"
+    },
+    "log": {
+      "title": "Recent activity",
+      "clear": "Clear",
+      "empty": "Nothing has fired yet.",
+      "manual": "Run from this page",
+      "filesUnder": {
+        "one": "{count} file under {folder}",
+        "other": "{count} files under {folder}"
+      },
+      "notified": "Notification sent",
+      "guardFlood": "Fired too often within a minute — further firings are skipped until it calms down",
+      "guardChain": "A chain of automation-started runs led here; it was not extended",
+      "pipelineRunning": "Running “{pipeline}”",
+      "pipelineFinished": "“{pipeline}” finished",
+      "pipelineCancelled": "“{pipeline}” was cancelled",
+      "interrupted": "Interrupted — the Studio stopped before it finished"
+    }
+  },
+  "vcs": {
+    "change": {
+      "added": "Added",
+      "untracked": "Untracked",
+      "copied": "Copied",
+      "modified": "Modified",
+      "renamed": "Renamed",
+      "deleted": "Deleted",
+      "conflicted": "Conflicted",
+      "unknown": "Changed"
+    },
+    "indicator": {
+      "none": "none",
+      "noneTitle": "No version control — the project is under nothing the Studio recognises, or it is switched off. Choose a backend on the Version Control page.",
+      "unusable": "Not usable: {reason}",
+      "toolNotFound": "Not usable: the command-line tool was not found",
+      "workspace": "Workspace {root}"
+    },
+    "page": {
+      "title": "Version Control",
+      "noWorkspace": "no workspace detected",
+      "unreadable": "The version control settings could not be read."
+    },
+    "active": {
+      "title": "Active system",
+      "refreshing": "Refreshing…",
+      "detected": "detected automatically",
+      "namedInConfig": "named in config.yaml as {id}",
+      "workspace": "Workspace",
+      "branch": "Branch",
+      "revision": "Revision",
+      "isolation": "Task isolation",
+      "supported": "supported",
+      "notSupported": "not supported",
+      "isolated": "Team tasks each get their own checkout, so two agents can work at once without overwriting each other (§10.5).",
+      "shared": "Team tasks share this working copy — the Studio falls back to path locks, so two agents touching the same files run one after the other (§10.5).",
+      "offTitle": "Version control is switched off",
+      "offBody": "Nothing here reads or writes a repository, and agent tasks fall back to path locks (§10.5). Choose a system below to turn it back on.",
+      "noneTitle": "No version control detected",
+      "noneBody": "The project is not inside a workspace any available backend recognises. Everything else works — this only means the Studio will not colour the file tree, commit generated assets, or give an agent task its own checkout."
+    },
+    "choose": {
+      "title": "Which system to use",
+      "auto": "Detect automatically",
+      "autoHint": "Plugin backends are asked first, then the built-in git — a plugin is enabled deliberately, so it is the better answer when a Plastic workspace sits inside a git repository (§9.6).",
+      "active": "active",
+      "claims": "claims this project",
+      "fromPlugin": "from the {plugin} plugin · drives {program}",
+      "fromPluginIsolates": "from the {plugin} plugin · drives {program} · isolates agent tasks",
+      "builtIn": "built in · drives {program}",
+      "builtInIsolates": "built in · drives {program} · isolates agent tasks",
+      "executableHint": "Only needed when {program} is not on PATH — give the full path to the executable. Empty means run it by name.",
+      "none": "None — turn the integration off",
+      "noneHint": "The Studio stops asking, even in a repository it would otherwise recognise."
+    },
+    "commit": {
+      "title": "Commit",
+      "pending": {
+        "one": "{count} changed file in the working copy — the Explorer's tree marks which, with a letter and a colour per file.",
+        "other": "{count} changed files in the working copy — the Explorer's tree marks which, with a letter and a colour per file."
+      },
+      "clean": "Nothing to commit — every file matches the last committed revision.",
+      "placeholder": "Regenerate rock variants",
+      "untracked": "Include untracked files",
+      "untrackedHint": "Off, only files the system already knows about are recorded — a freshly generated asset is untracked until this is on.",
+      "committing": "Committing…",
+      "commitAll": "Commit everything",
+      "wholeCopy": "The whole working copy — this page does not stage files one at a time.",
+      "needsMessage": "A commit needs a message.",
+      "committed": {
+        "one": "Committed {count} file.",
+        "other": "Committed {count} files."
+      },
+      "committedAs": {
+        "one": "Committed {count} file as {revision}.",
+        "other": "Committed {count} files as {revision}."
+      },
+      "committedOn": {
+        "one": "Committed {count} file on {branch}.",
+        "other": "Committed {count} files on {branch}."
+      },
+      "committedAsOn": {
+        "one": "Committed {count} file as {revision} on {branch}.",
+        "other": "Committed {count} files as {revision} on {branch}."
+      },
+      "nothing": "Nothing to commit — the working copy has no changes to record."
+    },
+    "diff": {
+      "title": "Diff",
+      "scope": "whole working copy",
+      "hide": "Hide",
+      "show": "Show the diff",
+      "reading": "Reading the diff…",
+      "empty": "No textual difference — the changes may be in binary files, which no diff can show."
+    }
+  },
+  "skills": {
+    "title": "Skills",
+    "openFolder": "Open folder",
+    "openFolderTitle": "Open {folder} in your file manager",
+    "intro": "A skill is a folder of instructions for one kind of work: a {file} and any files it refers to. Built-ins from the Studio and enabled plugins are available to every agent. Assign project skills in a member's settings on the Teams page. Agents receive descriptions and read the {file} when needed. Built-in instructions are maintained by their packages and can be read here.",
+    "names": "{rest} and {last}",
+    "files": {
+      "one": "SKILL.md + {amount} file",
+      "other": "SKILL.md + {amount} files"
+    },
+    "list": {
+      "title": "Skills",
+      "nothingBesides": "Nothing besides SKILL.md",
+      "givenTo": "Given to",
+      "givenToNobody": "Given to nobody yet",
+      "editTitle": "Edit SKILL.md",
+      "builtin": "Built-in · {source}",
+      "availableToAll": "Available to all agents",
+      "viewTitle": "Read built-in SKILL.md",
+      "view": "Read",
+      "revealTitle": "Open this skill's folder in your file manager",
+      "deleteTitle": "Delete this skill",
+      "emptyTitle": "No skills yet",
+      "emptyHint": "Create one here, or copy a folder with a SKILL.md into {folder}."
+    },
+    "create": {
+      "button": "New skill",
+      "title": "New skill",
+      "name": "Name",
+      "nameHint": "The folder's name, and what members are given it by: lower-case words joined by hyphens. Created as {path}.",
+      "nameRequired": "The skill needs a name.",
+      "description": "Description",
+      "descriptionPlaceholder": "Blocks out a playable level from a design brief. Use when asked to prototype or grey-box a level.",
+      "descriptionHint": "What it does and when to use it — the one line an agent reads before deciding to open the skill."
+    },
+    "editor": {
+      "unsaved": "unsaved",
+      "changedOnDisk": "SKILL.md changed on disk since you opened it.",
+      "keepMine": "Keep mine",
+      "revert": "Revert",
+      "shortcutHint": "Ctrl+S saves. Line endings stay as the file had them.",
+      "discardConfirm": "Discard your unsaved changes to {name}/SKILL.md?",
+      "deletedOnDisk": "{name} is no longer a skill in {folder} — it was deleted on disk."
+    },
+    "invalid": {
+      "revealTitle": "Open this folder in your file manager",
+      "deleteTitle": "Delete this folder",
+      "givenTo": {
+        "one": "given to {names}, who is not told about it",
+        "other": "given to {names}, who are not told about it"
+      }
+    },
+    "missing": {
+      "notInFolder": "not in {folder}",
+      "stillGivenTo": {
+        "one": "still given to {names}, who is not told about it",
+        "other": "still given to {names}, who are not told about it"
+      },
+      "takeOff": "Take off",
+      "takeOffTitle": "Take {name} off every member who has it",
+      "takeOffConfirm": "Take {name} off {names}?"
+    },
+    "delete": {
+      "title": "Delete {name}?",
+      "messageUsed": "The folder and everything in it are deleted from disk — there is no undo. {names} will no longer have it.",
+      "messageUnused": "The folder and everything in it are deleted from disk — there is no undo. No member has it."
+    },
+    "usage": {
+      "title": "How agents use them",
+      "body": "A member given skills is sent, with every task run and every chat message, one line per skill: its name, its description and the path of its {file}. The agent reads that file when its work matches the description, and the other files in the folder when the instructions point to them — each skill's folder is readable by that member, even from an isolated checkout.",
+      "note": "Project skills are not Claude Code's own {dir}, so a terminal session does not pick them up. Studio sessions receive all built-ins and the project skills assigned to their member. The wording of that line is {fragment} under {settings} → {section}."
+    }
+  },
+  "mcp": {
+    "title": "MCP Servers",
+    "notCreated": "{path} — not created yet",
+    "intro": "Servers listed here are handed to every Claude agent session the Studio starts (§10.7). The file is Claude Code's own, at the project root, so the same servers are available in a terminal — and it is usually committed, which is a reason to keep tokens out of it.",
+    "parseError": {
+      "title": ".mcp.json could not be read",
+      "hint": "Nothing is written until it parses — editing a server now would replace the file. Fix it below, or in your editor.",
+      "editFile": "Edit the file"
+    },
+    "servers": {
+      "title": "Servers",
+      "add": "Add server",
+      "builtin": "built-in",
+      "disabled": "disabled",
+      "onPath": "on PATH: {path}",
+      "remote": "remote — not contacted from here",
+      "tools": "tools: {prefix}",
+      "envCount": {
+        "one": "{count} environment variable",
+        "other": "{count} environment variables"
+      },
+      "headerCount": {
+        "one": "{count} header",
+        "other": "{count} headers"
+      },
+      "builtinDescription": "Tasks, documents, pipelines, automations and skills",
+      "disableBuiltin": "Run agents without the Studio's tools",
+      "enableBuiltin": "Give agents the Studio's own tools again",
+      "disableFile": "Withhold from agent sessions — the server stays in .mcp.json",
+      "enableFile": "Hand this server to agent sessions again",
+      "removeTitle": "Remove from .mcp.json",
+      "confirmRemove": "Remove \"{name}\" from .mcp.json?",
+      "builtinNote": "Provided by the Studio itself and not written to {file} — it runs in this process, which is what lets its tools obey the team's routing rules. It cannot be removed; switching it off leaves agents with files and nothing else.",
+      "emptyTitle": "No servers of your own",
+      "emptyHint": "Agents already have the Studio's built-in tools above — add a server to give them more.",
+      "notPassed": "not passed to agents"
+    },
+    "form": {
+      "addTitle": "Add a server",
+      "editTitle": "Edit {name}",
+      "name": "Name",
+      "nameRequired": "The server needs a name.",
+      "prefixHint": "Becomes the tool prefix {prefix}",
+      "transport": "Transport",
+      "transports": {
+        "stdio": "stdio — a local command",
+        "http": "http — a remote URL",
+        "sse": "sse — a remote URL (legacy)"
+      },
+      "command": "Command",
+      "arguments": "Arguments",
+      "argumentsHint": "One argument per line — spaces are kept.",
+      "environment": "Environment",
+      "headers": "Headers",
+      "keyValueHint": "One {format} per line. This file is usually committed — a secret typed here goes into version control with it.",
+      "notKeyValue": "\"{line}\" is not KEY=value"
+    },
+    "agents": {
+      "title": "How agents see these",
+      "strict": "Use only the servers on this page",
+      "strictHint": "Off, a session also loads whatever MCP config the `claude` CLI finds on its own — your user-level servers, and this file again, which brings a disabled server back.",
+      "autoAllowed": "An enabled server's tools are auto-allowed ({rule}): an agent session has nobody to answer a permission prompt, so enabling it here is the approval."
+    },
+    "raw": {
+      "show": "Edit .mcp.json directly",
+      "hide": "Hide the file",
+      "save": "Save file",
+      "revert": "Revert",
+      "hint": "Written verbatim — formatting and comments-by-convention are kept."
+    }
+  },
+  "plugins": {
+    "title": "Plugins",
+    "warning": "Plugins run unsandboxed Python and JavaScript — install only what you trust.",
+    "empty": "No plugins found",
+    "scope": {
+      "builtin": "Ships with the Studio",
+      "global": "Installed for every project",
+      "project": "Lives in this project"
+    },
+    "card": {
+      "error": "error",
+      "nodeTypes": {
+        "one": "{count} node type",
+        "other": "{count} node types"
+      },
+      "pages": {
+        "one": "{count} page",
+        "other": "{count} pages"
+      },
+      "previewers": {
+        "one": "{count} previewer",
+        "other": "{count} previewers"
+      },
+      "search": "search: {providers}",
+      "versionControl": "version control: {backends}",
+      "venvReady": "venv ready",
+      "venvNotBuilt": "venv not built",
+      "buildEnv": "Build env"
+    },
+    "missingPage": {
+      "title": "This plugin page could not be loaded",
+      "body": "The plugin registered the page but shipped no usable frontend module. Check that its {dir} directory is built and that the component default-exports a factory or a component."
+    }
+  },
+  "chat": {
+    "chooseConversation": "Select a chat or start a new conversation.",
+    "openPage": "Open Chats page",
+    "title": "Chat",
+    "chats": "Chats",
+    "newChat": "New chat",
+    "theMember": "The member",
+    "label": "Chat with a team member",
+    "allChats": "All chats",
+    "startChat": "Start a chat with a team member",
+    "minimise": "Minimise",
+    "minimiseChat": "Minimise the chat",
+    "answering": "Answering",
+    "answeringNow": "Answering…",
+    "resize": {
+      "edge": "Drag to resize the chat",
+      "corner": "Drag to resize the chat · double-click for the default size"
+    },
+    "delete": {
+      "action": "Delete this chat",
+      "confirmLabel": "Delete this chat?",
+      "question": "Delete this chat and its history?"
+    },
+    "list": {
+      "peopleOnly": "Every member of the team is a person. Add an agent on the {teams} page to chat with one.",
+      "empty": "Ask a team member about what you are looking at. They see the page, the open document and any text you select.",
+      "newReply": "New reply"
+    },
+    "new": {
+      "talkTo": "Talk to",
+      "pickMember": "Pick a team member",
+      "hint": "Your first message opens the chat. {name} will see where you are in the Studio with it."
+    },
+    "composer": {
+      "placeholder": "Message {name}…",
+      "placeholderNobody": "Message the member…",
+      "withoutSelection": "Send without the selection",
+      "stop": "Stop the reply",
+      "send": "Send (Enter)"
+    },
+    "context": {
+      "selection": {
+        "one": "Selection · {count} char",
+        "other": "Selection · {count} chars"
+      }
+    },
+    "page": {
+      "explorer": "Explorer",
+      "docs": "Documents",
+      "pipelines": "Pipelines",
+      "pipelineEditor": "Pipeline editor",
+      "tasks": "Tasks",
+      "teams": "Teams",
+      "statistics": "Statistics",
+      "automations": "Automations",
+      "vcs": "Version Control",
+      "skills": "Skills",
+      "mcp": "MCP Servers",
+      "plugins": "Plugins",
+      "settings": "Settings",
+      "home": "Home"
+    },
+    "transcript": {
+      "empty": "Say hello. {name} sees the page you are on, the document you have open and anything you select, and has the same tools as on a task.",
+      "thinking": "Thinking",
+      "stopped": "Stopped"
+    },
+    "errors": {
+      "pickMember": "Pick who to talk to first.",
+      "stillAnswering": "The member is still answering — wait for the reply or stop it."
+    },
+    "producer": {
+      "approved": "Plan approved",
+      "compacted": "Conversation summarized",
+      "label": "Producer Mode",
+      "start": "Start Producer Mode",
+      "stop": "Stop Producer Mode",
+      "hint": "Describe your goal. The Producer will prepare tasks and coordinate them using the selected mode.",
+      "stopHint": "Stops Producer Mode. Existing tasks and their work remain on the board.",
+      "pause": "Pause",
+      "resume": "Resume",
+      "pauseHint": "Pause the Producer and all running tasks in this team, preserving their work and sessions.",
+      "resumeHint": "Continue the Producer and this team's paused tasks from their saved state.",
+      "paused": "Paused. Work is saved; the Producer and team tasks wait for Resume, including after restarting Studio.",
+      "approve": "Approve plan and start",
+      "approvalHint": "Review the tasks above. Send a message to request changes, or approve this plan to start work.",
+      "dependencies": "Depends on: {tasks}",
+      "states": {
+        "off": "Stopped",
+        "discussing": "Waiting for your reply",
+        "running": "Coordinating work",
+        "awaiting_approval": "Waiting for plan approval",
+        "waiting": "Waiting for task changes",
+        "error": "Needs attention",
+        "awaiting_user": "Waiting for your reply"
+      },
+      "policy": "Decision mode",
+      "policies": {
+        "careful": "Careful",
+        "independent": "Independent",
+        "carefulHint": "Forwards execution questions to you and waits for plan approval.",
+        "independentHint": "Makes decisions and starts plans independently. Asks you only about critical blockers."
+      },
+      "taskStatus": "Producer task activity",
+      "taskLists": {
+        "running": "In progress · {count}",
+        "waiting": "Producer is waiting for · {count}",
+        "runningEmpty": "No tasks in progress.",
+        "waitingEmpty": "No tasks being awaited."
+      },
+      "pausedShort": "Paused",
+      "estimate": "Estimate Task Cost",
+      "estimateUsd": "Estimate Task Cost in US dollars",
+      "estimateHint": "Approximate API cost per task. During review, the Producer checks the remaining budget and moves work that cannot fit into new tasks. Default: $150.",
+      "estimateInvalid": "Enter an amount greater than zero in US dollars."
+    }
+  },
+  "settings": {
+    "commitDescription": {
+      "title": "Commit descriptions",
+      "hint": "Choose the backend and model that write commit descriptions for tasks. Applies to the next generation, including Retry.",
+      "backend": "Backend",
+      "model": "Model",
+      "default": "Backend default",
+      "custom": "Custom model…",
+      "modelId": "Model ID"
+    },
+    "title": "Settings",
+    "unavailable": "Settings unavailable",
+    "unsavedValue": "{value} (unsaved)",
+    "onThisPage": "On this page",
+    "language": {
+      "title": "Language",
+      "label": "Interface",
+      "hint": "Kept in this browser rather than in {file}, so everyone who opens the project reads it in their own language."
+    },
+    "appearance": {
+      "title": "Appearance",
+      "mode": "Mode",
+      "accent": "Accent",
+      "customAccent": "Custom accent",
+      "textSize": "Text size",
+      "pixels": "{size} px",
+      "textSizeInherited": "The app's own size, until you pick one of your own.",
+      "textSizePicked": "Picked for this project.",
+      "useDefaultSize": "Use the default size",
+      "fonts": "Fonts",
+      "fontInterface": "Interface",
+      "fontCode": "Code and ids",
+      "sidebar": "Sidebar",
+      "sidebarHint": "Icons only keeps the rail at 48 px and names the section on hover; auto-collapse widens it while the pointer is on it.",
+      "canvas": "Canvas",
+      "grid": "Grid",
+      "nodeTint": "Node header tint",
+      "statusColours": "Status colours",
+      "statusColoursHint": "Pipeline nodes, task cards and the file tree's marks share one vocabulary, so this changes all of them.",
+      "customTokens": "Custom tokens",
+      "removeToken": "Remove this token",
+      "addToken": "Add a token",
+      "exportTheme": "Export theme…",
+      "importTheme": "Import…",
+      "customTokensHint": "Applied last, so they win over the preset. Saved to {file} with everything else, so the theme travels with the project."
+    },
+    "explorer": {
+      "title": "Explorer",
+      "showDataDir": "Show the {dir} directory in the file tree",
+      "showDataDirHint": "Off by default — it holds the database, run logs and generated assets."
+    },
+    "execution": {
+      "title": "Execution",
+      "reuseCache": "Reuse cached node results",
+      "reuseCacheHint": "Skips re-running a node whose type, parameters and input files are unchanged.",
+      "clearAssetCache": "Clear unused asset cache",
+      "assetCacheHint": "Removes generated files no longer referenced by saved pipelines, settings or documents. Files absent from output history are kept. Old run previews may become unavailable.",
+      "assetCacheConfirm": "Delete unused generated assets? Saved pipeline inputs and files absent from output history will be kept. Previews of deleted results in run history will no longer open.",
+      "assetCacheCleared": "Removed {count} files ({size} MiB). Could not remove: {failed}.",
+      "clearCache": "Clear the node cache",
+      "cacheCleared": {
+        "one": "Removed {count} cached node result.",
+        "other": "Removed {count} cached node results."
+      },
+      "concurrentJobs": "Concurrent {name} jobs",
+      "concurrencyHint": "The agent limit is set under AI agents; the others are edited in {file}."
+    },
+    "agents": {
+      "title": "AI agents",
+      "parallel": "Parallel sessions",
+      "parallelHint": "How many agent sessions — task runs and chats together — may talk to the model at once. A task started past this waits In progress and says so in its transcript; raising the number starts the waiting ones right away.",
+      "launchRoot": "Launch root",
+      "launchRootHint": "Where every agent session starts, relative to the project root. {here} is the project itself; {up} starts them one level up, for a project that is one folder of a larger checkout.",
+      "startIn": "Agents start in",
+      "outside": "That is outside the project. A worktree is a second checkout of the repository, so tasks launched there get no isolated checkout — overlapping ones are serialised by path instead, exactly as in a project with no version control."
+    },
+    "tasks": {
+      "title": "Tasks",
+      "projectCode": "Project code",
+      "projectCodeHint": "Goes in front of every task's number, so a task can be named out loud and in a commit message. 1–6 letters and digits, at least one letter. Leave it empty and it is derived from the project's name.",
+      "readAs": "Tasks read as",
+      "renamesNothing": "Changing it renames nothing: the number underneath a task is fixed when the task is created and is never edited, so an id already written down still finds its task."
+    },
+    "project": {
+      "title": "Project",
+      "root": "Root",
+      "versionControl": "Version control",
+      "authentication": "Authentication",
+      "tokenRequired": "token required",
+      "open": "open (loopback)",
+      "openAnother": "Open another project…",
+      "openAnotherHint": "Everything the current project has running — pipeline runs, agent sessions — stops when another one is opened.",
+      "vcsNone": "none detected",
+      "vcsIsolated": "agents get isolated checkouts",
+      "vcsShared": "agents share the working tree",
+      "vcsLine": "{name} — {detail}"
+    },
+    "updates": {
+      "title": "Studio updates",
+      "reading": "Reading the Studio’s repository…",
+      "cannotUpdate": "This Studio cannot update itself.",
+      "available": "{version} is available.",
+      "onLatest": "On {current} — the newest release on {upstream}.",
+      "thisBranch": "this branch",
+      "noRelease": "This checkout is on no release yet.",
+      "thisBuild": "This build is {version}",
+      "checked": "checked {time}",
+      "dirty": "the checkout has uncommitted changes",
+      "updating": "Updating…",
+      "checkNow": "Check now",
+      "automatic": "Check for new releases automatically",
+      "automaticHint": "Fetches the Studio’s own repository and compares its newest release tag against this build. Only tagged commits count as a release.",
+      "howOften": "How often",
+      "every15Minutes": "Every 15 minutes",
+      "hourly": "Hourly",
+      "every3Hours": "Every 3 hours",
+      "twiceADay": "Twice a day",
+      "daily": "Daily",
+      "howItWorks": "Updating runs {command} in the Studio’s own checkout, rebuilds whatever the pull changed and starts the server again on the same port. Pipeline runs and agent sessions do not survive it."
+    },
+    "startup": {
+      "title": "System startup",
+      "label": "Launch Voxarium Studio when I sign in",
+      "description": "Open the last project automatically after signing in to Windows.",
+      "desktopOnly": "This setting is available in the Windows desktop application.",
+      "saving": "Saving…"
+    }
+  },
+  "appearance": {
+    "mode": {
+      "dark": "Dark",
+      "light": "Light",
+      "system": "Follow system"
+    },
+    "font": {
+      "system": "System",
+      "systemMono": "System monospace"
+    },
+    "sidebar": {
+      "labels": "Labels",
+      "icons": "Icons only",
+      "auto": "Auto-collapse"
+    },
+    "canvasGrid": {
+      "dots": "Dots",
+      "lines": "Lines",
+      "none": "None"
+    },
+    "statusPalette": {
+      "default": "Default",
+      "accessible": "Colour-blind safe"
+    },
+    "import": {
+      "notJson": "The file is not JSON.",
+      "notObject": "The file does not hold a theme object.",
+      "oneOf": "\"{key}\" must be one of {choices}.",
+      "accent": "\"accent\" must be a #rrggbb colour.",
+      "textSize": "\"text_size\" must be null or a whole number from {min} to {max}.",
+      "nodeTint": "\"node_tint\" must be a whole number from {min} to {max}.",
+      "customTokens": "\"custom_tokens\" must be an object of \"--name\": \"value\" pairs.",
+      "tokenName": "Custom token \"{name}\" must be named like --vxs-bg-surface.",
+      "tokenValue": "Custom token \"{name}\" must be a short CSS value without ; or braces.",
+      "empty": "The file holds no theme fields."
+    }
+  },
+  "agentPrompts": {
+    "title": "Agent prompts",
+    "intro": "Everything the Studio itself tells an agent, beyond the roster and the brief. Reword any line, or clear it and save to drop it from the prompt entirely; Reset returns a line to the built-in text and keeps it following future updates.",
+    "changed": "{count} changed.",
+    "allBuiltIn": "All on the built-in text.",
+    "loadError": "Could not load the built-in prompts: {error}",
+    "edited": "edited",
+    "removed": "removed",
+    "notSent": "Not sent.",
+    "placeholders": "Placeholders:",
+    "resetToDefault": "Reset to default",
+    "cannotRemove": "Cannot be removed — saved blank, it falls back to the default.",
+    "saveBlankToRemove": "Save it blank to drop this line from the prompt.",
+    "groups": {
+      "identity": {
+        "title": "Who the member is",
+        "note": "Written into .claude/agents/<member>.md — the file a terminal’s claude --agent reads too — or sent with the run when no definition can be written."
+      },
+      "system": {
+        "title": "Every run’s system prompt",
+        "note": "Appended to the stock Claude Code prompt with what only that run knows."
+      },
+      "openers": {
+        "title": "Messages that open a run",
+        "note": "What the Studio sends when it resumes or continues a session on your behalf."
+      },
+      "chat": {
+        "title": "Chats with a member",
+        "note": "The floating chat: the same session, tools, MCP servers and Studio skill as a task run, with where you are in the Studio in place of a brief."
+      },
+      "extra": "Other",
+      "producer": {
+        "title": "Producer Mode",
+        "note": "Instructions for planning, decision modes, task review, budget checks and context summaries."
+      }
+    },
+    "fragments": {
+      "identity": {
+        "label": "Introduction",
+        "hint": "The first line of every member’s instructions: their name, role and team."
+      },
+      "identity_responsibility": {
+        "label": "Responsibility",
+        "hint": "Sent when the member has an area of responsibility in the roster."
+      },
+      "identity_manager": {
+        "label": "Manager",
+        "hint": "Sent when the member reports to someone — names who reviews their work."
+      },
+      "identity_reports": {
+        "label": "Direct reports",
+        "hint": "Sent when anyone reports to this member."
+      },
+      "identity_peers": {
+        "label": "Sideways routes",
+        "hint": "Sent when the member may hand work to peers (their can_assign_to list)."
+      },
+      "task_context": {
+        "label": "Task id",
+        "hint": "Tells the session which card it is working on."
+      },
+      "task_temp": {
+        "label": "Temporary task files",
+        "hint": "Directs working and temporary files to {temp_dir}, the task's absolute scratch directory. Its contents are deleted when the task moves to Done."
+      },
+      "studio_skill": {
+        "label": "Studio skill",
+        "hint": "Points the session at the skill that teaches the Studio’s tools — the board, delegation, the shared documents, the code graph. Sent when the Studio’s own MCP server reaches the session; {skill} is the skill’s name. The skill itself ships with the Studio beside the tools it describes, so it is not a setting."
+      },
+      "no_studio_tools": {
+        "label": "No Studio tools",
+        "hint": "Sent instead of the Studio skill line when the member has routes but the Studio’s tools are disabled or unavailable."
+      },
+      "member_skills": {
+        "label": "Skills",
+        "hint": "Sent when the member has been given skills on the Teams page — task runs and chats alike. {skills} is one line per skill: its name, its description and the path of its SKILL.md."
+      },
+      "docs_location": {
+        "label": "Documents folder",
+        "hint": "Where the team’s shared documents live on disk."
+      },
+      "code_graph": {
+        "label": "Code graph",
+        "hint": "Sent when a graphify knowledge graph exists at the agent launch root — the Graphify plugin keeps one there. Names the graph and sends the session to the Studio skill for how to query it; {graph} is the file, {skill} the skill."
+      },
+      "isolated_checkout": {
+        "label": "Isolated checkout",
+        "hint": "Sent when the task runs in its own worktree, branched off the project (§10.5)."
+      },
+      "outside_project": {
+        "label": "Outside the project",
+        "hint": "Sent when the launch root places the session outside the project root."
+      },
+      "finish": {
+        "label": "Finishing up",
+        "hint": "Closes the system prompt: asks for a summary for the reviewer."
+      },
+      "finish_tool": {
+        "label": "Finishing up, with the tools",
+        "hint": "Closes the system prompt when the Studio's tools reach the session: asks for finish_task with a result type — done, question or error — and the summary."
+      },
+      "resume": {
+        "label": "Resume",
+        "hint": "Opens a resumed session when nothing new was written for it — the brief is already in its context."
+      },
+      "resume_notes": {
+        "label": "Notes preamble",
+        "hint": "Introduces the notes written since the last run stopped, right after the Resume message."
+      },
+      "review_changes": {
+        "label": "Changes requested",
+        "hint": "Opens the session a reviewer sent back; {comment} is their feedback."
+      },
+      "stall_continue": {
+        "label": "Continue after a stall",
+        "hint": "Opens each automatic continuation of a session that stopped mid-work with its turn budget spent."
+      },
+      "result_required": {
+        "label": "Result missing",
+        "hint": "Sent once to a session that ended without calling finish_task; a session that still says nothing reaches review unlabelled."
+      },
+      "chat_mode": {
+        "label": "Chat mode",
+        "hint": "Stands where the task id would in a chat’s system prompt: this is a conversation with the user, not a card on the board."
+      },
+      "chat_context": {
+        "label": "Where the user is",
+        "hint": "Opens every chat message; {context} is the page, the open document and the selected text at the moment of sending."
+      },
+      "producer_mode": {
+        "label": "Producer workflow",
+        "hint": "The planning, approval, review and waiting rules for Producer Mode. Tasks returned with Done can only be approved; corrections require a new task. {language} is the initial conversation language."
+      },
+      "producer_start": {
+        "label": "Start Producer Mode",
+        "hint": "Asks what the user wants to accomplish now."
+      },
+      "producer_wake": {
+        "label": "Resume Producer Mode",
+        "hint": "Resumes coordination after approval, task changes or a restart."
+      },
+      "task_compact": {
+        "label": "Compress task context",
+        "hint": "Preserves decisions, completed work and pending requests in one summary for a fresh session."
+      },
+      "producer_compact": {
+        "label": "Compact Producer context",
+        "hint": "Summarizes goals, decisions and task progress for a fresh context."
+      },
+      "producer_careful": {
+        "label": "Producer: Careful",
+        "hint": "Forwards new execution questions and waits for your plan approval."
+      },
+      "producer_independent": {
+        "label": "Producer: Independent",
+        "hint": "Makes decisions and approves plans independently; escalates only critical blockers."
+      },
+      "producer_task_cost": {
+        "label": "Task cost checks",
+        "hint": "Tells the Producer how to compare accumulated API Cost with Estimate Task Cost before continuing a task and when to split remaining work into new tasks."
+      },
+      "producer_review": {
+        "label": "Task review rules",
+        "hint": "Guides review decisions and explains how to close completed work and create follow-up tasks for corrections."
+      },
+      "producer_state": {
+        "label": "Current state and task history",
+        "hint": "Adds the current Producer state and guidance for reading task history. {state} is the saved state and task board; {prompt} is the current request."
+      },
+      "producer_summary": {
+        "label": "Saved conversation summary",
+        "hint": "Restores the saved summary before a new request. {summary} is the compacted conversation; {prompt} is the current request."
+      }
+    }
+  },
+  "producerPage": {
+    "title": "Producer Mode",
+    "plan": "Plan",
+    "deleteChat": "Stop Producer Mode and delete chat",
+    "chat": "Producer chat",
+    "selectChat": "Select a chat",
+    "newChat": "New chat",
+    "tasks": "Active tasks",
+    "emptyTasks": "No active tasks",
+    "emptyTasksHint": "Active task conversations appear here as work starts.",
+    "noProducer": "Producer is not available for this team.",
+    "previous": "Previous tasks",
+    "next": "Next tasks",
+    "openTask": "Open task",
+    "retry": "Retry",
+    "loading": "Loading conversations…",
+    "taskCost": "API Cost",
+    "noMessages": "No messages yet"
+  }
+}

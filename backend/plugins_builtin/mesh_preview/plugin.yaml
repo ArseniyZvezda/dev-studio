@@ -1,0 +1,37 @@
+id: mesh_preview
+name: Mesh Preview
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Renders .glb, .gltf, .stl and .obj meshes in the Explorer preview pane — the formats
+  the Hunyuan3D nodes actually write, which until now fell through to "no preview
+  available". The file is parsed in the browser and drawn in a small WebGL viewer you
+  can orbit, pan and zoom: binary and ASCII STL, OBJ positions/normals/faces with n-gon
+  fan triangulation, and glTF 2.0 with its scene graph walked so every node's transform
+  lands on the geometry it places.
+
+  It reads what the surface looks like and nothing else. A glTF material's base colour
+  is drawn in full — `baseColorTexture` sampled through TEXCOORD_0 and tinted by
+  `baseColorFactor`, which is what makes a textured Hunyuan3D export look like the model
+  it is rather than a grey blob — with one draw call per texture. Everything past that
+  channel is still ignored: no animation, no skinning, no PBR evaluation, and no normal,
+  metallic/roughness, occlusion or emissive maps. Alpha is dropped and every surface is
+  opaque.
+
+  Anything it cannot draw is named in the strip along the bottom instead of failing or
+  being drawn wrong: Draco-compressed primitives, a texture that lives in a sibling file,
+  KHR_texture_transform, a Basis/KTX2 texture, and a .gltf whose buffers sit in a
+  separate .bin — nothing here can fetch a second file.
+
+  Manifest-only: it contributes no node types and runs no Python, so it needs no
+  isolated environment. That is the point of the previewer extension point (§6.2) —
+  a file type gets a viewer without the Studio itself depending on a 3D library.
+enabled_by_default: true
+
+frontend:
+  previewers:
+    - id: mesh-model
+      label: Mesh
+      extensions: ['.glb', '.gltf', '.stl', '.obj']
+      component: frontend/MeshPreview.js
+  dist: frontend

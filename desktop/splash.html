@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self'"><title>Voxarium Studio</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#17191e;color:#eceef2;font:14px 'Segoe UI',sans-serif;user-select:none;-webkit-app-region:drag}
+main{height:300px;padding:42px;display:flex;flex-direction:column;justify-content:center;border:1px solid #30333b}
+.mark{width:64px;height:64px;object-fit:contain;margin-bottom:16px}
+h1{font-size:24px;font-weight:600;letter-spacing:-.5px;margin:0 0 8px}p{color:#9a9faa;margin:0;font-size:13px}
+.track{height:2px;background:#30333b;overflow:hidden;margin-top:32px}.track::after{content:'';display:block;height:100%;width:35%;background:#b0cba4;animation:load 1.4s ease-in-out infinite}
+@keyframes load{from{transform:translateX(-100%)}to{transform:translateX(390%)}}@media(prefers-reduced-motion:reduce){.track::after{animation:none;width:100%}}
+</style></head><body><main><img class="mark" src="assets/logo.png" alt="" aria-hidden="true"><h1>Voxarium Studio</h1><p id="status" role="status"></p><div class="track" aria-hidden="true"></div></main><script src="splash.js"></script></body></html>

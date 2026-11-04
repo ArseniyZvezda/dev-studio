@@ -1,0 +1,32 @@
+id: vox_preview
+name: Voxarium & VOX Preview
+version: 0.1.0
+author: Voxarium Studio
+description: >
+  Renders Voxarium .voxarium projects and MagicaVoxel .vox files in the Explorer preview pane. The voxel grids are parsed
+  in the browser and turned into a face-culled mesh — only voxel faces with no solid
+  neighbour become triangles — then drawn with a small WebGL viewer you can orbit, pan
+  and zoom.
+
+  The whole scene is drawn, not just the first model: the extension format's nTRN/nGRP/
+  nSHP graph places each object, with rotation, nested group transforms and the same
+  model instanced as many times as the author placed it.
+
+  Objects are listed in a panel with an eye each, so any of them can be switched on or
+  off — alt-click isolates one, double-click the canvas fits the camera to whatever is
+  showing. Objects hidden in MagicaVoxel, by their node or by their layer, start hidden
+  but are listed, so they can be brought back. Every object is meshed once and toggling
+  only changes which slices of the buffer are drawn, so it costs no rebuild.
+
+  Manifest-only: it contributes no node types and runs no Python, so it needs no
+  isolated environment. That is the point of the previewer extension point (§6.2) —
+  a file type gets a viewer without the Studio itself depending on a 3D library.
+enabled_by_default: true
+
+frontend:
+  previewers:
+    - id: vox-model
+      label: Voxel model
+      extensions: ['.vox', '.voxarium']
+      component: frontend/VoxPreview.js
+  dist: frontend
