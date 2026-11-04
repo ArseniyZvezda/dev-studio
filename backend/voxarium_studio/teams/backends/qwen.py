@@ -38,6 +38,24 @@ _TOOLS = {
     "web_search": "WebSearch", "web_fetch": "WebFetch", "todo_write": "TodoWrite",
     "agent": "Task",
 }
+_TOKEN_FIELDS = (
+    "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+
+
+def _normalise_usage(value: Any) -> dict[str, int]:
+    """Qwen's input includes cache reads; Studio accounts for them separately (§10.6)."""
+    if not isinstance(value, dict):
+        return {}
+    usage = {
+        key: value[key] for key in _TOKEN_FIELDS
+        if isinstance(value.get(key), int) and not isinstance(value[key], bool) and value[key] >= 0
+    }
+    if "input_tokens" in usage:
+        usage["input_tokens"] = max(
+            0, usage["input_tokens"] - usage.get("cache_read_input_tokens", 0)
+        )
+    return usage
 
 
 def _launcher() -> list[str] | None:
@@ -336,6 +354,15 @@ class _RunState:
                     events.append(AgentEvent(kind="tool_result", text=_text(block.get("content"))[:2000],
                                              data={"tool_use_id": block.get("tool_use_id"),
                                                    "is_error": bool(block.get("is_error"))}))
+            if kind == "assistant" and not frame.get("parent_tool_use_id"):
+                # §10.4: one API response can yield several transcript entries. Attach
+                # its accounting once so the shared live counter does not multiply it.
+                # Subagent usage is reconciled by the root result, not counted again.
+                usage = _normalise_usage(message.get("usage"))
+                # Qwen starts each intermediate block with an all-zero placeholder;
+                # it is not a new measurement of an empty context window.
+                if any(usage.values()) and events:
+                    events[0].data["usage"] = usage
         elif kind == "result" and not frame.get("parent_tool_use_id"):
             self.result = frame
             if frame.get("is_error"):
@@ -352,18 +379,13 @@ class _RunState:
 
     def finish(self, exit_code: int, duration_ms: int) -> AgentEvent:
         result = self.result or {}
-        usage = dict(result.get("usage") or {})
-        # Qwen's prompt tokens include cache reads; Studio accounts for them separately.
-        usage["input_tokens"] = max(0, usage.get("input_tokens", 0)
-                                    - usage.get("cache_read_input_tokens", 0))
+        usage = _normalise_usage(result.get("usage"))
         failed = bool(self.errors or result.get("is_error") or exit_code)
         return AgentEvent(kind="result", text=_text(result.get("result")) or self.last_text,
                           session_id=self.session_id, is_final=True, data={
                               "subtype": "error" if failed else "success", "is_error": failed,
                               "num_turns": result.get("num_turns", 0), "usage": usage,
-                              "total_tokens": sum(usage.get(key, 0) for key in (
-                                  "input_tokens", "output_tokens", "cache_read_input_tokens",
-                                  "cache_creation_input_tokens")),
+                              "total_tokens": sum(usage.values()),
                               "total_cost_usd": 0.0, "cost_unavailable": True,
                               "duration_ms": duration_ms, "exit_code": exit_code,
                               "errors": self.errors,

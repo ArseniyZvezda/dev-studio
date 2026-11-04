@@ -207,6 +207,11 @@ class AgentEvent:
     delegated work it started is still running and the run is being held open for it
     (§10.3). It is not ``system`` because the transcript hides that by default, and this is
     the line that explains the result card next to it — one that ends nothing.
+
+    Live usage (§10.4): attach Claude-shaped ``data.usage`` once per assistant response,
+    or emit ``system`` with text/subtype ``usage_update`` and cumulative ``total_tokens``
+    since the previous result. Optional ``context_tokens``/``context_window`` describe the
+    latest request, not lifetime input. Final result totals include already reported usage.
     """
 
     text: str = ""

@@ -20,7 +20,9 @@ TEAM = "team_default"
 DEV = f"{TEAM}__dev"
 HAPPY = [
     {"type": "system", "subtype": "init", "session_id": "qwen-session", "model": "qwen-model"},
-    {"type": "assistant", "message": {"content": [
+    {"type": "assistant", "message": {"usage": {
+        "input_tokens": 600, "cache_read_input_tokens": 100, "output_tokens": 30,
+    }, "content": [
         {"type": "thinking", "thinking": "Check the file."},
         {"type": "tool_use", "id": "tool-1", "name": "edit", "input": {
             "file_path": "main.py", "old_string": "old", "new_string": "new"}},
@@ -29,7 +31,9 @@ HAPPY = [
         {"type": "tool_result", "tool_use_id": "tool-1", "content": [
             {"type": "text", "text": "Edited."}], "is_error": False},
     ]}},
-    {"type": "assistant", "message": {"content": [{"type": "text", "text": "All done."}]}},
+    {"type": "assistant", "message": {"usage": {
+        "input_tokens": 400, "cache_read_input_tokens": 100, "output_tokens": 20,
+    }, "content": [{"type": "text", "text": "All done."}]}},
     {"type": "result", "subtype": "success", "is_error": False, "result": "All done.",
      "num_turns": 1, "usage": {"input_tokens": 1000, "cache_read_input_tokens": 200,
                                "output_tokens": 50, "total_tokens": 1050}},
@@ -102,6 +106,11 @@ async def test_protocol_translates_identity_tools_usage_and_result(fake, tmp_pat
     assert call.data["edit"] == {"insertions": 1, "deletions": 1}
     assert next(e for e in events if e.kind == "tool_result").data["tool_use_id"] == "tool-1"
     assert next(e for e in events if e.kind == "thinking").text == "Check the file."
+    live_usage = [e.data["usage"] for e in events if e.kind != "result" and "usage" in e.data]
+    assert live_usage == [
+        {"input_tokens": 500, "output_tokens": 30, "cache_read_input_tokens": 100},
+        {"input_tokens": 300, "output_tokens": 20, "cache_read_input_tokens": 100},
+    ]
     result = events[-1]
     assert result.is_final and not result.data["is_error"]
     assert result.text == "All done." and result.session_id == "qwen-session"
@@ -112,6 +121,48 @@ async def test_protocol_translates_identity_tools_usage_and_result(fake, tmp_pat
     assert record["stdin"] == "Бриф & <test>"
     assert "You are Dev." in record["argv"]
     assert not Path(record["config_path"]).exists()
+
+
+def test_usage_attaches_once_and_ignores_subagent_and_user_usage():
+    state = qwen._RunState("session")
+    frame = {
+        "type": "assistant", "message": {
+            "usage": {"input_tokens": 1000, "cache_read_input_tokens": 250,
+                      "output_tokens": 40, "total_tokens": 1040},
+            "content": [{"type": "text", "text": "First."},
+                        {"type": "text", "text": "Second."}],
+        },
+    }
+    events = state.events(frame)
+    assert len(events) == 2
+    assert events[0].data["usage"] == {
+        "input_tokens": 750, "output_tokens": 40, "cache_read_input_tokens": 250,
+    }
+    assert "usage" not in events[1].data
+    assert all("usage" not in event.data for event in state.events({
+        **frame, "parent_tool_use_id": "child",
+    }))
+    assert all("usage" not in event.data for event in state.events({**frame, "type": "user"}))
+
+
+def test_usage_missing_and_malformed_counts_are_not_invented():
+    assert qwen._normalise_usage(None) == {}
+    assert qwen._normalise_usage({"input_tokens": -1, "output_tokens": "100",
+                                  "cache_read_input_tokens": True}) == {}
+    assert qwen._normalise_usage({"input_tokens": 5, "cache_read_input_tokens": 10}) == {
+        "input_tokens": 0, "cache_read_input_tokens": 10,
+    }
+
+
+def test_intermediate_zero_usage_placeholder_does_not_reset_context():
+    events = qwen._RunState("session").events({
+        "type": "assistant", "message": {
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "content": [{"type": "thinking", "thinking": "Working."}],
+        },
+    })
+    assert len(events) == 1 and events[0].kind == "thinking"
+    assert "usage" not in events[0].data
 
 
 @pytest.mark.parametrize("mode,expected", list(qwen._MODES.items()))

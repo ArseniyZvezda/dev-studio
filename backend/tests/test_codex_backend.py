@@ -223,14 +223,14 @@ async def test_a_run_is_read_as_the_studio_events(fake: Fake, tmp_path: Path) ->
     assert turn.data["usage"]["output_tokens"] == 50
 
 
-async def test_usage_and_cost_accumulate_once_per_turn(fake: Fake, tmp_path: Path) -> None:
+async def test_repeated_cumulative_usage_is_not_charged_twice(fake: Fake, tmp_path: Path) -> None:
     fake.say([*HAPPY_RUN, HAPPY_RUN[-1]])
-    events = await run(make_request(tmp_path, resume_session_id="thr_1"))
+    events = await run(make_request(tmp_path))
     final = events[-1].data
-    assert final["total_tokens"] == 2100
+    assert final["total_tokens"] == 1050
     assert final["num_turns"] == 2
-    assert final["total_cost_usd"] == pytest.approx(0.000214)
-    assert final["usage"]["cache_read_input_tokens"] == 400
+    assert final["total_cost_usd"] == pytest.approx(0.000107)
+    assert final["usage"]["cache_read_input_tokens"] == 200
 
 
 async def test_unknown_models_are_unpriced_instead_of_claiming_free_usage(

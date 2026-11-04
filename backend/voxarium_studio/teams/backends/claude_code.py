@@ -781,6 +781,10 @@ def _assistant_events(message: Any, session_id: str | None) -> list[AgentEvent]:
                 )
             )
     _attach_usage(events, message)
+    parent = getattr(message, "parent_tool_use_id", None)
+    if parent:
+        for event in events:
+            event.data["parent_tool_use_id"] = parent
     return events
 
 

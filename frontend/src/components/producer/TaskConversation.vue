@@ -10,10 +10,11 @@ import MarkdownText from '@/components/ui/MarkdownText.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { t } from '@/i18n'
 import { toolName, toolSubject } from '@/lib/activity'
-import { formatTime, statusColor, statusLabel } from '@/lib/status'
+import { formatTime, formatTokens, statusColor, statusLabel } from '@/lib/status'
 import { mergeTaskConversation, taskConversationRows } from '@/lib/task-conversation'
 import { resultTypeColor, resultTypeHint, resultTypeLabel, resultTypeOf } from '@/lib/task-result'
 import { taskCost } from '@/lib/task-telemetry'
+import { taskUsage } from '@/lib/task-usage'
 import { liveLine, PROSE_KINDS } from '@/lib/transcript'
 import { onEvent } from '@/ws/connection'
 
@@ -27,6 +28,7 @@ const running = computed(() => props.task.is_running === true)
 const rows = computed(() => taskConversationRows(messages.value))
 const live = computed(() => liveLine(messages.value, 'advanced'))
 const cost = computed(() => taskCost(props.task.total_cost_usd, messages.value))
+const usage = computed(() => taskUsage({ total_tokens: props.task.total_tokens, messages: messages.value }))
 let generation = 0
 let alive = true
 let received: AgentMessage[] = []
@@ -203,6 +205,12 @@ onBeforeUnmount(() => {
         <span class="vxs-chat-typing shrink-0" :aria-label="t('chat.answering')"><i /><i /><i /></span>
         <span class="truncate" :title="live.activity ?? undefined">{{ live.activity || t('chat.answeringNow') }}</span>
       </p>
+      <!-- §10.11: lifetime spend follows the same live usage snapshots as TaskDetail. -->
+      <div class="mb-1 flex items-center justify-between gap-2 text-small"
+        :title="t('taskDetail.header.tokensSpentHint')">
+        <span class="text-faint">{{ t('producerPage.taskTokens') }}</span>
+        <span class="font-mono tabular-nums">{{ formatTokens(usage.totalTokens) }}</span>
+      </div>
       <div class="flex items-center justify-between gap-2 text-small">
         <span class="text-faint">{{ t('producerPage.taskCost') }}</span>
         <span class="font-mono tabular-nums">{{ cost }}</span>

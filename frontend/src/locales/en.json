@@ -1045,7 +1045,10 @@
       "telemetry": "{duration} · API Cost: {cost}",
       "costEstimateHint": "Approximate token cost at standard API rates, including cached input. This is not a ChatGPT subscription charge; service tiers, long-context premiums and tool fees may differ.",
       "context": "Context: {tokens}",
-      "contextHint": "How full the session's context window was at its last request — the prompt, the cache it created and the cache it read.",
+      "contextWindow": "Context: {tokens} / {window}",
+      "contextHint": "Input tokens in the latest request, including cached input. The context window capacity is shown when reported by the runtime.",
+      "tokensSpent": "Tokens spent: {tokens}",
+      "tokensSpentHint": "Total tokens spent on this task across all runs: input, cached input and output. Updates as the runtime reports usage.",
       "isolatedWorktree": "isolated worktree"
     },
     "runSettings": {
@@ -2424,6 +2427,7 @@
     "retry": "Retry",
     "loading": "Loading conversations…",
     "taskCost": "API Cost",
+    "taskTokens": "Tokens spent",
     "noMessages": "No messages yet"
   }
 }

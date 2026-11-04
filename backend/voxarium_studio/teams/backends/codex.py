@@ -85,6 +85,11 @@ _STDERR_TAIL = 4_000
 #: Give a previous writer time to release the session, without retrying forever (§10.6).
 _WRITER_RETRY_DELAYS = (1.0, 3.0, 6.0)
 
+# exec's stdout only reports accounting at turn.completed. Its session rollout carries
+# token_count after each model response, including the current context window (§10.6).
+_USAGE_POLL_SECONDS = 0.25
+_ROLLOUT_LINE_BYTES = 1024 * 1024
+
 #: Which sandbox each of the Claude SDK's permission modes becomes. ``plan`` reads only;
 #: ``bypassPermissions`` is the one that drops the sandbox, which the flag spells out.
 _SANDBOX_FOR_MODE = {
@@ -341,7 +346,13 @@ class CodexBackend(AgentBackend):
         process: asyncio.subprocess.Process | None = None
         stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL)
         stderr_task: asyncio.Task[None] | None = None
+        frame_task: asyncio.Task[Any] | None = None
+        usage = _RolloutUsage(codex_home())
         try:
+            if session_id:
+                # Snapshot before the child can append: a resumed session's cumulative
+                # total includes previous Studio runs and must not be billed again.
+                await asyncio.to_thread(usage.resume, session_id)
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=str(request.workdir),
@@ -358,8 +369,28 @@ class CodexBackend(AgentBackend):
             await process.stdin.drain()
             process.stdin.close()
 
-            state = _RunState(model=_cost_model(request))
-            async for frame in _frames(process.stdout, request.max_message_bytes):
+            state = _RunState(model=_cost_model(request), resumed=bool(request.resume_session_id))
+            usage_active = False
+            frames = _frames(process.stdout, request.max_message_bytes)
+            frame_task = asyncio.create_task(anext(frames, None))
+            while frame_task is not None:
+                await asyncio.wait({frame_task}, timeout=_USAGE_POLL_SECONDS)
+                if session_id and usage_active:
+                    snapshot = await asyncio.to_thread(usage.poll, session_id)
+                    state.set_usage_baseline(usage.accounting_baseline)
+                    if snapshot is not None:
+                        state.set_live_usage(*snapshot)
+                    update = state.usage_event()
+                    if update is not None:
+                        update.session_id = session_id
+                        yield update
+                if not frame_task.done():
+                    continue
+                frame = frame_task.result()
+                frame_task = None
+                if frame is None:
+                    break
+                frame_task = asyncio.create_task(anext(frames, None))
                 if isinstance(frame, _Oversized):
                     yield AgentEvent(
                         kind="system",
@@ -372,13 +403,33 @@ class CodexBackend(AgentBackend):
                         session_id=session_id,
                     )
                     continue
+                if frame.get("type") in {
+                    "turn.started", "turn.completed", "item.started", "item.updated", "item.completed"
+                }:
+                    # A failed resume may still have an external writer appending to
+                    # this rollout. Do not charge its work while our child is rejected.
+                    usage_active = True
                 for event in state.events(frame):
                     if event.kind == "system" and event.data.get("thread_id"):
                         session_id = str(event.data["thread_id"])
                     event.session_id = session_id
                     yield event
+                update = state.usage_event()
+                if update is not None:
+                    update.session_id = session_id
+                    yield update
 
             exit_code = await process.wait()
+            if session_id and usage_active:
+                # The final accounting can be flushed after the last stdout frame.
+                snapshot = await asyncio.to_thread(usage.poll, session_id, force=True)
+                state.set_usage_baseline(usage.accounting_baseline)
+                if snapshot is not None:
+                    state.set_live_usage(*snapshot)
+                update = state.usage_event()
+                if update is not None:
+                    update.session_id = session_id
+                    yield update
             if stderr_task is not None:
                 await stderr_task
             if state.reconnecting and not state.failed:
@@ -418,6 +469,9 @@ class CodexBackend(AgentBackend):
                 is_final=True,
             )
         finally:
+            if frame_task is not None:
+                frame_task.cancel()
+                await asyncio.gather(frame_task, return_exceptions=True)
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
             if process is not None and process.returncode is None:
@@ -630,15 +684,174 @@ def _cost_model(request: AgentRunRequest) -> str | None:
         return None
 
 
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _normalise_usage(usage: dict[str, Any]) -> dict[str, int]:
+    counted = {_USAGE_KEYS[key]: _count(usage[key]) for key in _USAGE_KEYS if key in usage}
+    if "input_tokens" in counted:
+        # Codex's input already includes its cache; output already includes reasoning.
+        counted["input_tokens"] = max(
+            0, counted["input_tokens"] - counted.get("cache_read_input_tokens", 0)
+        )
+    return counted
+
+
+class _RolloutUsage:
+    """A bounded, read-only tail of this run's Codex rollout (§10.6).
+
+    stdout deliberately omits token_count. Read just the selected thread's rollout;
+    never infer context from a turn's cumulative usage or from a model-name table.
+    New threads can fall back to stdout. A resume without a readable baseline keeps
+    accounting unknown rather than charging the old session's cumulative usage.
+    """
+
+    def __init__(self, home: Path) -> None:
+        self.home = home
+        self.session_id: str | None = None
+        self.path: Path | None = None
+        self.offset = 0
+        self.discarding = False
+        self.next_lookup = 0.0
+        self.next_poll = 0.0
+        self.baseline: dict[str, int] | None = {}
+        self.waiting_for_start = False
+        self.unavailable_resume = False
+        self.total: dict[str, int] = {}
+        self.context_tokens: int | None = None
+        self.context_window: int | None = None
+
+    def resume(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.baseline = None
+        self.unavailable_resume = self.poll(session_id, force=True) is None
+        self.waiting_for_start = True
+
+    @property
+    def accounting_baseline(self) -> dict[str, int] | None:
+        return None if self.waiting_for_start or self.unavailable_resume else self.baseline
+
+    def poll(
+        self, session_id: str, *, force: bool = False
+    ) -> tuple[dict[str, int], int | None, int | None] | None:
+        if session_id != self.session_id:
+            self.session_id = session_id
+            self.path = None
+            self.offset = 0
+            self.discarding = False
+            self.next_lookup = 0.0
+            self.next_poll = 0.0
+            self.baseline = {}
+            self.waiting_for_start = False
+            self.unavailable_resume = False
+            self.total = {}
+            self.context_tokens = self.context_window = None
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
+            return None
+        if not force and time.monotonic() < self.next_poll:
+            return None
+        self.next_poll = time.monotonic() + _USAGE_POLL_SECONDS
+        try:
+            if self.path is None:
+                if not force and time.monotonic() < self.next_lookup:
+                    return None
+                self.next_lookup = time.monotonic() + 1.0
+                for folder in ("sessions", "archived_sessions"):
+                    self.path = next(
+                        (self.home / folder).glob(f"**/rollout-*-{session_id}.jsonl"), None
+                    )
+                    if self.path is not None:
+                        break
+                if self.path is None:
+                    return None
+            with self.path.open("rb") as stream:
+                stream.seek(self.offset)
+                while True:
+                    start = stream.tell()
+                    raw = stream.readline(_ROLLOUT_LINE_BYTES + 1)
+                    if not raw:
+                        break
+                    if not raw.endswith(b"\n"):
+                        if len(raw) <= _ROLLOUT_LINE_BYTES:
+                            # Writers can append a JSON record in several writes.
+                            self.offset = start
+                            break
+                        self.discarding = True
+                        self.offset = stream.tell()
+                        continue
+                    self.offset = stream.tell()
+                    if self.discarding or len(raw) > _ROLLOUT_LINE_BYTES:
+                        self.discarding = False
+                        continue
+                    # Avoid decoding transcript content that cannot hold accounting.
+                    if b'"token_count"' not in raw and b'"task_started"' not in raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != "event_msg":
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload.get("type") == "task_started":
+                        if self.waiting_for_start and not self.unavailable_resume:
+                            # An old writer can finish between our pre-spawn snapshot
+                            # and the successful resume. Its last token_count belongs
+                            # to the baseline, before our new task_started boundary.
+                            self.baseline = dict(self.total)
+                            self.waiting_for_start = False
+                        window = _count(payload.get("model_context_window"))
+                        if window:
+                            self.context_window = window
+                    if payload.get("type") != "token_count":
+                        continue
+                    info = payload.get("info")
+                    if not isinstance(info, dict):
+                        continue
+                    total = info.get("total_token_usage")
+                    if isinstance(total, dict) and "input_tokens" in total:
+                        self.total = {
+                            key: _count(total.get(key)) for key in _USAGE_KEYS
+                        }
+                    last = info.get("last_token_usage")
+                    if isinstance(last, dict) and "input_tokens" in last:
+                        self.context_tokens = _count(last["input_tokens"])
+                    window = _count(info.get("model_context_window"))
+                    if window:
+                        self.context_window = window
+        except OSError:
+            return None
+        if self.waiting_for_start or self.unavailable_resume:
+            return None
+        if self.baseline is None:
+            # If a resumed rollout was initially unavailable, prefer an incomplete
+            # live count to charging historical usage; stdout supplies the final total.
+            self.baseline = dict(self.total)
+        delta = {
+            key: max(0, value - self.baseline.get(key, 0))
+            for key, value in self.total.items()
+        }
+        return _normalise_usage(delta), self.context_tokens, self.context_window
+
+
 class _RunState:
     """What one ``codex exec`` has said so far, folded into the Studio's events."""
 
-    def __init__(self, *, model: str | None = None) -> None:
+    def __init__(self, *, model: str | None = None, resumed: bool = False) -> None:
         self.model = model
         self.last_message = ""
         self.failed = False
         self.turns = 0
         self.usage: dict[str, int] = {}
+        self._usage_baseline: dict[str, int] | None = None if resumed else {}
+        self._stdout_total: dict[str, int] = {}
+        self.live_usage: dict[str, int] = {}
+        self.context_tokens: int | None = None
+        self.context_window: int | None = None
+        self._last_usage_event: dict[str, Any] | None = None
         self.error_text = ""
         self.reconnecting = ""
         self._started: set[str] = set()
@@ -660,17 +873,10 @@ class _RunState:
             self.reconnecting = ""
             self.turns += 1
             usage = frame.get("usage") if isinstance(frame.get("usage"), dict) else {}
-            counted = {
-                _USAGE_KEYS[key]: int(usage[key] or 0) for key in _USAGE_KEYS if key in usage
-            }
-            # Codex includes cached tokens in input_tokens; the Studio's Claude-shaped
-            # usage counts them separately. Keeping both whole double-counts the cache.
-            if "input_tokens" in counted:
-                counted["input_tokens"] = max(
-                    0, counted["input_tokens"] - counted.get("cache_read_input_tokens", 0)
-                )
-            for key, value in counted.items():
-                self.usage[key] = self.usage.get(key, 0) + value
+            previous = self.usage
+            self._stdout_total = {key: _count(usage[key]) for key in _USAGE_KEYS if key in usage}
+            self._update_stdout_usage()
+            counted = {key: max(0, value - previous.get(key, 0)) for key, value in self.usage.items()}
             data: dict[str, Any] = {"subtype": kind}
             if counted:
                 data["usage"] = counted
@@ -698,6 +904,52 @@ class _RunState:
             return []
         # A frame this build does not know: kept, hidden below Verbose like any system line.
         return [AgentEvent(kind="system", text=kind or "frame", data=_plain(frame))]
+
+    def set_usage_baseline(self, baseline: dict[str, int] | None) -> None:
+        self._usage_baseline = baseline
+        self._update_stdout_usage()
+
+    def _update_stdout_usage(self) -> None:
+        # exec emits the thread's cumulative usage, even for `exec resume` (Codex
+        # event_processor_with_jsonl_output::usage_from_last_total). Without a known
+        # baseline a resumed stdout total cannot honestly be charged to this run.
+        if self._usage_baseline is None or not self._stdout_total:
+            return
+        usage = _normalise_usage({
+            key: max(0, value - self._usage_baseline.get(key, 0))
+            for key, value in self._stdout_total.items()
+        })
+        if sum(usage.values()) >= sum(self.usage.values()):
+            self.usage = usage
+
+    def set_live_usage(
+        self, usage: dict[str, int], context_tokens: int | None, context_window: int | None
+    ) -> None:
+        if sum(usage.values()) >= sum(self.live_usage.values()):
+            self.live_usage = usage
+        if context_tokens is not None:
+            self.context_tokens = context_tokens
+        if context_window is not None:
+            self.context_window = context_window
+
+    def effective_usage(self) -> dict[str, int]:
+        # Both sources describe the same work. stdout is the fallback when rollout
+        # accounting is unavailable or arrives only partway through a resumed run.
+        return max((self.usage, self.live_usage), key=lambda usage: sum(usage.values()))
+
+    def usage_event(self) -> AgentEvent | None:
+        usage = self.effective_usage()
+        if not usage and self.context_tokens is None and self.context_window is None:
+            return None
+        data: dict[str, Any] = {"subtype": "usage_update", "total_tokens": sum(usage.values())}
+        if self.context_tokens is not None:
+            data["context_tokens"] = self.context_tokens
+        if self.context_window is not None:
+            data["context_window"] = self.context_window
+        if data == self._last_usage_event:
+            return None
+        self._last_usage_event = dict(data)
+        return AgentEvent(kind="system", text="usage_update", data=data)
 
     def _item(self, phase: str, item: dict[str, Any]) -> list[AgentEvent]:
         item_type = str(item.get("type") or "")
@@ -817,7 +1069,8 @@ class _RunState:
         Codex reports tokens, not a bill. Keep the API-equivalent estimate explicitly
         labelled, including an unknown tariff, so the UI never calls missing data free.
         """
-        cost = estimate_cost(self.model, self.usage)
+        usage = self.effective_usage()
+        cost = estimate_cost(self.model, usage)
         return {
             "subtype": "error" if is_error else "success",
             "is_error": is_error,
@@ -826,8 +1079,8 @@ class _RunState:
             "cost_estimated": cost is not None,
             "cost_unavailable": cost is None,
             "model": self.model,
-            "total_tokens": sum(self.usage.values()),
-            "usage": dict(self.usage),
+            "total_tokens": sum(usage.values()),
+            "usage": dict(usage),
             "exit_code": exit_code,
             "stop_reason": None,
             "api_error_status": None,

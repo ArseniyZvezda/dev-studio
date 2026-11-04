@@ -364,6 +364,36 @@ describe('the line under the rows', () => {
     }
   })
 
+  it('reconciles streamed assistant output with the result instead of counting it twice', () => {
+    const feed = [spent(10), spent(20), spent(30, { role: 'system', kind: 'result' })]
+    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+      expect(liveLine(feed, level).tokens).toBe(30)
+    }
+    expect(liveLine([spent(10), spent(40, { role: 'system', kind: 'result' })], 'compact').tokens)
+      .toBe(40)
+  })
+
+  it('closes continued segments separately before summing their output', () => {
+    const feed = [spent(10), spent(20),
+      message({ role: 'system', kind: 'result', data: { continued: true, usage: { output_tokens: 30 } } }),
+      message({ role: 'system', kind: 'continued' }),
+      spent(5), spent(7), spent(12, { role: 'system', kind: 'result' })]
+    expect(liveLine(feed, 'compact').tokens).toBe(42)
+  })
+
+  it('counts Codex turn deltas once when the run result repeats their total', () => {
+    const turn = (output: number) => spent(output, { role: 'system', kind: 'system', text: 'turn.completed' })
+    const feed = [turn(10), turn(20)]
+    expect(liveLine(feed, 'compact').tokens).toBe(30)
+    expect(liveLine([...feed, spent(30, { role: 'system', kind: 'result' })], 'compact').tokens).toBe(30)
+  })
+
+  it('retains output totals for older transcripts that only recorded results', () => {
+    const feed = [spent(30, { role: 'system', kind: 'result' }),
+      spent(12, { role: 'system', kind: 'result' })]
+    expect(liveLine(feed, 'compact').tokens).toBe(42)
+  })
+
   it('counts nothing for a transcript written before the backend recorded any', () => {
     // Zero is what makes the view say nothing at all, rather than "0 tokens" about a run
     // whose runtime never reported a figure.

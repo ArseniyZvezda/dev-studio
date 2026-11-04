@@ -99,6 +99,7 @@ import {
   resultTypeOf,
 } from '@/lib/task-result'
 import { taskCost } from '@/lib/task-telemetry'
+import { taskUsage } from '@/lib/task-usage'
 import type { Verbosity } from '@/lib/transcript'
 import {
   PROSE_KINDS,
@@ -284,34 +285,8 @@ async function removeAttachment(entry: TaskAttachment): Promise<void> {
   }
 }
 
-// ---------------------------------------------------------------- context window
-
-/**
- * How full the session's context window was at its last request (§10.4): the prompt, the
- * cache it created and the cache it read, off the newest assistant message that reported
- * usage. `_attach_usage` puts one accounting per API response on the transcript, and that
- * response's input *is* the context. A `result` entry's usage is the whole run's and is
- * skipped; `output_tokens` is what the model wrote and is not context. Nothing is shown for
- * a transcript written before usage was recorded.
- */
-const contextTokens = computed(() => {
-  const messages = props.task.messages
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (!message || message.role !== 'assistant') continue
-    const usage = message.data?.usage
-    if (!usage || typeof usage !== 'object') continue
-    const counted = usage as Record<string, unknown>
-    const count = (key: string) => (typeof counted[key] === 'number' ? (counted[key] as number) : 0)
-    if (!('input_tokens' in counted) && !('cache_read_input_tokens' in counted)) continue
-    return (
-      count('input_tokens') +
-      count('cache_creation_input_tokens') +
-      count('cache_read_input_tokens')
-    )
-  }
-  return 0
-})
+// §10.4: the socket updates the counters while the backend is still running.
+const usage = computed(() => taskUsage(props.task))
 
 const STATUSES: TaskStatus[] = [
   'todo',
@@ -563,9 +538,8 @@ const rows = computed(() => transcriptRows(props.task.messages, verbosity.value)
  * shown below Verbose whether or not this level draws a row for it, and kept nowhere.
  *
  * The number is deliberately *not* the header's `total_tokens`: that is the whole lifetime
- * bill, cache reads included — which is most of a long session — and it lands only when a
- * turn ends, so it says nothing at all during the hour a run spends thinking and calling
- * tools. This is what the model has written, and it moves.
+ * bill, cache reads included — which is most of a long session. This is what the model has
+ * written; the header also updates as the runtime reports usage.
  */
 const live = computed(() => liveLine(props.task.messages, verbosity.value))
 
@@ -1171,17 +1145,24 @@ async function complete() {
           >
             <Cpu class="size-3" /> {{ runSettings.label }}
           </span>
-          <!-- Beside the model, because the two read together: how much of this model's
-               window the session had filled at its last request. The lifetime token sum
-               and the turn count that used to sit in the telemetry line said less — a
-               long session is mostly cache reads, and neither number says how close the
-               session is to its ceiling. -->
+          <!-- §10.4: context occupancy and lifetime spending share the model's status row. -->
           <span
-            v-if="runSettings && contextTokens"
+            v-if="runSettings && usage.contextTokens !== null"
             class="inline-flex items-center gap-1 text-small text-faint"
             :title="t('taskDetail.header.contextHint')"
           >
-            · {{ t('taskDetail.header.context', { tokens: formatTokens(contextTokens) }) }}
+            · {{ usage.contextWindow !== null
+              ? t('taskDetail.header.contextWindow', {
+                  tokens: formatTokens(usage.contextTokens), window: formatTokens(usage.contextWindow),
+                })
+              : t('taskDetail.header.context', { tokens: formatTokens(usage.contextTokens) }) }}
+          </span>
+          <span
+            v-if="runSettings"
+            class="inline-flex items-center gap-1 text-small text-faint"
+            :title="t('taskDetail.header.tokensSpentHint')"
+          >
+            · {{ t('taskDetail.header.tokensSpent', { tokens: formatTokens(usage.totalTokens) }) }}
           </span>
           <!-- Beside the telemetry rather than next to its own checkbox: how long this task
                has been stopped for is a property of the run, and it is the first thing

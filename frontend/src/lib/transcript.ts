@@ -148,8 +148,8 @@ export interface TranscriptRow<M extends TranscriptMessage = TranscriptMessage> 
  * `activity` is the tail of everything Verbose would log, and is empty *at* Verbose, where
  * the newest row is already the newest line and a copy of it under the scroller would say
  * nothing. `tokens` is every level's: what the model has *written* across this task — its
- * thinking, its answers and its tool calls — which is the number that keeps moving while a
- * session is quiet, and the one the header's lifetime total cannot show until a turn ends.
+ * thinking, its answers and its tool calls. The header separately shows lifetime spending,
+ * including input and cached input, as the runtime reports it.
  * `seq` counts the lines that have gone by, so the view can key the element on it: a CSS
  * animation restarts when its element does, which is what turns a changing line into a
  * blinking one, and counting rather than comparing is what makes the same tool twice blink
@@ -220,22 +220,24 @@ export function editStat(message: TranscriptMessage): EditStat | null {
  * The runtime's `usage` is attached to **one** event per assistant message
  * (`_attach_usage` in `teams/backends/claude_code.py`), which is what makes summing these
  * right: a message that answered in prose and then called two tools is one API response
- * with one accounting, and the frame carries no running total to take a maximum of instead.
+ * with one accounting. A result carries the segment's total and is reconciled against
+ * those messages by liveLine rather than added a second time.
  *
  * `output_tokens` is the half that counts the thinking. The prompt and the cache reads are
  * in the task header's lifetime total, and they dwarf this one without saying anything
  * about what the agent has been doing — a long session is mostly cache reads.
  */
 function outputTokens(message: TranscriptMessage): number {
+  if (message.kind === 'system' && message.text === 'usage_update') return 0
   const usage = message.data?.usage
   if (!usage || typeof usage !== 'object') return 0
   const value = (usage as Record<string, unknown>).output_tokens
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
 }
 
 /** Whether a message survives this level. Compact and Advanced hide the same things. */
 function shows(message: TranscriptMessage, verbosity: Verbosity): boolean {
-  if (message.kind === 'system' && message.text === 'thinking_tokens') return false
+  if (message.kind === 'system' && ['thinking_tokens', 'usage_update'].includes(message.text)) return false
   if (verbosity === 'verbose') return true
   return ALWAYS_KINDS.has(message.kind) || message.role !== 'system'
 }
@@ -345,6 +347,7 @@ const TAIL_LIMIT = 160
  * `truncate` ever saw a line to truncate.
  */
 export function tailLine(message: TranscriptMessage): string {
+  if (message.kind === 'system' && message.text === 'usage_update') return ''
   // History is worded from its data, as its row is — the stored text is the backend's English.
   if (message.kind === 'status') return oneLine(statusText(message), TAIL_LIMIT)
   if (message.kind === 'edited') return oneLine(editedText(message), TAIL_LIMIT)
@@ -375,9 +378,19 @@ export function tailLine(message: TranscriptMessage): string {
 export function liveLine(messages: TranscriptMessage[], verbosity: Verbosity): LiveLine {
   const line: LiveLine = { activity: '', seq: 0, tokens: 0 }
   let thinking = 0
+  let segmentOutput = 0
   for (const message of messages) {
     const output = outputTokens(message)
-    line.tokens += output
+    if (message.kind === 'result') {
+      // Each result closes one segment, including continued results. Its aggregate
+      // fills gaps in older transcripts without charging the streamed output again.
+      line.tokens += Math.max(segmentOutput, output)
+      segmentOutput = 0
+    } else if (message.role === 'assistant' ||
+      (message.kind === 'system' && message.text === 'turn.completed')) {
+      // Codex reports turn deltas here; Claude/Qwen attach one delta per assistant reply.
+      segmentOutput += output
+    }
     if (output > 0 || message.kind === 'result') thinking = 0
     if (message.kind === 'system' && message.text === 'thinking_tokens') {
       const estimate = message.data?.estimated_tokens
@@ -390,7 +403,7 @@ export function liveLine(messages: TranscriptMessage[], verbosity: Verbosity): L
     line.activity = text
     line.seq += 1
   }
-  line.tokens += thinking
+  line.tokens += segmentOutput + thinking
   return line
 }
 

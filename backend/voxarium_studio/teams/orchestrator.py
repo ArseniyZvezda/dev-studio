@@ -73,6 +73,7 @@ from .project_skills import prompt_list as skill_prompt_list
 from .slots import agent_slot, span
 from .store import TeamStore
 from .tools import build_toolset
+from .usage import RunUsage
 
 log = logging.getLogger(__name__)
 
@@ -2393,9 +2394,20 @@ class TeamOrchestrator:
         # from, and it arrives *before* the failure it explains (§10.3).
         reported: usage_limits.UsageLimit | None = None
         limit: usage_limits.UsageLimit | None = None
+        usage = RunUsage()
+        credited_tokens = 0
 
         async for event in backend.run(request):
-            await self._publish_message(task_id, member_id, event)
+            # §10.4: persist reported spend while work is running, including a run
+            # cancelled before its result. The result only adds the uncredited balance.
+            live_usage = usage.observe(event)
+            if not (event.kind == "system" and event.data.get("subtype") == "usage_update"):
+                await self._publish_message(task_id, member_id, event)
+            if live_usage:
+                await self._publish_usage_update(
+                    task_id, member_id, usage, delta=usage.total - credited_tokens,
+                )
+                credited_tokens = usage.total
             if event.session_id:
                 await self._store_session_id(task_id, event.session_id)
             if event.kind == "text" and event.text:
@@ -2407,7 +2419,13 @@ class TeamOrchestrator:
                 limit = limit or usage_limits.stopped_by(event.text, event.data, reported)
                 await self._set_task_status(task_id, TaskStatus.BLOCKED, error=event.text)
             if event.kind == "result":
-                await self._store_result_stats(task_id, event.data)
+                usage.finish(event.data)
+                await self._store_result_stats(task_id, {
+                    **event.data, "total_tokens": usage.total - credited_tokens,
+                })
+                await self._publish_usage_update(task_id, member_id, usage)
+                usage.next_segment()
+                credited_tokens = 0
                 # A `continued` result ended a turn and not the run — a session that
                 # stopped mid-work and is being resumed, or one held open because the
                 # sub-agents and workflows the member started are still running (§10.3).
@@ -2863,6 +2881,19 @@ class TeamOrchestrator:
             task.num_turns += int(data.get("num_turns") or 0)
             task.total_tokens += int(data.get("total_tokens") or 0)
             session.add(task)
+
+    async def _publish_usage_update(
+        self, task_id: str, member_id: str, usage: RunUsage, *, delta: int = 0,
+    ) -> None:
+        """One persisted counter and one replaceable WS row, independent of backend (§10.4)."""
+        async with self.db.session() as session:
+            task = await session.get(TeamTask, task_id)
+            if task is None:
+                return
+            task.total_tokens += delta
+            task_total = task.total_tokens
+            session.add(task)
+        await self._publish_message(task_id, member_id, usage.snapshot(task_total))
 
     async def _cleanup_task_temp(self, task: TeamTask) -> None:
         try:
