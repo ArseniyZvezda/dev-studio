@@ -45,6 +45,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["voxarium_studio"]
+# The parent .gitignore's /voxarium_studio/ is managed-project data, but Hatch
+# applies it relative to backend/ and would drop the entire Python package.
+# Select the package explicitly, including the generated SPA required by §2.7.
+ignore-vcs = true
+exclude = ["**/__pycache__", "*.py[cod]", "/voxarium_studio/_build_stamp.json"]
 
 # Writes voxarium_studio/_build_stamp.json into the wheel, so an installed Studio can still say
 # which commit it came from вЂ” see hatch_build.py and voxarium_studio/build_info.py.

@@ -58,5 +58,6 @@ try {
     }
     New-Item -ItemType Directory -Force (Join-Path $DesktopRoot 'locales') | Out-Null
     Copy-Item frontend/src/locales/en.json, frontend/src/locales/ru.json -Destination (Join-Path $DesktopRoot 'locales')
-    Invoke-Checked $BundledPython @('-c', 'import voxarium_studio, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; assert static_dir(); assert builtin_plugins_dir()')
+    # Verify only the installed runtime, without checkout/PYTHONPATH fallbacks (§2.7).
+    Invoke-Checked $BundledPython @('-I', '-c', 'import voxarium_studio.cli, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; assert static_dir(); assert builtin_plugins_dir()')
 } finally { Pop-Location }
