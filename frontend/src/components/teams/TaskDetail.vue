@@ -1514,6 +1514,17 @@ async function complete() {
             <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
           </p>
 
+          <!-- Preparation and incomplete disk evidence remain visible at every level (§10.4). -->
+          <p
+            v-else-if="row.message.kind === 'file_observation_status' || row.message.kind === 'file_observation_error'"
+            class="flex items-baseline gap-2 px-1 text-small"
+            :class="row.message.kind === 'file_observation_error' ? 'text-warning' : 'text-faint'"
+          >
+            <FileText class="size-3 shrink-0 translate-y-0.5" />
+            <span class="min-w-0 break-words">{{ row.message.text }}</span>
+            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
+          </p>
+
           <!-- A tool call reads as a timeline entry for the same reason history does: it
                has no author speaking, and one card per call would bury the agent's own
                words. A call that *wrote* something carries its own icon and its size —

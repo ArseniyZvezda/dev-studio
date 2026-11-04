@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 
 # Mirrors frontend/src/lib/transcript.ts: shows(message, 'advanced').
-ALWAYS_KINDS = frozenset({"status", "edited", "commit", "tool_use", "continued"})
+ALWAYS_KINDS = frozenset({
+    "status", "edited", "commit", "tool_use", "continued",
+    "file_observation_status", "file_observation_error",
+})
 
 
 def verbose_only(role: str, kind: str) -> bool:

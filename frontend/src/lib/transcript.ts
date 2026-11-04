@@ -74,7 +74,9 @@ export function isVerbosity(value: unknown): value is Verbosity {
  * History entries no level hides — they are the task's audit trail, and it carries
  * `role: "system"` like the noise does (§10.4).
  */
-const HISTORY_KINDS = new Set(['status', 'edited', 'commit'])
+const HISTORY_KINDS = new Set([
+  'status', 'edited', 'commit', 'file_observation_status', 'file_observation_error',
+])
 
 /**
  * The history plus the tool calls, and `continued` with them.

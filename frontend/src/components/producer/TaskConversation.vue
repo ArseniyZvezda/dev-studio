@@ -166,6 +166,12 @@ onBeforeUnmount(() => {
           {{ statusLabel(String(row.message.data.to ?? task.status)) }}
           <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
         </p>
+        <p v-else-if="row.message.kind === 'file_observation_status' || row.message.kind === 'file_observation_error'"
+          class="flex items-baseline gap-1.5 text-small"
+          :class="row.message.kind === 'file_observation_error' ? 'text-warning' : 'text-faint'">
+          <span class="min-w-0 break-words">{{ row.message.text }}</span>
+          <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
+        </p>
         <div v-else class="rounded-lg border px-3 py-2"
           :class="row.message.role === 'user' ? 'ml-5 border-accent-border bg-accent-soft' : 'border-line-subtle bg-elevated'"
           :style="summaryColor(row.message) ? {

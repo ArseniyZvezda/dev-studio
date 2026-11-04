@@ -71,10 +71,14 @@ async def test_manual_replaces_every_old_message_and_preserves_task_and_audit(se
     })
     await ctx.teams.record_message(task.id, DEV, role="system", kind="file_observation",
                                    data={"paths": ["player.py", "other.py"]})
+    warning = "File observation incomplete: scan time limit reached; tool evidence remains available."
+    await ctx.teams.record_message(task.id, DEV, role="system", kind="file_observation_error",
+                                   text=warning)
     await ctx.teams.record_message(task.id, DEV, role="system", kind="result",
                                    data={"model": "test-model", "total_cost_usd": 0.5})
     await ctx.teams._store_result_stats(task.id, {"total_cost_usd": 0.5, "total_tokens": 500})
     before = await ctx.teams.task_changes(task.id)
+    assert before["observation_errors"] == [warning]
     ctx.config.teams.context_compression_tokens = 0  # manual bypasses the disabled threshold
     compressed = await ctx.teams.compress_task(task.id)
     messages = await ctx.teams._messages_of(task.id)
@@ -98,6 +102,7 @@ async def test_manual_replaces_every_old_message_and_preserves_task_and_audit(se
     assert "Implementation in progress" not in summary_request.prompt
     assert "old secret payload" not in summary_request.prompt
     assert "player.py" not in summary_request.prompt
+    assert warning not in summary_request.prompt
     assert "Keep jump height at 2m" in summary_request.prompt
     with pytest.raises(ValueError, match="no new dialogue"):
         await ctx.teams.compress_task(task.id)

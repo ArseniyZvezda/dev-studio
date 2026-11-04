@@ -4515,6 +4515,7 @@ async def test_archive_discards_only_verbose_rows_and_blocks_late_noise(teams: A
     for role, kind in [("system", "tool_result"), ("system", "system"),
                        ("assistant", "text"), ("assistant", "thinking"),
                        ("system", "tool_use"), ("system", "continued"),
+                       ("system", "file_observation_status"), ("system", "file_observation_error"),
                        ("human", "note"), ("system", "commit")]:
         await teams.teams.record_message(task.id, QA, role=role, kind=kind, text=kind)
     await teams.teams.update_task(task.id, {"status": TaskStatus.DONE, "archived": True})
@@ -4524,6 +4525,7 @@ async def test_archive_discards_only_verbose_rows_and_blocks_late_noise(teams: A
     kinds = {row.kind for row in rows}
     assert not {"tool_result", "system"} & kinds
     assert {"text", "thinking", "tool_use", "continued", "note", "commit", "status", "edited"} <= kinds
+    assert {"file_observation_status", "file_observation_error"} <= kinds
     await teams.teams.update_task(task.id, {"archived": False})
     assert (await load(teams, task.id)).status == TaskStatus.DONE
 

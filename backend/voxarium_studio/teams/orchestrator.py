@@ -2343,20 +2343,40 @@ class TeamOrchestrator:
                     task_id, member_id, role="system", kind="file_observation_error", text=error,
                 )
 
-        observer = FileObserver(self.paths.root, self.config.explorer.ignore, record)
+        async def progress(text: str, data: dict[str, Any]) -> None:
+            await self.record_message(
+                task_id, member_id, role="system", kind="file_observation_status",
+                text=text, data=data,
+            )
+
+        observer = FileObserver(
+            self.paths.root, self.config.explorer.ignore, record, progress=progress,
+        )
+        cancelled = False
         try:
-            await observer.start()
-        except Exception as exc:
-            await record([], f"File observation unavailable: {exc}")
-            return await self._drain_events(backend, request, task_id, member_id)
-        try:
-            return await self._drain_events(backend, request, task_id, member_id)
-        finally:
             try:
-                await observer.finish()
+                await observer.start()
             except Exception as exc:
-                log.exception("Could not finish file observation for %s", task_id)
-                await record([], f"File observation incomplete: {exc}")
+                await observer.cancel()
+                await record([], f"File observation unavailable: {exc}")
+            return await self._drain_events(backend, request, task_id, member_id)
+        except asyncio.CancelledError:
+            # Cancellation covers preparation too (§10.4). Do not start another disk
+            # traversal after Stop; already persisted observations remain available.
+            cancelled = True
+            await observer.cancel()
+            raise
+        finally:
+            if not cancelled:
+                try:
+                    await observer.finish()
+                except asyncio.CancelledError:
+                    await observer.cancel()
+                    raise
+                except Exception as exc:
+                    log.exception("Could not finish file observation for %s", task_id)
+                    await observer.cancel()
+                    await record([], f"File observation incomplete: {exc}")
 
     async def _drain_events(
         self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str

@@ -66,7 +66,7 @@ def expand_evidence(messages: list[AgentMessage]) -> list[AgentMessage]:
 
 
 def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
-    """Keep costs, model attribution and file paths/counts, not messages/tool payloads."""
+    """Keep accounting, file evidence and its limitations, not dialogue/tool payloads."""
     from .changes import WRITING_TOOLS, tool_name
 
     records = []
@@ -80,6 +80,10 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
             data = {"model": data.get("model")}
         elif message.kind in {"workdir", "file_observation"}:
             data = {key: data[key] for key in ("path", "paths", "root") if key in data}
+        elif message.kind == "file_observation_error":
+            # §10.4: retaining partial file evidence without its warning would make a
+            # compressed task appear to have been observed completely.
+            data = {}
         elif message.kind == "tool_use" and tool_name(data).casefold() in WRITING_TOOLS:
             inputs = data.get("input")
             if not isinstance(inputs, dict):
@@ -90,7 +94,8 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
         else:
             continue
         records.append({"kind": message.kind, "role": message.role,
-                        "text": "init" if message.kind == "system" else "",
+                        "text": (message.text if message.kind == "file_observation_error"
+                                 else "init" if message.kind == "system" else ""),
                         "data": data, "created_at": message.created_at.isoformat()})
     return records
 

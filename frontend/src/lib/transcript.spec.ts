@@ -42,6 +42,22 @@ describe('compressed task context (§10.4)', () => {
   })
 })
 
+describe('bounded file observation (§10.4)', () => {
+  it.each(['compact', 'advanced', 'verbose'] as const)('keeps preparation and incomplete evidence visible in %s', (level) => {
+    const feed = [
+      message({ role: 'system', kind: 'file_observation_status', text: 'Preparing file observation.' }),
+      message({ role: 'system', kind: 'file_observation_status', text: 'Still scanning the project.' }),
+      message({ role: 'system', kind: 'file_observation_error', text: 'Scan time limit reached; continuing with tool evidence.' }),
+      message({ role: 'system', kind: 'file_observation', data: { paths: ['file.txt'] } }),
+    ]
+    expect(kinds(transcriptRows(feed, level)).slice(0, 3)).toEqual([
+      'file_observation_status', 'file_observation_status', 'file_observation_error',
+    ])
+    expect(transcriptRows(feed, level).some((row) => row.message.kind === 'file_observation'))
+      .toBe(level === 'verbose')
+  })
+})
+
 describe('closing summary (§10.4)', () => {
   const report = () => message({ kind: 'summary', text: 'Detailed report.', data: { result_type: 'done' } })
 
