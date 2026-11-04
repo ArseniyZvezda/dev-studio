@@ -134,6 +134,8 @@ class TeamOrchestrator:
         before that, and a task started without it simply falls back to path locks."""
 
         self._path_locks = wt.PathLockManager()
+        # §10.5: publishing a new write set and taking a run's snapshot are atomic.
+        self._write_paths_guards: dict[str, asyncio.Lock] = {}
         self._temp_locks: dict[str, asyncio.Lock] = {}
         self.paused_teams: set[str] = set()
         """Producer execution gates, installed before startup dispatch (§10.11)."""
@@ -584,6 +586,7 @@ class TeamOrchestrator:
         assignee_id: str,
         title: str,
         brief: str,
+        write_paths: Sequence[str] = (),
         created_by: str | None = None,
         depends_on: list[str] | None = None,
         auto_start: bool = False,
@@ -614,6 +617,7 @@ class TeamOrchestrator:
         the sequential number (§10.2) assignable exactly once: it is read and written under
         ``_number_lock``, and nothing downstream has a route to change it afterwards.
         """
+        declared_writes = wt.normalize_write_paths(write_paths, root=self.paths.root)
         async with self._number_lock, self.db.session() as session:
             await self.check_can_assign(
                 session, assignee_id=assignee_id, created_by=created_by
@@ -644,6 +648,7 @@ class TeamOrchestrator:
                 created_by=created_by,
                 title=title,
                 brief=brief,
+                write_paths=declared_writes,
                 attachments=self.attachments.resolve_uploads(attachments or []),
                 depends_on=depends_on or [],
                 status=TaskStatus.TODO,
@@ -1088,6 +1093,7 @@ class TeamOrchestrator:
         {
             "title",
             "brief",
+            "write_paths",
             "attachments",
             "assignee_id",
             "depends_on",
@@ -1145,11 +1151,31 @@ class TeamOrchestrator:
         changes: dict[str, tuple[Any, Any]] = {}
         new_status: TaskStatus | None = None
 
-        async with self.db.session() as session:
+        async with (
+            self._write_paths_guards.setdefault(task_id, asyncio.Lock()),
+            self.db.session() as session,
+        ):
             task = await session.get(TeamTask, task_id)
             if task is None:
                 raise KeyError(task_id)
             await self.check_can_edit(session, task=task, actor_id=actor_id)
+
+            if "write_paths" in fields:
+                fields["write_paths"] = wt.normalize_write_paths(
+                    fields["write_paths"], root=self.paths.root,
+                )
+                if self.jobs.is_running(task_id) and fields["write_paths"] != task.write_paths:
+                    raise ValueError(
+                        "This task is running — stop it before changing write_paths. "
+                        "The active run keeps its declared file locks until it ends."
+                    )
+                if task.worktree_path and not wt.can_isolate_write_paths(
+                    fields["write_paths"], self.paths.root,
+                ):
+                    raise ValueError(
+                        "This task has an isolated checkout — clean it up or reset the task "
+                        "before declaring shared write files. Its existing work is preserved."
+                    )
 
             if (task.producer_chat_id and not task.producer_approved and
                     fields.get("status") not in (None, TaskStatus.TODO, TaskStatus.CANCELLED)):
@@ -1939,7 +1965,10 @@ class TeamOrchestrator:
         prompt: str,
         images: Sequence[dict[str, Any]] = (),
     ) -> None:
-        async with self.db.session() as session:
+        async with (
+            self._write_paths_guards.setdefault(task_id, asyncio.Lock()),
+            self.db.session() as session,
+        ):
             task = await session.get(TeamTask, task_id)
             member = await session.get(TeamMember, member_id)
             team = await session.get(Team, task.team_id) if task else None
@@ -1960,8 +1989,7 @@ class TeamOrchestrator:
             )
             peers = await self._assignable_peers(session, member)
             resume_session_id = task.agent_session_id
-            brief = task.brief
-            title = task.title
+            write_paths = list(task.write_paths)
 
         await self._set_task_status(task_id, TaskStatus.IN_PROGRESS, started=True)
 
@@ -1988,7 +2016,20 @@ class TeamOrchestrator:
         locks: list[asyncio.Lock] = []
 
         try:
-            if member.isolate_worktree and offset is not None:
+            can_isolate_writes = wt.can_isolate_write_paths(write_paths, self.paths.root)
+            if task.worktree_path and not can_isolate_writes:
+                raise ValueError(
+                    "The declared writes require the shared working copy, but this task "
+                    "still has an isolated checkout. Clean it up or reset the task first."
+                )
+            if member.isolate_worktree and offset is not None and not can_isolate_writes:
+                await self.record_message(
+                    task_id, member_id, role="system", kind="workdir",
+                    text=("The declared write files include absolute paths, parent traversal or links. "
+                          "Using the shared working copy with write-file locks (§10.5)."),
+                    data={"path": str(workdir)},
+                )
+            if member.isolate_worktree and offset is not None and can_isolate_writes:
                 created = await wt.create_isolated_workspace(
                     self.vcs, self.paths.worktrees, task_id, member_id
                 )
@@ -2012,7 +2053,7 @@ class TeamOrchestrator:
                             session.add(stored)
 
             if worktree_created is None:
-                # No checkout isolation available — fall back to the path heuristic (§10.5).
+                # §10.5: only explicit writes contend; reading references in a brief is free.
                 loop = asyncio.get_running_loop()
                 queued_at: float | None = None
 
@@ -2029,7 +2070,7 @@ class TeamOrchestrator:
                     )
 
                 locks = await self._path_locks.acquire(
-                    f"{title}\n{brief}", roots=(self.paths.root, launch_root),
+                    write_paths, root=self.paths.root,
                     owner=self.display_id(task), on_wait=waiting_for_path,
                 )
                 if queued_at is not None:
@@ -2137,6 +2178,19 @@ class TeamOrchestrator:
                 # here would send the same paragraph twice in one system prompt.
                 include_identity=agent_name is None,
                 skills=member_skills.found,
+            )
+            # §10.5: every run, including resumed sessions, sees the current write contract.
+            system_prompt += (
+                "\n\nDeclared write files (write_paths):\n"
+                + ("\n".join(f"- {path}" for path in write_paths) if write_paths else "(none)")
+                + f"\nFor this run, resolve relative write paths from {worktree_created or self.paths.root}, "
+                "regardless of the session working directory. In an isolated checkout this "
+                "maps project-relative declarations to their checkout counterparts."
+                + "\nOnly these files receive coordination locks when this task has no isolated "
+                "checkout. Read-only references never take locks. Declare files you will create, "
+                "edit, delete or rename, including both rename paths. Do not edit undeclared "
+                "project files: if the write scope must change, report the required paths for "
+                "an update before the next run. Task-private temporary files are separate."
             )
             # The project's own MCP servers (§10.7) go in first, so a project server that
             # happens to be called `voxarium_studio` cannot displace the Studio's tools — those

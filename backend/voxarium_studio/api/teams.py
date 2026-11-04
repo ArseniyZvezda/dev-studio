@@ -59,6 +59,11 @@ class TaskCreate(BaseModel):
     assignee_id: str
     title: str
     brief: str = ""
+    write_paths: list[str] = Field(default_factory=list, description=(
+        "Exact files this task will write, create or delete, including both paths of a "
+        "rename. Paths are relative to the managed project root or absolute. Exclude "
+        "read-only references; an empty list takes no path locks."
+    ))
     attachments: list[str] = Field(default_factory=list)
     created_by: str | None = None
     depends_on: list[str] = []
@@ -91,6 +96,12 @@ class TaskUpdate(BaseModel):
 
     title: str | None = None
     brief: str | None = None
+    write_paths: list[str] = Field(default_factory=list, description=(
+        "Replace the exact files this task will write (§10.5). Include files created "
+        "or deleted and both paths of a rename, relative to the managed project root "
+        "or absolute. Exclude read-only references. An empty list clears the path locks; "
+        "this cannot change while the task is running."
+    ))
     attachments: list[str] | None = None
     assignee_id: str | None = None
     depends_on: list[str] | None = None
@@ -690,6 +701,7 @@ async def create_task(team_id: str, payload: TaskCreate, ctx: Ctx) -> dict[str, 
             assignee_id=payload.assignee_id,
             title=payload.title,
             brief=payload.brief,
+            write_paths=payload.write_paths,
             attachments=payload.attachments,
             created_by=payload.created_by,
             depends_on=payload.depends_on,

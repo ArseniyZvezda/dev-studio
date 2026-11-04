@@ -223,6 +223,17 @@ def build_toolset(
                         "you wrote by its path."
                     ),
                 },
+                "write_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Exact file paths this task will write, create or delete, including "
+                        "both paths of a rename. Use paths relative to the managed project "
+                        "root or absolute paths; no directories or globs. Never include "
+                        "files only read for context. Omitted or empty means no path locks; "
+                        "paths mentioned in the brief do not create locks (§10.5)."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -274,6 +285,7 @@ def build_toolset(
                 assignee_id=assignee_id,
                 title=title,
                 brief=brief,
+                write_paths=args.get("write_paths", []),
                 created_by=member.id,
                 depends_on=depends_on,
                 auto_start=True,
@@ -441,6 +453,7 @@ def build_toolset(
             + (" (you)" if found.assignee_id == member.id else ""),
             f"created by: {names.get(found.created_by or '', found.created_by or 'the user')}",
             f"auto-start on release: {'yes' if found.auto_start else 'no'}",
+            "write paths: " + (", ".join(found.write_paths) or "(none; no path locks)"),
         ]
         if waits:
             lines.append(
@@ -466,7 +479,7 @@ def build_toolset(
 
     @tool(
         "update_task",
-        "Edit a task on the board: retitle it, correct its brief, change what it waits "
+        "Edit a task on the board: retitle it, correct its brief or write paths, change what it waits "
         "for, or move it between columns. You may edit your own tasks and those of the "
         "people who report to you; the built-in Producer may edit any task on its team. "
         "In Producer Mode use review_producer_task for execution and review decisions. "
@@ -484,6 +497,17 @@ def build_toolset(
                     "type": "string",
                     **({"maxLength": PRODUCER_BRIEF_MAX_CHARS} if producer else {}),
                     "description": "Replaces the whole brief — read the task first if you are amending it.",
+                },
+                "write_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Replace the exact file paths this task will write, create or delete, "
+                        "including both paths of a rename. Paths are relative to the managed "
+                        "project root or absolute; no directories or globs. Exclude read-only "
+                        "references. Empty clears the write set and takes no path locks. "
+                        "Cannot change while the task is running (§10.5)."
+                    ),
                 },
                 "assignee_id": {
                     "type": "string",
@@ -538,6 +562,8 @@ def build_toolset(
                 fields[key] = args[key].strip()
         if isinstance(args.get("auto_start"), bool):
             fields["auto_start"] = args["auto_start"]
+        if "write_paths" in args:
+            fields["write_paths"] = args["write_paths"]
 
         if args.get("status"):
             try:

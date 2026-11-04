@@ -71,6 +71,7 @@ import MemberSelect from '@/components/teams/MemberSelect.vue'
 import RunOverrides from '@/components/teams/RunOverrides.vue'
 import TaskChanges from '@/components/teams/TaskChanges.vue'
 import TaskDiff from '@/components/teams/TaskDiff.vue'
+import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
@@ -100,6 +101,7 @@ import {
 } from '@/lib/task-result'
 import { taskCost } from '@/lib/task-telemetry'
 import { taskUsage } from '@/lib/task-usage'
+import { writePathsFromText } from '@/lib/task-write-paths'
 import type { Verbosity } from '@/lib/transcript'
 import {
   PROSE_KINDS,
@@ -775,6 +777,7 @@ watch(
 interface Draft {
   title: string
   brief: string
+  write_paths: string
   assignee_id: string
   depends_on: string[]
   auto_start: boolean
@@ -807,6 +810,7 @@ function draftOf(): Draft {
   return {
     title: props.task.title,
     brief: props.task.brief,
+    write_paths: (props.task.write_paths ?? []).join('\n'),
     assignee_id: props.task.assignee_id,
     depends_on: [...props.task.depends_on],
     auto_start: props.task.auto_start,
@@ -840,6 +844,9 @@ const patch = computed<TaskUpdate>(() => {
   const result: TaskUpdate = {}
   if (current.title.trim() !== original.title) result.title = current.title.trim()
   if (current.brief !== original.brief) result.brief = current.brief
+  const writePaths = writePathsFromText(current.write_paths)
+  if (JSON.stringify(writePaths) !== JSON.stringify(original.write_paths ?? []))
+    result.write_paths = writePaths
   if (current.assignee_id !== original.assignee_id) result.assignee_id = current.assignee_id
   if (current.depends_on.join(' ') !== original.depends_on.join(' '))
     result.depends_on = current.depends_on
@@ -1266,6 +1273,8 @@ async function complete() {
             class="w-full resize-y rounded-md border border-line bg-inset px-2 py-1 outline-none focus:border-accent"
           />
 
+          <TaskWritePaths v-model="draft.write_paths" :disabled="task.is_running" />
+
           <div>
             <span class="mb-1 block text-small text-faint">
               {{ t('taskDetail.edit.assignedTo') }}
@@ -1382,6 +1391,14 @@ async function complete() {
           </p>
           <p class="whitespace-pre-wrap">{{ task.brief || '—' }}</p>
           <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
+        </section>
+
+        <section class="rounded-md bg-inset p-2">
+          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
+            {{ t('tasks.writePaths.label') }}
+          </p>
+          <p v-if="task.write_paths?.length" class="font-mono text-small break-all whitespace-pre-wrap">{{ task.write_paths.join('\n') }}</p>
+          <p v-else class="text-small text-faint">{{ t('tasks.writePaths.empty') }}</p>
         </section>
 
         <section v-if="dependencies.length" class="rounded-md bg-inset p-2">

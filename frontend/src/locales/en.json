@@ -938,6 +938,13 @@
         "keep": "Keep"
       }
     },
+    "writePaths": {
+      "label": "Files to write",
+      "placeholder": "src/player.py\ndocs/design.md",
+      "hint": "One file per line, relative to the managed project root or absolute. Include files to create, change, delete or rename; exclude files used only for reading. Empty means no file locks.",
+      "runningHint": "The write list cannot be changed while this task is running or waiting to start.",
+      "empty": "No files declared for writing — no file locks."
+    },
     "composer": {
       "intro": "Lands in {todo}. Move it to {pending}, use Start All, or enable Autostart Tasks to release it automatically.",
       "titleField": "Title",
@@ -1714,9 +1721,9 @@
       "supported": "supported",
       "notSupported": "not supported",
       "isolated": "Team tasks each get their own checkout, so two agents can work at once without overwriting each other (§10.5).",
-      "shared": "Team tasks share this working copy — the Studio falls back to path locks, so two agents touching the same files run one after the other (§10.5).",
+      "shared": "Team tasks share this working copy. The Studio locks only the files each task declares for writing; tasks declaring the same file run one after the other. Reading a file does not cause a wait (§10.5).",
       "offTitle": "Version control is switched off",
-      "offBody": "Nothing here reads or writes a repository, and agent tasks fall back to path locks (§10.5). Choose a system below to turn it back on.",
+      "offBody": "Nothing here reads or writes a repository, and agent tasks lock only their declared write files (§10.5). Choose a system below to turn it back on.",
       "noneTitle": "No version control detected",
       "noneBody": "The project is not inside a workspace any available backend recognises. Everything else works — this only means the Studio will not colour the file tree, commit generated assets, or give an agent task its own checkout."
     },

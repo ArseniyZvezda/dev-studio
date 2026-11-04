@@ -5,7 +5,7 @@ import { producerActiveTasks, producerChatTasks, producerNeedsReply } from './pr
 function task(id: string, number: number, patch: Partial<TeamTask> = {}): TeamTask {
   return {
     id, number, display_id: `DP-${number}`, team_id: 'team', assignee_id: 'agent', created_by: null,
-    title: id, brief: '', status: 'todo', depends_on: [], auto_start: false, resume_on_limit: true,
+    title: id, brief: '', write_paths: [], status: 'todo', depends_on: [], auto_start: false, resume_on_limit: true,
     limit_reset_at: null, limit_resume_at: null, model: null, effort: null, agent_session_id: null,
     remote_control_url: null, worktree_path: null, review_comment: null, result_summary: null,
     result_type: null, error: null, total_cost_usd: 0, num_turns: 0, total_tokens: 0, archived: false,

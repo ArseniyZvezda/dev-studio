@@ -86,7 +86,8 @@ task accepts that id, the bare number, or the opaque `task_…` id.
 - **`get_task`** — one card in full: brief, status, assignee, what it waits for, the last summary,
   review comment and error. Not the transcript. Call it on any id a brief or a note mentions.
 - **`update_task`** — send only what changes: `title`, `brief` (replaces the whole brief, so read
-  the card first), `assignee_id`, `status`, `depends_on` (replaces the list), `auto_start`. You may
+  the card first), `write_paths` (replaces the write-file list), `assignee_id`, `status`,
+  `depends_on` (replaces the list), `auto_start`. You may
   edit your own tasks and those of the people who report to you. You cannot move your own task to
   `needs_review`, `done` or `cancelled`: `finish_task` is the way into review, and closing it is
   your manager's decision.
@@ -109,6 +110,12 @@ nobody, do not try: describe what is needed in your summary and your reviewer wi
   assignee's entire first prompt. State the acceptance criteria and name the documents it builds
   on by path.
 - `depends_on` — ids of the tasks that must reach `done` before it may run.
+- `write_paths` — exact files the task will create, edit, delete or rename (both old and new
+  paths for a rename), relative to the managed project root or absolute (§10.5). Declare the
+  full list before release; use `[]` for tasks that only read. Never include reference material
+  that the task only reads. Shared-copy runs lock only these files, regardless of paths in
+  the title or brief. Directories and globs are unsupported. Use `update_task` to change the
+  list while stopped; a running or queued task keeps its write scope until the run ends.
 - **It lands in `todo`.** Team Autostart Tasks may release it automatically; otherwise a person
   releases it. The tool reports which happened. Never wait or poll for an unreleased task,
   or assume a queued task has already finished.

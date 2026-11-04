@@ -454,6 +454,7 @@ export const useTeamsStore = defineStore('teams', () => {
     assigneeId: string
     title: string
     brief: string
+    writePaths?: string[]
     createdBy?: string | null
     dependsOn?: string[]
     autoStart: boolean
@@ -469,6 +470,7 @@ export const useTeamsStore = defineStore('teams', () => {
         assignee_id: input.assigneeId,
         title: input.title,
         brief: input.brief,
+        write_paths: input.writePaths ?? [],
         attachments: input.attachments ?? [],
         created_by: input.createdBy ?? null,
         depends_on: input.dependsOn ?? [],

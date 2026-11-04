@@ -563,6 +563,8 @@ export interface TeamTask {
   created_by: string | null
   title: string
   brief: string
+  /** Explicit files to write; read-only references never acquire locks (§10.5). */
+  write_paths: string[]
   status: TaskStatus
   depends_on: string[]
   auto_start: boolean
@@ -771,6 +773,7 @@ export interface TaskCreate {
   assignee_id: string
   title: string
   brief?: string
+  write_paths?: string[]
   created_by?: string | null
   depends_on?: string[]
   /**
@@ -795,6 +798,8 @@ export interface TaskUpdate {
   attachments?: string[]
   title?: string
   brief?: string
+  /** Replaces the write list; [] clears it. Cannot change during a run (§10.5). */
+  write_paths?: string[]
   assignee_id?: string
   depends_on?: string[]
   auto_start?: boolean

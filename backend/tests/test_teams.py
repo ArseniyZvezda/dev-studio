@@ -756,9 +756,13 @@ def _let_go(gates: dict[str, asyncio.Event], task_id: str) -> None:
     gates.setdefault(task_id, asyncio.Event()).set()
 
 
-async def _dev_task(teams: AppContext, title: str, *, auto_start: bool = True) -> TeamTask:
+async def _dev_task(
+    teams: AppContext, title: str, *, auto_start: bool = True,
+    write_paths: list[str] | tuple[str, ...] = (),
+) -> TeamTask:
     return await teams.teams.create_task(
-        team_id=TEAM, assignee_id=DEV, title=title, brief="b", auto_start=auto_start
+        team_id=TEAM, assignee_id=DEV, title=title, brief="b", auto_start=auto_start,
+        write_paths=write_paths,
     )
 
 
@@ -973,9 +977,10 @@ async def test_path_wait_names_blocker_and_releases_without_taking_an_agent_slot
         dev = await session.get(TeamMember, DEV)
         dev.solo_mode = False
         session.add(dev)
-    first = await _dev_task(teams, "Edit src/shared.py")
-    second = await _dev_task(teams, "Review src/shared.py")
-    third = await _dev_task(teams, "Edit src/other.py")
+    # The write declaration alone must create the conflict; the brief names no files.
+    first = await _dev_task(teams, "First writer", write_paths=["src/shared.py"])
+    second = await _dev_task(teams, "Second writer", write_paths=["src/shared.py"])
+    third = await _dev_task(teams, "Independent writer", write_paths=["src/other.py"])
 
     async def started(task):
         return task.id in gates
@@ -997,6 +1002,9 @@ async def test_path_wait_names_blocker_and_releases_without_taking_an_agent_slot
     assert "src/shared.py" in waiting.text
     assert second.id not in gates
     assert (await load(teams, second.id)).agent_session_id is None
+    with pytest.raises(ValueError):
+        await teams.teams.update_task(second.id, {"write_paths": []})
+    assert (await load(teams, second.id)).write_paths == ["src/shared.py"]
     assert not await _queued_entries(teams, first.id)
 
     await release(teams, third.id)
@@ -1010,6 +1018,97 @@ async def test_path_wait_names_blocker_and_releases_without_taking_an_agent_slot
     for task in (second, third):
         _let_go(gates, task.id)
         await wait_for(task.id, timeout=20)
+
+
+@pytest.mark.parametrize("write_sets", [
+    ([], []),
+    (["src/a.py"], ["src/b.py"]),
+    (["src/shared.py"], []),
+], ids=["two-readers", "shared-context-separate-writes", "reader-during-write"])
+async def test_read_references_never_queue_a_task(
+    teams: AppContext, wait_for, write_sets: tuple[list[str], list[str]],
+) -> None:
+    gates, _ = await _hold_dev_runs(teams, "held_read_references")
+    # Declarations stay project-relative even if sessions start outside the project.
+    teams.config.teams.launch_root = ".."
+    async with teams.db.session() as session:
+        dev = await session.get(TeamMember, DEV)
+        dev.solo_mode = False
+        session.add(dev)
+    tasks = [
+        await teams.teams.create_task(
+            team_id=TEAM, assignee_id=DEV,
+            title=f"Read docs/design.md for task {index}",
+            brief="Read docs/design.md and src/shared.py for context only; do not edit them.",
+            write_paths=paths, auto_start=True,
+        )
+        for index, paths in enumerate(write_sets)
+    ]
+    for task in tasks:
+        await release(teams, task.id)
+
+    async def both_started():
+        return len(gates) == 2
+
+    await _wait_until(both_started)
+    for task in tasks:
+        assert not await _queued_entries(teams, task.id)
+        _let_go(gates, task.id)
+    for task in tasks:
+        await wait_for(task.id, timeout=20)
+
+
+async def test_write_paths_can_be_edited_and_cleared_before_a_run(teams: AppContext) -> None:
+    task = await _dev_task(teams, "Read docs/design.md")
+    assert task.write_paths == [], "omitted declarations must never be inferred from text"
+    updated = await teams.teams.update_task(task.id, {"write_paths": ["src/a.py", "Makefile"]})
+    assert updated.write_paths == ["src/a.py", "Makefile"]
+    assert (await load(teams, task.id)).write_paths == updated.write_paths
+    cleared = await teams.teams.update_task(task.id, {"write_paths": []})
+    assert cleared.write_paths == []
+    assert (await load(teams, task.id)).write_paths == []
+
+
+async def test_write_paths_cannot_change_during_a_run(teams: AppContext, wait_for) -> None:
+    gates, _ = await _hold_dev_runs(teams, "held_write_declaration")
+    task = await _dev_task(teams, "Writer", write_paths=["src/a.py"])
+    await release(teams, task.id)
+
+    async def started():
+        return task.id in gates
+
+    await _wait_until(started)
+    for changed in ([], ["src/b.py"]):
+        with pytest.raises(ValueError):
+            await teams.teams.update_task(task.id, {"write_paths": changed})
+        assert (await load(teams, task.id)).write_paths == ["src/a.py"]
+    # Saving unchanged task details is harmless while the acquired set stays the same.
+    same = await teams.teams.update_task(task.id, {"write_paths": ["src/a.py"]})
+    assert same.write_paths == ["src/a.py"]
+    _let_go(gates, task.id)
+    await wait_for(task.id, timeout=20)
+    changed = await teams.teams.update_task(task.id, {"write_paths": ["src/b.py"]})
+    assert changed.write_paths == ["src/b.py"]
+
+
+async def test_old_tasks_gain_empty_write_paths_without_inferring_brief(teams: AppContext) -> None:
+    from sqlalchemy import text
+
+    from voxarium_studio.core.db import Database
+
+    task = await _dev_task(teams, "Read src/shared.py")
+    async with teams.db._engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE team_task DROP COLUMN write_paths"))
+    reopened = Database(teams.db.path)
+    try:
+        await reopened.create_all()
+        await reopened.create_all()  # The additive migration is safe on later startups too.
+        async with reopened.session() as session:
+            saved = await session.get(TeamTask, task.id)
+            assert saved.write_paths == []
+            assert saved.title == task.title and saved.status == TaskStatus.TODO
+    finally:
+        await reopened.close()
 
 
 async def test_common_brief_prose_does_not_queue_unrelated_runs(
@@ -2527,6 +2626,152 @@ def test_a_model_released_after_this_build_is_still_settable_on_a_task(client) -
 # ------------------------------------------------------------------ agent launch root
 
 
+async def _enable_test_isolation(teams: AppContext) -> list:
+    """A VCS that can create checkouts, with no repository or external process."""
+    from voxarium_studio.vcs import IsolatedWorkspace, VcsStatus
+
+    created: list[IsolatedWorkspace] = []
+
+    class IsolatingVcs:
+        id = "test-isolation"
+        name = "Test isolation"
+        supports_isolation = True
+
+        async def create_workspace(self, path, branch):
+            path.mkdir(parents=True)
+            workspace = IsolatedWorkspace(path, branch)
+            created.append(workspace)
+            return workspace
+
+        async def workspace_changes(self, path):
+            return VcsStatus(backend=self.id, root=Path(path))
+
+        async def diff(self, path=None):
+            return ""
+
+    teams.teams.vcs = IsolatingVcs()
+    async with teams.db.session() as session:
+        dev = await session.get(TeamMember, DEV)
+        dev.isolate_worktree = True
+        dev.solo_mode = False
+        session.add(dev)
+    return created
+
+
+@pytest.mark.parametrize("target_kind", [
+    "absolute-inside", "absolute-outside", "relative-outside", "relative-parent-inside",
+    "symlink-outside",
+])
+async def test_shared_write_locations_use_locks_even_when_isolation_is_available(
+    teams: AppContext, wait_for, target_kind: str,
+) -> None:
+    if target_kind == "symlink-outside" and sys.platform == "win32":
+        pytest.skip("POSIX symlink coverage; Windows may require elevated privileges")
+    outside = teams.paths.root.parent / "outside"
+    outside.mkdir()
+    if target_kind == "absolute-inside":
+        declaration = str(teams.paths.root / "src" / "shared.py")
+    elif target_kind == "absolute-outside":
+        declaration = str(outside / "shared.py")
+    elif target_kind == "relative-outside":
+        declaration = "../outside/shared.py"
+    elif target_kind == "relative-parent-inside":
+        # Contained in the original project, but this spelling escapes a nested checkout.
+        declaration = f"../{teams.paths.root.name}/src/shared.py"
+    else:
+        try:
+            (teams.paths.root / "linked").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"Symlinks unavailable: {exc}")
+        declaration = "linked/shared.py"
+    gates, _ = await _hold_dev_runs(teams, "held_external_writes")
+    created = await _enable_test_isolation(teams)
+    first = await _dev_task(teams, "First writer", write_paths=[declaration])
+    second = await _dev_task(teams, "Second writer", write_paths=[declaration])
+
+    async def started(task):
+        return task.id in gates
+
+    await release(teams, first.id)
+    await _wait_until(lambda: started(first))
+    assert created == [], "a shared location cannot follow an isolated checkout"
+    await release(teams, second.id)
+
+    async def waiting():
+        return bool(await _queued_entries(teams, second.id))
+
+    await _wait_until(waiting)
+    [notice] = await _queued_entries(teams, second.id)
+    assert notice.data["resource"] == "path"
+    assert notice.data["blocking_task"] == teams.teams.display_id(first)
+    assert second.id not in gates and created == []
+    assert (await load(teams, first.id)).worktree_path is None
+    _let_go(gates, first.id)
+    await wait_for(first.id, timeout=20)
+    await _wait_until(lambda: started(second))
+    _let_go(gates, second.id)
+    await wait_for(second.id, timeout=20)
+
+
+async def test_project_relative_write_locations_keep_checkout_isolation(
+    teams: AppContext, wait_for, monkeypatch,
+) -> None:
+    gates, _ = await _hold_dev_runs(teams, "held_isolated_writes")
+    created = await _enable_test_isolation(teams)
+    tasks = [
+        await _dev_task(teams, title, write_paths=["src/shared.py"])
+        for title in ("First writer", "Second writer")
+    ]
+    seen: list[AgentRunRequest] = []
+    original_consume = teams.teams._consume
+
+    async def consume(backend, request, *args):
+        seen.append(request)
+        return await original_consume(backend, request, *args)
+
+    monkeypatch.setattr(teams.teams, "_consume", consume)
+    for task in tasks:
+        await release(teams, task.id)
+
+    async def both_started():
+        return len(gates) == 2
+
+    await _wait_until(both_started)
+    assert len(created) == 2 and created[0].path != created[1].path
+    for request in seen:
+        assert any(request.workdir == workspace.path for workspace in created)
+        assert f"resolve relative write paths from {request.workdir}," in request.system_prompt
+    for task in tasks:
+        assert not await _queued_entries(teams, task.id), "each writer has its own shared.py"
+        assert (await load(teams, task.id)).worktree_path
+        _let_go(gates, task.id)
+    for task in tasks:
+        await wait_for(task.id, timeout=20)
+
+
+async def test_stopped_task_with_checkout_rejects_shared_write_scope(
+    teams: AppContext, wait_for,
+) -> None:
+    await _enable_test_isolation(teams)
+    await _record_requests(teams, "recording_checkout_scope")
+    task = await _dev_task(teams, "Isolated writer", write_paths=["src/a.py"])
+    await release(teams, task.id)
+    await wait_for(task.id, timeout=20)
+    stopped = await load(teams, task.id)
+    assert not teams.jobs.is_running(task.id)
+    assert stopped.worktree_path and Path(stopped.worktree_path).is_dir()
+
+    # The original checkout and its review must not silently switch to shared files.
+    with pytest.raises(ValueError):
+        await teams.teams.update_task(task.id, {
+            "write_paths": [str(teams.paths.root / "src" / "b.py")],
+        })
+    preserved = await load(teams, task.id)
+    assert preserved.write_paths == ["src/a.py"]
+    assert preserved.worktree_path == stopped.worktree_path
+    assert Path(preserved.worktree_path).is_dir()
+
+
 async def _record_workdir(teams: AppContext, wait_for, name: str):
     """Run one task on a backend that only remembers where it was started."""
     seen: list = []
@@ -2732,6 +2977,43 @@ async def test_a_run_hands_the_session_its_members_agent(teams: AppContext, wait
     assert seen[0].agent_name == DESIGNER_AGENT
     assert "You are Marina" not in seen[0].system_prompt, "the identity is in the definition"
     assert "shared documents" in seen[0].system_prompt, "what only this run knows still is"
+
+
+@pytest.mark.parametrize("new_scope", [["src/b.py"], []], ids=["replace", "clear"])
+async def test_resumed_run_gets_updated_write_contract(
+    teams: AppContext, wait_for, monkeypatch, new_scope: list[str],
+) -> None:
+    seen = await _record_requests(teams, "recording_write_contract")
+    acquired: list[list[str]] = []
+    original_acquire = teams.teams._path_locks.acquire
+
+    async def acquire(paths, **kwargs):
+        acquired.append(list(paths))
+        return await original_acquire(paths, **kwargs)
+
+    monkeypatch.setattr(teams.teams._path_locks, "acquire", acquire)
+    task = await _dev_task(teams, "Read docs/design.md", write_paths=["src/a.py"])
+    await release(teams, task.id)
+    await wait_for(task.id, timeout=20)
+    assert "- src/a.py" in seen[0].system_prompt
+    assert "Read-only references never take locks" in seen[0].system_prompt
+    assert "Do not edit undeclared" in seen[0].system_prompt
+
+    # Model a stored session from the previous run, then revise its next-run scope.
+    async with teams.db.session() as session:
+        saved = await session.get(TeamTask, task.id)
+        saved.agent_session_id = "previous-session"
+        session.add(saved)
+    await teams.teams.update_task(task.id, {"write_paths": new_scope})
+    await teams.teams.request_changes(task.id, "Continue with the new scope", actor_id=DIRECTOR)
+    await wait_for(task.id, timeout=20)
+
+    assert len(seen) == 2
+    assert seen[1].resume_session_id == "previous-session"
+    assert seen[1].task.write_paths == new_scope
+    assert "- src/a.py" not in seen[1].system_prompt
+    assert ("- src/b.py" if new_scope else "Declared write files (write_paths):\n(none)") in seen[1].system_prompt
+    assert acquired == [["src/a.py"], new_scope]
 
 
 async def test_a_run_is_pointed_at_the_studio_skill_and_handed_it(

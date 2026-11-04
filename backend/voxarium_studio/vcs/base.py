@@ -15,7 +15,7 @@ parsing.
 Isolation is optional and declared with ``supports_isolation``. Git worktrees are cheap
 and local; a centralised system's equivalent means a server round trip and a second
 checkout on disk, so a backend that cannot do it honestly says so and the caller falls
-back to the path-lock heuristic §10.5 already describes.
+back to the explicit write-file locks §10.5 describes.
 """
 
 from __future__ import annotations

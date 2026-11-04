@@ -23,6 +23,8 @@ const api = {
   startAllTasks: vi.fn(),
   compressTask: vi.fn(),
   cancelTask: vi.fn(),
+  createTask: vi.fn(),
+  updateTask: vi.fn(),
 }
 
 vi.mock('@/api/client', async () => {
@@ -53,6 +55,7 @@ function task(overrides: Partial<TeamTask> = {}): TeamTask {
     created_by: null,
     title: 'Tune the dash',
     brief: '',
+    write_paths: [],
     status: 'in_progress',
     depends_on: [],
     auto_start: true,
@@ -117,6 +120,32 @@ beforeEach(() => {
   setActivePinia(createPinia())
   handlers.clear()
   for (const stub of Object.values(api)) stub.mockReset()
+})
+
+describe('explicit write-file declarations', () => {
+  it('sends only the declared write files, despite shared read references in the brief', async () => {
+    const store = await storeWith([])
+    await store.createTask({
+      assigneeId: 'member_1', title: 'Read docs/design.md',
+      brief: 'Use README.md for context; change src/player.py.',
+      writePaths: ['src/player.py'], autoStart: false,
+    })
+    expect(api.createTask).toHaveBeenCalledExactlyOnceWith('team_1', expect.objectContaining({
+      write_paths: ['src/player.py'],
+    }))
+  })
+
+  it('defaults to no write files and sends an explicit empty list when clearing an existing list', async () => {
+    const store = await storeWith([task({ write_paths: ['src/player.py'], is_running: false })])
+    await store.createTask({
+      assigneeId: 'member_1', title: 'Review README.md', brief: 'Read src/player.py.', autoStart: false,
+    })
+    expect(api.createTask).toHaveBeenCalledExactlyOnceWith('team_1', expect.objectContaining({
+      write_paths: [],
+    }))
+    expect(await store.updateTask('task_1', { write_paths: [] })).toBe(true)
+    expect(api.updateTask).toHaveBeenCalledExactlyOnceWith('team_1', 'task_1', { write_paths: [], actor_id: null })
+  })
 })
 
 describe('context compression progress', () => {

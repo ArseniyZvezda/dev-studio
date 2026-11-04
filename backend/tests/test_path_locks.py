@@ -1,53 +1,46 @@
-"""Fallback isolation must recognise files without serialising ordinary prose (§10.5)."""
+"""Fallback isolation locks declared write targets, never prose or read references (§10.5)."""
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
 
-from voxarium_studio.teams.worktree import PathLockManager
+from voxarium_studio.teams.worktree import PathLockManager, normalize_write_paths
 
 
-@pytest.mark.parametrize("text", [
-    "Решение пользователя 03.11.2026; ревью 03.11; версия v4.9.7.",
-    "BT-561/563 и аварийный spawn/destroy запрещены.",
-    "Сеть/save-load/LOD/регрессия, готово/FAIL/НП, владелец/dirty/реальные.",
-    "15 вещей, 3 LOD/helpers; Body/Headwear_A; HTTP 403/read-only.",
-    "https://example.com/docs/file.md и `https://example.com/assets/`",
+@pytest.mark.parametrize("paths", [
+    "src/player.py",
+    [""],
+    ["   "],
+    ["."],
+    [".."],
+    ["src/"],
+    ["src/*.py"],
+    ["src/file?.py"],
+    ["src/player.py", 42],
 ])
-def test_prose_is_not_a_path(text: str, tmp_path: Path) -> None:
-    assert PathLockManager.extract_paths(text, roots=(tmp_path,)) == set()
+def test_invalid_write_declarations_are_rejected(paths) -> None:
+    with pytest.raises(ValueError):
+        normalize_write_paths(paths)
 
 
-@pytest.mark.parametrize(("text", "expected"), [
-    ("Edit src/player.py, then README.md.", {"src/player.py", "readme.md"}),
-    (r"Script\SampleGame\Player.as and ./Script/SampleGame/Player.as", {"script/samplegame/player.as"}),
-    ("Create ./src/new and src/other/", {"src/new", "src/other"}),
-    ("../engine/source /opt/game/source", {"../engine/source", "/opt/game/source"}),
-    (r'"D:\Game Project\Source\Player.as"', {"d:/game project/source/player.as"}),
-    ("`docs/design notes.md` and 'docs/art notes.md'", {"docs/design notes.md", "docs/art notes.md"}),
-    ("Edit [design](docs/design.md)", {"docs/design.md"}),
-    ("Файл:«src/player.py», `src/player.py:42:3`", {"src/player.py"}),
-    ("See `docs/design.md#requirements`", {"docs/design.md"}),
-])
-def test_filenames_and_explicit_paths(text: str, expected: set[str]) -> None:
-    assert PathLockManager.extract_paths(text) == expected
-
-
-def test_existing_extensionless_paths_use_project_and_launch_roots(tmp_path: Path) -> None:
-    project = tmp_path / "game"
-    (project / "Script" / "SampleGame").mkdir(parents=True)
-    (tmp_path / "engine" / "Source").mkdir(parents=True)
-    (project / "Makefile").touch()
-    assert PathLockManager.extract_paths(
-        "Script/SampleGame engine/Source Makefile spawn/destroy",
-        roots=(project, tmp_path),
-    ) == {"script/samplegame", "engine/source", "makefile"}
-
-
-async def test_same_file_waits_and_names_its_owner() -> None:
+async def test_empty_write_list_acquires_nothing(tmp_path: Path) -> None:
     manager = PathLockManager()
-    held = await manager.acquire("src/shared.py", owner="BT-546")
+    assert await manager.acquire([], root=tmp_path) == []
+
+
+async def test_explicit_new_extensionless_file_and_spaces_are_locked(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    held = await manager.acquire(["Makefile", "docs/design notes.md"], root=tmp_path)
+    assert len(held) == 2
+    assert all(lock.locked() for lock in held)
+    manager.release(held)
+
+
+async def test_same_file_waits_and_names_its_owner(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    held = await manager.acquire(["src/shared.py"], root=tmp_path, owner="BT-546")
     waiting = asyncio.Event()
     notices = []
 
@@ -56,15 +49,16 @@ async def test_same_file_waits_and_names_its_owner() -> None:
         waiting.set()
 
     contender = asyncio.create_task(manager.acquire(
-        r"src\shared.py", owner="BT-543", on_wait=on_wait,
+        [r"src\shared.py"], root=tmp_path, owner="BT-543", on_wait=on_wait,
     ))
     try:
         await asyncio.wait_for(waiting.wait(), 1)
         assert not contender.done()
         assert notices == [("src/shared.py", "BT-546")]
-        independent = await asyncio.wait_for(manager.acquire("src/other.py"), 1)
+        independent = await asyncio.wait_for(manager.acquire(["src/other.py"], root=tmp_path), 1)
         manager.release(independent)
         manager.release(held)
+        held = []
         acquired = await asyncio.wait_for(contender, 1)
         manager.release(acquired)
     finally:
@@ -74,10 +68,101 @@ async def test_same_file_waits_and_names_its_owner() -> None:
         manager.release(held)
 
 
-@pytest.mark.parametrize("callback_error", [False, True])
-async def test_interrupted_wait_releases_partial_acquisitions(callback_error: bool) -> None:
+async def test_relative_absolute_and_dotted_aliases_share_one_lock(tmp_path: Path) -> None:
     manager = PathLockManager()
-    held = await manager.acquire("z.py", owner="holder")
+    absolute = str(tmp_path / "src" / "shared.py")
+    held = await asyncio.wait_for(manager.acquire(
+        ["src/shared.py", "./src/../src/shared.py", absolute], root=tmp_path,
+    ), 1)
+    assert len(held) == 1, "aliases must not deadlock a task against itself"
+    waiting = asyncio.Event()
+
+    async def on_wait(_path, _owner):
+        waiting.set()
+
+    contender = asyncio.create_task(manager.acquire([absolute], root=tmp_path, on_wait=on_wait))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        assert not contender.done()
+        manager.release(held)
+        held = []
+        manager.release(await asyncio.wait_for(contender, 1))
+    finally:
+        if not contender.done():
+            contender.cancel()
+        await asyncio.gather(contender, return_exceptions=True)
+        manager.release(held)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX resolves '..' after following symlinks")
+async def test_symlink_parent_path_shares_lock_with_resolved_file(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    project.mkdir()
+    target = tmp_path / "outside" / "subdir"
+    target.mkdir(parents=True)
+    try:
+        (project / "link").symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+    manager = PathLockManager()
+    held = await manager.acquire(["link/../shared.py"], root=project)
+    waiting = asyncio.Event()
+
+    async def on_wait(_path, _owner):
+        waiting.set()
+
+    contender = asyncio.create_task(manager.acquire(
+        [str(target.parent / "shared.py")], root=project, on_wait=on_wait,
+    ))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        assert not contender.done(), "lexical removal of '..' would lock the wrong file"
+        manager.release(held)
+        held = []
+        manager.release(await asyncio.wait_for(contender, 1))
+    finally:
+        if not contender.done():
+            contender.cancel()
+        await asyncio.gather(contender, return_exceptions=True)
+        manager.release(held)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case insensitive")
+async def test_windows_case_aliases_share_one_lock(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    held = await asyncio.wait_for(manager.acquire(
+        [r"Src\Shared.py", "src/shared.py"], root=tmp_path,
+    ), 1)
+    assert len(held) == 1
+    manager.release(held)
+
+
+async def test_every_declared_target_is_locked_beyond_twenty(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    paths = [f"src/file_{index:02}.py" for index in range(25)]
+    held = await manager.acquire(paths, root=tmp_path)
+    assert len(held) == 25
+    waiting = asyncio.Event()
+
+    async def on_wait(_path, _owner):
+        waiting.set()
+
+    contender = asyncio.create_task(manager.acquire([paths[-1]], root=tmp_path, on_wait=on_wait))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        assert not contender.done()
+    finally:
+        contender.cancel()
+        await asyncio.gather(contender, return_exceptions=True)
+        manager.release(held)
+
+
+@pytest.mark.parametrize("callback_error", [False, True])
+async def test_interrupted_wait_releases_partial_acquisitions(
+    tmp_path: Path, callback_error: bool,
+) -> None:
+    manager = PathLockManager()
+    held = await manager.acquire(["z.py"], root=tmp_path, owner="holder")
     waiting = asyncio.Event()
 
     async def on_wait(path, owner):
@@ -85,7 +170,7 @@ async def test_interrupted_wait_releases_partial_acquisitions(callback_error: bo
         if callback_error:
             raise RuntimeError("could not record wait")
 
-    contender = asyncio.create_task(manager.acquire("a.py z.py", on_wait=on_wait))
+    contender = asyncio.create_task(manager.acquire(["a.py", "z.py"], root=tmp_path, on_wait=on_wait))
     try:
         await asyncio.wait_for(waiting.wait(), 1)
         if not callback_error:
@@ -93,7 +178,7 @@ async def test_interrupted_wait_releases_partial_acquisitions(callback_error: bo
         with pytest.raises(RuntimeError if callback_error else asyncio.CancelledError):
             await contender
         # a.py was acquired before z.py blocked: it must not leak after cancellation.
-        acquired = await asyncio.wait_for(manager.acquire("a.py"), 1)
+        acquired = await asyncio.wait_for(manager.acquire(["a.py"], root=tmp_path), 1)
         manager.release(acquired)
         assert held[0].locked(), "the other task still owns z.py"
     finally:

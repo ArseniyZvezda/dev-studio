@@ -19,12 +19,14 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import DependencyPicker from '@/components/teams/DependencyPicker.vue'
 import MemberSelect from '@/components/teams/MemberSelect.vue'
 import RunOverrides from '@/components/teams/RunOverrides.vue'
+import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import type { UploadedAttachment } from '@/api/client'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { statusLabel } from '@/lib/status'
+import { writePathsFromText } from '@/lib/task-write-paths'
 import { useTeamsStore } from '@/stores/teams'
 
 const props = defineProps<{
@@ -41,6 +43,7 @@ const form = ref({
   assigneeId: props.assigneeId as string | null,
   title: '',
   brief: '',
+  writePaths: '',
   createdBy: null as string | null,
   dependsOn: [] as string[],
   autoStart: true,
@@ -92,6 +95,7 @@ async function submit() {
       assigneeId,
       title: form.value.title.trim(),
       brief: form.value.brief.trim(),
+      writePaths: writePathsFromText(form.value.writePaths),
       attachments: attachments.value.map(entry => entry.reference),
       createdBy: form.value.createdBy,
       dependsOn: form.value.dependsOn,
@@ -182,6 +186,8 @@ async function submit() {
         </label>
 
         </AttachmentPicker>
+
+        <TaskWritePaths v-model="form.writePaths" />
 
         <DependencyPicker
           v-model="form.dependsOn"

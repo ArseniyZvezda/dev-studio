@@ -5,7 +5,7 @@ gets its own checkout when the project's version control system can provide one 
 worktree, or whatever the detected :class:`~voxarium_studio.vcs.base.VcsBackend` offers — and
 merging back happens through the review step. Where it cannot (no version control at all,
 or a system whose second checkout means a server round trip), we fall back to serialising
-tasks whose briefs mention overlapping paths.
+tasks whose explicit write-file lists overlap. Read-only references never take locks.
 
 The module is still called ``worktree`` because ``TeamTask.worktree_path`` and the
 ``DELETE …/worktree`` endpoint are, and those are a stored column and a published API.
@@ -16,21 +16,69 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import posixpath
-import re
+import os
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ..vcs import IsolatedWorkspace, VcsBackend, VcsError
 
 log = logging.getLogger(__name__)
 
-_PATH_TOKEN = re.compile(
-    r'''`([^`\r\n]+)`|"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[/\\])?[\w./\\-]+)'''
-)
-_FILE_SUFFIX = re.compile(r"\.[A-Za-z][A-Za-z0-9_-]{0,15}$")
-_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s`\"'<>]+")
+def normalize_write_paths(paths: Sequence[str], *, root: Path | None = None) -> list[str]:
+    """Validate exact write-file declarations, never infer them from prose (§10.5).
+
+    Preserve spelling for the editor; identity (absolute/relative aliases and symlinks)
+    is resolved against the managed project root when locks are acquired.
+    """
+    if isinstance(paths, (str, bytes)) or not isinstance(paths, Sequence):
+        raise ValueError("write_paths must be a list of file paths")
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in paths:
+        if not isinstance(value, str):
+            raise ValueError("write_paths must contain only strings")
+        path = value.strip().replace("\\", "/")
+        if (not path or any(char in path for char in "\x00\r\n*?[]")
+                or "://" in path or path.endswith("/")):
+            raise ValueError("write_paths must contain exact file paths, not blanks, URLs or patterns")
+        windows = PureWindowsPath(path)
+        if windows.drive and not windows.root:
+            raise ValueError("write_paths cannot contain drive-relative paths")
+        # Preserve '..' until filesystem-aware resolution: link/../file can point
+        # outside this directory on POSIX, even when lexical normpath says otherwise.
+        path = PurePosixPath(path).as_posix()
+        if path in {".", "..", "/"} or path.endswith("/.."):
+            raise ValueError("write_paths must name files, not directories")
+        if root is not None and (root / path).is_dir():
+            raise ValueError(f"write_paths must name files, not directories: {path}")
+        key = os.path.normcase(path)
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+
+def can_isolate_write_paths(paths: Sequence[str], root: Path) -> bool:
+    """Only relative files inside the project can follow a checkout (§10.5).
+
+    Absolute paths, parent traversal and links need their original filesystem context;
+    moving them to a checkout can change their target or still reach the shared copy.
+    Such a run stays in the shared copy and coordinates all declared writes.
+    """
+    root = root.resolve()
+    for path in paths:
+        relative = Path(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        candidate = root
+        for part in relative.parts:
+            candidate /= part
+            if candidate.is_symlink() or candidate.is_junction():
+                return False
+        if not candidate.resolve().is_relative_to(root):
+            return False
+    return True
 
 
 def branch_name(task_id: str, member_id: str) -> str:
@@ -77,65 +125,39 @@ async def workspace_diff(vcs: VcsBackend | None, path: Path) -> str:
 
 
 class PathLockManager:
-    """Serialises tasks whose briefs reference overlapping paths.
+    """Serialises tasks declaring writes to the same file (§10.5).
 
-    Used when checkout isolation is unavailable. The heuristic is deliberately crude —
-    it only has to stop two agents from editing the same obviously-named file at once.
+    Used when checkout isolation is unavailable. This is coordination between tasks,
+    not filesystem enforcement: callers must declare their intended writes.
     """
 
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._owners: dict[asyncio.Lock, str | None] = {}
 
-    @staticmethod
-    def extract_paths(text: str, roots: Sequence[Path] = ()) -> set[str]:
-        """Recognise filenames, explicit paths and existing extensionless paths (§10.5).
-
-        A slash alone is not evidence of a path: task references and prose such as
-        ``BT-561/563`` or ``spawn/destroy`` otherwise serialise unrelated tasks.
-        """
-        paths: set[str] = set()
-        for match in _PATH_TOKEN.finditer(_URL.sub("", text)):
-            token = next(value for value in match.groups() if value is not None)
-            token = token.strip().strip("*").rstrip(".,:!?").replace("\\", "/")
-            token = re.sub(r":\d+(?::\d+)?$", "", token.partition("#")[0])
-            if not token or "\x00" in token:
-                continue
-            filename = token.rstrip("/").rsplit("/", 1)[-1]
-            explicit = token.startswith(("./", "../", "/")) or bool(
-                re.match(r"^[A-Za-z]:/", token)
-            ) or token.endswith("/")
-            existing = False
-            if not explicit and not _FILE_SUFFIX.search(filename):
-                for root in roots:
-                    try:
-                        if (root / token).exists():
-                            existing = True
-                            break
-                    except OSError:
-                        continue
-            if explicit or _FILE_SUFFIX.search(filename) or existing:
-                key = posixpath.normpath(token).lower()
-                if key not in {".", "..", "/"}:
-                    paths.add(key)
-        return paths
-
     async def acquire(
         self,
-        text: str,
+        paths: Sequence[str],
         *,
-        roots: Sequence[Path] = (),
+        root: Path,
         owner: str | None = None,
         on_wait: Callable[[str, str | None], Awaitable[None]] | None = None,
     ) -> list[asyncio.Lock]:
-        """Acquire locks for every referenced path, in a stable order to avoid deadlock."""
-        keys = sorted(self.extract_paths(text, roots))[:20]
+        """Lock every declared file, in a stable order; no inference or truncation."""
+        root = root.resolve()
+        keys: dict[str, str] = {}
+        for path in normalize_write_paths(paths, root=root):
+            resolved = (root / path).resolve()
+            key = os.path.normcase(str(resolved))
+            # Relative names remain readable in queued messages; aliases share one lock.
+            display = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
+            keys.setdefault(key, display.as_posix())
         acquired: list[asyncio.Lock] = []
         try:
-            for key in keys:
+            for key in sorted(keys):
                 lock = self._locks[key]
                 if lock.locked() and on_wait is not None:
-                    await on_wait(key, self._owners.get(lock))
+                    await on_wait(keys[key], self._owners.get(lock))
                 await lock.acquire()
                 acquired.append(lock)
                 self._owners[lock] = owner
