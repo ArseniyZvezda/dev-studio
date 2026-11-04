@@ -3,12 +3,28 @@ const path = require('node:path');
 
 function compareVersions(left, right) {
   const parse = value => {
-    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value || '');
+    const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(value || '');
     if (!match) throw new Error('unknownBackendVersion');
-    return match.slice(1).map(Number);
+    const prerelease = match[4]?.split('.') || [];
+    if (prerelease.some(part => /^0\d+$/.test(part))) throw new Error('unknownBackendVersion');
+    return { core: match.slice(1, 4).map(BigInt), prerelease };
   };
   const a = parse(left), b = parse(right);
-  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return Math.sign(a[i] - b[i]);
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+  // Release tags may include prereleases (§2.7); stable versions outrank those
+  // with the same core, and numeric identifiers use numeric rather than text order.
+  if (!a.prerelease.length || !b.prerelease.length) {
+    return Number(!a.prerelease.length) - Number(!b.prerelease.length);
+  }
+  for (let i = 0; i < Math.max(a.prerelease.length, b.prerelease.length); i++) {
+    const l = a.prerelease[i], r = b.prerelease[i];
+    if (l === r) continue;
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    const ln = /^\d+$/.test(l), rn = /^\d+$/.test(r);
+    if (ln !== rn) return ln ? -1 : 1;
+    return (ln ? BigInt(l) < BigInt(r) : l < r) ? -1 : 1;
+  }
   return 0;
 }
 

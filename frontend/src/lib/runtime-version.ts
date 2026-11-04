@@ -1,7 +1,5 @@
-import { version } from '../../package.json'
-
 /** Compiled into this bundle; never copied from the server's reply (§2.5). */
-export const FRONTEND_VERSION = version
+export const FRONTEND_VERSION = __STUDIO_VERSION__
 
 export async function waitForBackendVersion(version: string): Promise<void> {
   const deadline = Date.now() + 120_000

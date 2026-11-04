@@ -1,9 +1,74 @@
 """Version mismatch recovery never starts a real server during tests (§2.5)."""
+import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from voxarium_studio.api import runtime
+from voxarium_studio import build_info as bi
+
+
+@pytest.fixture
+def uncached_build():
+    bi.build_info.cache_clear()
+    yield
+    bi.build_info.cache_clear()
+
+
+def test_available_versions_rereads_the_replaced_stamp_without_changing_the_running_build(
+    monkeypatch, tmp_path, uncached_build
+):
+    package = tmp_path / "python" / "Lib" / "site-packages" / "voxarium_studio"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "5.0.0"\n', encoding="utf-8")
+    stamp = package / bi.STAMP_NAME
+    stamp.write_text(json.dumps({"version": "5.0.0", "tag": "v5.1.0"}), encoding="utf-8")
+    monkeypatch.setattr(bi, "_package_dir", lambda: package)
+    running = bi.build_info()
+    assert running.version == "5.1.0"
+
+    stamp.write_text(json.dumps({"version": "5.0.0", "tag": "v5.2.0"}), encoding="utf-8")
+    static = package / "static"
+    static.mkdir()
+    (static / "studio-version.json").write_text(json.dumps({"version": "5.2.0"}), encoding="utf-8")
+    monkeypatch.setattr("voxarium_studio.main.static_dir", lambda: static)
+    monkeypatch.setattr(runtime.sys, "executable", str(tmp_path / "python" / "python.exe"))
+    (tmp_path / "run.ps1").write_text("# launcher", encoding="utf-8")
+
+    assert runtime.available_versions(dev=False) == ("5.2.0", "5.2.0", tmp_path)
+    assert bi.build_info() is running
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_dev_available_versions_use_the_current_git_identity_instead_of_package_metadata(
+    monkeypatch, tmp_path, uncached_build
+):
+    package = tmp_path / "backend" / "voxarium_studio"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('__version__ = "5.0.0"\n', encoding="utf-8")
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "package.json").write_text(json.dumps({"version": "5.0.0"}), encoding="utf-8")
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Studio Test")
+    git("config", "commit.gpgsign", "false")
+    git("add", "-A")
+    git("commit", "-m", "source")
+    monkeypatch.setattr(bi, "_package_dir", lambda: package)
+    running = bi.build_info()
+    short_commit = git("rev-parse", "--short", "HEAD")
+    assert runtime.available_versions(dev=True) == (short_commit, short_commit, tmp_path)
+
+    git("tag", "v5.2.0")
+    assert runtime.available_versions(dev=True) == ("5.2.0", "5.2.0", tmp_path)
+    assert bi.build_info() is running
 
 
 @pytest.fixture
@@ -54,6 +119,23 @@ def test_recovery_never_downgrades_a_newer_running_server(client, recovery, monk
     monkeypatch.setattr(runtime, "available_versions", lambda **_: ("4.4.0", "4.4.0", tmp_path))
     result = client.post("/api/runtime/recover", json={"frontend_version": "4.4.0", "backend_version": "4.5.0"})
     assert result.status_code == 409
+    assert not recovery
+
+
+@pytest.mark.parametrize("running, installed", [
+    ("1234567", "7654321"), ("5.2.0", "7654321"), ("1234567", "5.2.0"),
+])
+def test_recovery_does_not_order_numeric_commit_hashes_as_release_versions(
+    client, recovery, monkeypatch, tmp_path, running, installed
+):
+    monkeypatch.setattr(runtime, "build_info", lambda: SimpleNamespace(version=running))
+    monkeypatch.setattr(runtime, "available_versions", lambda **_: (installed, installed, tmp_path))
+
+    response = client.post("/api/runtime/recover", json={
+        "frontend_version": installed, "backend_version": running,
+    })
+
+    assert response.status_code == 409
     assert not recovery
 
 

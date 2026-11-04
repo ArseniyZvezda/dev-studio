@@ -1460,7 +1460,7 @@ export interface VcsCommitResult {
  * commit fields are all null when neither could answer.
  */
 export interface StudioVersion {
-  /** The hand-maintained package version, e.g. `0.1.0` — the release line, not the build. */
+  /** Shared runtime identity: normalized HEAD tag, else short commit; package fallback without git/stamp. */
   version: string
   /** What this build is called: its tag (`v0.2.0`), else the short commit (`c3fd2b1`),
    * else the bare version. Composed on the backend so the UI and `voxarium_studio version`

@@ -81,7 +81,14 @@ running. Click the tray icon or choose **Open Voxarium Studio** to restore it.
 **Quit** in the tray menu uses the same exit confirmation. The ordinary minimize
 button still minimizes to the taskbar. Tray labels follow the language in Settings.
 An independently started server is left running. Runtime logs are under
-`%APPDATA%/Voxarium Studio/run/`; `launcher.log` includes launcher errors.
+`%APPDATA%/Voxarium Studio/run/`; `desktop.log` includes shell startup errors and the
+release, expected backend and observed backend versions; `launcher.log` includes launcher errors.
+The desktop, backend and compiled frontend use the same exact HEAD tag (normalized, for
+example `v5.2.0` → `5.2.0`), or short commit hash when untagged. Startup requires equality.
+The wheel stamp and packaged shell's `studioVersion` preserve this identity after installation.
+Only Electron/NSIS installer metadata needs a numeric SemVer fallback for untagged builds;
+it is not used in place of the Studio version for startup checks. The build verifies all
+three identities and includes the version in the frontend cache key.
 Project data survives uninstall. The update button above Settings downloads new
 desktop releases with progress, then offers Install and restart. Installation asks
 before stopping tasks and shuts down only the owned backend.

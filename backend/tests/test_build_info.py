@@ -44,7 +44,7 @@ def studio_checkout(tmp_path: Path) -> Path:
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Studio Test")
     git("config", "commit.gpgsign", "false")
-    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text('__version__ = "5.0.0"\n', encoding="utf-8")
     git("add", "-A")
     git("commit", "-m", "first")
     return root
@@ -96,6 +96,7 @@ def test_a_source_tree_reports_its_head(
     assert info.dirty is False
     assert info.tag is None
     assert info.display == info.short_commit
+    assert info.version == info.short_commit
 
 
 @requires_git
@@ -110,6 +111,23 @@ def test_a_tagged_commit_is_named_by_its_tag(
     info = bi.build_info()
     assert info.tag == "v0.2.0"
     assert info.display == "v0.2.0"
+    assert info.version == "0.2.0"
+
+
+@requires_git
+@pytest.mark.parametrize("tag, expected", [
+    ("v5.2.0", "5.2.0"), ("v4.1", "4.1.0"),
+    ("5.3.1", "5.3.1"), ("v5.3.0-beta.2", "5.3.0-beta.2"),
+    ("nightly", "nightly"),
+])
+def test_runtime_version_uses_the_exact_release_tag(
+    monkeypatch: pytest.MonkeyPatch, studio_checkout: Path, tag: str, expected: str
+) -> None:
+    subprocess.run(["git", "tag", tag], cwd=studio_checkout, check=True, capture_output=True)
+    _pretend_installed_at(monkeypatch, studio_checkout / "backend" / "voxarium_studio")
+
+    assert bi.build_info().version == expected
+    assert bi.read_build_info().version == expected
 
 
 @requires_git
@@ -130,6 +148,7 @@ def test_a_tag_further_back_does_not_name_this_build(
     info = bi.build_info()
     assert info.tag is None
     assert info.display == info.short_commit
+    assert info.version == info.short_commit
 
 
 @requires_git
@@ -186,7 +205,7 @@ def test_the_stamp_outranks_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     (tmp_path / bi.STAMP_NAME).write_text(
         json.dumps(
             {
-                "version": "9.9.9",
+                "version": "5.0.0",
                 "commit": "a" * 40,
                 "short_commit": "aaaaaaa",
                 "tag": "v9.9.9",
@@ -213,6 +232,18 @@ def test_a_stamp_without_a_short_hash_derives_one(
     _pretend_installed_at(monkeypatch, tmp_path)
 
     assert bi.build_info().short_commit == "bbbbbbb"
+    assert bi.build_info().version == "bbbbbbb"
+
+
+def test_untagged_stamp_uses_the_commit_instead_of_an_old_package_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / bi.STAMP_NAME).write_text(json.dumps({
+        "version": "5.0.0", "commit": "abcdef0123456789", "short_commit": "abcdef0",
+    }), encoding="utf-8")
+    _pretend_installed_at(monkeypatch, tmp_path)
+
+    assert bi.build_info().version == "abcdef0"
 
 
 @pytest.mark.parametrize("content", ["not json at all", '"a string"', "[]", ""])
@@ -237,6 +268,7 @@ def test_stamp_payload_is_what_the_build_hook_writes(
 
     assert payload["commit"] and payload["branch"] == "main"
     assert payload["tag"] == "v0.3.0"
+    assert payload["version"] == "0.3.0"
     assert "source" not in payload, "the reader knows it came from a stamp"
 
     elsewhere = studio_checkout.parent / "installed"
@@ -249,6 +281,28 @@ def test_stamp_payload_is_what_the_build_hook_writes(
     assert reread.source == "stamp"
     assert reread.commit == payload["commit"]
     assert reread.display == "v0.3.0"
+    assert reread.version == "0.3.0"
+
+
+@requires_git
+def test_installed_source_identity_changes_without_rewriting_the_running_identity(
+    monkeypatch: pytest.MonkeyPatch, studio_checkout: Path
+) -> None:
+    _pretend_installed_at(monkeypatch, studio_checkout / "backend" / "voxarium_studio")
+    running = bi.build_info()
+    assert running.version == running.short_commit
+    subprocess.run(["git", "tag", "v5.2.0"], cwd=studio_checkout, check=True, capture_output=True)
+
+    assert bi.read_build_info().version == "5.2.0"
+    assert bi.build_info() is running
+
+
+def test_installed_package_fallback_is_read_from_disk_without_using_the_imported_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _pretend_installed_at(monkeypatch, tmp_path)
+    (tmp_path / "__init__.py").write_text('__version__ = "8.0.0"\n', encoding="utf-8")
+    assert bi.read_build_info().version == "8.0.0"
 
 
 def test_stamp_payload_is_empty_without_a_commit(
@@ -266,12 +320,27 @@ def test_the_project_payload_and_healthz_agree_on_the_build(client: TestClient) 
     version = client.get("/api/project").json()["version"]
     health = client.get("/healthz").json()
 
-    assert version["version"] == __version__
+    assert version["version"] == bi.build_info().version
     assert version["display"] == (version["tag"] or version["short_commit"] or __version__)
     assert set(version) >= {"commit", "short_commit", "tag", "branch", "committed_at", "dirty"}
-    assert health["version"] == __version__, "run.ps1 polls this; it stays the bare version"
+    assert health["version"] == version["version"]
     assert health["build"] == version["display"]
     assert health["commit"] == version["commit"]
+
+
+@requires_git
+def test_tagged_health_and_project_api_report_the_release_runtime_version(
+    monkeypatch: pytest.MonkeyPatch, studio_checkout: Path, project: Path
+) -> None:
+    from voxarium_studio.main import create_app
+
+    subprocess.run(["git", "tag", "v5.2.0"], cwd=studio_checkout, check=True, capture_output=True)
+    _pretend_installed_at(monkeypatch, studio_checkout / "backend" / "voxarium_studio")
+    with TestClient(create_app(str(project)), base_url="http://127.0.0.1") as client:
+        health = client.get("/healthz").json()
+        version = client.get("/api/project").json()["version"]
+    assert health["version"] == version["version"] == "5.2.0"
+    assert health["build"] == version["display"] == "v5.2.0"
 
 
 # ------------------------------------------------------------------------- the changelog

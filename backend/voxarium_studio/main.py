@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
 from .api import api_router
 from .build_info import build_info
 from .core.context import AppContext
@@ -73,7 +72,7 @@ def create_app(
 
     app = FastAPI(
         title="Voxarium Studio",
-        version=__version__,
+        version=build.version,
         description=(
             "Local web hub for AI game-dev pipelines, plugins and agent teams. "
             "All project data lives in the managed project's voxarium_studio/ directory."
@@ -100,8 +99,8 @@ def create_app(
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, Any]:
-        # `version` stays the bare package version — run.ps1 and anything else polling
-        # this endpoint predate the commit fields, which are additive.
+        # §2.5, §2.7: the normalized release tag must match the SPA and desktop.
+        # Untagged builds use their short commit; build keeps the full display label.
         return {
             "status": "ok",
             "service": "voxarium_studio",

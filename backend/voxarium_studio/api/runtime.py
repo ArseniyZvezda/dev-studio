@@ -1,21 +1,23 @@
 """Recover a frontend/backend version mismatch without pulling or rebuilding (§2.5)."""
 from __future__ import annotations
 
-import ast
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..build_info import build_info, studio_repo_root
+from ..build_info import build_info, read_build_info, studio_repo_root
 from ..updates import RelaunchTarget, UpdateService
 from ..updates.versions import parse_tag
 from .deps import Ctx
 
 router = APIRouter(prefix="/runtime", tags=["runtime"])
+
+_ORDERED_RUNTIME_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 class RecoverRequest(BaseModel):
@@ -27,20 +29,17 @@ def available_versions(*, dev: bool) -> tuple[str, str, Path | None]:
     """Read installed files, not the version imported by this old process."""
     from ..main import static_dir
 
-    package = Path(__file__).resolve().parents[1]
-    tree = ast.parse((package / "__init__.py").read_text(encoding="utf-8"))
-    backend = next(ast.literal_eval(node.value) for node in tree.body
-                   if isinstance(node, ast.Assign)
-                   and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets))
+    backend = read_build_info().version
     root = studio_repo_root()
     if dev and root:
-        manifest = root / "frontend" / "package.json"
+        # Vite resolves the same checkout tag at startup (§2.5).
+        frontend = backend
     else:
         directory = static_dir()
         if directory is None:
             raise ValueError("The frontend is not built. Build or reinstall the Studio first.")
         manifest = directory / "studio-version.json"
-    frontend = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+        frontend = json.loads(manifest.read_text(encoding="utf-8"))["version"]
     if not isinstance(backend, str) or not isinstance(frontend, str):
         raise ValueError("Invalid installed version metadata.")
     # The packaged desktop puts run.ps1 alongside python/, just as the checkout does.
@@ -70,7 +69,10 @@ async def recover_runtime(body: RecoverRequest, ctx: Ctx, request: Request,
         raise HTTPException(409, "The frontend and backend files have different versions. Rebuild or reinstall the Studio.")
     if installed == running:
         return {"action": "reload", "version": running}
-    current_release, installed_release = parse_tag(running), parse_tag(installed)
+    # §2.5: only normalized stable release versions can be ordered for recovery.
+    # A short commit may contain digits only; parse_tag also accepts bare numbers.
+    current_release = parse_tag(running) if _ORDERED_RUNTIME_VERSION.fullmatch(running) else None
+    installed_release = parse_tag(installed) if _ORDERED_RUNTIME_VERSION.fullmatch(installed) else None
     if not current_release or not installed_release or installed_release <= current_release:
         raise HTTPException(409, "The installed backend is older than the running server or its version is unknown. Update the installed files first.")
     if root is None:

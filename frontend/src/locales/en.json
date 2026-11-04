@@ -34,7 +34,7 @@
     "maximize": "Maximize",
     "restore": "Restore window",
     "closeWindow": "Close window",
-    "startFailed": "Studio could not start. See launcher.log and backend.err.log in the folder below.",
+    "startFailed": "Studio could not start. See desktop.log, launcher.log and backend.err.log in the folder below.",
     "portBusy": "Port 8765 is occupied by another application. Close it and try again.",
     "close": "Quit Studio? Running pipelines and agent tasks will be stopped.",
     "cancel": "Cancel",

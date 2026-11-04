@@ -14,6 +14,9 @@ try {
     $Frontend = Join-Path $RepoRoot 'frontend'
     $BuildRoot = Join-Path $DesktopRoot 'build'
     New-Item -ItemType Directory -Force $BuildRoot | Out-Null
+    $ReleaseJson = & node.exe (Join-Path $PSScriptRoot 'release.cjs')
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the Studio build version' }
+    $Release = $ReleaseJson | ConvertFrom-Json
     $LockHash = (Get-FileHash (Join-Path $Frontend 'package-lock.json')).Hash
     $DepsStamp = Join-Path $Frontend 'node_modules/.studio-lock'
     if (-not (Test-Path $DepsStamp) -or (Get-Content $DepsStamp -Raw) -ne $LockHash) {
@@ -24,6 +27,8 @@ try {
     $Sources = @(Get-ChildItem -LiteralPath $SourceDirs -Recurse -File)
     $Sources += @(Get-ChildItem $Frontend -File)
     $DigestText = ($Sources | Sort-Object FullName | ForEach-Object { $_.FullName + ':' + (Get-FileHash -LiteralPath $_.FullName).Hash }) -join "`n"
+    # Adding/removing a tag changes the compiled version without touching source files (§2.5).
+    $DigestText += "`nStudio version: $($Release.version)"
     $SourceHash = [Convert]::ToBase64String([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($DigestText)))
     $SpaStamp = Join-Path $BuildRoot 'frontend.hash'
     if (-not (Test-Path $SpaStamp) -or (Get-Content $SpaStamp -Raw) -ne $SourceHash -or -not (Test-Path 'backend/voxarium_studio/static/index.html')) {
@@ -59,5 +64,5 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $DesktopRoot 'locales') | Out-Null
     Copy-Item frontend/src/locales/en.json, frontend/src/locales/ru.json -Destination (Join-Path $DesktopRoot 'locales')
     # Verify only the installed runtime, without checkout/PYTHONPATH fallbacks (§2.7).
-    Invoke-Checked $BundledPython @('-I', '-c', 'import voxarium_studio.cli, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; assert static_dir(); assert builtin_plugins_dir()')
+    Invoke-Checked $BundledPython @('-I', '-c', 'import json, sys; import voxarium_studio.cli, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; from voxarium_studio.build_info import build_info; assert static_dir(); assert builtin_plugins_dir(); actual = build_info().version; frontend = json.loads((static_dir() / ''studio-version.json'').read_text())[''version'']; assert actual == frontend == sys.argv[1], (actual, frontend, sys.argv[1])', $Release.version)
 } finally { Pop-Location }

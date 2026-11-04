@@ -20,8 +20,10 @@ Neither is the *managed* project's repository. That one has its own history and 
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import re
 import subprocess
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -47,14 +49,16 @@ GIT_TIMEOUT = 10.0
 _SEP = "\x1f"
 """Field separator for the one `git show` that fetches hash, short hash and date."""
 
+_RELEASE_TAG = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?")
+
 
 @dataclass(frozen=True, slots=True)
 class BuildInfo:
     """What the UI, `/healthz` and `voxarium_studio version` all say about this build."""
 
     version: str = __version__
-    """The package version from ``__init__.py``. Hand-maintained, so it names the release
-    line rather than the build — it is what shows when git has nothing to say at all."""
+    """The release tag or short commit shared by backend, SPA and desktop (§2.5, §2.7).
+    The package version is only a fallback when no build identity is available."""
     commit: str | None = None
     short_commit: str | None = None
     tag: str | None = None
@@ -92,7 +96,28 @@ def build_info() -> BuildInfo:
     it was imported from, so re-reading git after someone commits would report a version
     this process is not.
     """
-    return _from_stamp() or _from_git(studio_repo_root()) or BuildInfo()
+    return _resolve_build_info(__version__)
+
+
+def read_build_info() -> BuildInfo:
+    """Resolve installed files again without changing the running process's identity.
+
+    Recovery (§2.5) must see a replaced wheel stamp or new checkout HEAD, including
+    a changed package-version fallback, while ``build_info()`` stays cached.
+    """
+    tree = ast.parse((_package_dir() / "__init__.py").read_text(encoding="utf-8"))
+    version = next(ast.literal_eval(node.value) for node in tree.body
+                   if isinstance(node, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets))
+    if not isinstance(version, str) or not version:
+        raise ValueError("Invalid installed Studio package version.")
+    return _resolve_build_info(version)
+
+
+def _resolve_build_info(package_version: str) -> BuildInfo:
+    return (_from_stamp(package_version=package_version)
+            or _from_git(studio_repo_root(), package_version=package_version)
+            or BuildInfo(version=package_version))
 
 
 def studio_repo_root() -> Path | None:
@@ -142,7 +167,7 @@ def _package_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _from_stamp() -> BuildInfo | None:
+def _from_stamp(*, package_version: str = __version__) -> BuildInfo | None:
     stamp = _package_dir() / STAMP_NAME
     try:
         data = json.loads(stamp.read_text(encoding="utf-8"))
@@ -154,10 +179,10 @@ def _from_stamp() -> BuildInfo | None:
     if not isinstance(data, dict):
         log.warning("Ignoring a build stamp at %s that is not an object.", stamp)
         return None
-    return _from_fields(data, source="stamp")
+    return _from_fields(data, source="stamp", package_version=package_version)
 
 
-def _from_git(root: Path | None) -> BuildInfo | None:
+def _from_git(root: Path | None, *, package_version: str = __version__) -> BuildInfo | None:
     if root is None:
         return None
     described = _git(root, "show", "--no-patch", f"--format=%H{_SEP}%h{_SEP}%cI", "HEAD")
@@ -190,16 +215,24 @@ def _from_git(root: Path | None) -> BuildInfo | None:
             "dirty": bool(changes),
         },
         source="git",
+        package_version=package_version,
     )
 
 
-def _from_fields(data: dict[str, Any], *, source: str) -> BuildInfo:
+def _from_fields(data: dict[str, Any], *, source: str, package_version: str = __version__) -> BuildInfo:
     commit = _text(data.get("commit"))
+    short_commit = _text(data.get("short_commit")) or (commit[:7] if commit else None)
+    tag = _text(data.get("tag"))
+    # §2.5, §2.7: a release tag is the runtime version too, not only a display label.
+    # Match the Windows/Electron SemVer normalization, retaining prerelease suffixes.
+    release = _RELEASE_TAG.fullmatch(tag or "")
+    version = (f"{release[1]}.{release[2]}.{release[3] or '0'}{release[4] or ''}"
+               if release else tag or short_commit or _text(data.get("version")) or package_version)
     return BuildInfo(
-        version=_text(data.get("version")) or __version__,
+        version=version,
         commit=commit,
-        short_commit=_text(data.get("short_commit")) or (commit[:7] if commit else None),
-        tag=_text(data.get("tag")),
+        short_commit=short_commit,
+        tag=tag,
         branch=_text(data.get("branch")),
         committed_at=_text(data.get("committed_at")),
         dirty=bool(data.get("dirty", False)),

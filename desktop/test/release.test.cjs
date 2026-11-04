@@ -1,12 +1,57 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const { releaseInfo } = require('../scripts/release.cjs');
 test('installer takes the visible release tag rather than the Python package version', () => {
-  assert.deepEqual(releaseInfo({tag:'v4.1',version:'0.1.0',short_commit:'abcdef0'}), {display:'v4.1',version:'4.1.0'});
-  assert.deepEqual(releaseInfo({tag:'v4.2.3-beta.1',version:'0.1.0'}), {display:'v4.2.3-beta.1',version:'4.2.3-beta.1'});
+  assert.deepEqual(releaseInfo({tag:'v4.1',version:'0.1.0',short_commit:'abcdef0'}), {display:'v4.1',version:'4.1.0',installerVersion:'4.1.0'});
+  assert.deepEqual(releaseInfo({tag:'v4.2.3-beta.1',version:'0.1.0'}), {display:'v4.2.3-beta.1',version:'4.2.3-beta.1',installerVersion:'4.2.3-beta.1'});
 });
 test('untagged builds retain the same commit label as the application', () => {
-  assert.deepEqual(releaseInfo({short_commit:'abcdef0',version:'0.1.0'}), {display:'abcdef0',version:'0.1.0'});
-  assert.deepEqual(releaseInfo({version:'4.2.0'}), {display:'4.2.0',version:'4.2.0'});
-  assert.throws(() => releaseInfo({tag:'../bad',version:'0.1.0'}));
+  assert.deepEqual(releaseInfo({short_commit:'abcdef0',version:'0.1.0'}), {display:'abcdef0',version:'abcdef0',installerVersion:'0.1.0'});
+  assert.deepEqual(releaseInfo({version:'4.2.0'}), {display:'4.2.0',version:'4.2.0',installerVersion:'4.2.0'});
+  assert.throws(() => releaseInfo({}), /Invalid Studio build label/);
+});
+
+test('non-SemVer tags remain the exact runtime identity', () => {
+  assert.deepEqual(releaseInfo({tag:'release/v5.2.0',version:'5.0.0'}),
+    {display:'release/v5.2.0',version:'release/v5.2.0',installerVersion:'5.0.0'});
+});
+
+test('a stamped commit identity retains a numeric fallback only for the installer format', () => {
+  assert.deepEqual(releaseInfo({short_commit:'abcdef0',version:'abcdef0'}, '5.0.0'),
+    {display:'abcdef0',version:'abcdef0',installerVersion:'5.0.0'});
+  assert.throws(() => releaseInfo({short_commit:'abcdef0',version:'abcdef0'}), /Invalid Studio installer version/);
+});
+
+function installerConfig(tag) {
+  const desktop = path.resolve(__dirname, '..');
+  const context = {
+    __dirname: desktop, module: { exports: {} }, process: { env: {} },
+    require(name) {
+      if (name === 'node:fs') return {
+        existsSync: () => true,
+        readFileSync: () => JSON.stringify({ tag, version: tag }),
+      };
+      if (name === './scripts/installer-messages.cjs') return { writeInstallerMessages() {} };
+      return require(name.startsWith('.') ? path.resolve(desktop, name) : name);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(desktop, 'electron-builder.cjs'), 'utf8'), context);
+  return context.module.exports;
+}
+
+test('installer metadata requires the same tag version as the runtime', () => {
+  const config = installerConfig('v5.2.0');
+  assert.equal(config.extraMetadata.version, '5.2.0');
+  assert.equal(config.extraMetadata.studioVersion, '5.2.0');
+  assert.equal(config.extraMetadata.backendVersion, undefined);
+  assert.equal(config.artifactName, 'Voxarium-Studio-Setup-v5.2.0.${ext}');
+});
+
+test('artifact names sanitize tag path separators without changing the runtime version', () => {
+  const config = installerConfig('release/v5.2.0');
+  assert.equal(config.extraMetadata.studioVersion, 'release/v5.2.0');
+  assert.equal(config.artifactName, 'Voxarium-Studio-Setup-release-v5.2.0.${ext}');
 });

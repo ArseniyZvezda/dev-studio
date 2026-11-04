@@ -9,7 +9,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { ORIGIN, navigationKind, registerPermissions } = require('./policy.cjs');
-const productName = require('./package.json').productName;
+const metadata = require('./package.json');
+const productName = metadata.productName;
 const appIcon = path.join(__dirname, 'assets/icon.ico');
 // The renamed desktop owns a separate profile and single-instance lock (§2.7).
 app.setPath('userData', path.join(app.getPath('appData'), 'Voxarium Studio'));
@@ -19,6 +20,13 @@ let desktopLocale;
 const currentMessages = () => desktopLocale ? translate(desktopLocale) : messages;
 const instance = randomUUID();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+function logStartup(event, details = {}) {
+  if (!runDir) return;
+  try {
+    fs.appendFileSync(path.join(runDir, 'desktop.log'),
+      `${JSON.stringify({ time: new Date().toISOString(), event, ...details })}\n`);
+  } catch (error) { console.error('Could not write desktop startup log:', error); }
+}
 async function health() {
   try {
     const response = await fetch(`${ORIGIN}/healthz`, { signal: AbortSignal.timeout(1500) });
@@ -37,7 +45,11 @@ async function stopOwned() {
 }
 async function startBackend() {
   const existing = await health();
-  const expectedVersion = app.getVersion();
+  // §2.7: require the same tag/commit identity as the backend and built frontend.
+  const expectedVersion = app.isPackaged
+    ? metadata.studioVersion ?? app.getVersion()
+    : require('./scripts/release.cjs').sourceReleaseInfo(path.resolve(__dirname, '..'), metadata.version).version;
+  logStartup('backend-check', { releaseVersion: app.getVersion(), expectedVersion, existing });
   let plan;
   try {
     plan = await backendStartPlan(existing, expectedVersion, async () => {
@@ -60,8 +72,6 @@ async function startBackend() {
       || current.desktop_instance !== existing.desktop_instance)) throw new Error(messages.backendChanged);
   }
   const root = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '..');
-  runDir = path.join(app.getPath('userData'), 'run');
-  fs.mkdirSync(runDir, { recursive: true });
   shutdownFile = path.join(runDir, `${instance}.stop`);
   const log = fs.openSync(path.join(runDir, 'launcher.log'), 'w');
   // run.ps1 detaches the backend itself. DETACHED_PROCESS makes Windows PowerShell
@@ -82,6 +92,7 @@ async function startBackend() {
     const result = await health();
     if (result?.desktop_instance === instance) {
       owned = true;
+      logStartup('backend-started', { expectedVersion, actualVersion: result.version });
       if (result.version !== expectedVersion) throw new Error(messages.unknownBackendVersion);
       return;
     }
@@ -95,6 +106,9 @@ function openExternal(url) {
 }
 async function boot() {
   messages = translate(app.getLocale().startsWith('ru') ? 'ru' : 'en');
+  runDir = path.join(app.getPath('userData'), 'run');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'desktop.log'), '');
   app.setAppUserModelId('studio.voxarium.desktop');
   Menu.setApplicationMenu(null);
   splash = new BrowserWindow({ width: 460, height: 300, frame: false, resizable: false,
@@ -167,6 +181,7 @@ async function boot() {
     })().finally(() => { closePending = false; });
   });
   await window.loadURL(ORIGIN);
+  logStartup('window-loaded');
   window.show();
   if (splash && !splash.isDestroyed()) splash.close();
 }
@@ -187,6 +202,7 @@ else {
     });
   });
   app.whenReady().then(boot).catch(async error => {
+    logStartup('startup-failed', { error: error.stack || String(error) });
     dialog.showErrorBox(productName, `${messages?.startFailed || error.message}\n${error.message}\n${runDir || ''}`);
     await stopOwned();
     app.exit(1);

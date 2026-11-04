@@ -2,6 +2,8 @@ import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
+import { sourceReleaseInfo } from '../desktop/scripts/release.cjs'
+import { version as fallbackVersion } from './package.json'
 
 /**
  * Kept apart from `vite.config.ts` so the build config stays about the build.
@@ -13,6 +15,9 @@ import { defineConfig } from 'vitest/config'
  * building a schema must not mean building a second, fake one.
  */
 export default defineConfig({
+  define: {
+    __STUDIO_VERSION__: JSON.stringify(sourceReleaseInfo(fileURLToPath(new URL('..', import.meta.url)), fallbackVersion).version),
+  },
   plugins: [vue()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
