@@ -475,6 +475,9 @@ class ChatService:
                 skills=member_skills.found,
             )
             if chat.producer_mode:
+                # §10.11: the Producer's read-only responsibility mirrors this prompt;
+                # identity/agent files omit it so it reaches only active chats, once,
+                # with their language rather than the unresolved settings placeholder.
                 system_prompt += "\n\n" + self.config.teams.prompts.text(
                     "producer_mode", language="Russian" if chat.producer_locale == "ru" else "English")
                 system_prompt += "\n\n" + self.config.teams.prompts.text(f"producer_{chat.producer_policy}")

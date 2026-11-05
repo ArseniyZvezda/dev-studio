@@ -32,6 +32,7 @@ from pathlib import Path
 from ..core.paths import ProjectPaths
 from ..core.prompts import AgentPromptsConfig
 from ..models.teams import MemberKind, Team, TeamMember
+from .producer_identity import is_producer
 
 log = logging.getLogger(__name__)
 
@@ -76,7 +77,9 @@ def identity_lines(
 
     The sentences are the ``identity_*`` templates from ``teams.prompts`` (§10.3); only
     the data between them is the roster's. A line whose data is absent — no manager, no
-    reports — is skipped, and so is one the user blanked in Settings.
+    reports — is skipped, and so is one the user blanked in Settings. The built-in
+    Producer's responsibility mirrors its System Prompt (§10.11), which belongs only
+    to an active Producer chat and is resolved there with the chat's language.
     """
     candidates = [
         prompts.text(
@@ -86,7 +89,7 @@ def identity_lines(
             team=team.name if team else "this project",
         ),
         prompts.text("identity_responsibility", responsibility=member.responsibility)
-        if member.responsibility
+        if member.responsibility and not is_producer(member)
         else "",
         prompts.text("identity_manager", manager=describe(manager)) if manager else "",
         prompts.text(
@@ -119,7 +122,7 @@ def definition_text(
     role = member.role_title or "team member"
     description = (
         f"{member.name} — {role}"
-        + (f". {member.responsibility}" if member.responsibility else ".")
+        + (f". {member.responsibility}" if member.responsibility and not is_producer(member) else ".")
     )
     front = [
         "---",

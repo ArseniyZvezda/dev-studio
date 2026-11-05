@@ -456,6 +456,11 @@ async def _validate_member(
     from ..teams.producer_identity import is_producer
     if is_producer(member) and fields.get("kind", "agent") != "agent":
         raise HTTPException(400, "The built-in Producer must remain an agent.")
+    if is_producer(member) and "responsibility" in fields:
+        # §10.11: the built-in role mirrors the Producer System Prompt in Settings.
+        raise HTTPException(
+            400, "The built-in Producer responsibility is read-only. Edit Producer System Prompt in Settings.",
+        )
     if "name" in fields and not str(fields["name"] or "").strip():
         raise HTTPException(status_code=400, detail="A member needs a name")
 

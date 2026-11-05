@@ -8,6 +8,7 @@ stay in SQLite.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import select
 
 from ..core.paths import ProjectPaths
+from ..core.prompts import AgentPromptsConfig
 from ..models.teams import Team, TeamMember, TeamTask
 from .producer_identity import PRODUCER_ID, is_producer
 
@@ -92,8 +94,21 @@ def _assign_keys(team_id: str, entries: list[str]) -> list[str]:
 
 
 class TeamStore:
-    def __init__(self, paths: ProjectPaths) -> None:
+    def __init__(
+        self, paths: ProjectPaths, *, prompts: Callable[[], AgentPromptsConfig] = AgentPromptsConfig,
+    ) -> None:
         self.paths = paths
+        self._prompts = prompts
+
+    def sync_producer_responsibility(self, member: TeamMember) -> bool:
+        """Project the current Producer System Prompt into its read-only role (§10.11)."""
+        if not is_producer(member):
+            return False
+        responsibility = self._prompts().text("producer_mode")
+        if member.responsibility == responsibility:
+            return False
+        member.responsibility = responsibility
+        return True
 
     @property
     def directory(self) -> Path:
@@ -132,7 +147,7 @@ class TeamStore:
         return self.directory / f"{team_id}.yaml"
 
     async def sync_to_db(self, session) -> list[Team]:
-        """Upsert YAML-declared teams and members. Hand-edited YAML wins on conflict."""
+        """Upsert YAML roles; the Producer's responsibility comes from Settings (§10.11)."""
         teams: list[Team] = []
         for definition in self.load_definitions():
             team = await session.get(Team, definition.id)
@@ -167,6 +182,7 @@ class TeamStore:
                     member.kind = "agent"
                 member.manager_id = manager_key
                 member.responsibility = member_def.responsibility
+                self.sync_producer_responsibility(member)
                 member.can_assign_to = _assign_keys(definition.id, member_def.can_assign_to)
                 member.tags = list(member_def.tags)
                 member.agent_backend = member_def.agent_backend
@@ -196,10 +212,10 @@ class TeamStore:
                     producer = TeamMember(
                         id=producer_id, team_id=team.id, name="Producer", role_title="Producer",
                         builtin="producer", can_assign_to=["*"], sort_order=len(declared_ids),
-                        responsibility="Coordinate the user's work through plans, tasks and reviews.",
                     )
                 producer.builtin = "producer"
                 producer.kind = "agent"
+                self.sync_producer_responsibility(producer)
                 session.add(producer)
                 declared_ids.add(producer_id)
 
@@ -243,6 +259,8 @@ class TeamStore:
                                          if producer.manager_id else None)
                 values["can_assign_to"] = [key.removeprefix(prefix) for key in producer.can_assign_to]
                 entry = MemberDefinition(**values).model_dump(exclude_defaults=True)
+                # §10.11: Settings owns this template; never freeze a copy in the roster.
+                entry.pop("responsibility", None)
                 if payload.get("members") is None:
                     payload["members"] = []
                 payload["members"].append(entry)
@@ -293,6 +311,9 @@ class TeamStore:
                 "solo_mode": member.solo_mode,
                 "avatar_color": member.avatar_color,
             }
+            if is_producer(member):
+                # Also removes obsolete responsibility overrides on the next roster edit.
+                entry.pop("responsibility")
             # An icon, effort, skills, a borrowed agent and layout are written only once
             # somebody chooses them, rather than as nulls on every row of a file whose job is
             # partly to be read. `_dump_preserving` drops keys the payload omits, so clearing

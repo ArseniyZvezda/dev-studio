@@ -109,7 +109,10 @@ async def test_builtin_is_restored_without_overwriting_settings_or_other_roster_
     after = yaml.safe_load(path.read_text(encoding="utf-8"))
     saved = [m for m in after["members"] if m["id"] == "studio-producer"]
     assert len(saved) == 1 and saved[0]["model"] == "custom-model"
-    assert saved[0]["responsibility"] == "My production instructions"
+    assert "responsibility" not in saved[0], "the Producer prompt belongs to Settings"
+    async with producer.db.session() as session:
+        restored = await session.get(TeamMember, PRODUCER)
+        assert restored.responsibility == producer.config.teams.prompts.text("producer_mode")
     assert [m for m in after["members"] if m["id"] != "studio-producer"] == payload["members"]
 
 
@@ -137,6 +140,46 @@ async def test_start_is_only_for_producer_and_opens_a_localized_conversation(pro
     assert "mcp__voxarium_studio__propose_producer_plan" in request.extra_allowed_tools
     await producer.chats.producer.enable(chat.id)
     assert len(ProducerBackend.requests) == 1, "double Start must not create another turn"
+
+
+@pytest.mark.parametrize("named_agent", [False, True])
+@pytest.mark.parametrize("override", [None, "Custom Producer instructions. Speak {language}."])
+async def test_producer_system_prompt_is_resolved_once_only_in_active_mode(
+    producer, monkeypatch, named_agent, override,
+):
+    monkeypatch.setattr(ProducerBackend, "named_agents", named_agent)
+    producer.config.teams.prompts.producer_mode = override
+    await producer.teams.sync_agent_definitions()
+    raw = producer.config.teams.prompts.text("producer_mode")
+    resolved = producer.config.teams.prompts.text("producer_mode", language="Russian")
+    chat = await producer.chats.create_chat(PRODUCER)
+
+    await producer.chats.send(chat.id, "Hello", UserContext())
+    await finished(producer, chat.id)
+    ordinary = ProducerBackend.requests[-1]
+    assert raw not in ordinary.system_prompt
+    assert resolved not in ordinary.system_prompt
+
+    await producer.chats.producer.enable(chat.id, "ru")
+    await finished(producer, chat.id)
+    active = ProducerBackend.requests[-1]
+    assert active.system_prompt.count(resolved) == 1
+    assert "{language}" not in active.system_prompt
+    assert bool(active.agent_name) == named_agent
+    definition = (producer.paths.root / ".claude" / "agents" / "producer.md").read_text(
+        encoding="utf-8",
+    )
+    assert raw not in definition
+    assert "{language}" not in definition
+    assert "Producer Mode is active" not in definition
+    assert "Custom Producer instructions" not in definition
+
+    await producer.chats.producer.disable(chat.id)
+    await producer.chats.send(chat.id, "Hello again", UserContext())
+    await finished(producer, chat.id)
+    stopped = ProducerBackend.requests[-1]
+    assert raw not in stopped.system_prompt
+    assert resolved not in stopped.system_prompt
 
 
 async def test_drafts_do_not_escape_through_autostart_start_all_or_manual_release(producer):
@@ -280,7 +323,10 @@ async def test_done_result_can_only_be_approved_in_producer_mode(producer, polic
 
 
 @pytest.mark.parametrize("policy", ["careful", "independent"])
-async def test_done_result_corrections_use_a_new_task_and_normal_plan_approval(producer, policy):
+@pytest.mark.parametrize("original_approved", [False, True])
+async def test_done_result_corrections_use_a_new_task_and_normal_plan_approval(
+    producer, policy, original_approved,
+):
     chat = await opened(producer)
     await producer.chats.producer.set_policy(chat.id, policy)
     await finished(producer, chat.id)
@@ -288,8 +334,9 @@ async def test_done_result_corrections_use_a_new_task_and_normal_plan_approval(p
     await allow(producer, task)
     await producer.teams.submit_for_review(task.id, "Movement implemented", "done")
     tools = await tools_for(producer, chat)
-    result = await tools["review_producer_task"]({"task": task.id, "action": "approve"})
-    assert not result.get("is_error"), result
+    if original_approved:
+        result = await tools["review_producer_task"]({"task": task.id, "action": "approve"})
+        assert not result.get("is_error"), result
     if job := producer.teams._commit_jobs.get(task.id):
         await asyncio.wait_for(asyncio.shield(job), timeout=10)
     completed = (await producer.teams._reload(task.id)).model_dump()
@@ -297,12 +344,12 @@ async def test_done_result_corrections_use_a_new_task_and_normal_plan_approval(p
     result = await tools["create_task"]({
         "assignee_id": DEV, "title": "Correct movement animation",
         "brief": "Fix the animation issue identified when reviewing the completed movement task.",
-        "depends_on": [task.id],
+        "depends_on": [task.id] if original_approved else [],
     })
     assert not result.get("is_error"), result
     correction, = [t for t in await producer.chats.producer.tasks(chat.id) if t.id != task.id]
     assert correction.status == "todo" and not correction.producer_approved
-    assert correction.depends_on == [task.id]
+    assert correction.depends_on == ([task.id] if original_approved else [])
     result = await tools["propose_producer_plan"]({"tasks": [correction.id], "summary": "Fix animation"})
     assert not result.get("is_error"), result
     if policy == "careful":

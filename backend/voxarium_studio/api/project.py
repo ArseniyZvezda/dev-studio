@@ -285,6 +285,8 @@ async def reload_everything(ctx: Ctx) -> dict[str, Any]:
     """Re-read config.yaml and re-scan plugins, for when files were edited by hand."""
     try:
         ctx.reload_config()
+        # §10.11: hand-edited prompts also refresh the Producer's derived responsibility.
+        await ctx.teams.sync_agent_definitions()
         await ctx.updates.configure(ctx.config.updates)
         await ctx.reload_plugins()
     except Exception as exc:

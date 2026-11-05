@@ -1325,6 +1325,7 @@
       "always": "always",
       "routesHint": "Their own manager and reports are always reachable; this adds sideways routes, like a tester sending a fix straight to the developer.",
       "responsibility": "Responsibility",
+      "responsibilityProducerHint": "Read-only here. Edit Producer System Prompt in Settings → Agent prompts → Producer Mode.",
       "responsibilityAgentHint": "Folded into the agent's system prompt — write it as instructions, not a job ad.",
       "responsibilityPersonHint": "Shown to whoever assigns them work.",
       "skills": "Skills",
@@ -1365,7 +1366,7 @@
       "savedToYaml": "Saved to the team's YAML",
       "removeTitle": "Remove from the team",
       "keep": "Keep",
-      "builtinProducer": "Built-in Producer: settings are editable; this agent cannot be deleted."
+      "builtinProducer": "Built-in Producer: this agent cannot be deleted."
     },
     "mark": {
       "person": "Person — works outside the Studio"
@@ -2424,8 +2425,8 @@
         "hint": "Opens every chat message; {context} is the page, the open document and the selected text at the moment of sending."
       },
       "producer_mode": {
-        "label": "Producer workflow",
-        "hint": "The planning, approval, review and waiting rules for Producer Mode. Tasks returned with Done can only be approved; corrections require a new task. {language} is the initial conversation language."
+        "label": "Producer System Prompt",
+        "hint": "Defines the built-in Producer's responsibility and the rules for planning, approvals, scope review and waiting in Producer Mode. {language} is the initial conversation language."
       },
       "producer_start": {
         "label": "Start Producer Mode",

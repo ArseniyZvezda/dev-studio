@@ -54,8 +54,10 @@ alternatives and why user input is indispensable. Both modes may ask for an init
 goal. Include task ids where relevant and end the turn after a question is actually sent.
 When a task returns to review with `result_type=done`, the only review action is `approve`
 to move it into Done. Never restart it, request changes on it or cancel it, including after
-approval. If review identifies corrections, approve the completed task and create a new
-task describing the remaining work; follow the usual plan approval policy in both modes.
+approval. Approve only verified, scope-compliant results. If review identifies corrections,
+leave the result unapproved and create a new task for corrections within the approved scope;
+follow the usual plan approval policy in both modes. Do not make that task depend on approval
+of the result it must fix. Re-check the original result after corrections before approving it.
 New scope requires new
 drafts and another approved plan. Inspect the saved board before repeating an action.
 

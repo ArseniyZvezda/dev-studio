@@ -98,6 +98,7 @@ const saving = ref(false)
 const failed = ref(false)
 
 const isAgent = computed(() => draft.value.kind === 'agent')
+const isProducer = computed(() => props.member.builtin === 'producer')
 /** The draft as a thing `MemberMark` can draw, so the header previews an unsaved choice. */
 const look = computed(() => ({
   name: draft.value.name,
@@ -237,7 +238,8 @@ const patch = computed<MemberUpdate>(() => {
     result.role_title = current.role_title.trim()
   if (current.kind !== original.kind) result.kind = current.kind
   if (current.manager_id !== original.manager_id) result.manager_id = current.manager_id
-  if (current.responsibility !== original.responsibility)
+  // §10.11: the built-in Producer's responsibility is owned by its Settings prompt.
+  if (!isProducer.value && current.responsibility !== original.responsibility)
     result.responsibility = current.responsibility
   if (current.avatar_color !== original.avatar_color) result.avatar_color = current.avatar_color
   if (current.avatar_icon !== original.avatar_icon) result.avatar_icon = current.avatar_icon
@@ -550,12 +552,28 @@ async function remove() {
         <p class="text-small font-semibold tracking-wide text-faint uppercase">
           {{ t('teams.editor.responsibility') }}
         </p>
-        <textarea v-model="draft.responsibility" rows="4" class="field resize-y" />
+        <textarea
+          v-if="isProducer"
+          :value="member.responsibility"
+          :aria-label="t('teams.editor.responsibility')"
+          readonly
+          rows="8"
+          class="field resize-y text-muted"
+        />
+        <textarea
+          v-else
+          v-model="draft.responsibility"
+          :aria-label="t('teams.editor.responsibility')"
+          rows="4"
+          class="field resize-y"
+        />
         <p class="text-small text-faint">
           {{
-            isAgent
-              ? t('teams.editor.responsibilityAgentHint')
-              : t('teams.editor.responsibilityPersonHint')
+            isProducer
+              ? t('teams.editor.responsibilityProducerHint')
+              : isAgent
+                ? t('teams.editor.responsibilityAgentHint')
+                : t('teams.editor.responsibilityPersonHint')
           }}
         </p>
       </section>

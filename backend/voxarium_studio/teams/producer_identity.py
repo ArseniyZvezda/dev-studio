@@ -1,4 +1,4 @@
-"""The reserved, editable Producer member of each team (§10.11)."""
+"""The reserved Producer member, whose responsibility comes from Settings (§10.11)."""
 
 PRODUCER_ID = "studio-producer"
 

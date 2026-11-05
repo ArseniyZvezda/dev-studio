@@ -137,7 +137,7 @@ class TeamOrchestrator:
         self.bus = bus
         self.jobs = jobs
         self.config = config
-        self.store = TeamStore(paths)
+        self.store = TeamStore(paths, prompts=lambda: self.config.teams.prompts)
         self.docs = docs if docs is not None else DocStore(paths, bus)
         self.skills = skills if skills is not None else SkillStore(paths)
         """``voxarium_studio/skills/`` — what a member's ``skills`` names resolve against (§10.10)."""
@@ -847,6 +847,9 @@ class TeamOrchestrator:
             teams = {team.id: team for team in (await session.exec(select(Team))).all()}
             by_id = {member.id: member for member in members}
             for member in members:
+                # §10.11: a Settings edit also updates the Producer's read-only roster data.
+                if self.store.sync_producer_responsibility(member):
+                    session.add(member)
                 if member.kind == MemberKind.HUMAN or member.agent:
                     # Nothing of ours on disk for either: a person has no session to start,
                     # and a borrowed agent is somebody else's file.
