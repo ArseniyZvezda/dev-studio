@@ -187,6 +187,39 @@ def average_task_days(tasks: Iterable[TeamTask]) -> list[dict[str, Any]]:
     ]
 
 
+def average_task_duration_days(
+    tasks: Iterable[TeamTask], messages: Iterable[AgentMessage],
+) -> list[dict[str, Any]]:
+    """Average execution time of completed tasks by completion day (§10.4).
+
+    Provider durations cover separate runs, so resumed work is added without the idle
+    time between runs. Older tasks fall back to the same start/end interval shown in
+    their header. Missing/invalid timing is omitted, never counted as a zero-time task.
+    Context-summary requests are auxiliary accounting, not task execution runs.
+    """
+    runs: dict[str, list[int | None]] = defaultdict(list)
+    for message in messages:
+        if message.kind == "result" and message.data.get("purpose") != "context_compaction":
+            runs[message.task_id].append(token_count(message.data.get("duration_ms")))
+    days: dict[date, list[int]] = defaultdict(list)
+    for task in tasks:
+        if _status_of(task) != TaskStatus.DONE or task.finished_at is None:
+            continue
+        durations = runs.get(task.id, [])
+        if durations and all(value is not None for value in durations):
+            duration = sum(value for value in durations if value is not None)
+        elif task.started_at is not None:
+            duration = round((task.finished_at - task.started_at).total_seconds() * 1000)
+            if duration < 0:
+                continue
+        else:
+            continue
+        days[_day(task.finished_at)].append(duration)
+    return [{"day": day.isoformat(), "tasks": len(durations),
+             "average_duration_ms": round(sum(durations) / len(durations), 3)}
+            for day, durations in sorted(days.items())]
+
+
 def _day(when: datetime) -> date:
     """The UTC calendar day a moment falls on. Stored timestamps are UTC (``UtcDateTime``)."""
     return when.date()
@@ -227,6 +260,8 @@ def cost_stats(
         members and activity also carry token counts alongside their existing costs.
     ``average_task_series``
         Full lifetime cost and tokens per completed task, grouped by completion day.
+    ``average_task_duration_series``
+        Execution duration per completed task with known timing, by completion day.
     """
     events = cost_events(tasks, messages)
     token_records = _token_records(tasks, messages)
@@ -333,6 +368,7 @@ def cost_stats(
         "series": series,
         "token_series": token_series,
         "average_task_series": average_task_days(tasks),
+        "average_task_duration_series": average_task_duration_days(tasks, messages),
         "by_member": by_member,
         "by_model": model_spend(tasks, messages),
         "by_model_tokens": [

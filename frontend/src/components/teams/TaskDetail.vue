@@ -76,12 +76,14 @@ import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
+import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import { t, type MessageKey } from '@/i18n'
 import { toolName, toolSubject } from '@/lib/activity'
 import { dialogEscape } from '@/lib/dialog'
 import {
   formatBytes,
   formatCountdown,
+  formatCost,
   formatDuration,
   formatTime,
   formatTokens,
@@ -90,7 +92,7 @@ import {
   statusLabel,
 } from '@/lib/status'
 import type { Subagent } from '@/lib/subagents'
-import { running as stillRunning, subagents, subagentUsage } from '@/lib/subagents'
+import { running as stillRunning, subagents } from '@/lib/subagents'
 import { useTaskClock } from '@/lib/task-clock'
 import {
   RESULT_TYPES,
@@ -534,14 +536,13 @@ const verbosity = ref<Verbosity>(isVerbosity(remembered) ? remembered : 'compact
 const rows = computed(() => transcriptRows(props.task.messages, verbosity.value))
 
 /**
- * The transcript's last line (`lib/transcript.ts`), and what its number means.
+ * The transcript's last activity (`lib/transcript.ts`).
  *
  * The activity half is the tail of the *whole* feed — the newest thing Verbose would log,
  * shown below Verbose whether or not this level draws a row for it, and kept nowhere.
  *
- * The number is deliberately *not* the header's `total_tokens`: that is the whole lifetime
- * bill, cache reads included — which is most of a long session. This is what the model has
- * written; the header also updates as the runtime reports usage.
+ * Its adjacent token chip uses the same confirmed lifetime usage as the header (§10.4).
+ * The live line's output estimate remains available to other transcript consumers.
  */
 const live = computed(() => liveLine(props.task.messages, verbosity.value))
 
@@ -640,7 +641,9 @@ function subagentNote(entry: Subagent): string {
     parts.push(t(SUBAGENT_ENDINGS[entry.status]))
   }
   if (entry.toolUses) parts.push(t('taskDetail.delegated.calls', { count: entry.toolUses }))
-  parts.push(subagentUsage(entry))
+  parts.push(t('taskDetail.delegated.apiCost', {
+    cost: entry.costUsd === null ? t('taskDetail.delegated.usageUnavailable') : formatCost(entry.costUsd),
+  }))
   return parts.join(' · ')
 }
 
@@ -1164,19 +1167,12 @@ async function complete() {
                 })
               : t('taskDetail.header.context', { tokens: formatTokens(usage.contextTokens) }) }}
           </span>
-          <span
+          <TokenUsageChip
             v-if="runSettings"
-            class="inline-flex items-center gap-1 text-small text-faint"
-            :title="t('tokenUsage.uncachedHint')"
-          >
-            · {{ t('tokenUsage.uncachedValue', { tokens: formatTokens(usage.uncachedTokens) }) }}
-          </span>
-          <span v-if="runSettings" class="inline-flex items-center gap-1 text-small text-faint" :title="t('tokenUsage.cachedHint')">
-            · {{ t('tokenUsage.cachedValue', { tokens: formatTokens(usage.cachedTokens) }) }}
-          </span>
-          <span v-if="runSettings && usage.unclassifiedTokens > 0" class="inline-flex items-center gap-1 text-small text-faint" :title="t('tokenUsage.unclassifiedHint')">
-            · {{ t('tokenUsage.unclassifiedValue', { tokens: formatTokens(usage.unclassifiedTokens) }) }}
-          </span>
+            :input-tokens="usage.inputTokens"
+            :output-tokens="usage.outputTokens"
+            :cached-tokens="usage.cacheReadTokens"
+          />
           <!-- Beside the telemetry rather than next to its own checkbox: how long this task
                has been stopped for is a property of the run, and it is the first thing
                somebody opening a Blocked card is asking. Lit only while something is
@@ -1235,7 +1231,7 @@ async function complete() {
               <p
                 v-for="entry in delegated"
                 :key="entry.id"
-                class="flex items-baseline gap-2 py-px"
+                class="flex flex-wrap items-center gap-x-2 gap-y-1 py-0.5"
                 :title="entry.summary || entry.description"
               >
                 <span
@@ -1249,12 +1245,17 @@ async function complete() {
                   class="shrink-0 text-small text-faint"
                   :title="entry.model || entry.backend"
                 >{{ entry.backend }}</span>
-                <span class="truncate" :class="entry.status === 'running' ? '' : 'text-faint'">
+                <span class="min-w-0 flex-1 truncate" :class="entry.status === 'running' ? '' : 'text-faint'">
                   {{ entry.description }}
                 </span>
-                <span class="ml-auto shrink-0 font-mono text-small text-faint">
+                <span class="ml-auto min-w-0 break-words text-right font-mono text-small text-faint">
                   {{ subagentNote(entry) }}
                 </span>
+                <TokenUsageChip
+                  :input-tokens="entry.inputTokens"
+                  :output-tokens="entry.outputTokens"
+                  :cached-tokens="entry.cacheReadTokens"
+                />
               </p>
             </div>
             <!-- Outside the scroller on purpose: it explains the whole list, so it must not
@@ -1636,8 +1637,8 @@ async function complete() {
           </article>
         </template>
 
-        <!-- The last line of the dialogue: the newest thing Verbose would log, and what the
-             model has written so far. One line under everything, below Verbose —
+        <!-- The last line of the dialogue: the newest thing Verbose would log, and the
+             task's lifetime usage (§10.4). One line under everything, below Verbose —
              `lib/transcript.ts` says why it is not one per block, and why it follows the log
              rather than the rows. `truncate` is the "if it does not fit" half; the text is
              already flattened, so this cuts a long line rather than wrapping the box open.
@@ -1645,8 +1646,8 @@ async function complete() {
              every update: a CSS animation restarts when its element does, and that flash is
              the same signal the board card gives for the same reason. -->
         <p
-          v-if="live.activity || live.tokens"
-          class="flex items-baseline gap-2 px-1 pl-4 text-small text-faint"
+          v-if="live.activity || usage.totalTokens > 0"
+          class="flex items-center gap-2 px-1 pl-4 text-small text-faint"
         >
           <span
             v-if="live.activity"
@@ -1656,16 +1657,16 @@ async function complete() {
           >
             {{ live.activity }}
           </span>
-          <span
-            v-if="live.tokens"
-            class="ml-auto shrink-0 font-mono"
-            :title="t('taskDetail.transcript.tokensHint')"
-          >
-            {{ t('taskDetail.transcript.tokens', { tokens: formatTokens(live.tokens) }) }}
-          </span>
+          <TokenUsageChip
+            v-if="usage.totalTokens > 0"
+            class="ml-auto"
+            :input-tokens="usage.inputTokens"
+            :output-tokens="usage.outputTokens"
+            :cached-tokens="usage.cacheReadTokens"
+          />
         </p>
 
-        <p v-if="!rows.length && !live.activity && !live.tokens" class="text-faint">
+        <p v-if="!rows.length && !live.activity && usage.totalTokens === 0" class="text-faint">
           {{
             isHuman
               ? t('taskDetail.transcript.emptyPerson')

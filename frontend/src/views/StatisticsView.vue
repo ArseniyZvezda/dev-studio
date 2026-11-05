@@ -8,17 +8,17 @@
  * `GET /api/teams/{id}/stats`, which builds the time series from the runs themselves
  * rather than from the tasks — a card resumed across three days is spent on three days.
  *
- * Two mirrored columns put tokens on the left and API Cost on the right.
- * Figures refresh with the board while retaining the previous render during a fetch.
+ * Two mirrored columns put tokens on the left and API Cost on the right, followed by
+ * daily execution time. Cards render immediately; each metric owns its loading state.
  */
 import { ChartLine } from 'lucide-vue-next'
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { ApiError, api } from '@/api/client'
 import type { TeamStats } from '@/api/types'
 import StatsMetricColumn from '@/components/stats/StatsMetricColumn.vue'
+import CostChart from '@/components/stats/CostChart.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { t } from '@/i18n'
 import { todayIso } from '@/lib/cost-chart'
 import { useTeamsStore } from '@/stores/teams'
@@ -27,7 +27,12 @@ const teams = useTeamsStore()
 
 const stats = ref<TeamStats | null>(null)
 const loading = ref(false)
+const initializing = ref(true)
 const error = ref<string | null>(null)
+const busy = computed(() => initializing.value || teams.loading || loading.value)
+const durationSeries = computed(() => (stats.value?.average_task_duration_series ?? []).map(row => ({
+  day: row.day, value: row.average_duration_ms, spent: 0, count: row.tasks,
+})))
 
 const today = todayIso()
 
@@ -51,10 +56,12 @@ async function refresh(): Promise<void> {
   inFlight = true
   loading.value = true
   error.value = null
+  const teamId = teams.team.id
   try {
-    stats.value = await api.teamStats(teams.team.id)
+    const result = await api.teamStats(teamId)
+    if (teams.team?.id === teamId) stats.value = result
   } catch (cause) {
-    error.value = cause instanceof ApiError ? cause.detail : String(cause)
+    if (teams.team?.id === teamId) error.value = cause instanceof ApiError ? cause.detail : String(cause)
   } finally {
     inFlight = false
     loading.value = false
@@ -65,10 +72,21 @@ async function refresh(): Promise<void> {
   }
 }
 
-onMounted(async () => {
-  teams.subscribe()
+async function initialize(): Promise<void> {
+  initializing.value = true
   await teams.load()
+  initializing.value = false
   await refresh()
+}
+
+function retry(): void {
+  if (teams.error || !teams.team) void initialize()
+  else void refresh()
+}
+
+onMounted(() => {
+  teams.subscribe()
+  void initialize()
 })
 
 // The store replaces the tasks array on every refresh, which is exactly when the figures
@@ -77,6 +95,11 @@ watch(
   () => teams.tasks,
   () => void refresh(),
 )
+watch(() => teams.team?.id, () => {
+  stats.value = null
+  error.value = null
+  void refresh()
+})
 </script>
 
 <template>
@@ -93,11 +116,13 @@ watch(
       </p>
     </header>
 
-    <p v-if="teams.error" class="bg-danger-soft px-pane py-1 text-danger">{{ teams.error }}</p>
-    <p v-if="error" class="bg-danger-soft px-pane py-1 text-danger">{{ error }}</p>
+    <div v-if="teams.error || error" class="flex items-center gap-3 bg-danger-soft px-pane py-2 text-danger" role="alert">
+      <p class="min-w-0 flex-1 break-words">{{ teams.error || error }}</p>
+      <button class="shrink-0 rounded px-2 py-1 text-small underline hover:bg-hover disabled:opacity-50" :disabled="busy" @click="retry">{{ t('statistics.retry') }}</button>
+    </div>
 
     <EmptyState
-      v-if="!teams.team && !teams.loading"
+      v-if="!teams.team && !busy && !teams.error"
       class="vxs-enter"
       :title="t('statistics.noTeam')"
       :hint="t('statistics.noTeamHint')"
@@ -106,22 +131,25 @@ watch(
     </EmptyState>
 
     <div
-      v-else-if="stats"
-      class="@container p-pane transition-opacity"
-      :class="loading ? 'opacity-60' : ''"
+      v-else
+      class="@container p-pane"
     >
       <!-- §10.4: matching sections, tokens left and API Cost right; stack in narrow panes. -->
       <div class="grid grid-cols-1 gap-6 @4xl:grid-cols-2 @4xl:gap-x-0 @4xl:gap-y-5">
-        <StatsMetricColumn :stats="stats" :today="today" metric="tokens" class="@4xl:pr-5" />
+        <StatsMetricColumn :stats="stats" :today="today" :loading="busy" metric="tokens" class="@4xl:pr-5" />
         <StatsMetricColumn
           :stats="stats"
           :today="today"
+          :loading="busy"
           metric="usd"
           class="border-t border-pane pt-6 @4xl:border-t-0 @4xl:border-l @4xl:pt-0 @4xl:pl-5"
         />
       </div>
+      <section class="mt-6 rounded-lg border border-card bg-elevated p-pane shadow-card">
+        <h2 class="mb-1 font-medium">{{ t('statistics.durationChart.title') }}</h2>
+        <p class="mb-3 text-small text-faint">{{ t('statistics.durationChart.hint') }}</p>
+        <CostChart :series="durationSeries" :today="today" metric="duration" mode="average" :loading="busy" :unavailable="!stats" />
+      </section>
     </div>
-
-    <div v-else-if="loading" class="p-pane"><LoadingBars /></div>
   </div>
 </template>

@@ -65,7 +65,9 @@ async def test_response_usage_is_live_and_results_only_add_uncredited_tokens(ctx
     assert rows[0].data == {"subtype": "usage_update", "total_tokens": 70,
                            "task_total_tokens": 320, "context_tokens": 60,
                            "total_uncached_tokens": 64, "total_cached_tokens": 0,
+                           "total_input_tokens": 60, "total_output_tokens": 4,
                            "task_total_uncached_tokens": 204, "task_total_cached_tokens": 20,
+                           "task_total_input_tokens": 190, "task_total_output_tokens": 14,
                            "accounting_version": 2}
     async with ctx.db.session() as session:
         stored = await session.get(TeamTask, task.id)
@@ -109,6 +111,8 @@ async def test_spend_survives_cancellation_and_next_run_adds_only_new_usage(ctx)
     with pytest.raises(asyncio.CancelledError):
         await ctx.teams._drain_events(Cancelled(), request, task.id, task.assignee_id)
     assert await total(ctx, task) == 109
+    first = (await telemetry(ctx, task))[0].data
+    assert (first["task_total_input_tokens"], first["task_total_output_tokens"]) == (100, 9)
 
     class Resumed:
         async def run(self, _request):
@@ -120,6 +124,8 @@ async def test_spend_survives_cancellation_and_next_run_adds_only_new_usage(ctx)
 
     await ctx.teams._drain_events(Resumed(), request, task.id, task.assignee_id)
     assert await total(ctx, task) == 149
+    latest = (await telemetry(ctx, task))[0].data
+    assert (latest["task_total_input_tokens"], latest["task_total_output_tokens"]) == (100, 9)
     assert "context_tokens" not in (await telemetry(ctx, task))[0].data
 
 

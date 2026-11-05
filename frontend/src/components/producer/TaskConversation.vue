@@ -8,9 +8,10 @@ import type { AgentMessage, TaskAttachment, TeamMember, TeamTask } from '@/api/t
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
+import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import { t } from '@/i18n'
 import { toolName, toolSubject } from '@/lib/activity'
-import { formatTime, formatTokens, statusColor, statusLabel } from '@/lib/status'
+import { formatTime, statusColor, statusLabel } from '@/lib/status'
 import { mergeTaskConversation, taskConversationRows } from '@/lib/task-conversation'
 import { resultTypeColor, resultTypeHint, resultTypeLabel, resultTypeOf } from '@/lib/task-result'
 import { taskCost } from '@/lib/task-telemetry'
@@ -206,17 +207,12 @@ onBeforeUnmount(() => {
         <span class="truncate" :title="live.activity ?? undefined">{{ live.activity || t('chat.answeringNow') }}</span>
       </p>
       <!-- §10.11: lifetime spend follows the same live usage snapshots as TaskDetail. -->
-      <div class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.uncachedHint')">
-        <span class="text-faint">{{ t('tokenUsage.uncached') }}</span>
-        <span class="font-mono tabular-nums">{{ formatTokens(usage.uncachedTokens) }}</span>
-      </div>
-      <div class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.cachedHint')">
-        <span class="text-faint">{{ t('tokenUsage.cached') }}</span>
-        <span class="font-mono tabular-nums">{{ formatTokens(usage.cachedTokens) }}</span>
-      </div>
-      <div v-if="usage.unclassifiedTokens > 0" class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.unclassifiedHint')">
-        <span class="text-faint">{{ t('tokenUsage.unclassified') }}</span>
-        <span class="font-mono tabular-nums">{{ formatTokens(usage.unclassifiedTokens) }}</span>
+      <div class="mb-2 flex justify-end">
+        <TokenUsageChip
+          :input-tokens="usage.inputTokens"
+          :output-tokens="usage.outputTokens"
+          :cached-tokens="usage.cacheReadTokens"
+        />
       </div>
       <div class="flex items-center justify-between gap-2 text-small">
         <span class="text-faint">{{ t('producerPage.taskCost') }}</span>

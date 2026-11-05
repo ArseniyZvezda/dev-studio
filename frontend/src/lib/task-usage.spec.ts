@@ -12,10 +12,78 @@ const telemetry = (data: Record<string, unknown>, created_at = '2026-11-04T10:01
   message({ id: 'state_usage', role: 'system', kind: 'system', text: 'usage_update', data, created_at })
 
 describe('task header usage (§10.4)', () => {
+  it('reads saved and newer live sent/received/cache counters as one complete snapshot', () => {
+    const task = { total_tokens: 1000, total_uncached_tokens: 300, total_cached_tokens: 700,
+      total_input_tokens: 200, total_output_tokens: 100, messages: [] as AgentMessage[] }
+    expect(taskUsage(task)).toMatchObject({ inputTokens: 200, outputTokens: 100, cacheReadTokens: 700 })
+    task.messages.push(telemetry({ task_total_tokens: 1500, task_total_uncached_tokens: 500,
+      task_total_cached_tokens: 1000, task_total_input_tokens: 350, task_total_output_tokens: 150 }))
+    expect(taskUsage(task)).toMatchObject({ inputTokens: 350, outputTokens: 150, cacheReadTokens: 1000 })
+  })
+
+  it('does not replace known saved directions with a same-total legacy snapshot', () => {
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 300, total_cached_tokens: 700,
+      total_input_tokens: 200, total_output_tokens: 100, messages: [telemetry({ task_total_tokens: 1000,
+        task_total_uncached_tokens: 300, task_total_cached_tokens: 700 })] }))
+      .toMatchObject({ inputTokens: 200, outputTokens: 100, cacheReadTokens: 700 })
+  })
+
+  it('keeps missing and inconsistent historical direction splits unknown', () => {
+    for (const task of [
+      { total_tokens: 1000 },
+      { total_tokens: 1000, total_uncached_tokens: 0, total_cached_tokens: 0,
+        total_input_tokens: 0, total_output_tokens: 0 },
+      { total_tokens: 1000, total_uncached_tokens: 800, total_cached_tokens: 700 },
+    ]) {
+      expect(taskUsage({ ...task, messages: [] }))
+        .toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: null })
+    }
+    expect(taskUsage({ total_tokens: 0, messages: [] }))
+      .toMatchObject({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 })
+  })
+
+  it('derives complete old usage without repeating streamed responses or final result counters', () => {
+    const usage = { input_tokens: 100, cache_creation_input_tokens: 50, cache_read_input_tokens: 200, output_tokens: 10 }
+    const messages = [
+      message({ data: { provider_response_id: 'response1', usage } }),
+      message({ data: { provider_response_id: 'response1', usage: { ...usage, output_tokens: 30 } } }),
+      message({ kind: 'result', data: { total_tokens: 380, usage: { ...usage, output_tokens: 30 } } }),
+      telemetry({ total_tokens: 380, task_total_tokens: 380 }),
+    ]
+    expect(taskUsage({ total_tokens: 380, messages }))
+      .toMatchObject({ inputTokens: 150, outputTokens: 30, cacheReadTokens: 200 })
+    // Additional unexplained lifetime spending cannot be assigned to a direction.
+    expect(taskUsage({ total_tokens: 500, messages })).toMatchObject({ inputTokens: null, outputTokens: null })
+  })
+
+  it('uses retained repaired evidence and keeps subsequent runs after compaction', () => {
+    const result = (input: number, output: number, cached: number, created_at: string) =>
+      message({ kind: 'result', created_at, data: { total_tokens: input + output + cached,
+        usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: cached } } })
+    const messages = [result(900, 90, 9000, '2026-11-04T09:00:00Z'),
+      message({ kind: 'accounting', created_at: '2026-11-04T11:00:00Z', data: {
+        repair: { cutoff_at: '2026-11-04T10:00:00Z' },
+        evidence: [result(100, 10, 1000, '2026-11-04T09:00:00Z')],
+      } }),
+      message({ kind: 'compressed summary', created_at: '2026-11-04T12:00:00Z', data: {
+        evidence: [result(200, 20, 2000, '2026-11-04T11:30:00Z')],
+      } }),
+      result(300, 30, 3000, '2026-11-04T13:00:00Z')]
+    expect(taskUsage({ total_tokens: 6660, messages }))
+      .toMatchObject({ inputTokens: 600, outputTokens: 60, cacheReadTokens: 6000 })
+  })
+
+  it('rejects old evidence that matches the total but contradicts the confirmed cache partition', () => {
+    const messages = [message({ kind: 'result', data: { total_tokens: 1000,
+      usage: { input_tokens: 100, output_tokens: 100, cache_read_input_tokens: 800 } } })]
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 300, total_cached_tokens: 700, messages }))
+      .toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: 700 })
+  })
+
   it('keeps historical tokens unclassified rather than pretending they were uncached', () => {
     expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 200, total_cached_tokens: 500, messages: [] }))
       .toEqual({ totalTokens: 1000, uncachedTokens: 200, cachedTokens: 500, unclassifiedTokens: 300,
-        contextTokens: null, contextWindow: null })
+        contextTokens: null, contextWindow: null, inputTokens: null, outputTokens: null, cacheReadTokens: 500 })
     expect(taskUsage({ total_tokens: 1000, messages: [] }).unclassifiedTokens).toBe(1000)
   })
 
@@ -23,7 +91,7 @@ describe('task header usage (§10.4)', () => {
     const messages = [telemetry({ task_total_tokens: 9000, context_tokens: 400 })]
     expect(taskUsage({ total_tokens: 1200, total_uncached_tokens: 200, total_cached_tokens: 1000, messages }))
       .toEqual({ totalTokens: 1200, uncachedTokens: 200, cachedTokens: 1000, unclassifiedTokens: 0,
-        contextTokens: 400, contextWindow: null })
+        contextTokens: 400, contextWindow: null, inputTokens: null, outputTokens: null, cacheReadTokens: 1000 })
   })
 
   it('accepts newly classified tokens without requiring total spending to increase', () => {

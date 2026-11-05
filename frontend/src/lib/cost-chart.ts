@@ -6,7 +6,7 @@
  * by, and none of them needs a browser to be wrong in.
  */
 
-import { formatDate, formatNumber } from '@/i18n'
+import { formatDate, formatNumber, t } from '@/i18n'
 import { formatCost, formatTokens } from '@/lib/status'
 
 /** The same geometry displays either resource and either aggregation (§10.4). */
@@ -18,7 +18,7 @@ export interface MetricPoint {
   count: number
 }
 
-export type Metric = 'tokens' | 'usd'
+export type Metric = 'tokens' | 'usd' | 'duration'
 export type StatisticsChartMode = 'cumulative' | 'average'
 
 const DAY_MS = 86_400_000
@@ -141,6 +141,14 @@ export function formatAxisCost(value: number): string {
 /** Token usage is compact everywhere, including tooltips and accessible summaries. */
 export function formatMetricValue(value: number, metric: Metric, compact = false): string {
   if (metric === 'tokens') return formatTokens(value)
+  if (metric === 'duration') {
+    const seconds = Math.max(0, value / 1000)
+    const amount = seconds < 60 ? seconds : seconds < 3600 ? seconds / 60 : seconds / 3600
+    const unit = seconds < 60 ? 'seconds' : seconds < 3600 ? 'minutes' : 'hours'
+    return t(`statistics.durationChart.${unit}`, {
+      value: formatNumber(amount, { maximumSignificantDigits: 3 }),
+    })
+  }
   if (compact && value >= 10_000) {
     const amount = formatNumber(value, { notation: 'compact', maximumFractionDigits: 1 })
     return `$${amount}`

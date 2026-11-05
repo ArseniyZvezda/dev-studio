@@ -237,7 +237,7 @@ type OutputMessage = Pick<TranscriptMessage, 'kind' | 'role' | 'text' | 'data' |
 const EVIDENCE_KINDS = new Set(['accounting', 'compressed summary', 'context_summary'])
 
 /** §10.4: repairs replace historical accounting while leaving the original dialogue visible. */
-function outputAccounting(messages: TranscriptMessage[]): OutputMessage[] {
+export function outputAccounting(messages: TranscriptMessage[]): OutputMessage[] {
   let latestRepair: { message: TranscriptMessage; cutoff: number } | null = null
   const repairs = new Set<TranscriptMessage>()
   for (const message of messages) {

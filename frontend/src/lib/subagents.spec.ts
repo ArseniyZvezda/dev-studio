@@ -50,6 +50,38 @@ const saved = (overrides: Partial<TaskSubagent> = {}): TaskSubagent => ({
 })
 
 describe('durable Studio-managed work (§10.3)', () => {
+  it('uses complete saved directions and replaces them with newer live counters', () => {
+    const row = saved({ total_tokens: 1500, total_uncached_tokens: 500, total_cached_tokens: 1000,
+      total_input_tokens: 400, total_output_tokens: 100 })
+    expect(subagents([], [row])[0]).toMatchObject({ inputTokens: 400, outputTokens: 100, cacheReadTokens: 1000 })
+    const progress = { ...frame('task_progress', { task_id: row.id, usage: {
+      total_tokens: 2000, total_uncached_tokens: 700, total_cached_tokens: 1300,
+      total_input_tokens: 550, total_output_tokens: 150,
+    } }), created_at: '2026-09-04T10:02:00Z' }
+    expect(subagents([progress], [row])[0]).toMatchObject({ inputTokens: 550, outputTokens: 150, cacheReadTokens: 1300 })
+    const finish = { ...frame('task_notification', { task_id: row.id, status: 'completed' }),
+      created_at: '2026-09-04T10:03:00Z' }
+    expect(subagents([progress, finish], [row])[0])
+      .toMatchObject({ inputTokens: 550, outputTokens: 150, cacheReadTokens: 1300 })
+  })
+
+  it('does not infer a native agent direction split from a combined total', () => {
+    const progress = frame('task_progress', { task_id: 'native_1', usage: { total_tokens: 250 } })
+    expect(subagents([started('native_1'), progress])[0])
+      .toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: null })
+    expect(subagents([], [saved({ total_input_tokens: 0, total_output_tokens: 0 })])[0])
+      .toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: null })
+  })
+
+  it('drops old directions when a same-total report changes the cache partition', () => {
+    const row = saved({ total_tokens: 1500, total_uncached_tokens: 500, total_cached_tokens: 1000,
+      total_input_tokens: 400, total_output_tokens: 100 })
+    const progress = { ...frame('task_progress', { task_id: row.id, usage: {
+      total_tokens: 1500, total_uncached_tokens: 700, total_cached_tokens: 800,
+    } }), created_at: '2026-09-04T10:02:00Z' }
+    expect(subagents([progress], [row])[0]).toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: 800 })
+  })
+
   it('retains archived or compressed workers when lifecycle messages are gone', () => {
     for (const messages of [[], [message({ kind: 'compressed summary', text: 'Task summary' })]]) {
       const list = subagents(messages, [saved()])

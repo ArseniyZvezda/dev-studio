@@ -18,6 +18,7 @@
 import type { AgentMessage, TaskSubagent } from '@/api/types'
 import { t, type MessageKey } from '@/i18n'
 import { formatCost, formatTokens, parseUtc } from '@/lib/status'
+import { tokenDirections, usageRecord, type TokenDirections } from '@/lib/token-directions'
 
 /**
  * Work whose completion wakes the session for another turn, so the run is held open for it.
@@ -38,7 +39,7 @@ const RUN_ENDING_KINDS = new Set(['error', 'cancelled'])
 export type SubagentStatus = 'running' | 'completed' | 'failed' | 'stopped'
 
 /** One piece of delegated work, from `task_started` to whichever frame ended it. */
-export interface Subagent {
+export interface Subagent extends TokenDirections {
   id: string
   description: string
   /** The runtime's own word: `local_agent`, `local_workflow`, `background_shell`, … */
@@ -140,14 +141,26 @@ export function subagentUsage(entry: Pick<Subagent, 'tokens' | 'uncachedTokens' 
 /** Native lifecycle events may report only a total; the missing split stays unknown. */
 function tokenBreakdown(
   usage: Record<string, unknown> | null,
-  previous?: Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'>,
-): Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'> {
+  previous?: Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'> & TokenDirections,
+): Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'> & TokenDirections {
   const tokens = count(usage?.total_tokens) ?? previous?.tokens ?? 0
   const uncachedTokens = count(usage?.total_uncached_tokens) ?? previous?.uncachedTokens ?? 0
   const cachedTokens = count(usage?.total_cached_tokens) ?? previous?.cachedTokens ?? 0
-  return uncachedTokens + cachedTokens <= tokens
+  const groups = uncachedTokens + cachedTokens <= tokens
     ? { tokens, uncachedTokens, cachedTokens }
     : { tokens, uncachedTokens: 0, cachedTokens: 0 }
+  const directions = tokenDirections({ ...usage,
+    usage: usageRecord(usage?.usage) ?? usage,
+    total_uncached_tokens: groups.uncachedTokens,
+    total_cached_tokens: groups.cachedTokens,
+  }, tokens)
+  if (previous && tokens === previous.tokens && groups.uncachedTokens === previous.uncachedTokens
+    && groups.cachedTokens === previous.cachedTokens) {
+    directions.inputTokens ??= previous.inputTokens
+    directions.outputTokens ??= previous.outputTokens
+    directions.cacheReadTokens ??= previous.cacheReadTokens
+  }
+  return { ...groups, ...directions }
 }
 
 /** The fields a lifecycle frame is read from — an `AgentMessage`, or the event that will
@@ -183,7 +196,8 @@ export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = 
       status: row.status === 'queued' || row.status === 'running' ? 'running' : asStatus(row.status),
       holdsRun: true, startedAt: row.created_at, endedAt: row.finished_at,
       ...tokenBreakdown({ total_tokens: row.total_tokens, total_uncached_tokens: row.total_uncached_tokens,
-        total_cached_tokens: row.total_cached_tokens }),
+        total_cached_tokens: row.total_cached_tokens, total_input_tokens: row.total_input_tokens,
+        total_output_tokens: row.total_output_tokens }),
       costUsd: count(row.total_cost_usd),
       toolUses: count(row.tool_uses) ?? 0, lastTool: '', summary: row.summary,
     })

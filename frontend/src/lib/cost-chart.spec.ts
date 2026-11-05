@@ -91,6 +91,13 @@ describe('formatAxisCost', () => {
 })
 
 describe('compact metric labels', () => {
+  it('formats average execution times in seconds, minutes and hours without discarding sub-second values', () => {
+    expect(formatMetricValue(250, 'duration')).toBe('0.25 s')
+    expect(formatMetricValue(25_000, 'duration', true)).toBe('25 s')
+    expect(formatMetricValue(90_000, 'duration')).toBe('1.5 min')
+    expect(formatMetricValue(5_400_000, 'duration', true)).toBe('1.5 h')
+  })
+
   it('uses the same compact token counts on the plot and in tooltips', () => {
     expect(formatMetricValue(12_345_678, 'tokens', true)).toBe('12M')
     expect(formatMetricValue(12_345_678, 'tokens')).toBe('12M')

@@ -136,6 +136,55 @@ def test_empty_statistics_have_no_fabricated_days():
     stats = cost_stats([], [], [])
     assert stats["token_series"] == stats["by_model_tokens"] == stats["average_task_series"] == []
     assert stats["totals"]["spent_tokens"] == 0
+    assert stats["average_task_duration_series"] == []
+
+
+def test_daily_duration_average_adds_runs_excludes_idle_time_and_keeps_archives():
+    tasks = [
+        task("resumed", status=TaskStatus.DONE, started_at=at(1), finished_at=at(3), archived=True),
+        task("short", status=TaskStatus.DONE, started_at=at(3), finished_at=at(3)),
+        task("zero", status=TaskStatus.DONE, finished_at=at(5)),
+        task("unknown", status=TaskStatus.DONE, finished_at=at(3)),
+        task("review", status=TaskStatus.NEEDS_REVIEW, started_at=at(1), finished_at=at(3)),
+        task("cancelled", status=TaskStatus.CANCELLED, started_at=at(1), finished_at=at(3)),
+    ]
+    messages = [
+        message("resumed", "result", 1, {"duration_ms": 60000, "continued": True}),
+        message("resumed", "result", 3, {"duration_ms": 180000}),
+        message("resumed", "result", 3, {"purpose": "context_compaction"}),
+        message("short", "result", 3, {"duration_ms": 120000}),
+        message("zero", "result", 5, {"duration_ms": 0}),
+        message("other-team", "result", 3, {"duration_ms": 999999}),
+    ]
+    expected = [
+        {"day": "2026-10-03", "tasks": 2, "average_duration_ms": 180000},
+        {"day": "2026-10-05", "tasks": 1, "average_duration_ms": 0},
+    ]
+    assert cost_stats(tasks, messages, [])["average_task_duration_series"] == expected
+    for _ in range(2):
+        # Compression/archiving keeps timing evidence, including the auxiliary marker.
+        messages = compaction.expand_evidence([
+            message(key, compaction.ACCOUNTING_KIND, 5, {"evidence": compaction.retain_evidence(
+                [item for item in messages if item.task_id == key])})
+            for key in ("resumed", "short", "zero")
+        ])
+        assert cost_stats(tasks, messages, [])["average_task_duration_series"] == expected
+
+
+def test_duration_average_falls_back_to_header_interval_and_omits_invalid_timing():
+    tasks = [
+        task("legacy", status=TaskStatus.DONE, started_at=at(2, 10), finished_at=at(2, 11)),
+        task("incomplete", status=TaskStatus.DONE, started_at=at(2, 10), finished_at=at(2, 12)),
+        task("invalid", status=TaskStatus.DONE, started_at=at(3), finished_at=at(2)),
+        task("undated", status=TaskStatus.DONE, started_at=at(1)),
+        task("unknown", status=TaskStatus.DONE, finished_at=at(4)),
+    ]
+    messages = [message("incomplete", "result", 1, {"duration_ms": 1000}),
+                message("incomplete", "result", 2, {"duration_ms": -1}),
+                message("unknown", "result", 4, {"duration_ms": True})]
+    assert cost_stats(tasks, messages, [])["average_task_duration_series"] == [
+        {"day": "2026-10-02", "tasks": 2, "average_duration_ms": 5400000},
+    ]
 
 
 def test_compression_retains_token_results_and_live_date_across_repeated_compression():

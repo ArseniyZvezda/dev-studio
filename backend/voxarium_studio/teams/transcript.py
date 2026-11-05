@@ -33,7 +33,9 @@ def compact_state(message, owner_id: str) -> bool:
         # Cumulative telemetry is a snapshot, never a second copy of response usage.
         message.data = {"subtype": "usage_update", **{
             key: value for key in ("total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                                  "total_input_tokens", "total_output_tokens",
                                   "task_total_tokens", "task_total_uncached_tokens", "task_total_cached_tokens",
+                                  "task_total_input_tokens", "task_total_output_tokens",
                                   "accounting_version", "context_tokens", "context_window")
             if isinstance(value := message.data.get(key), int) and not isinstance(value, bool) and value >= 0
         }}

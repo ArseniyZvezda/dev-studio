@@ -76,7 +76,7 @@ from .slots import agent_slot, span
 from .subagents import SubagentManager, results_prompt
 from .store import TeamStore
 from .tools import build_toolset
-from .usage import RunUsage, usage_components
+from .usage import RunUsage, usage_components, usage_directions
 
 log = logging.getLogger(__name__)
 
@@ -1488,6 +1488,7 @@ class TeamOrchestrator:
             evidence.append({"kind": "result", "role": "system", "text": "",
                              "created_at": utcnow().isoformat(),
                              "data": {"total_cost_usd": data.get("total_cost_usd", 0),
+                                      "purpose": "context_compaction",
                                       **{key: data[key] for key in (
                                           "provider_session_id", "session_total_cost_usd",
                                           "session_cost_baseline_usd", "cost_unavailable",
@@ -1495,6 +1496,8 @@ class TeamOrchestrator:
                                       "total_tokens": data.get("total_tokens", 0),
                                       "total_uncached_tokens": usage_components(data)[0],
                                       "total_cached_tokens": usage_components(data)[1],
+                                      "total_input_tokens": usage_directions(data)[0],
+                                      "total_output_tokens": usage_directions(data)[1],
                                       "accounting_version": 2,
                                       "usage": data.get("usage", {}),
                                       "model": data.get("model") or request.model}})
@@ -1578,6 +1581,8 @@ class TeamOrchestrator:
             task.total_tokens = 0
             task.total_uncached_tokens = 0
             task.total_cached_tokens = 0
+            task.total_input_tokens = 0
+            task.total_output_tokens = 0
             task.started_at = None
             task.finished_at = None
             session.add(task)
@@ -2590,6 +2595,7 @@ class TeamOrchestrator:
         usage = RunUsage()
         credited_tokens = 0
         credited_uncached = credited_cached = 0
+        credited_input = credited_output = 0
 
         async for event in backend.run(request):
             # §10.4: persist reported spend while work is running, including a run
@@ -2608,9 +2614,12 @@ class TeamOrchestrator:
                     task_id, member_id, usage, delta=usage.total - credited_tokens,
                     uncached_delta=usage.uncached - credited_uncached,
                     cached_delta=usage.cached - credited_cached,
+                    input_delta=usage.input - credited_input,
+                    output_delta=usage.output - credited_output,
                 )
                 credited_tokens = usage.total
                 credited_uncached, credited_cached = usage.uncached, usage.cached
+                credited_input, credited_output = usage.input, usage.output
             if event.session_id:
                 await self._store_session_id(task_id, event.session_id)
             if event.kind == "text" and event.text:
@@ -2627,11 +2636,14 @@ class TeamOrchestrator:
                     **event.data, "total_tokens": usage.total - credited_tokens,
                     "total_uncached_tokens": usage.uncached - credited_uncached,
                     "total_cached_tokens": usage.cached - credited_cached,
+                    "total_input_tokens": usage.input - credited_input,
+                    "total_output_tokens": usage.output - credited_output,
                 })
                 await self._publish_usage_update(task_id, member_id, usage)
                 usage.next_segment()
                 credited_tokens = 0
                 credited_uncached = credited_cached = 0
+                credited_input = credited_output = 0
                 # A `continued` result ended a turn and not the run — a session that
                 # stopped mid-work and is being resumed, or one held open because the
                 # sub-agents and workflows the member started are still running (§10.3).
@@ -3080,6 +3092,7 @@ class TeamOrchestrator:
 
     async def _store_result_stats(self, task_id: str, data: dict[str, Any]) -> None:
         uncached, cached = usage_components(data)
+        sent, received = usage_directions(data)
         async with self.db.session() as session:
             await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
                 total_cost_usd=TeamTask.total_cost_usd + float(data.get("total_cost_usd") or 0.0),
@@ -3087,11 +3100,14 @@ class TeamOrchestrator:
                 total_tokens=TeamTask.total_tokens + int(data.get("total_tokens") or 0),
                 total_uncached_tokens=TeamTask.total_uncached_tokens + uncached,
                 total_cached_tokens=TeamTask.total_cached_tokens + cached,
+                total_input_tokens=TeamTask.total_input_tokens + sent,
+                total_output_tokens=TeamTask.total_output_tokens + received,
             ))
 
     async def _publish_usage_update(
         self, task_id: str, member_id: str, usage: RunUsage, *, delta: int = 0,
         uncached_delta: int = 0, cached_delta: int = 0,
+        input_delta: int = 0, output_delta: int = 0,
     ) -> None:
         """One persisted counter and one replaceable WS row, independent of backend (§10.4)."""
         async with self.db.session() as session:
@@ -3099,13 +3115,17 @@ class TeamOrchestrator:
                 total_tokens=TeamTask.total_tokens + delta,
                 total_uncached_tokens=TeamTask.total_uncached_tokens + uncached_delta,
                 total_cached_tokens=TeamTask.total_cached_tokens + cached_delta,
+                total_input_tokens=TeamTask.total_input_tokens + input_delta,
+                total_output_tokens=TeamTask.total_output_tokens + output_delta,
             ))
             task = await session.get(TeamTask, task_id)
             if task is None:
                 return
             task_total = task.total_tokens
             task_uncached, task_cached = task.total_uncached_tokens, task.total_cached_tokens
-        await self._publish_message(task_id, member_id, usage.snapshot(task_total, task_uncached, task_cached))
+            task_input, task_output = task.total_input_tokens, task.total_output_tokens
+        await self._publish_message(task_id, member_id, usage.snapshot(
+            task_total, task_uncached, task_cached, task_input, task_output))
 
     async def _cleanup_task_temp(self, task: TeamTask) -> None:
         try:

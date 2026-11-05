@@ -1568,7 +1568,23 @@
     },
     "metrics": {
       "tokens": "Tokens",
-      "usd": "API Cost"
+      "usd": "API Cost",
+      "duration": "execution time"
+    },
+    "retry": "Retry",
+    "unavailable": "Statistics could not be loaded.",
+    "durationChart": {
+      "title": "Average Task Time",
+      "hint": "Average execution time of tasks in Done, grouped by their completion day (UTC). Uses recorded run durations, or the task's start-to-finish interval when run timing is missing. Archived tasks count; tasks without timing and days without measured completions have no point.",
+      "empty": "No completed tasks with recorded execution time yet.",
+      "summaryEmpty": "Average task execution time: no completed tasks with recorded execution time yet.",
+      "summary": {
+        "one": "Average task execution time: {count} recorded day, from {from} to {to}; latest average {value}.",
+        "other": "Average task execution time: {count} recorded days, from {from} to {to}; latest average {value}."
+      },
+      "seconds": "{value} s",
+      "minutes": "{value} min",
+      "hours": "{value} h"
     },
     "tokens": {
       "one": "{value} token",
@@ -2511,6 +2527,11 @@
     "noMessages": "No messages yet"
   },
   "tokenUsage": {
+    "sentValue": "Sent: {tokens}",
+    "receivedValue": "Received: {tokens}",
+    "sentHint": "Input tokens sent to the model, including cache creation. Cache reads are counted separately.",
+    "receivedHint": "Output tokens received from the model.",
+    "unavailable": "The recorded usage does not provide this token count.",
     "uncached": "Tokens excluding cache reads",
     "cached": "Cache reads",
     "unclassified": "Unclassified tokens",

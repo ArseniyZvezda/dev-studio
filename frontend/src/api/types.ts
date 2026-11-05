@@ -624,6 +624,8 @@ export interface TeamTask {
   /** Input, cache creation and output; cache reads are tracked separately (§10.4). */
   total_uncached_tokens?: number
   total_cached_tokens?: number
+  total_input_tokens?: number
+  total_output_tokens?: number
   /**
    * Off the board, still on the books (§10.4). Only a `done` task can be archived, and a
    * status move off `done` un-archives it, so this never describes a card the board has to
@@ -695,6 +697,8 @@ export interface AgentChat {
   total_tokens: number
   total_uncached_tokens?: number
   total_cached_tokens?: number
+  total_input_tokens?: number
+  total_output_tokens?: number
   created_at: string
   last_message_at: string
   /** The member is answering right now. */
@@ -783,6 +787,8 @@ export interface TaskSubagent {
   total_tokens: number
   total_uncached_tokens?: number
   total_cached_tokens?: number
+  total_input_tokens?: number
+  total_output_tokens?: number
   total_cost_usd: number
   num_turns: number
   tool_uses: number
@@ -937,6 +943,8 @@ export interface TeamStats {
   series: CostPoint[]
   token_series: TokenPoint[]
   average_task_series: AverageTaskPoint[]
+  /** Measured execution time of Done tasks, grouped by their completion day (UTC). */
+  average_task_duration_series: { day: string; average_duration_ms: number; tasks: number }[]
   by_member: MemberSpend[]
   by_model: { model: string | null; spent_usd: number }[]
   by_model_tokens: {

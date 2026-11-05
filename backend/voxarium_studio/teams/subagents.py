@@ -240,6 +240,8 @@ class SubagentManager:
                 "usage": {"total_tokens": row.total_tokens, "total_cost_usd": row.total_cost_usd,
                           "total_uncached_tokens": row.total_uncached_tokens,
                           "total_cached_tokens": row.total_cached_tokens,
+                          "total_input_tokens": row.total_input_tokens,
+                          "total_output_tokens": row.total_output_tokens,
                           "tool_uses": row.tool_uses},
             },
         )
@@ -305,6 +307,7 @@ class SubagentManager:
                 usage = RunUsage()
                 credited = 0
                 credited_uncached = credited_cached = 0
+                credited_input = credited_output = 0
                 credited_cost = 0.0
                 last_text, result_text = "", ""
                 failed = False
@@ -323,8 +326,11 @@ class SubagentManager:
                         delta = usage.total - credited
                         uncached_delta = usage.uncached - credited_uncached
                         cached_delta = usage.cached - credited_cached
+                        input_delta = usage.input - credited_input
+                        output_delta = usage.output - credited_output
                         credited = usage.total
                         credited_uncached, credited_cached = usage.uncached, usage.cached
+                        credited_input, credited_output = usage.input, usage.output
                         raw_cost = event.data.get("total_cost_usd")
                         cost = (float(raw_cost) if isinstance(raw_cost, (int, float))
                                 and not isinstance(raw_cost, bool) and math.isfinite(raw_cost) and raw_cost >= 0 else None)
@@ -334,6 +340,8 @@ class SubagentManager:
                         row.total_tokens += delta
                         row.total_uncached_tokens += uncached_delta
                         row.total_cached_tokens += cached_delta
+                        row.total_input_tokens += input_delta
+                        row.total_output_tokens += output_delta
                         row.total_cost_usd += cost_delta
                         row.num_turns += turns
                         row.updated_at = utcnow()
@@ -352,6 +360,7 @@ class SubagentManager:
                             usage.next_segment()
                             credited, credited_cost = 0, 0.0
                             credited_uncached = credited_cached = 0
+                            credited_input = credited_output = 0
                         async with self.owner.db.session() as session:
                             session.add(row)
                             session.add(SubagentMessage(subagent_id=row.id, kind=event.kind, text=event.text, data=event.data))
@@ -360,12 +369,14 @@ class SubagentManager:
                                 total_tokens=TeamTask.total_tokens + delta,
                                 total_uncached_tokens=TeamTask.total_uncached_tokens + uncached_delta,
                                 total_cached_tokens=TeamTask.total_cached_tokens + cached_delta,
+                                total_input_tokens=TeamTask.total_input_tokens + input_delta,
+                                total_output_tokens=TeamTask.total_output_tokens + output_delta,
                                 total_cost_usd=TeamTask.total_cost_usd + cost_delta,
                                 num_turns=TeamTask.num_turns + turns,
                             ))
                         last_tool = str(event.data.get("name") or event.text) if event.kind == "tool_use" else ""
                         await self._emit(row, "task_progress", last_tool=last_tool)
-                        if delta or uncached_delta or cached_delta or cost_delta or turns:
+                        if delta or uncached_delta or cached_delta or input_delta or output_delta or cost_delta or turns:
                             await self.owner._publish_task_changed(row.task_id)
                 row.status = "failed" if failed else "completed"
                 row.summary = result_text or last_text

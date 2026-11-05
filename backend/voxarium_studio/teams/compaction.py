@@ -112,6 +112,8 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
         if message.kind == "result":
             data = {key: data[key] for key in (
                 "total_cost_usd", "total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                "total_input_tokens", "total_output_tokens",
+                "duration_ms", "purpose",
                 "usage", "model", "accounting_version", "provider_session_id", "session_total_cost_usd",
                 "session_cost_baseline_usd", "repair_source", "cost_unavailable",
             ) if key in data}
@@ -126,7 +128,9 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
             # work retains its date after the dialogue is compressed.
             data = {key: data[key] for key in (
                 "subtype", "total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                "total_input_tokens", "total_output_tokens",
                 "task_total_tokens", "task_total_uncached_tokens", "task_total_cached_tokens", "accounting_version",
+                "task_total_input_tokens", "task_total_output_tokens",
             )
                     if key in data}
         elif message.kind in {"model", "system"}:

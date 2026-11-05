@@ -376,6 +376,9 @@ class TeamTask(SQLModel, table=True):
     """Input, cache writes and output; legacy unclassified usage stays in total only."""
     total_cached_tokens: int = 0
     """Repeated cache reads, already included in total_tokens."""
+    total_input_tokens: int = 0
+    """Known sent tokens, including cache creation but excluding cache reads (§10.4)."""
+    total_output_tokens: int = 0
     commit_message: str | None = Field(default=None, sa_column=Column(Text))
     """The commit description drafted when the task last reached ``needs_review`` (§10.4).
 
@@ -493,6 +496,8 @@ class AgentChat(SQLModel, table=True):
     total_tokens: int = 0
     total_uncached_tokens: int = 0
     total_cached_tokens: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
     created_at: datetime = Field(default_factory=utcnow, index=True, sa_type=UtcDateTime)
     last_message_at: datetime = Field(default_factory=utcnow, index=True, sa_type=UtcDateTime)
     """When anything was last said in it, by either side — what the chat list sorts by."""

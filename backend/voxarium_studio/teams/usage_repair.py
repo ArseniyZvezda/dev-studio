@@ -684,13 +684,15 @@ def apply_audit(report: dict, *, backup_path: Path | None = None, database_path:
             if not task or task["status"] not in TERMINAL or _fingerprint(task, messages[tid], stamps.get(tid)) != row["fingerprint"]:
                 raise ValueError(f"Task changed since audit; no tasks repaired: {tid}")
         columns = {row[1] for row in connection.execute("PRAGMA table_info(team_task)")}
-        for field in ("total_uncached_tokens", "total_cached_tokens"):
+        for field in ("total_uncached_tokens", "total_cached_tokens", "total_input_tokens", "total_output_tokens"):
             if field not in columns:
                 connection.execute(f"ALTER TABLE team_task ADD COLUMN {field} INTEGER NOT NULL DEFAULT 0")
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
         for row in selected:
             task, after = by_id[row["task_id"]], row["after"]
-            connection.execute("UPDATE team_task SET total_tokens=?,total_uncached_tokens=?,total_cached_tokens=?,total_cost_usd=? WHERE id=?",
+            # Direction totals must be rebuilt from repaired evidence, never reused from
+            # accounting that the repair has invalidated (§10.4).
+            connection.execute("UPDATE team_task SET total_tokens=?,total_uncached_tokens=?,total_cached_tokens=?,total_cost_usd=?,total_input_tokens=0,total_output_tokens=0 WHERE id=?",
                                tuple(after[key] for key in COUNTERS) + (task["id"],))
             data = {"accounting_version": 2,
                     "repair": {"version": VERSION, "cutoff_at": row["cutoff_at"],

@@ -655,9 +655,10 @@ class ChatService:
                 session.add(chat)
 
     async def _store_result_stats(self, chat_id: str, data: dict[str, Any]) -> None:
-        from .usage import usage_components
+        from .usage import usage_components, usage_directions
 
         uncached, cached = usage_components(data)
+        sent, received = usage_directions(data)
         async with self.db.session() as session:
             chat = await session.get(AgentChat, chat_id)
             if chat is None:
@@ -667,6 +668,8 @@ class ChatService:
             chat.total_tokens += int(data.get("total_tokens") or 0)
             chat.total_uncached_tokens += uncached
             chat.total_cached_tokens += cached
+            chat.total_input_tokens += sent
+            chat.total_output_tokens += received
             session.add(chat)
 
     async def _set_error(self, chat_id: str, error: str | None) -> None:

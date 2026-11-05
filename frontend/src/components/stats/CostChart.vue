@@ -14,6 +14,7 @@
  * plain SVG, shared by both resources and both aggregation modes.
  */
 import { useElementSize } from '@vueuse/core'
+import { LoaderCircle } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
 import { formatNumber, t } from '@/i18n'
@@ -37,6 +38,8 @@ const props = defineProps<{
   metric: Metric
   mode: StatisticsChartMode
   metricLabel?: string
+  loading?: boolean
+  unavailable?: boolean
 }>()
 
 const container = ref<HTMLElement | null>(null)
@@ -90,7 +93,9 @@ const xTicks = computed(() =>
   dayTicks(domain.value.start, domain.value.end, Math.max(2, Math.floor(plotWidth.value / 78))),
 )
 
-const messagePrefix = computed(() => props.mode === 'average'
+const messagePrefix = computed(() => props.metric === 'duration'
+  ? 'statistics.durationChart'
+  : props.mode === 'average'
   ? 'statistics.averageChart'
   : props.metric === 'tokens' ? 'statistics.tokensChart' : 'statistics.chart')
 const metricLabel = computed(() => props.metricLabel ?? t(`statistics.metrics.${props.metric}`))
@@ -158,13 +163,17 @@ const tooltipStyle = computed(() => {
 </script>
 
 <template>
-  <div ref="container" class="relative w-full">
+  <div ref="container" class="relative w-full" :aria-busy="loading">
+    <div v-if="loading && !series.length" class="grid h-60 place-items-center rounded-md bg-inset/40" role="status">
+      <LoaderCircle class="size-5 animate-spin text-faint" aria-hidden="true" />
+      <span class="sr-only">{{ t('common.loading') }}</span>
+    </div>
     <p
-      v-if="!series.length"
+      v-else-if="!series.length"
       class="grid place-items-center text-faint"
       :style="{ height: `${HEIGHT}px` }"
     >
-      {{ t(`${messagePrefix}.empty`) }}
+      {{ t(unavailable ? 'statistics.unavailable' : `${messagePrefix}.empty`) }}
     </p>
 
     <svg
@@ -260,6 +269,11 @@ const tooltipStyle = computed(() => {
         {{ formatPlotValue(last.value) }}
       </text>
     </svg>
+
+    <span v-if="loading && series.length" class="absolute right-2 top-2 rounded bg-elevated p-1 text-faint" role="status">
+      <LoaderCircle class="size-4 animate-spin" aria-hidden="true" />
+      <span class="sr-only">{{ t('common.loading') }}</span>
+    </span>
 
     <!-- HTML rather than SVG text, so it wraps, layers and themes like every other tooltip. -->
     <div

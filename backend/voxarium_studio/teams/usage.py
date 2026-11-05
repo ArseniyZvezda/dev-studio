@@ -29,6 +29,19 @@ def usage_components(data: dict[str, Any]) -> tuple[int, int]:
     )
 
 
+def usage_directions(data: dict[str, Any]) -> tuple[int, int]:
+    """Sent/received tokens for the §10.4 chip; cache reads remain separate."""
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    sent = token_count(data.get("total_input_tokens"))
+    received = token_count(data.get("total_output_tokens"))
+    return (
+        sent if sent is not None else sum(token_count(usage.get(key)) or 0
+            for key in ("input_tokens", "cache_creation_input_tokens")),
+        received if received is not None else token_count(usage.get("output_tokens")) or 0,
+    )
+
+
 class RunUsage:
     """Credit each response once, then reconcile the final result without adding it twice.
 
@@ -41,6 +54,8 @@ class RunUsage:
         self.total = 0
         self.uncached = 0
         self.cached = 0
+        self.input = 0
+        self.output = 0
         self.context: dict[str, int] = {}
         self.responses: dict[str, dict[str, int]] = {}
 
@@ -53,6 +68,9 @@ class RunUsage:
             uncached, cached = usage_components(data)
             self.uncached = max(self.uncached, uncached)
             self.cached = max(self.cached, cached)
+            sent, received = usage_directions(data)
+            self.input = max(self.input, sent)
+            self.output = max(self.output, received)
             self.total = max(self.total, self.uncached + self.cached)
             for key in ("context_tokens", "context_window"):
                 value = token_count(data.get(key))
@@ -81,19 +99,24 @@ class RunUsage:
         self.total += sum(delta.values())
         self.cached += delta.get("cache_read_input_tokens", 0)
         self.uncached += sum(delta.get(key, 0) for key in TOKEN_FIELDS if key != "cache_read_input_tokens")
+        self.input += delta.get("input_tokens", 0) + delta.get("cache_creation_input_tokens", 0)
+        self.output += delta.get("output_tokens", 0)
         if not data.get("parent_tool_use_id") and any(key in counted for key in TOKEN_FIELDS[:3]):
             self.context = {"context_tokens": sum(counted.get(key, 0) for key in TOKEN_FIELDS[:3])}
         return True
 
     def counters(self) -> dict[str, int]:
         return {"total_tokens": self.total, "total_uncached_tokens": self.uncached,
-                "total_cached_tokens": self.cached, "accounting_version": 2}
+                "total_cached_tokens": self.cached, "total_input_tokens": self.input,
+                "total_output_tokens": self.output, "accounting_version": 2}
 
-    def snapshot(self, task_total: int, task_uncached: int = 0, task_cached: int = 0) -> AgentEvent:
+    def snapshot(self, task_total: int, task_uncached: int = 0, task_cached: int = 0,
+                 task_input: int = 0, task_output: int = 0) -> AgentEvent:
         return AgentEvent(kind="system", text="usage_update", data={
             "subtype": "usage_update", **self.counters(),
             "task_total_tokens": task_total, "task_total_uncached_tokens": task_uncached,
-            "task_total_cached_tokens": task_cached, **self.context,
+            "task_total_cached_tokens": task_cached, "task_total_input_tokens": task_input,
+            "task_total_output_tokens": task_output, **self.context,
         })
 
     def finish(self, data: dict[str, Any]) -> None:
@@ -101,8 +124,12 @@ class RunUsage:
         uncached, cached = usage_components(data)
         self.uncached = max(self.uncached, uncached)
         self.cached = max(self.cached, cached)
+        sent, received = usage_directions(data)
+        self.input = max(self.input, sent)
+        self.output = max(self.output, received)
         self.total = max(self.total, self.uncached + self.cached)
 
     def next_segment(self) -> None:
         self.total = 0
         self.uncached = self.cached = 0
+        self.input = self.output = 0
