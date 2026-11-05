@@ -19,7 +19,9 @@
     "closeFailed": "Setup could not end all Voxarium Studio processes. Close the remaining processes yourself, then click Retry. No application files have been replaced."
   },
   "desktop": {
-    "backendVersionMismatch": "Version mismatch: interface {frontend}, backend {backend}. Stopping the old processes and restarting Studio…",
+    "backendVersionMismatch": "Version mismatch: interface {frontend}, backend {backend}. Restarting the backend for the selected Studio build…",
+    "confirmBackendSwitch": "Studio backend {backend} is already running. Switch to build {frontend}?\n\nThe current project will be kept. Running tasks and pipelines will be stopped. Commit hashes do not indicate which build is newer.",
+    "switchBackend": "Switch and restart",
     "unknownBackendVersion": "The backend version could not be verified. Rebuild or reinstall Studio.",
     "desktopTooOld": "A newer Studio backend is already running. Update this desktop application before opening it again.",
     "restartProjectUnknown": "Studio could not read the current project for a safe restart. If the server requires a token, provide VOXARIUM_STUDIO_TOKEN before launching the desktop.",

@@ -61,7 +61,12 @@ build the frontend. From `desktop`, run `npm start`. The shell calls the reposit
 `run.ps1` in a hidden process when no Studio is running, or attaches to a matching-version Studio on port 8765.
 An older Studio backend is replaced through the same launcher, preserving its current
 project. A newer backend is left running and the older desktop reports that it needs an
-update. The web interface also checks versions at startup and reconnect, then restarts
+update. When different commit hashes are involved (including commit/release switches),
+the desktop shows both builds and asks before switching to its bundled backend.
+Cancelling leaves the server running and closes startup without an error. Confirming
+stops running work, reads the current project, rechecks the server identity and starts
+the selected build through the same launcher. Hashes are never sorted as releases.
+The web interface also checks versions at startup and reconnect, then restarts
 an outdated backend or reloads an outdated page. Recovery stops running work; failed
 recovery remains visible and does not loop automatically (dev spec §2.5).
 To test without touching a real managed project:

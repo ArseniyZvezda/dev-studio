@@ -9,10 +9,13 @@ const { ORIGIN } = require('../policy.cjs');
 // Exercise the actual boot path without spawning processes, opening windows or
 // contacting the fixed server port. The desktop and backend must share a version (§2.7).
 async function boot({ existing = null, packaged = true, studioVersion = packaged ? '5.2.0' : '5.0.0',
-  startedVersion = studioVersion, releaseVersion = '5.2.0', staleBackendVersion } = {}) {
-  const calls = { launch: [], stop: [], errors: [], pages: [], exits: [], updates: [], diagnostics: [] };
+  startedVersion = studioVersion, releaseVersion = '5.2.0', staleBackendVersion,
+  confirmationResponse = 1, project = { root: 'D:\\Games\\CurrentProject' }, projectOk = true,
+  recheckedExisting } = {}) {
+  const calls = { launch: [], stop: [], errors: [], pages: [], exits: [], updates: [], diagnostics: [],
+    confirmations: [], projects: [] };
   const instance = 'test-desktop-instance';
-  let launched = false, completion;
+  let launched = false, completion, healthChecks = 0;
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: packaged,
@@ -45,7 +48,13 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
     ...(staleBackendVersion ? { backendVersion: staleBackendVersion } : {}) };
   const mocks = {
     electron: { app, BrowserWindow,
-      dialog: { showErrorBox: (_title, text) => calls.errors.push(text) },
+      dialog: {
+        showErrorBox: (_title, text) => calls.errors.push(text),
+        showMessageBox: async (_window, options) => {
+          calls.confirmations.push({ ...options, projectReads: calls.projects.length });
+          return { response: confirmationResponse };
+        },
+      },
       shell: {}, Menu: { setApplicationMenu() {} }, ipcMain: { handle() {} },
       nativeImage: { createFromPath: () => image },
     },
@@ -84,10 +93,15 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
     },
     process: { env: {}, pid: 1234, resourcesPath: path.resolve('test-resources') },
     fetch: async url => {
-      assert.equal(url, `${ORIGIN}/healthz`, 'boot must not read a project for a compatible server');
+      if (url === `${ORIGIN}/api/project`) {
+        calls.projects.push(url);
+        return { ok: projectOk, json: async () => project };
+      }
+      assert.equal(url, `${ORIGIN}/healthz`);
+      healthChecks++;
       const health = launched
         ? { service: 'voxarium_studio', status: 'ok', version: startedVersion, desktop_instance: instance }
-        : existing;
+        : healthChecks > 1 && recheckedExisting !== undefined ? recheckedExisting : existing;
       return { ok: !!health, json: async () => health };
     },
     AbortSignal, setTimeout, console,
@@ -115,6 +129,8 @@ test('tagged desktop attaches to a compatible independent backend without taking
   assert.deepEqual(calls.pages, [ORIGIN]);
   assert.equal(calls.launch.length, 0);
   assert.equal(calls.stop.length, 0);
+  assert.equal(calls.projects.length, 0);
+  assert.equal(calls.confirmations.length, 0);
 });
 
 test('a genuinely incompatible owned backend still fails startup and is stopped', async () => {
@@ -178,4 +194,71 @@ test('checkout startup uses the same untagged source commit as the backend', asy
   assert.deepEqual(calls.errors, []);
   assert.deepEqual(calls.pages, [ORIGIN]);
   assert.equal(calls.diagnostics[0].expectedVersion, 'abcdef0');
+});
+
+const independentCommit = { service: 'voxarium_studio', status: 'ok', version: '0ebc2cf', desktop_instance: null };
+
+test('installed commit switches an independent backend only after confirmation and preserves its current project', async () => {
+  const calls = await boot({ existing: independentCommit, studioVersion: '3d9da6e', releaseVersion: '5.0.0' });
+  assert.deepEqual(calls.errors, []);
+  assert.equal(calls.confirmations.length, 1);
+  const confirmation = calls.confirmations[0];
+  assert.match(confirmation.message, /0ebc2cf/);
+  assert.match(confirmation.message, /3d9da6e/);
+  assert.match(confirmation.message, /tasks and pipelines will be stopped/);
+  assert.equal(confirmation.defaultId, 0);
+  assert.equal(confirmation.cancelId, 0);
+  assert.equal(confirmation.projectReads, 0, 'read the current project after the user confirms');
+  assert.equal(calls.projects.length, 1);
+  assert.equal(calls.launch.length, 1);
+  const args = calls.launch[0][1];
+  assert.equal(args[args.indexOf('-Project') + 1], 'D:\\Games\\CurrentProject');
+  assert.equal(args.includes('-Desktop'), false);
+  assert.ok(args.includes(path.join(path.resolve('test-resources'), 'runtime', 'run.ps1')));
+  assert.deepEqual(calls.pages, [ORIGIN]);
+  assert.deepEqual(calls.exits, []);
+});
+
+test('cancelling a commit switch leaves the independent backend untouched and exits without an error', async () => {
+  const calls = await boot({ existing: independentCommit, studioVersion: '3d9da6e', confirmationResponse: 0 });
+  assert.equal(calls.confirmations.length, 1);
+  assert.deepEqual(calls.projects, []);
+  assert.deepEqual(calls.launch, []);
+  assert.deepEqual(calls.stop, []);
+  assert.deepEqual(calls.errors, []);
+  assert.deepEqual(calls.pages, []);
+  assert.deepEqual(calls.exits, [0]);
+  assert.equal(calls.diagnostics.at(-1).event, 'backend-switch-cancelled');
+});
+
+test('matching commits attach without a switch prompt or project read', async () => {
+  const calls = await boot({ existing: independentCommit, studioVersion: independentCommit.version });
+  assert.deepEqual(calls.confirmations, []);
+  assert.deepEqual(calls.projects, []);
+  assert.deepEqual(calls.launch, []);
+  assert.deepEqual(calls.errors, []);
+  assert.deepEqual(calls.pages, [ORIGIN]);
+});
+
+test('a backend changed during switch confirmation is never replaced', async () => {
+  for (const changed of [{ ...independentCommit, version: 'abcdef0' },
+    { ...independentCommit, desktop_instance: 'other-desktop' }, { ...independentCommit, service: 'other' }]) {
+    const calls = await boot({ existing: independentCommit, studioVersion: '3d9da6e', recheckedExisting: changed });
+    assert.equal(calls.confirmations.length, 1);
+    assert.deepEqual(calls.launch, []);
+    assert.deepEqual(calls.stop, []);
+    assert.match(calls.errors[0], /backend changed/i);
+    assert.deepEqual(calls.exits, [1]);
+  }
+});
+
+test('a confirmed commit switch still requires access to the current absolute project path', async () => {
+  for (const options of [{ projectOk: false }, { project: { root: 'relative' } }]) {
+    const calls = await boot({ existing: independentCommit, studioVersion: '3d9da6e', ...options });
+    assert.equal(calls.confirmations.length, 1);
+    assert.deepEqual(calls.launch, []);
+    assert.deepEqual(calls.stop, []);
+    assert.match(calls.errors[0], /current project/i);
+    assert.deepEqual(calls.exits, [1]);
+  }
 });

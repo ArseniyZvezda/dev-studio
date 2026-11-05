@@ -60,9 +60,22 @@ async function startBackend() {
       });
       if (!response.ok) throw new Error('restartProjectUnknown');
       return response.json();
+    }, async () => {
+      // Commit hashes identify builds but cannot order them (§2.7).
+      const result = await dialog.showMessageBox(splash, {
+        type: 'question',
+        message: messages.confirmBackendSwitch.replace('{frontend}', expectedVersion).replace('{backend}', existing.version),
+        buttons: [messages.cancel, messages.switchBackend], defaultId: 0, cancelId: 0,
+      });
+      return result.response === 1;
     });
   } catch (error) { throw new Error(messages[error.message] || error.message); }
-  if (plan.reuse) return;
+  if (plan.cancelled) {
+    logStartup('backend-switch-cancelled', { expectedVersion, actualVersion: existing.version });
+    app.exit(0);
+    return false;
+  }
+  if (plan.reuse) return true;
   if (plan.replacement) {
     const message = messages.backendVersionMismatch.replace('{frontend}', expectedVersion).replace('{backend}', existing.version);
     await splash.loadFile(path.join(__dirname, 'splash.html'), { query: { message } });
@@ -94,7 +107,7 @@ async function startBackend() {
       owned = true;
       logStartup('backend-started', { expectedVersion, actualVersion: result.version });
       if (result.version !== expectedVersion) throw new Error(messages.unknownBackendVersion);
-      return;
+      return true;
     }
     if (failure) throw failure;
     await delay(250);
@@ -117,7 +130,7 @@ async function boot() {
   splash.once('ready-to-show', () => splash.show());
   await splash.loadFile(path.join(__dirname, 'splash.html'), { query: { message: messages.loading } });
   splash.show();
-  await startBackend();
+  if (!await startBackend()) return;
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 600,
     title: productName, show: false, frame: false, backgroundColor: '#14161b', icon: appIcon,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'),

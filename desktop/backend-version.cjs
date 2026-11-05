@@ -28,14 +28,27 @@ function compareVersions(left, right) {
   return 0;
 }
 
-async function backendStartPlan(existing, expectedVersion, readProject) {
+async function backendStartPlan(existing, expectedVersion, readProject, confirmReplacement) {
   if (!existing) return { reuse: false, replacement: false, args: ['-NoOpen', '-Desktop'] };
   if (existing.service !== 'voxarium_studio' || existing.status !== 'ok') throw new Error('portBusy');
+  if (![existing.version, expectedVersion].every(value => typeof value === 'string' && value.trim())) {
+    throw new Error('unknownBackendVersion');
+  }
   if (existing.version === expectedVersion) return { reuse: true };
-  // Never replace a newer backend with the older desktop's bundled runtime.
-  if (compareVersions(existing.version, expectedVersion) > 0) throw new Error('desktopTooOld');
+  const commit = value => /^[0-9a-f]{7,40}$/i.test(value);
+  if (commit(existing.version) || commit(expectedVersion)) {
+    // Commit identities cannot be ordered. Switching to the selected desktop build
+    // requires an explicit choice before reading the running server's project (§2.7).
+    for (const version of [existing.version, expectedVersion]) {
+      if (!commit(version)) compareVersions(version, version);
+    }
+    if (typeof confirmReplacement !== 'function' || !await confirmReplacement()) return { cancelled: true };
+  } else {
+    // Never replace a newer backend with the older desktop's bundled runtime.
+    if (compareVersions(existing.version, expectedVersion) > 0) throw new Error('desktopTooOld');
+  }
   const project = await readProject();
-  if (!project?.root || !path.isAbsolute(project.root)) throw new Error('restartProjectUnknown');
+  if (typeof project?.root !== 'string' || !path.isAbsolute(project.root)) throw new Error('restartProjectUnknown');
   return { reuse: false, replacement: true, args: ['-NoOpen', '-Project', project.root] };
 }
 
