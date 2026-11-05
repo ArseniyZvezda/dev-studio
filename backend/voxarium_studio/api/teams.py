@@ -56,6 +56,7 @@ def _task_json(ctx: AppContext, task: TeamTask) -> dict[str, Any]:
 
 
 class TaskCreate(BaseModel):
+    summary_locale: Literal["en", "ru"] | None = None
     assignee_id: str
     title: str
     brief: str = ""
@@ -94,6 +95,7 @@ class TaskUpdate(BaseModel):
     task is most of it.
     """
 
+    summary_locale: Literal["en", "ru"] | None = None
     title: str | None = None
     brief: str | None = None
     write_paths: list[str] = Field(default_factory=list, description=(
@@ -144,6 +146,7 @@ _NULLABLE_TASK_FIELDS = frozenset({"model", "effort"})
 
 
 class ReviewAction(BaseModel):
+    summary_locale: Literal["en", "ru"] | None = None
     comment: str = ""
     actor_id: str | None = None
     attachments: list[str] = Field(default_factory=list)
@@ -154,6 +157,12 @@ class ActorAction(BaseModel):
     """A human member's own move on their task — or the user's, when ``actor_id`` is null."""
 
     actor_id: str | None = None
+
+
+class TaskRunAction(BaseModel):
+    """Capture the reader's language without changing project settings (§10.4)."""
+
+    summary_locale: Literal["en", "ru"] | None = None
 
 
 class NoteCreate(ActorAction):
@@ -426,10 +435,14 @@ async def update_team(team_id: str, payload: TeamUpdate, ctx: Ctx) -> dict[str, 
 
 
 @router.post("/{team_id}/tasks/start-all", status_code=202)
-async def start_all_tasks(team_id: str, ctx: Ctx) -> dict[str, Any]:
+async def start_all_tasks(
+    team_id: str, ctx: Ctx, payload: TaskRunAction | None = None
+) -> dict[str, Any]:
     """Release Todo/Pending agent tasks once; queued tasks wait for their usual gates (§10.4)."""
     try:
-        task_ids = await ctx.teams.start_all_tasks(team_id)
+        task_ids = await ctx.teams.start_all_tasks(
+            team_id, summary_locale=payload.summary_locale if payload else None
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"No team {team_id!r}") from exc
     return {"team_id": team_id, "task_ids": task_ids}
@@ -708,6 +721,7 @@ async def create_task(team_id: str, payload: TaskCreate, ctx: Ctx) -> dict[str, 
             auto_start=payload.auto_start,
             model=payload.model,
             effort=payload.effort,
+            summary_locale=payload.summary_locale,
         )
     except RoutingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -794,6 +808,7 @@ async def update_task(
     """Edit a task's fields, move it between columns, or both."""
     fields = payload.model_dump(exclude_unset=True)
     actor_id = fields.pop("actor_id", None)
+    summary_locale = fields.pop("summary_locale", None)
     # Almost none of a task's editable fields are nullable, so an explicit null carries no
     # meaning a `None` default does not — drop both rather than let one through to clear a
     # title or orphan an assignee. The exception is the pair of overrides, where a null is
@@ -809,7 +824,9 @@ async def update_task(
         if task is None or task.team_id != team_id:
             raise HTTPException(status_code=404, detail=f"No task {task_id!r}")
     try:
-        task = await ctx.teams.update_task(task_id, fields, actor_id=actor_id)
+        task = await ctx.teams.update_task(
+            task_id, fields, actor_id=actor_id, summary_locale=summary_locale
+        )
     except RoutingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except KeyError as exc:
@@ -883,7 +900,9 @@ async def reset_task(
 
 
 @router.post("/{team_id}/tasks/{task_id}/start", status_code=202)
-async def start_task(team_id: str, task_id: str, ctx: Ctx) -> dict[str, Any]:
+async def start_task(
+    team_id: str, task_id: str, ctx: Ctx, payload: TaskRunAction | None = None
+) -> dict[str, Any]:
     """Start the assignee's session, or resume the one it already has (§10.3).
 
     Start sends the brief; resume does not — the session it reopens already holds it, and
@@ -894,7 +913,9 @@ async def start_task(team_id: str, task_id: str, ctx: Ctx) -> dict[str, Any]:
     dependency, it is already running, or the assignee is a person.
     """
     try:
-        task = await ctx.teams.start_task(task_id)
+        task = await ctx.teams.start_task(
+            task_id, summary_locale=payload.summary_locale if payload else None
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -980,6 +1001,7 @@ async def request_changes(
             payload.comment,
             actor_id=payload.actor_id,
             attachments=payload.attachments,
+            summary_locale=payload.summary_locale,
         )
     except RoutingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

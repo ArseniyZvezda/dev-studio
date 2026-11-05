@@ -7,7 +7,7 @@
  * the picture, and plugin modules load same-origin in both modes.
  */
 
-import { t } from '@/i18n'
+import { locale, t } from '@/i18n'
 import { authHeaders, withTokenParam } from './auth'
 import type {
   TaskResultType,
@@ -555,7 +555,9 @@ export const api = {
   setAutostartTasks: (teamId: string, enabled: boolean) =>
     request<TeamDetail>('PATCH', `/teams/${teamId}`, { body: { autostart_tasks: enabled } }),
   startAllTasks: (teamId: string) =>
-    request<{ team_id: string; task_ids: string[] }>('POST', `/teams/${teamId}/tasks/start-all`),
+    request<{ team_id: string; task_ids: string[] }>('POST', `/teams/${teamId}/tasks/start-all`, {
+      body: { summary_locale: locale.value },
+    }),
   /** What the team's work has cost, over time and by member — archived tasks included. */
   teamStats: (teamId: string) => request<TeamStats>('GET', `/teams/${teamId}/stats`),
   memberOptions: () => request<MemberOptions>('GET', '/teams/member-options'),
@@ -573,13 +575,18 @@ export const api = {
       `/teams/${teamId}/members/${memberId}`,
     ),
   createTask: (teamId: string, body: TaskCreate) =>
-    request<TeamTask>('POST', `/teams/${teamId}/tasks`, { body }),
+    request<TeamTask>('POST', `/teams/${teamId}/tasks`, {
+      body: { ...body, summary_locale: locale.value },
+    }),
   tasks: (teamId: string, status?: string) =>
     request<TeamTask[]>('GET', `/teams/${teamId}/tasks`, { query: { status } }),
   task: (teamId: string, taskId: string) =>
     request<TaskDetail>('GET', `/teams/${teamId}/tasks/${taskId}`),
   updateTask: (teamId: string, taskId: string, body: TaskUpdate) =>
-    request<TeamTask>('PATCH', `/teams/${teamId}/tasks/${taskId}`, { body }),
+    request<TeamTask>('PATCH', `/teams/${teamId}/tasks/${taskId}`, {
+      // Release captures the reader's language for the deferred run (§10.4).
+      body: { ...body, ...(body.status === 'pending' ? { summary_locale: locale.value } : {}) },
+    }),
   deleteTask: (teamId: string, taskId: string, actorId: string | null = null) =>
     request<{ task_id: string; deleted: boolean }>(
       'DELETE',
@@ -587,7 +594,9 @@ export const api = {
       { query: { actor_id: actorId } },
     ),
   startTask: (teamId: string, taskId: string) =>
-    request<{ task_id: string; status: string }>('POST', `/teams/${teamId}/tasks/${taskId}/start`),
+    request<{ task_id: string; status: string }>('POST', `/teams/${teamId}/tasks/${taskId}/start`, {
+      body: { summary_locale: locale.value },
+    }),
   /**
    * Wipe the session, transcript, summary and cost, keeping the task and its brief (§10.4).
    * The task comes back in `todo`, so the next run starts from nothing.
@@ -612,7 +621,7 @@ export const api = {
     attachments: string[] = [],
   ) =>
     request<TeamTask>('POST', `/teams/${teamId}/tasks/${taskId}/request-changes`, {
-      body: { comment, actor_id: actorId, attachments },
+      body: { comment, actor_id: actorId, attachments, summary_locale: locale.value },
     }),
   /** Take back a file uploaded for a review that was not sent with it. */
   removeTaskAttachment: (teamId: string, taskId: string, name: string) =>

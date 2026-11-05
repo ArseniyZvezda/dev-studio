@@ -10,13 +10,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DocFolderRenameFrame } from '@/api/types'
+import { setLocale } from '@/i18n'
 
 vi.mock('@/api/auth', () => ({
   authHeaders: () => ({}),
   withTokenParam: (url: string) => url,
 }))
 
-const { ApiError, readNdjson, renameDocFolder } = await import('./client')
+const { api, ApiError, readNdjson, renameDocFolder } = await import('./client')
 
 /** A body that arrives in exactly these pieces, the way a network may cut it. */
 function streamOf(...chunks: (string | Uint8Array)[]): ReadableStream<Uint8Array> {
@@ -61,8 +62,42 @@ const DONE = {
   failed: 0,
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals()
+  await setLocale('en')
+})
+
+describe('task summary language (§10.4)', () => {
+  it('captures the current reader language when creating, releasing, running or reviewing', async () => {
+    const fetcher = vi.fn(async () => new Response('{}', {
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetcher)
+
+    for (const language of ['ru', 'en'] as const) {
+      await setLocale(language)
+      fetcher.mockClear()
+      await api.createTask('team', { assignee_id: 'agent', title: 'A task' })
+      await api.updateTask('team', 'task', { status: 'pending' })
+      await api.startTask('team', 'task')
+      await api.startAllTasks('team')
+      await api.requestChanges('team', 'task', 'Try again')
+      expect(fetcher.mock.calls).toHaveLength(5)
+      for (const [, init] of vi.mocked(fetch).mock.calls) {
+        expect(JSON.parse(String(init?.body)).summary_locale).toBe(language)
+      }
+    }
+  })
+
+  it('does not change a task language for an unrelated edit', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', {
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    await setLocale('ru')
+    await api.updateTask('team', 'task', { title: 'New title' })
+    const [, init] = vi.mocked(fetch).mock.calls[0]!
+    expect(JSON.parse(String(init?.body))).toEqual({ title: 'New title' })
+  })
 })
 
 describe('reading newline-delimited JSON', () => {

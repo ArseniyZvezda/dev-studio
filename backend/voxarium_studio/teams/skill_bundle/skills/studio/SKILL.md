@@ -135,9 +135,11 @@ End every run by calling **`finish_task`**. Both arguments are required:
   what you need from them. `error`: the
   work could not be done — say why and what you tried. The reviewer's queue is read by this colour
   before anything else, so pick the honest one rather than the flattering one.
-- `summary` — what you changed, what you are asking, or what went wrong, and what your reviewer
-  should check. Name the task by its id and documents by their path. It is stored on the card as
-  the task's summary.
+- `summary` — your **only completion message**, in the user's language specified in the task
+  instructions (§10.4). Use **2–4 short sentences** for the outcome, essential verification,
+  and any question, blocker or check your reviewer needs. Name the task by its id and link to
+  supporting documents instead of repeating their contents. It is stored on the card and
+  shown directly to the user.
 
 Judge only the **current task's scope and acceptance criteria**, not the feature as a whole
 (§10.4). If this task is complete but finishing the feature still requires **other tasks**,
@@ -146,7 +148,10 @@ turning their unfinished work into a question for this task. `question` applies 
 questions or unfinished work within the current task. If waiting on another task prevents
 meeting this task's own acceptance criteria, this task is still incomplete.
 
-The call records the report; it does not end the run or move the task. Finish your reply after it.
+Do not write a separate detailed report or summary before the call. After it succeeds, end
+the turn **without any additional text**, acknowledgement or closing reply: the summary is
+already the user's final answer. If the call fails, correct the arguments and retry.
+The call records the summary; the Studio moves the task when the run ends.
 A run that ends without the call is asked for it once more, and a session that still says nothing
 reaches review unlabelled — do not rely on that.
 

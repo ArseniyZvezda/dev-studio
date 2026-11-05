@@ -141,8 +141,11 @@ SPECS: dict[str, PromptSpec] = {
         placeholders=("workdir", "project_root"),
     ),
     "finish": PromptSpec(
-        "When you finish, end with a short summary of what you changed and anything your "
-        "reviewer should check."
+        "When you finish, write one short summary in {language}: 2–4 short sentences "
+        "covering the outcome, essential verification and anything your reviewer needs "
+        "to decide or check. Do not write a detailed report followed by a summary. "
+        "Link to supporting documents when needed instead of repeating their contents.",
+        placeholders=("language",),
     ),
     # Sent in `finish`'s place when the Studio's tools reach the session (§10.4): the
     # summary then goes through `finish_task`, which is also where the result type —
@@ -154,9 +157,15 @@ SPECS: dict[str, PromptSpec] = {
         "could not be done. Judge only the current task's scope and acceptance criteria, not "
         "the feature as a whole. If this task is complete but the feature still awaits OTHER "
         "tasks, report `done`, not `question`; mention those tasks in the summary. "
-        "Include a short summary of what "
-        "you changed, what you are asking, or what went wrong, and anything your reviewer "
-        "should check. Do not end your run without that call."
+        "Write the summary in {language}, using 2–4 short sentences: the outcome, "
+        "essential verification and any question, blocker or check the reviewer needs. "
+        "Link to supporting documents when needed instead of repeating their contents. "
+        "The finish_task summary is your ONLY completion message and is shown to the user "
+        "directly. Do not write a separate report or summary before the call. After the "
+        "call succeeds, end the turn without any additional text, acknowledgement or "
+        "closing reply. If the call fails, correct it and retry. "
+        "Do not end your run without a successful call.",
+        placeholders=("language",),
     ),
     # --- a chat with a member (teams/chat.py) --------------------------------------
     # The same session machinery as a task run, with nothing on the board: `chat_mode` takes
@@ -314,13 +323,18 @@ SPECS: dict[str, PromptSpec] = {
         # task is handed over. One extra turn at most; a session that still says nothing
         # goes to review unlabelled.
         "Your run ended without reporting its result. Call the finish_task tool now with "
-        "result_type — `done`, `question` or `error` — and your summary, then stop. "
+        "result_type — `done`, `question` or `error` — and one summary in {language}, "
+        "using 2–4 short sentences for the outcome, essential verification and any "
+        "question, blocker or check the reviewer needs. The summary is shown to the user "
+        "directly. Do not write a separate report before the call; after it succeeds, "
+        "end the turn without any additional text, acknowledgement or closing reply. "
+        "If the call fails, correct it and retry. "
         "Judge only the current task's scope and acceptance criteria, not the whole feature. "
         "If this task is complete but the feature still awaits OTHER tasks, report `done` "
         "and mention those tasks in the summary. Use `question` only for unresolved questions "
         "or unfinished work within the current task that needs the reviewer's input; "
         "use `error` when the work could not be done.",
-        required=True,
+        placeholders=("language",), required=True,
     ),
 }
 

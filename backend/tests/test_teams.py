@@ -23,6 +23,7 @@ from voxarium_studio.core.prompts import AgentPromptsConfig
 from voxarium_studio.core.prompts import default as default_prompt
 from voxarium_studio.models.base import utcnow
 from voxarium_studio.models.teams import (
+    AgentChat,
     AgentMessage,
     MemberKind,
     ProjectCounter,
@@ -45,7 +46,7 @@ from voxarium_studio.teams.backends.base import (
     register_backend,
     register_live_session,
 )
-from voxarium_studio.teams.orchestrator import DelegationLimitError, RoutingError
+from voxarium_studio.teams.orchestrator import DelegationLimitError, RoutingError, summary_language
 from voxarium_studio.teams.tools import build_toolset
 
 TEAM = "team_default"
@@ -53,6 +54,10 @@ DIRECTOR = f"{TEAM}__director"  # human, org-chart root
 DESIGNER = f"{TEAM}__designer"  # agent, reports to the director, may assign to dev
 DEV = f"{TEAM}__dev"  # agent, reports to the director
 QA = f"{TEAM}__qa"  # human, may assign to designer and dev
+
+
+def _summary_prompt(key: str, locale: str | None = None) -> str:
+    return AgentPromptsConfig().text(key, language=summary_language(locale))
 
 
 class StubBackend:
@@ -3169,7 +3174,7 @@ async def test_a_code_graph_at_the_launch_root_reaches_the_prompt(
         in prompt
     ), "the graph by its path, and the skill that says how to ask it"
     assert "graphify query" not in prompt, "the commands are the skill's"
-    assert prompt.index("graphify") < prompt.index(default_prompt("finish_tool")), (
+    assert prompt.index("graphify") < prompt.index(_summary_prompt("finish_tool")), (
         "before the closing line, with the other things the run knows"
     )
 
@@ -4541,7 +4546,9 @@ async def test_finish_task_has_no_card_to_report_on_in_a_chat(teams: AppContext)
     assert result.get("is_error") and "chat" in result["content"][0]["text"]
 
 
-def _reporting_backend(teams: AppContext, name: str, *, report: list[tuple[str, str] | None]):
+def _reporting_backend(
+    teams: AppContext, name: str, *, report: list[tuple[str, str] | None], silent: bool = False,
+):
     """A session that calls `finish_task` the way the prompt asks — or does not.
 
     ``report`` is one entry per run the backend will be asked for: ``(type, summary)`` to
@@ -4556,7 +4563,8 @@ def _reporting_backend(teams: AppContext, name: str, *, report: list[tuple[str, 
 
         async def run(self, request):
             seen.append(request)
-            yield AgentEvent(kind="text", text="Lowered the cooldown.", session_id="sess_1")
+            if not silent:
+                yield AgentEvent(kind="text", text="Lowered the cooldown.", session_id="sess_1")
             wanted = report[len(seen) - 1] if len(seen) <= len(report) else None
             if wanted is not None:
                 toolset = build_toolset(teams.teams, member=request.member, task=request.task)
@@ -4564,7 +4572,7 @@ def _reporting_backend(teams: AppContext, name: str, *, report: list[tuple[str, 
                 await finish.handler({"result_type": wanted[0], "summary": wanted[1]})
             yield AgentEvent(
                 kind="result",
-                text="Closing words.",
+                text="" if silent else "Closing words.",
                 session_id="sess_1",
                 data={"is_error": False, "num_turns": 1, "total_cost_usd": 0.01, "total_tokens": 10},
                 is_final=True,
@@ -4575,13 +4583,17 @@ def _reporting_backend(teams: AppContext, name: str, *, report: list[tuple[str, 
     return seen
 
 
-async def _run_on(teams: AppContext, wait_for, backend: str, member_id: str = DEV) -> TeamTask:
+async def _run_on(
+    teams: AppContext, wait_for, backend: str, member_id: str = DEV,
+    *, summary_locale: str | None = None,
+) -> TeamTask:
     async with teams.db.session() as session:
         member = await session.get(TeamMember, member_id)
         member.agent_backend = backend
         session.add(member)
     task = await teams.teams.create_task(
-        team_id=TEAM, assignee_id=member_id, title="t", brief="b", auto_start=True
+        team_id=TEAM, assignee_id=member_id, title="t", brief="b", auto_start=True,
+        summary_locale=summary_locale,
     )
     await release(teams, task.id)
     await wait_for(task.id, timeout=20)
@@ -4607,8 +4619,69 @@ async def test_a_run_that_reported_lands_in_review_with_its_type_and_the_reporte
     assert len(seen) == 1, "a run that reported is not asked again"
 
 
+@pytest.mark.parametrize("locale", ["ru", "en", None])
+async def test_short_summary_is_the_only_response_and_uses_the_task_language(
+    teams: AppContext, wait_for, locale: str | None,
+) -> None:
+    pytest.importorskip("claude_agent_sdk")
+    teams.config.teams.result_follow_up = True
+    seen = _reporting_backend(
+        teams, "silent_summary", report=[("done", "Fixed. Checks passed.")], silent=True,
+    )
+    finished = await _run_on(teams, wait_for, "silent_summary", summary_locale=locale)
+    assert finished.status == TaskStatus.NEEDS_REVIEW
+    assert finished.summary_locale == locale
+    assert finished.result_summary == "Fixed. Checks passed."
+    assert len(seen) == 1, "the stored summary completes the task without another model turn"
+    assert _summary_prompt("finish_tool", locale) in seen[0].system_prompt
+    assert "{language}" not in seen[0].system_prompt
+    async with teams.db.session() as session:
+        messages = (await session.exec(select(AgentMessage).where(
+            AgentMessage.task_id == finished.id,
+            AgentMessage.kind.in_(["text", "summary"]),
+        ))).all()
+    assert [(message.kind, message.text) for message in messages] == [
+        ("summary", "Fixed. Checks passed.")
+    ]
+
+
+async def test_summary_locale_survives_release_and_changes_for_a_review_resume(
+    teams: AppContext, wait_for,
+) -> None:
+    seen = await _record_requests(teams, "locale_resume")
+    task = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DESIGNER, title="English brief", brief="Use the saved UI language.",
+        auto_start=True, summary_locale="ru",
+    )
+    await release(teams, task.id)
+    await wait_for(task.id, timeout=20)
+    assert _summary_prompt("finish_tool", "ru") in seen[0].system_prompt
+    await teams.teams.request_changes(task.id, "Revise it.", summary_locale="en")
+    await wait_for(task.id, timeout=20)
+    assert (await load(teams, task.id)).summary_locale == "en"
+    assert _summary_prompt("finish_tool", "en") in seen[1].system_prompt
+
+
+async def test_delegated_summary_language_comes_from_parent_or_producer(teams: AppContext) -> None:
+    parent = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DESIGNER, title="Parent", brief="b", summary_locale="ru",
+    )
+    child = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="Child", brief="b", parent_task=parent, created_by=DESIGNER,
+    )
+    assert (await load(teams, child.id)).summary_locale == "ru"
+    async with teams.db.session() as session:
+        chat = AgentChat(member_id=DESIGNER, producer_mode=True, producer_locale="ru")
+        session.add(chat)
+    drafted = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="Producer draft", brief="b", producer_chat_id=chat.id,
+    )
+    assert (await load(teams, drafted.id)).summary_locale == "ru"
+
+
+@pytest.mark.parametrize("locale", ["ru", "en", None])
 async def test_a_run_that_skipped_the_report_is_asked_once_in_the_same_session(
-    teams: AppContext, wait_for
+    teams: AppContext, wait_for, locale: str | None,
 ) -> None:
     pytest.importorskip("claude_agent_sdk")
     teams.config.teams.result_follow_up = True
@@ -4616,11 +4689,11 @@ async def test_a_run_that_skipped_the_report_is_asked_once_in_the_same_session(
         teams, "reporting_late", report=[None, ("question", "Which cooldown do you want?")]
     )
 
-    finished = await _run_on(teams, wait_for, "reporting_late")
+    finished = await _run_on(teams, wait_for, "reporting_late", summary_locale=locale)
 
     assert len(seen) == 2
     follow_up = seen[1]
-    assert follow_up.prompt == default_prompt("result_required")
+    assert follow_up.prompt == _summary_prompt("result_required", locale)
     assert follow_up.resume_session_id == "sess_1", "the same session, one more message"
     assert follow_up.images == [] and follow_up.recovery_prompt == ""
     assert finished.status == TaskStatus.NEEDS_REVIEW
@@ -4684,8 +4757,8 @@ async def test_no_result_follow_up_without_studio_tools(
     finished = await _run_on(teams, wait_for, "reporting_without_tools")
 
     assert len(seen) == 1, "do not spend another turn asking for an unavailable tool"
-    assert default_prompt("finish") in seen[0].system_prompt
-    assert default_prompt("finish_tool") not in seen[0].system_prompt
+    assert _summary_prompt("finish") in seen[0].system_prompt
+    assert _summary_prompt("finish_tool") not in seen[0].system_prompt
     assert finished.status == TaskStatus.NEEDS_REVIEW
     assert finished.result_type is None
     assert finished.result_summary == "Closing words."
@@ -4779,8 +4852,8 @@ async def test_the_prompt_asks_for_finish_task_only_when_the_tools_are_there(
     )
     await release(teams, task.id)
     await wait_for(task.id, timeout=20)
-    assert default_prompt("finish_tool") in seen[0].system_prompt
-    assert default_prompt("finish") not in seen[0].system_prompt
+    assert _summary_prompt("finish_tool") in seen[0].system_prompt
+    assert _summary_prompt("finish") not in seen[0].system_prompt
 
     teams.config.mcp.disabled = ["voxarium_studio"]
     again = await teams.teams.create_task(
@@ -4788,8 +4861,8 @@ async def test_the_prompt_asks_for_finish_task_only_when_the_tools_are_there(
     )
     await release(teams, again.id)
     await wait_for(again.id, timeout=20)
-    assert default_prompt("finish") in seen[1].system_prompt
-    assert default_prompt("finish_tool") not in seen[1].system_prompt
+    assert _summary_prompt("finish") in seen[1].system_prompt
+    assert _summary_prompt("finish_tool") not in seen[1].system_prompt
 
 
 async def test_archive_discards_only_verbose_rows_and_blocks_late_noise(teams: AppContext):

@@ -31,6 +31,7 @@ from ..engine.jobs import JobEngine, JobHandle
 from ..models.base import utcnow
 from ..models.teams import (
     TERMINAL_TASK_STATUSES,
+    AgentChat,
     AgentMessage,
     MemberKind,
     ProjectCounter,
@@ -76,6 +77,20 @@ from .tools import build_toolset
 from .usage import RunUsage
 
 log = logging.getLogger(__name__)
+
+
+def summary_language(locale: str | None) -> str:
+    """Resolve the per-task locale without inventing a global project language (§10.4)."""
+    return {"ru": "Russian", "en": "English"}.get(
+        locale or "", "the language used by the user in the task brief and conversation"
+    )
+
+
+def _summary_locale(locale: str | None) -> str | None:
+    if locale is not None and locale not in {"en", "ru"}:
+        raise ValueError("Summary locale must be en or ru")
+    return locale
+
 
 COMMIT_DRAFT_SHUTDOWN_GRACE = 5.0
 """Seconds a shutdown lets a commit draft finish before cancelling it (§10.4)."""
@@ -221,16 +236,17 @@ class TeamOrchestrator:
                     task.id for task in pending if task.team_id == team.id
                 ])
 
-    async def start_all_tasks(self, team_id: str) -> list[str]:
+    async def start_all_tasks(self, team_id: str, *, summary_locale: str | None = None) -> list[str]:
         """Release this team's Todo/Pending agent tasks, keeping dependency/Solo gates (§10.4)."""
-        return await self._release_tasks(team_id)
+        return await self._release_tasks(team_id, summary_locale=summary_locale)
 
     async def _autostart_todo(self, task: TeamTask) -> None:
         if task.status == TaskStatus.TODO:
             await self._release_tasks(task.team_id, automatic=True, task_id=task.id)
 
     async def _release_tasks(
-        self, team_id: str, *, automatic: bool = False, task_id: str | None = None
+        self, team_id: str, *, automatic: bool = False, task_id: str | None = None,
+        summary_locale: str | None = None,
     ) -> list[str]:
         async with self._release_lock:
             if team_id in self.paused_teams:
@@ -267,7 +283,8 @@ class TeamOrchestrator:
                     # Keep the normal edit/status history and dispatch path. Enabling the
                     # per-task flag also queues dependencies and a busy solo member.
                     await self.update_task(
-                        candidate.id, {"status": TaskStatus.PENDING, "auto_start": True}
+                        candidate.id, {"status": TaskStatus.PENDING, "auto_start": True},
+                        summary_locale=summary_locale,
                     )
                     if current.status == TaskStatus.PENDING and current.auto_start:
                         # An unchanged Pending task has no edit to trigger dispatch.
@@ -595,6 +612,7 @@ class TeamOrchestrator:
         parent_task: TeamTask | None = None,
         attachments: list[str] | None = None,
         producer_chat_id: str | None = None,
+        summary_locale: str | None = None,
     ) -> TeamTask:
         """Put a task on someone's board, initially in ``todo`` (§10.4).
 
@@ -639,8 +657,17 @@ class TeamOrchestrator:
                     f"Delegation depth limit reached ({self.config.teams.max_delegation_depth}). "
                     "Describe what still needs doing in your summary instead of handing it on."
                 )
+            producer_chat_id = producer_chat_id or (parent_task.producer_chat_id if parent_task else None)
+            locale = _summary_locale(summary_locale)
+            if locale is None and parent_task is not None:
+                locale = parent_task.summary_locale
+            if locale is None and producer_chat_id:
+                producer_chat = await session.get(AgentChat, producer_chat_id)
+                if producer_chat is not None:
+                    locale = _summary_locale(producer_chat.producer_locale)
             task = TeamTask(
-                producer_chat_id=producer_chat_id or (parent_task.producer_chat_id if parent_task else None),
+                producer_chat_id=producer_chat_id,
+                summary_locale=locale,
                 producer_approved=bool(parent_task and parent_task.producer_approved),
                 number=await self._next_task_number(session),
                 team_id=team_id,
@@ -697,6 +724,7 @@ class TeamOrchestrator:
         *,
         message: str | None = None,
         images: Sequence[dict[str, Any]] = (),
+        summary_locale: str | None = None,
     ) -> TeamTask:
         """Run (or resume) the agent session for a task — only from ``pending`` (§10.4).
 
@@ -752,6 +780,13 @@ class TeamOrchestrator:
                 prompt, pictures = message, list(images)
             else:
                 prompt, pictures = await self._opening_turn(session, task)
+            if self.jobs.is_running(task_id):
+                raise ValueError("This task is already running")
+            if task.team_id in self.paused_teams:
+                raise ValueError("Producer Mode is paused. Press Resume before starting tasks.")
+            if summary_locale is not None:
+                task.summary_locale = _summary_locale(summary_locale)
+                session.add(task)
 
         if self.jobs.is_running(task_id):
             raise ValueError("This task is already running")
@@ -996,6 +1031,7 @@ class TeamOrchestrator:
         *,
         actor_id: str | None = None,
         attachments: Sequence[str] = (),
+        summary_locale: str | None = None,
     ) -> TeamTask:
         """Send a task back with a comment, and the files attached to it.
 
@@ -1020,6 +1056,8 @@ class TeamOrchestrator:
             # A name that is not on disk fails the whole review before anything is written.
             records = self.attachments.resolve(task_id, list(attachments))
             task.review_comment = comment
+            if summary_locale is not None:
+                task.summary_locale = _summary_locale(summary_locale)
             session.add(task)
             assignee = await session.get(TeamMember, task.assignee_id)
             is_human = assignee is not None and assignee.kind == MemberKind.HUMAN
@@ -1124,7 +1162,8 @@ class TeamOrchestrator:
     """
 
     async def update_task(
-        self, task_id: str, fields: dict[str, Any], *, actor_id: str | None = None
+        self, task_id: str, fields: dict[str, Any], *, actor_id: str | None = None,
+        summary_locale: str | None = None,
     ) -> TeamTask:
         """Edit a task in place — title, brief, assignee, dependencies, auto-start, status.
 
@@ -1159,6 +1198,9 @@ class TeamOrchestrator:
             if task is None:
                 raise KeyError(task_id)
             await self.check_can_edit(session, task=task, actor_id=actor_id)
+
+            if summary_locale is not None:
+                task.summary_locale = _summary_locale(summary_locale)
 
             if "write_paths" in fields:
                 fields["write_paths"] = wt.normalize_write_paths(
@@ -2174,6 +2216,7 @@ class TeamOrchestrator:
                 has_studio_tools=toolset is not None,
                 prompts=self.config.teams.prompts,
                 code_graph=code_graph_file(launch_root),
+                language=summary_language(task.summary_locale),
                 # The identity is in the agent definition when there is one; repeating it
                 # here would send the same paragraph twice in one system prompt.
                 include_identity=agent_name is None,
@@ -2321,7 +2364,9 @@ class TeamOrchestrator:
             and (await self._reload(task_id)).result_type is None
         ):
             session_id = (await self._reload(task_id)).agent_session_id
-            follow_up = self.config.teams.prompts.text("result_required")
+            follow_up = self.config.teams.prompts.text(
+                "result_required", language=summary_language((await self._reload(task_id)).summary_locale)
+            )
             if session_id and follow_up:
                 await self.record_message(
                     task_id,
@@ -3567,6 +3612,7 @@ def _build_system_prompt(
     include_identity: bool = True,
     chat: bool = False,
     skills: Sequence[Skill] = (),
+    language: str = summary_language(None),
 ) -> str:
     """What this *run* has to tell the agent, appended onto the stock claude_code preset.
 
@@ -3645,5 +3691,5 @@ def _build_system_prompt(
     if not chat:
         # With the Studio's tools the summary goes through `finish_task`, where the result
         # type is a required argument (§10.4); without them the run can only speak it.
-        say("finish_tool" if has_studio_tools else "finish")
+        say("finish_tool" if has_studio_tools else "finish", language=language)
     return "\n\n".join(lines)

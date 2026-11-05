@@ -607,6 +607,8 @@ export interface TeamTask {
   worktree_path: string | null
   review_comment: string | null
   result_summary: string | null
+  /** Reader's language captured for task summaries; absent on older servers (§10.4). */
+  summary_locale?: 'en' | 'ru' | null
   /**
    * How the work ended, said by whoever did it when the task reached review (§10.4):
    * `done` (green), `question` (blue) or `error` (red). Null until reported — and on a
@@ -769,6 +771,7 @@ export interface RemoteControlLink {
 }
 
 export interface TaskCreate {
+  summary_locale?: 'en' | 'ru' | null
   attachments?: string[]
   assignee_id: string
   title: string
@@ -795,6 +798,7 @@ export interface TaskCreate {
  * endpoints (claim/complete/approve) remain the ones with side effects.
  */
 export interface TaskUpdate {
+  summary_locale?: 'en' | 'ru' | null
   attachments?: string[]
   title?: string
   brief?: string

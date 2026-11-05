@@ -348,6 +348,13 @@ class TeamTask(SQLModel, table=True):
     worktree_path: str | None = None
     review_comment: str | None = Field(default=None, sa_column=Column(Text))
     result_summary: str | None = Field(default=None, sa_column=Column(Text))
+    summary_locale: str | None = None
+    """User's interface language for the task's short result (§10.4).
+
+    Captured on create/release/start/request-changes, inherited by delegated tasks, and retained
+    for unattended resumes. Null on older tasks asks for the user's conversation language.
+    """
+
     result_type: str | None = None
     """A :class:`TaskResultType`, or null while nobody has said how the work ended (§10.4).
 

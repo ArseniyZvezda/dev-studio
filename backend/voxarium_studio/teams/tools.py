@@ -733,8 +733,12 @@ def build_toolset(
         "A completed task is `done` even if the feature still awaits OTHER tasks; mention "
         "them in the summary. Use `question` only for unresolved questions or unfinished "
         "work within the current task that needs the reviewer's input. "
-        "Calling it again replaces the earlier report. It does not end the run or move the "
-        "task — finish your reply after it.",
+        "The summary is your ONLY completion message, shown to the user directly. "
+        "Use the user's language specified in the task instructions and 2–4 short sentences. "
+        "Do not send a separate report before this call or any text after it succeeds. "
+        "Calling it again corrects an earlier report. It does not move the task; after "
+        "success, end the turn without an acknowledgement or closing reply. "
+        "If it fails, correct the arguments and retry.",
         {
             "type": "object",
             "properties": {
@@ -753,9 +757,11 @@ def build_toolset(
                 "summary": {
                     "type": "string",
                     "description": (
-                        "What you changed, what you are asking, or what went wrong, and "
-                        "anything your reviewer should check. Name tasks by their id and "
-                        "documents by their path."
+                        "Your only completion message: 2–4 short sentences in the user's "
+                        "language specified in the task instructions. State the outcome, "
+                        "essential verification and any question, blocker or check the "
+                        "reviewer needs. Name tasks by id; link supporting documents "
+                        "instead of repeating detailed reports."
                     ),
                 },
             },
@@ -779,7 +785,8 @@ def build_toolset(
             return _text(f"{type(exc).__name__}: {exc}", is_error=True)
         return _text(
             f"Recorded {orchestrator.display_id(updated)} as {updated.result_type}. It goes "
-            "to review when this run ends — you can stop now."
+            "to review when this run ends. Your summary has already been shown to the "
+            "user. End the turn now without any additional text or closing reply."
         )
 
     tools = [
