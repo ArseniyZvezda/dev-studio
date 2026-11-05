@@ -11,6 +11,14 @@
 
 !macro customHeader
   !include "${BUILD_RESOURCES_DIR}\installer-messages.nsh"
+  BrandingText "${PRODUCT_NAME} $(studio_buildVersion)"
+!macroend
+
+!macro customInstall
+  # Keep the actual build label for Windows and the next upgrade page (§2.7).
+  # Electron's VERSION remains numeric for packaging and the updater.
+  WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "DisplayVersion" "$(studio_buildVersion)"
+  WriteRegStr SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" "DisplayName" "${PRODUCT_NAME} $(studio_buildVersion)"
 !macroend
 
 !macro customInit

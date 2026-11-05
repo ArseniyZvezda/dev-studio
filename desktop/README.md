@@ -87,8 +87,11 @@ The desktop, backend and compiled frontend use the same exact HEAD tag (normaliz
 example `v5.2.0` → `5.2.0`), or short commit hash when untagged. Startup requires equality.
 The wheel stamp and packaged shell's `studioVersion` preserve this identity after installation.
 Only Electron/NSIS installer metadata needs a numeric SemVer fallback for untagged builds;
-it is not used in place of the Studio version for startup checks. The build verifies all
-three identities and includes the version in the frontend cache key.
+it is not used in place of the Studio version for startup checks or installer text.
+The installer footer, upgrade page and Windows installed-app entry show the wheel stamp's
+tag or short commit hash. The next upgrade reads that label from `DisplayVersion`;
+older installations retain their previously recorded version until upgraded.
+The build verifies all three identities and includes the version in the frontend cache key.
 Project data survives uninstall. The update button above Settings downloads new
 desktop releases with progress, then offers Install and restart. Installation asks
 before stopping tasks and shuts down only the owned backend.

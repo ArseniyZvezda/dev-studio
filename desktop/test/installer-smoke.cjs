@@ -47,8 +47,9 @@ async function main() {
       else fs.unlinkSync(old);
       const config = path.join(root, `config-${version}.cjs`);
       fs.writeFileSync(config, `const base = require(${JSON.stringify(path.join(desktop, 'electron-builder.cjs'))});
+require(${JSON.stringify(path.join(desktop, 'scripts/installer-messages.cjs'))}).writeInstallerMessages('abcdef0');
 module.exports = { ...base, appId: 'studio.voxarium.installer-smoke', productName: ${JSON.stringify(productName)},
-  artifactName: 'setup-${version}.exe', extraMetadata: { version: '${version}' }, publish: null,
+  artifactName: 'setup-${version}.exe', extraMetadata: { version: '${version}', studioVersion: 'abcdef0' }, publish: null,
   directories: { ...base.directories, output: ${JSON.stringify(path.join(root, 'dist'))} },
   nsis: { ...base.nsis, guid: '${guid}', include: ${version === '1.0.0' ? 'null' : JSON.stringify(path.join(desktop, 'installer/update.nsh'))},
     createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false } };
@@ -94,12 +95,15 @@ module.exports = { ...base, appId: 'studio.voxarium.installer-smoke', productNam
     assert.equal(install('2.0.0').status, 0);
     assert.equal(fs.readFileSync(path.join(installation, `${productName}.exe`), 'utf8'), 'test payload 2.0.0');
     assert.equal(fs.existsSync(path.join(installation, 'obsolete.txt')), false);
-    assert.ok(successful('reg.exe', ['query', uninstallRegistry, '/v', 'DisplayVersion', '/reg:64']).includes('2.0.0'));
+    assert.ok(successful('reg.exe', ['query', uninstallRegistry, '/v', 'DisplayVersion', '/reg:64']).includes('abcdef0'));
+    assert.ok(successful('reg.exe', ['query', uninstallRegistry, '/v', 'DisplayName', '/reg:64']).includes(`${productName} abcdef0`));
     assert.equal(fs.readFileSync(marker, 'utf8'), 'settings stay');
     assert.equal(fs.readFileSync(path.join(root, 'project-data.txt'), 'utf8'), 'project stays');
     assert.equal(install('2.0.0', ['--updated']).status, 0, 'Updater mode must support reinstall');
+    assert.ok(successful('reg.exe', ['query', uninstallRegistry, '/v', 'DisplayVersion', '/reg:64']).includes('abcdef0'));
+    assert.ok(successful('reg.exe', ['query', uninstallRegistry, '/v', 'DisplayName', '/reg:64']).includes(`${productName} abcdef0`));
     assert.equal(fs.readFileSync(marker, 'utf8'), 'settings stay');
-    console.log('PASS: legacy install, busy-process guard, termination, in-place upgrade, obsolete-file cleanup, profile/project preservation, updater reinstall');
+    console.log('PASS: legacy install, busy-process guard, termination, in-place commit upgrade, displayed commit version/name, obsolete-file cleanup, profile/project preservation, updater reinstall');
   } finally {
     if (worker) { worker.kill(); await workerExit; }
     const uninstaller = path.join(installation, `Uninstall ${productName}.exe`);

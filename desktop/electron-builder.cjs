@@ -3,10 +3,10 @@ const { releaseInfo } = require('./scripts/release.cjs');
 const { updateFeedOptions } = require('./update-feed.cjs');
 const metadata = require('./package.json');
 const fs = require('node:fs');
-require('./scripts/installer-messages.cjs').writeInstallerMessages();
 const stampFile = path.join(__dirname, 'build/runtime/python/Lib/site-packages/voxarium_studio/_build_stamp.json');
 const stamp = fs.existsSync(stampFile) ? JSON.parse(fs.readFileSync(stampFile, 'utf8')) : { version: metadata.version };
 const release = releaseInfo(stamp, metadata.version);
+require('./scripts/installer-messages.cjs').writeInstallerMessages(release.display);
 const feed = updateFeedOptions(process.env);
 module.exports = {
   ...metadata.build,
