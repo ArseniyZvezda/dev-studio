@@ -14,7 +14,7 @@
 import type { ActivityDay } from '@/api/types'
 import { formatDate, t } from '@/i18n'
 import { dayMs } from '@/lib/cost-chart'
-import { formatCost } from '@/lib/status'
+import { formatCost, formatTokens } from '@/lib/status'
 
 const DAY_MS = 86_400_000
 const WEEK_MS = 7 * DAY_MS
@@ -196,7 +196,7 @@ export function describeCell(cell: HeatCell, metric: 'tokens' | 'usd' = 'usd'): 
     parts.push(t('statistics.activity.tasksFinished', { count: entry.finished }))
   }
   if (spent > 0) {
-    parts.push(metric === 'tokens' ? t('statistics.tokens', { count: spent }) : formatCost(spent))
+    parts.push(metric === 'tokens' ? t('statistics.tokens', { count: spent, value: formatTokens(spent) }) : formatCost(spent))
   }
   return parts.join(' · ')
 }

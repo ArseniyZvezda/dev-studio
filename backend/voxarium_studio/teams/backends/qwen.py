@@ -363,6 +363,8 @@ class _RunState:
                 # it is not a new measurement of an empty context window.
                 if any(usage.values()) and events:
                     events[0].data["usage"] = usage
+                    if message.get("id"):
+                        events[0].data["provider_response_id"] = str(message["id"])
         elif kind == "result" and not frame.get("parent_tool_use_id"):
             self.result = frame
             if frame.get("is_error"):
@@ -386,6 +388,10 @@ class _RunState:
                               "subtype": "error" if failed else "success", "is_error": failed,
                               "num_turns": result.get("num_turns", 0), "usage": usage,
                               "total_tokens": sum(usage.values()),
+                              "total_cached_tokens": usage.get("cache_read_input_tokens", 0),
+                              "total_uncached_tokens": sum(value for key, value in usage.items()
+                                                           if key != "cache_read_input_tokens"),
+                              "accounting_version": 2,
                               "total_cost_usd": 0.0, "cost_unavailable": True,
                               "duration_ms": duration_ms, "exit_code": exit_code,
                               "errors": self.errors,

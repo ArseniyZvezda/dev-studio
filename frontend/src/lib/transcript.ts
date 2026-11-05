@@ -27,7 +27,7 @@ import { t, type MessageKey } from '@/i18n'
  */
 export type TranscriptMessage = Omit<AgentMessage, 'task_id'>
 import { oneLine, toolName, toolSubject } from '@/lib/activity'
-import { statusLabel } from '@/lib/status'
+import { parseUtc, statusLabel } from '@/lib/status'
 import { subagentActivity } from '@/lib/subagents'
 import { resultTypeOf } from '@/lib/task-result'
 
@@ -217,22 +217,57 @@ export function editStat(message: TranscriptMessage): EditStat | null {
 /**
  * Tokens the model produced on this turn, or 0 for a turn that reported none.
  *
- * The runtime's `usage` is attached to **one** event per assistant message
- * (`_attach_usage` in `teams/backends/claude_code.py`), which is what makes summing these
- * right: a message that answered in prose and then called two tools is one API response
- * with one accounting. A result carries the segment's total and is reconciled against
- * those messages by liveLine rather than added a second time.
+ * A provider response can emit several assistant frames with repeated or advancing
+ * usage. liveLine counts only the increment for its provider_response_id. A result
+ * carries the segment's total and fills gaps instead of charging the stream again.
  *
  * `output_tokens` is the half that counts the thinking. The prompt and the cache reads are
  * in the task header's lifetime total, and they dwarf this one without saying anything
  * about what the agent has been doing — a long session is mostly cache reads.
  */
-function outputTokens(message: TranscriptMessage): number {
+function outputTokens(message: Pick<TranscriptMessage, 'kind' | 'text' | 'data'>): number {
   if (message.kind === 'system' && message.text === 'usage_update') return 0
   const usage = message.data?.usage
   if (!usage || typeof usage !== 'object') return 0
   const value = (usage as Record<string, unknown>).output_tokens
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+type OutputMessage = Pick<TranscriptMessage, 'kind' | 'role' | 'text' | 'data' | 'created_at'>
+const EVIDENCE_KINDS = new Set(['accounting', 'compressed summary', 'context_summary'])
+
+/** §10.4: repairs replace historical accounting while leaving the original dialogue visible. */
+function outputAccounting(messages: TranscriptMessage[]): OutputMessage[] {
+  let latestRepair: { message: TranscriptMessage; cutoff: number } | null = null
+  const repairs = new Set<TranscriptMessage>()
+  for (const message of messages) {
+    const repair = message.data?.repair
+    if (message.kind !== 'accounting' || !repair || typeof repair !== 'object') continue
+    const raw = (repair as Record<string, unknown>).cutoff_at
+    const cutoff = typeof raw === 'string' ? parseUtc(raw) : NaN
+    if (!Number.isFinite(cutoff)) continue
+    repairs.add(message)
+    if (!latestRepair || parseUtc(message.created_at) > parseUtc(latestRepair.message.created_at)) {
+      latestRepair = { message, cutoff }
+    }
+  }
+  const evidence = (message: TranscriptMessage): OutputMessage[] => {
+    const rows = message.data?.evidence
+    if (!Array.isArray(rows)) return []
+    return rows.flatMap((row): OutputMessage[] => {
+      if (!row || typeof row !== 'object' || typeof row.kind !== 'string'
+        || typeof row.created_at !== 'string' || !Number.isFinite(parseUtc(row.created_at))) return []
+      return [{ kind: row.kind, role: row.role === 'assistant' ? 'assistant' : 'system',
+        text: typeof row.text === 'string' ? row.text : '', created_at: row.created_at,
+        data: row.data && typeof row.data === 'object' ? row.data : {} }]
+    })
+  }
+  const feed = messages.flatMap((message): OutputMessage[] => repairs.has(message)
+    ? [] : EVIDENCE_KINDS.has(message.kind) ? evidence(message) : [message])
+  const canonical = latestRepair
+    ? [...feed.filter(message => parseUtc(message.created_at) > latestRepair.cutoff), ...evidence(latestRepair.message)]
+    : feed
+  return canonical.sort((a, b) => parseUtc(a.created_at) - parseUtc(b.created_at))
 }
 
 /** Whether a message survives this level. Compact and Advanced hide the same things. */
@@ -380,7 +415,8 @@ export function liveLine(messages: TranscriptMessage[], verbosity: Verbosity): L
   const line: LiveLine = { activity: '', seq: 0, tokens: 0 }
   let thinking = 0
   let segmentOutput = 0
-  for (const message of messages) {
+  const responses = new Map<string, number>()
+  for (const message of outputAccounting(messages)) {
     const output = outputTokens(message)
     if (message.kind === 'result') {
       // Each result closes one segment, including continued results. Its aggregate
@@ -389,22 +425,32 @@ export function liveLine(messages: TranscriptMessage[], verbosity: Verbosity): L
       segmentOutput = 0
     } else if (message.role === 'assistant' ||
       (message.kind === 'system' && message.text === 'turn.completed')) {
-      // Codex reports turn deltas here; Claude/Qwen attach one delta per assistant reply.
-      segmentOutput += output
+      // Response ids survive continued results: replaying an earlier response is not
+      // new output, while a new id starts its own counter. Codex turn usage is a delta.
+      const id = message.data?.provider_response_id
+      if (typeof id === 'string' && id) {
+        const previous = responses.get(id) ?? 0
+        segmentOutput += Math.max(0, output - previous)
+        responses.set(id, Math.max(previous, output))
+      } else {
+        segmentOutput += output
+      }
     }
     if (output > 0 || message.kind === 'result') thinking = 0
     if (message.kind === 'system' && message.text === 'thinking_tokens') {
       const estimate = message.data?.estimated_tokens
       thinking = typeof estimate === 'number' && Number.isFinite(estimate) ? Math.max(0, estimate) : 0
-      continue
     }
+  }
+  line.tokens += segmentOutput + thinking
+  for (const message of messages) {
+    if (message.kind === 'system' && message.text === 'thinking_tokens') continue
     if (verbosity === 'verbose') continue
     const text = tailLine(message)
     if (!text) continue
     line.activity = text
     line.seq += 1
   }
-  line.tokens += segmentOutput + thinking
   return line
 }
 

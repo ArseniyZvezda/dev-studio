@@ -1,23 +1,37 @@
 <script setup lang="ts">
 /** Mirrored token / API Cost statistics, with one shared layout (§10.4). */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type { TeamStats } from '@/api/types'
 import ActivityHeatmap from '@/components/stats/ActivityHeatmap.vue'
 import CostChart from '@/components/stats/CostChart.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
+import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import { formatNumber, t } from '@/i18n'
 import { formatMetricValue, type Metric, type MetricPoint } from '@/lib/cost-chart'
+import { formatTokens } from '@/lib/status'
 
 const props = defineProps<{ stats: TeamStats; today: string; metric: Metric }>()
 const isTokens = computed(() => props.metric === 'tokens')
 const heading = computed(() => t(isTokens.value ? 'statistics.metrics.tokens' : 'statistics.metrics.usd'))
 const format = (value: number) => formatMetricValue(value, props.metric)
+type TokenKind = 'uncached' | 'cached' | 'unclassified'
+const tokenKind = ref<TokenKind>('uncached')
+const tokenKinds = computed<TokenKind[]>(() => props.stats.totals.spent_unclassified_tokens > 0
+  ? ['uncached', 'cached', 'unclassified'] : ['uncached', 'cached'])
+const tokenOptions = computed(() => tokenKinds.value.map(value => ({
+  value, label: t(`tokenUsage.${value}Short`),
+})))
+const tokenLabel = computed(() => t(`tokenUsage.${tokenKind.value}`))
+watch(tokenKinds, kinds => { if (!kinds.includes(tokenKind.value)) tokenKind.value = 'uncached' })
+const activity = computed(() => isTokens.value ? props.stats.activity.map(row => ({
+  ...row, spent_tokens: row[`spent_${tokenKind.value}_tokens`],
+})) : props.stats.activity)
 
 const tiles = computed(() => {
   const totals = props.stats.totals
   const value = (name: 'spent' | 'done' | 'in_flight' | 'cancelled') =>
-    totals[`${name}_${props.metric}`]
+    isTokens.value ? totals[`${name}_${tokenKind.value}_tokens`] : totals[`${name}_usd`]
   return [
     { label: t('statistics.tiles.spent'), value: format(value('spent')), note: t('statistics.tiles.spentNote') },
     {
@@ -30,29 +44,29 @@ const tiles = computed(() => {
     {
       label: t('statistics.tiles.tasks'), value: formatNumber(totals.tasks),
       note: value('cancelled')
-        ? t('statistics.tiles.cancelledNote', { cost: isTokens.value ? t('statistics.tokens', { count: value('cancelled') }) : format(value('cancelled')) })
+        ? t('statistics.tiles.cancelledNote', { cost: isTokens.value ? t('statistics.tokens', { count: value('cancelled'), value: formatTokens(value('cancelled')) }) : format(value('cancelled')) })
         : t('statistics.tiles.nothingCancelled'),
     },
   ]
 })
 
 const series = computed<MetricPoint[]>(() => isTokens.value
-  ? props.stats.token_series.map(row => ({ day: row.day, value: row.cumulative_tokens, spent: row.spent_tokens, count: row.runs }))
+  ? props.stats.token_series.map(row => ({ day: row.day, value: row[`cumulative_${tokenKind.value}_tokens`], spent: row[`spent_${tokenKind.value}_tokens`], count: row.runs }))
   : props.stats.series.map(row => ({ day: row.day, value: row.cumulative_usd, spent: row.spent_usd, count: row.runs })))
 
 const averages = computed<MetricPoint[]>(() => props.stats.average_task_series.map(row => ({
   day: row.day,
-  value: isTokens.value ? row.average_tokens : row.average_usd,
+  value: isTokens.value ? row[`average_${tokenKind.value}_tokens`] : row.average_usd,
   spent: 0,
   count: row.tasks,
 })))
 
 const members = computed(() => props.stats.by_member.map(row => ({
-  ...row, value: isTokens.value ? row.spent_tokens : row.spent_usd,
+  ...row, value: isTokens.value ? row[`spent_${tokenKind.value}_tokens`] : row.spent_usd,
 })).sort((a, b) => b.value - a.value || a.name.localeCompare(b.name)))
 
 const models = computed(() => (isTokens.value
-  ? props.stats.by_model_tokens.map(row => ({ model: row.model, value: row.spent_tokens }))
+  ? props.stats.by_model_tokens.map(row => ({ model: row.model, value: row[`spent_${tokenKind.value}_tokens`] }))
   : props.stats.by_model.map(row => ({ model: row.model, value: row.spent_usd })))
   .sort((a, b) => b.value - a.value || (a.model ?? '').localeCompare(b.model ?? '')))
 
@@ -62,8 +76,22 @@ function share(value: number, maximum: number): string {
 </script>
 
 <template>
-  <section class="grid min-w-0 gap-5 @4xl:row-span-7 @4xl:grid-rows-subgrid" :aria-label="heading">
-    <h2 class="text-title font-semibold text-primary">{{ heading }}</h2>
+  <section class="grid min-w-0 grid-cols-1 gap-5 @4xl:row-span-7 @4xl:grid-rows-subgrid" :aria-label="heading">
+    <header>
+      <h2 class="text-title font-semibold text-primary">{{ heading }}</h2>
+      <template v-if="isTokens">
+        <dl class="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-small">
+          <div v-for="kind in tokenKinds" :key="kind" :title="t(`tokenUsage.${kind}Hint`)">
+            <dt class="text-faint">{{ t(`tokenUsage.${kind}`) }}</dt>
+            <dd class="mt-0.5 font-semibold text-primary tabular-nums">{{ formatTokens(stats.totals[`spent_${kind}_tokens`]) }}</dd>
+          </div>
+        </dl>
+        <div class="mt-3 overflow-x-auto">
+          <SegmentedControl v-model="tokenKind" :options="tokenOptions" :aria-label="t('tokenUsage.chartMetric')" />
+        </div>
+        <p class="mt-2 text-small text-faint">{{ t(`tokenUsage.${tokenKind}Hint`) }}</p>
+      </template>
+    </header>
 
     <div class="vxs-enter grid grid-cols-2 gap-3">
       <div v-for="tile in tiles" :key="tile.label" class="min-w-0 rounded-lg border border-card bg-elevated p-3 shadow-card">
@@ -76,19 +104,19 @@ function share(value: number, maximum: number): string {
     <section class="vxs-enter flex flex-col rounded-lg border border-card bg-elevated p-pane shadow-card">
       <h3 class="mb-1 font-medium">{{ t('statistics.activity.title') }}</h3>
       <p class="mb-3 text-small text-faint">{{ t('statistics.activity.hint') }}</p>
-      <ActivityHeatmap :activity="stats.activity" :today="today" :metric="metric" class="mt-auto" />
+      <ActivityHeatmap :activity="activity" :today="today" :metric="metric" class="mt-auto" />
     </section>
 
     <section class="vxs-enter flex flex-col rounded-lg border border-card bg-elevated p-pane shadow-card">
-      <h3 class="mb-1 font-medium">{{ t(isTokens ? 'statistics.tokensChart.title' : 'statistics.chart.title') }}</h3>
+      <h3 class="mb-1 font-medium">{{ t(isTokens ? 'statistics.tokensChart.title' : 'statistics.chart.title') }}<span v-if="isTokens" class="text-faint"> — {{ tokenLabel }}</span></h3>
       <p class="mb-3 text-small text-faint">{{ t(isTokens ? 'statistics.tokensChart.hint' : 'statistics.chart.hint') }}</p>
-      <CostChart :series="series" :today="today" :metric="metric" mode="cumulative" class="mt-auto" />
+      <CostChart :series="series" :today="today" :metric="metric" :metric-label="isTokens ? tokenLabel : undefined" mode="cumulative" class="mt-auto" />
     </section>
 
     <section class="vxs-enter flex flex-col rounded-lg border border-card bg-elevated p-pane shadow-card">
-      <h3 class="mb-1 font-medium">{{ t(isTokens ? 'statistics.averageChart.tokensTitle' : 'statistics.averageChart.costTitle') }}</h3>
+      <h3 class="mb-1 font-medium">{{ t(isTokens ? 'statistics.averageChart.tokensTitle' : 'statistics.averageChart.costTitle') }}<span v-if="isTokens" class="text-faint"> — {{ tokenLabel }}</span></h3>
       <p class="mb-3 text-small text-faint">{{ t(isTokens ? 'statistics.averageChart.tokensHint' : 'statistics.averageChart.costHint') }}</p>
-      <CostChart :series="averages" :today="today" :metric="metric" mode="average" class="mt-auto" />
+      <CostChart :series="averages" :today="today" :metric="metric" :metric-label="isTokens ? tokenLabel : undefined" mode="average" class="mt-auto" />
     </section>
 
     <section class="vxs-enter rounded-lg border border-card bg-elevated p-pane shadow-card">

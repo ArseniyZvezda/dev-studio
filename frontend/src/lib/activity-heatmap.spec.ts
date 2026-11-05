@@ -25,6 +25,9 @@ const day = (iso: string, overrides: Partial<ActivityDay> = {}): ActivityDay => 
   finished: 0,
   spent_usd: 0,
   spent_tokens: 0,
+  spent_uncached_tokens: 0,
+  spent_cached_tokens: 0,
+  spent_unclassified_tokens: 0,
   activity: 1,
   ...overrides,
 })
@@ -180,7 +183,7 @@ describe('describeCell', () => {
 
   it('shows token spend instead of dollars in the token column, including token-only residuals', () => {
     const entry = day(TODAY, { runs: 2, finished: 1, spent_usd: 0.41, spent_tokens: 1250, activity: 3 })
-    expect(describeCell(cellFor(entry), 'tokens')).toBe('2 runs · 1 task finished · 1,250 tokens')
+    expect(describeCell(cellFor(entry), 'tokens')).toBe('2 runs · 1 task finished · 1.3K tokens')
     expect(describeCell(cellFor(day(TODAY, { runs: 0, spent_tokens: 1, activity: 0 })), 'tokens'))
       .toBe('1 token')
     expect(describeCell(cellFor(null), 'tokens')).toBe('No activity')

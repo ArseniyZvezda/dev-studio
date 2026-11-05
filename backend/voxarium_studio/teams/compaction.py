@@ -7,6 +7,7 @@ import math
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
 from ..models.teams import AgentMessage
@@ -54,9 +55,26 @@ def context_tokens(messages: list[AgentMessage]) -> int:
 
 
 def expand_evidence(messages: list[AgentMessage]) -> list[AgentMessage]:
-    """Read retained accounting/file facts, without resurrecting the old dialogue."""
+    """Read canonical accounting; a journal repair supersedes older accounting (§10.4)."""
+    repairs: list[tuple[AgentMessage, datetime]] = []
+    for message in messages:
+        repair = message.data.get("repair")
+        if message.kind != ACCOUNTING_KIND or not isinstance(repair, dict):
+            continue
+        try:
+            cutoff = datetime.fromisoformat(repair["cutoff_at"].replace("Z", "+00:00"))
+            repairs.append((message, cutoff.replace(tzinfo=timezone.utc) if cutoff.tzinfo is None else cutoff))
+        except (KeyError, AttributeError, TypeError, ValueError):
+            continue
+    latest_by_task: dict[str, tuple[AgentMessage, datetime]] = {}
+    for repair in repairs:
+        previous = latest_by_task.get(repair[0].task_id)
+        if previous is None or repair[0].created_at >= previous[0].created_at:
+            latest_by_task[repair[0].task_id] = repair
     expanded = []
     for message in messages:
+        if any(message is repair[0] for repair in repairs):
+            continue
         if message.kind not in EVIDENCE_KINDS:
             expanded.append(message)
             continue
@@ -64,6 +82,23 @@ def expand_evidence(messages: list[AgentMessage]) -> list[AgentMessage]:
             expanded.append(AgentMessage.model_validate({
                 **record, "task_id": message.task_id, "member_id": message.member_id,
             }))
+    if latest_by_task:
+        def replaced(message: AgentMessage) -> bool:
+            latest = latest_by_task.get(message.task_id)
+            if latest is None:
+                return False
+            _, cutoff = latest
+            when = message.created_at
+            when = when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+            accounting = message.kind in {"result", "model"} or (
+                message.kind == "system" and (message.text == "init"
+                    or message.data.get("subtype") == "usage_update"))
+            return accounting and when <= cutoff
+        expanded = [message for message in expanded if not replaced(message)]
+        for repair, _ in latest_by_task.values():
+            expanded.extend(AgentMessage.model_validate({
+                **record, "task_id": repair.task_id, "member_id": repair.member_id,
+            }) for record in repair.data.get("evidence", []))
     return expanded
 
 
@@ -75,11 +110,24 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
     for message in expand_evidence(messages):
         data = message.data
         if message.kind == "result":
-            data = {key: data[key] for key in ("total_cost_usd", "total_tokens", "model") if key in data}
+            data = {key: data[key] for key in (
+                "total_cost_usd", "total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                "usage", "model", "accounting_version", "provider_session_id", "session_total_cost_usd",
+                "session_cost_baseline_usd", "repair_source", "cost_unavailable",
+            ) if key in data}
+            if "usage" in data:
+                usage = data["usage"]
+                data["usage"] = {key: usage[key] for key in (
+                    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens",
+                ) if isinstance(usage, dict) and isinstance(usage.get(key), int)
+                    and not isinstance(usage[key], bool) and usage[key] >= 0}
         elif message.kind == "system" and data.get("subtype") == "usage_update":
             # §10.4: keep the latest accounting checkpoint so token-only/cancelled
             # work retains its date after the dialogue is compressed.
-            data = {key: data[key] for key in ("subtype", "total_tokens", "task_total_tokens")
+            data = {key: data[key] for key in (
+                "subtype", "total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                "task_total_tokens", "task_total_uncached_tokens", "task_total_cached_tokens", "accounting_version",
+            )
                     if key in data}
         elif message.kind in {"model", "system"}:
             if message.kind == "system" and message.text != "init":

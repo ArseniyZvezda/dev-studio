@@ -87,10 +87,12 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
         child_requests.append(request)
         yield AgentEvent(kind="system", text="usage_update", session_id="child-session", data={
             "subtype": "usage_update", "total_tokens": 40, "context_tokens": 900,
+            "total_uncached_tokens": 10, "total_cached_tokens": 30,
             "context_window": 9999, "total_cost_usd": 0.02,
         })
         yield AgentEvent(kind="tool_use", text="Read", data={"name": "Read"})
-        yield result("Child findings", tokens=100, cost=0.05, session="child-session")
+        yield result("Child findings", tokens=100, cost=0.05, session="child-session",
+                     total_uncached_tokens=20, total_cached_tokens=80)
 
     install("test_other_backend", child)
 
@@ -101,14 +103,17 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
                 request.task.id, MEMBER, description="Inspect implementation", prompt="Read source.py",
                 backend="test_other_backend", model="child-model",
             )
-            yield result("Waiting for findings", tokens=10, cost=0.01)
+            yield result("Waiting for findings", tokens=10, cost=0.01,
+                         total_uncached_tokens=4, total_cached_tokens=6)
         else:
             assert "Child findings" in request.prompt
             yield AgentEvent(kind="system", text="usage_update", data={
                 "subtype": "usage_update", "total_tokens": 20, "context_tokens": 45,
+                "total_uncached_tokens": 7, "total_cached_tokens": 13,
                 "context_window": 2000,
             })
-            yield result("Integrated findings", tokens=20, cost=0.02)
+            yield result("Integrated findings", tokens=20, cost=0.02,
+                         total_uncached_tokens=7, total_cached_tokens=13)
 
     task, job = await start(parent)
     await asyncio.wait_for(job, 8)
@@ -118,6 +123,7 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert saved.result_summary == "Integrated findings"
     assert saved.agent_session_id == "parent-session"
     assert saved.total_tokens == 130
+    assert (saved.total_uncached_tokens, saved.total_cached_tokens) == (31, 99)
     assert saved.total_cost_usd == pytest.approx(0.08)
     assert saved.num_turns == 3
     assert len(parent_requests) == 2 and len(child_requests) == 1
@@ -133,6 +139,7 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert "mcp__voxarium_studio__spawn_subagent" not in worker.extra_allowed_tools
     assert rows[0].status == "completed" and rows[0].session_id == "child-session"
     assert rows[0].total_tokens == 100 and rows[0].total_cost_usd == pytest.approx(0.05)
+    assert (rows[0].total_uncached_tokens, rows[0].total_cached_tokens) == (20, 80)
     assert rows[0].tool_uses == 1
     feed = await messages(ctx, task.id)
     parent_results = [message for message in feed if message.kind == "result"]
@@ -142,6 +149,8 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     snapshot = next(message for message in feed if message.text == "usage_update")
     assert snapshot.data["context_tokens"] == 45
     assert snapshot.data["task_total_tokens"] == 130
+    assert snapshot.data["task_total_uncached_tokens"] == 31
+    assert snapshot.data["task_total_cached_tokens"] == 99
     assert not ctx.teams.subagents.runs and not ctx.jobs.is_running(rows[0].id)
 
 

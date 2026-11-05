@@ -1167,9 +1167,15 @@ async function complete() {
           <span
             v-if="runSettings"
             class="inline-flex items-center gap-1 text-small text-faint"
-            :title="t('taskDetail.header.tokensSpentHint')"
+            :title="t('tokenUsage.uncachedHint')"
           >
-            · {{ t('taskDetail.header.tokensSpent', { tokens: formatTokens(usage.totalTokens) }) }}
+            · {{ t('tokenUsage.uncachedValue', { tokens: formatTokens(usage.uncachedTokens) }) }}
+          </span>
+          <span v-if="runSettings" class="inline-flex items-center gap-1 text-small text-faint" :title="t('tokenUsage.cachedHint')">
+            · {{ t('tokenUsage.cachedValue', { tokens: formatTokens(usage.cachedTokens) }) }}
+          </span>
+          <span v-if="runSettings && usage.unclassifiedTokens > 0" class="inline-flex items-center gap-1 text-small text-faint" :title="t('tokenUsage.unclassifiedHint')">
+            · {{ t('tokenUsage.unclassifiedValue', { tokens: formatTokens(usage.unclassifiedTokens) }) }}
           </span>
           <!-- Beside the telemetry rather than next to its own checkbox: how long this task
                has been stopped for is a property of the run, and it is the first thing

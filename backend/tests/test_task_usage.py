@@ -63,7 +63,10 @@ async def test_response_usage_is_live_and_results_only_add_uncredited_tokens(ctx
     rows = await telemetry(ctx, task)
     assert len(rows) == 1
     assert rows[0].data == {"subtype": "usage_update", "total_tokens": 70,
-                           "task_total_tokens": 320, "context_tokens": 60}
+                           "task_total_tokens": 320, "context_tokens": 60,
+                           "total_uncached_tokens": 64, "total_cached_tokens": 0,
+                           "task_total_uncached_tokens": 204, "task_total_cached_tokens": 20,
+                           "accounting_version": 2}
     async with ctx.db.session() as session:
         stored = await session.get(TeamTask, task.id)
         assert stored.total_cost_usd == pytest.approx(0.03)

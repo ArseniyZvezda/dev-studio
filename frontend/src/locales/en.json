@@ -1540,7 +1540,7 @@
       "hint": "Costs by recorded run model, most expensive first. Costs without a recorded model are shown as Unknown model.",
       "empty": "Nothing spent yet.",
       "unknown": "Unknown model",
-      "tokensHint": "Tokens by recorded run model, largest first. Usage without a recorded model is shown as Unknown model."
+      "tokensHint": "Selected token usage by recorded run model, largest first. Usage without a recorded model is shown as Unknown model."
     },
     "byMember": {
       "title": "By member",
@@ -1552,31 +1552,31 @@
         "other": "{done} of {count} tasks finished"
       },
       "doneRatio": "{done}/{tasks} done",
-      "tokensHint": "Token usage across each member's tasks, largest first."
+      "tokensHint": "Selected token usage across each member’s tasks, largest first."
     },
     "metrics": {
       "tokens": "Tokens",
       "usd": "API Cost"
     },
     "tokens": {
-      "one": "{count} token",
-      "other": "{count} tokens"
+      "one": "{value} token",
+      "other": "{value} tokens"
     },
     "tokensChart": {
       "title": "Tokens over time",
-      "hint": "Running total of tokens used by day, including cached tokens. Days without usage have no point; the line runs flat to today.",
+      "hint": "Running total of the selected token type by day. Days without recorded usage have no point; the line runs flat to today.",
       "empty": "No token usage recorded yet.",
-      "summaryEmpty": "Tokens over time: no token usage recorded yet.",
+      "summaryEmpty": "{metric} over time: no token usage recorded yet.",
       "summary": {
-        "one": "Tokens over time: {total} in total across {count} day, from {from} to {to}.",
-        "other": "Tokens over time: {total} in total across {count} days, from {from} to {to}."
+        "one": "{metric} over time: {total} in total across {count} day, from {from} to {to}.",
+        "other": "{metric} over time: {total} in total across {count} days, from {from} to {to}."
       }
     },
     "averageChart": {
       "costTitle": "Average task cost",
       "tokensTitle": "Average tokens per task",
       "costHint": "Each point is the average full API Cost of tasks in Done that finished on that UTC day. Archived and zero-cost tasks count; days without completed tasks have no point.",
-      "tokensHint": "Each point is the average full token usage of tasks in Done that finished on that UTC day. Archived and zero-usage tasks count; days without completed tasks have no point.",
+      "tokensHint": "Each point is the average lifetime usage of the selected token type for tasks in Done that finished on that UTC day. Archived and zero-usage tasks count; days without completed tasks have no point.",
       "empty": "No completed tasks with a finish date yet.",
       "summaryEmpty": "Average task {metric}: no completed tasks with a finish date yet.",
       "summary": {
@@ -2489,5 +2489,20 @@
     "taskCost": "API Cost",
     "taskTokens": "Tokens spent",
     "noMessages": "No messages yet"
+  },
+  "tokenUsage": {
+    "uncached": "Tokens excluding cache reads",
+    "cached": "Cache reads",
+    "unclassified": "Unclassified tokens",
+    "uncachedShort": "Without cache reads",
+    "cachedShort": "Cache reads",
+    "unclassifiedShort": "Unclassified",
+    "uncachedHint": "Input, cache creation and output tokens. Cache reads are counted separately.",
+    "cachedHint": "Input tokens read from the cache. These are not included in tokens excluding cache reads.",
+    "unclassifiedHint": "Historical tokens without enough evidence to separate cache reads. They are not counted as uncached tokens.",
+    "uncachedValue": "Without cache reads: {tokens}",
+    "cachedValue": "Cache reads: {tokens}",
+    "unclassifiedValue": "Unclassified: {tokens}",
+    "chartMetric": "Token type shown in all charts"
   }
 }

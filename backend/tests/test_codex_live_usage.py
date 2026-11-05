@@ -100,7 +100,8 @@ def test_usage_snapshot_is_deduplicated_and_never_added_to_final_usage() -> None
     state.set_live_usage({"input_tokens": 100, "cache_read_input_tokens": 200, "output_tokens": 50}, 300, 258400)
     event = state.usage_event()
     assert event is not None and event.text == "usage_update"
-    assert event.data == {"subtype": "usage_update", "total_tokens": 350, "context_tokens": 300, "context_window": 258400}
+    assert event.data == {"subtype": "usage_update", "total_tokens": 350, "context_tokens": 300, "context_window": 258400,
+                          "total_uncached_tokens": 150, "total_cached_tokens": 200, "accounting_version": 2}
     assert "usage" not in event.data  # transcript output-token counters must not double-count it
     assert state.usage_event() is None
     state.events({"type": "turn.completed", "usage": {"input_tokens": 300, "cached_input_tokens": 200, "output_tokens": 50}})
@@ -115,7 +116,9 @@ def test_usage_snapshot_is_deduplicated_and_never_added_to_final_usage() -> None
 def test_stdout_fallback_reports_spend_without_claiming_it_is_context() -> None:
     state = codex._RunState()
     state.events({"type": "turn.completed", "usage": {"input_tokens": 300, "cached_input_tokens": 200, "output_tokens": 50}})
-    assert state.usage_event().data == {"subtype": "usage_update", "total_tokens": 350}
+    assert state.usage_event().data == {"subtype": "usage_update", "total_tokens": 350,
+                                      "total_uncached_tokens": 150, "total_cached_tokens": 200,
+                                      "accounting_version": 2}
     state.set_live_usage({"input_tokens": 100, "cache_read_input_tokens": 200, "output_tokens": 50}, 200, 258400)
     assert state.usage_event().data["context_tokens"] == 200
     # Context can shrink independently of cumulative spend after compaction.

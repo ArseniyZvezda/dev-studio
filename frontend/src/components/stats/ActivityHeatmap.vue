@@ -28,7 +28,7 @@ import {
   windowTotals,
 } from '@/lib/activity-heatmap'
 import { dayMs, formatDay } from '@/lib/cost-chart'
-import { formatCost } from '@/lib/status'
+import { formatCost, formatTokens } from '@/lib/status'
 
 const props = withDefaults(
   defineProps<{
@@ -85,7 +85,7 @@ const caption = computed(() => {
     t('statistics.activity.tasksFinished', { count: sums.finished }),
   ]
   if (props.metric === 'tokens') {
-    if (sums.spent_tokens > 0) parts.push(t('statistics.tokens', { count: sums.spent_tokens }))
+    if (sums.spent_tokens > 0) parts.push(t('statistics.tokens', { count: sums.spent_tokens, value: formatTokens(sums.spent_tokens) }))
   } else if (sums.spent_usd > 0) {
     parts.push(formatCost(sums.spent_usd))
   }

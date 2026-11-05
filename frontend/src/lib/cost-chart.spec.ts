@@ -91,9 +91,9 @@ describe('formatAxisCost', () => {
 })
 
 describe('compact metric labels', () => {
-  it('fits millions on the plot while keeping exact token totals in tooltips', () => {
-    expect(formatMetricValue(12_345_678, 'tokens', true)).toBe('12.3M')
-    expect(formatMetricValue(12_345_678, 'tokens')).toBe('12,345,678')
+  it('uses the same compact token counts on the plot and in tooltips', () => {
+    expect(formatMetricValue(12_345_678, 'tokens', true)).toBe('12M')
+    expect(formatMetricValue(12_345_678, 'tokens')).toBe('12M')
     expect(formatMetricValue(12_345_678, 'usd', true)).toBe('$12.3M')
   })
 

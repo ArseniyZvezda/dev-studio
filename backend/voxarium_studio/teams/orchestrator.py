@@ -75,7 +75,7 @@ from .slots import agent_slot, span
 from .subagents import SubagentManager, results_prompt
 from .store import TeamStore
 from .tools import build_toolset
-from .usage import RunUsage
+from .usage import RunUsage, usage_components
 
 log = logging.getLogger(__name__)
 
@@ -1313,26 +1313,29 @@ class TeamOrchestrator:
                     AgentMessage.role == "system",
                     AgentMessage.kind.in_(["result", "model", "system", compaction.ACCOUNTING_KIND]),
                 ))).all())
-                evidence = compaction.retain_evidence(accounting)
+                summaries = list((await session.exec(select(AgentMessage).where(
+                    AgentMessage.task_id == task_id,
+                    AgentMessage.kind.in_(compaction.SUMMARY_KINDS),
+                    AgentMessage.role != "system",
+                ).order_by(AgentMessage.created_at))).all())
+                # Canonicalize the repair marker together with old summary evidence
+                # before deleting it; otherwise the summary resurrects replaced totals.
+                evidence = compaction.retain_evidence([*accounting, *summaries])
                 await session.exec(delete(AgentMessage).where(
                     AgentMessage.task_id == task_id,
                     AgentMessage.role == "system",
                     AgentMessage.kind.not_in(ALWAYS_KINDS),
                 ))
-                if evidence:
-                    summary = (await session.exec(select(AgentMessage).where(
-                        AgentMessage.task_id == task_id,
-                        AgentMessage.kind.in_(compaction.SUMMARY_KINDS),
-                    ).order_by(AgentMessage.created_at.desc()))).first()
-                    if summary is not None:
+                if summaries:
+                    for summary in summaries:
                         summary.data = {**summary.data,
-                                        "evidence": [*summary.data.get("evidence", []), *evidence]}
+                                        "evidence": evidence if summary is summaries[-1] else []}
                         session.add(summary)
-                    else:
-                        session.add(AgentMessage(
-                            task_id=task_id, member_id=task.assignee_id, role="system",
-                            kind=compaction.ACCOUNTING_KIND, data={"evidence": evidence},
-                        ))
+                elif evidence:
+                    session.add(AgentMessage(
+                        task_id=task_id, member_id=task.assignee_id, role="system",
+                        kind=compaction.ACCOUNTING_KIND, data={"evidence": evidence},
+                    ))
             started_before = task.started_at is not None
             unblocked = not await self._unmet_dependencies(session, task)
             assignee_id = task.assignee_id
@@ -1483,7 +1486,15 @@ class TeamOrchestrator:
             evidence.append({"kind": "result", "role": "system", "text": "",
                              "created_at": utcnow().isoformat(),
                              "data": {"total_cost_usd": data.get("total_cost_usd", 0),
+                                      **{key: data[key] for key in (
+                                          "provider_session_id", "session_total_cost_usd",
+                                          "session_cost_baseline_usd", "cost_unavailable",
+                                      ) if key in data},
                                       "total_tokens": data.get("total_tokens", 0),
+                                      "total_uncached_tokens": usage_components(data)[0],
+                                      "total_cached_tokens": usage_components(data)[1],
+                                      "accounting_version": 2,
+                                      "usage": data.get("usage", {}),
                                       "model": data.get("model") or request.model}})
         entry = AgentMessage(
             task_id=task_id, member_id=request.member.id, role="assistant",
@@ -1563,6 +1574,8 @@ class TeamOrchestrator:
             task.total_cost_usd = 0.0
             task.num_turns = 0
             task.total_tokens = 0
+            task.total_uncached_tokens = 0
+            task.total_cached_tokens = 0
             task.started_at = None
             task.finished_at = None
             session.add(task)
@@ -2573,11 +2586,15 @@ class TeamOrchestrator:
         limit: usage_limits.UsageLimit | None = None
         usage = RunUsage()
         credited_tokens = 0
+        credited_uncached = credited_cached = 0
 
         async for event in backend.run(request):
             # §10.4: persist reported spend while work is running, including a run
             # cancelled before its result. The result only adds the uncredited balance.
             live_usage = usage.observe(event)
+            if event.kind == "result":
+                usage.finish(event.data)
+                event = replace(event, data={**event.data, **usage.counters()})
             if not (event.kind == "system" and event.data.get("subtype") == "usage_update"):
                 visible = event
                 if event.kind == "result" and self.subagents.has_pending(task_id):
@@ -2586,8 +2603,11 @@ class TeamOrchestrator:
             if live_usage:
                 await self._publish_usage_update(
                     task_id, member_id, usage, delta=usage.total - credited_tokens,
+                    uncached_delta=usage.uncached - credited_uncached,
+                    cached_delta=usage.cached - credited_cached,
                 )
                 credited_tokens = usage.total
+                credited_uncached, credited_cached = usage.uncached, usage.cached
             if event.session_id:
                 await self._store_session_id(task_id, event.session_id)
             if event.kind == "text" and event.text:
@@ -2602,10 +2622,13 @@ class TeamOrchestrator:
                 usage.finish(event.data)
                 await self._store_result_stats(task_id, {
                     **event.data, "total_tokens": usage.total - credited_tokens,
+                    "total_uncached_tokens": usage.uncached - credited_uncached,
+                    "total_cached_tokens": usage.cached - credited_cached,
                 })
                 await self._publish_usage_update(task_id, member_id, usage)
                 usage.next_segment()
                 credited_tokens = 0
+                credited_uncached = credited_cached = 0
                 # A `continued` result ended a turn and not the run — a session that
                 # stopped mid-work and is being resumed, or one held open because the
                 # sub-agents and workflows the member started are still running (§10.3).
@@ -3053,26 +3076,33 @@ class TeamOrchestrator:
                 session.add(task)
 
     async def _store_result_stats(self, task_id: str, data: dict[str, Any]) -> None:
+        uncached, cached = usage_components(data)
         async with self.db.session() as session:
             await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
                 total_cost_usd=TeamTask.total_cost_usd + float(data.get("total_cost_usd") or 0.0),
                 num_turns=TeamTask.num_turns + int(data.get("num_turns") or 0),
                 total_tokens=TeamTask.total_tokens + int(data.get("total_tokens") or 0),
+                total_uncached_tokens=TeamTask.total_uncached_tokens + uncached,
+                total_cached_tokens=TeamTask.total_cached_tokens + cached,
             ))
 
     async def _publish_usage_update(
         self, task_id: str, member_id: str, usage: RunUsage, *, delta: int = 0,
+        uncached_delta: int = 0, cached_delta: int = 0,
     ) -> None:
         """One persisted counter and one replaceable WS row, independent of backend (§10.4)."""
         async with self.db.session() as session:
             await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
                 total_tokens=TeamTask.total_tokens + delta,
+                total_uncached_tokens=TeamTask.total_uncached_tokens + uncached_delta,
+                total_cached_tokens=TeamTask.total_cached_tokens + cached_delta,
             ))
             task = await session.get(TeamTask, task_id)
             if task is None:
                 return
             task_total = task.total_tokens
-        await self._publish_message(task_id, member_id, usage.snapshot(task_total))
+            task_uncached, task_cached = task.total_uncached_tokens, task.total_cached_tokens
+        await self._publish_message(task_id, member_id, usage.snapshot(task_total, task_uncached, task_cached))
 
     async def _cleanup_task_temp(self, task: TeamTask) -> None:
         try:

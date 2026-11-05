@@ -18,8 +18,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import json
 import logging
+import math
 import os
+import re
 import shutil
 from collections.abc import AsyncIterator
 from functools import lru_cache
@@ -39,6 +42,73 @@ from .base import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _session_cost_baseline(session_id: str | None) -> float | None:
+    """Read the last persisted cumulative cost before resuming a Claude subprocess.
+
+    Read backwards in bounded blocks: a long session can be hundreds of MB. A missing
+    journal is unknown, never a zero baseline that would recharge all prior work.
+    """
+    if not session_id:
+        return 0.0
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
+        return None
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    for path in root.glob(f"*/{session_id}.jsonl"):
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                position, pending = stream.tell(), b""
+                while position:
+                    size = min(position, 65536)
+                    position -= size
+                    stream.seek(position)
+                    lines = (stream.read(size) + pending).split(b"\n")
+                    pending = lines[0]
+                    if position == 0:
+                        lines[0], pending = pending, b""
+                    else:
+                        lines = lines[1:]
+                    for line in reversed(lines):
+                        if b'cost-state' not in line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        cost = row.get("totalCostUSD")
+                        if (row.get("type") == "cost-state" and isinstance(cost, (int, float))
+                                and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0):
+                            return float(cost)
+        except OSError:
+            continue
+    return None
+
+
+class _SessionCost:
+    """Claude result cost is session-cumulative; its token usage is per invocation."""
+
+    def __init__(self, session_id: str | None, baseline: float | None) -> None:
+        self.session_id, self.baseline = session_id, baseline
+
+    def apply(self, data: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+        if session_id != self.session_id:
+            self.session_id, self.baseline = session_id, 0.0
+        raw = float(data.get("total_cost_usd") or 0)
+        baseline = self.baseline
+        valid = math.isfinite(raw) and raw >= 0 and not data.get("cost_unavailable")
+        data = {**data, "accounting_version": 2, "provider_session_id": session_id,
+                "session_total_cost_usd": raw if valid else None,
+                "session_cost_baseline_usd": baseline,
+                "total_cost_usd": max(0.0, raw - baseline) if valid and baseline is not None else 0.0}
+        if baseline is None or not valid:
+            data["cost_unavailable"] = True
+        if valid:
+            # A stale/empty result must not lower the watermark and recharge history
+            # when the next cumulative result arrives for this same session.
+            self.baseline = max(baseline or 0.0, raw)
+        return data
 
 #: The CLI's own phrase for a result nobody asked the model to produce. Not what a stalled
 #: run looks like through the SDK — that arrives as an **empty** result — so it is one test
@@ -323,6 +393,7 @@ class ClaudeCodeBackend(AgentBackend):
             )
 
         session_id: str | None = request.resume_session_id
+        cost_counter = _SessionCost(session_id, await asyncio.to_thread(_session_cost_baseline, session_id))
         prompt = request.prompt
         continuations = 0
         try:
@@ -401,7 +472,7 @@ class ClaudeCodeBackend(AgentBackend):
                                     )
                                 elif isinstance(message, ResultMessage):
                                     text = getattr(message, "result", "") or ""
-                                    data = _result_data(message)
+                                    data = cost_counter.apply(_result_data(message), session_id)
                                     mid_work = _stopped_mid_work(data, text)
                                     stalled = (
                                         mid_work
@@ -661,7 +732,12 @@ def _result_data(message: Any) -> dict[str, Any]:
         "is_error": bool(getattr(message, "is_error", False)),
         "num_turns": getattr(message, "num_turns", 0) or 0,
         "total_cost_usd": getattr(message, "total_cost_usd", 0.0) or 0.0,
+        "cost_unavailable": getattr(message, "total_cost_usd", None) is None,
         "total_tokens": _usage_tokens(usage),
+        "total_cached_tokens": int(usage.get("cache_read_input_tokens") or 0),
+        "total_uncached_tokens": sum(int(usage.get(key) or 0) for key in _TOKEN_FIELDS
+                                     if key != "cache_read_input_tokens"),
+        "accounting_version": 2,
         "usage": usage,
         "duration_ms": getattr(message, "duration_ms", 0) or 0,
         "stop_reason": getattr(message, "stop_reason", None),
@@ -806,6 +882,9 @@ def _attach_usage(events: list[AgentEvent], message: Any) -> None:
     counted = {key: int(usage[key] or 0) for key in _TOKEN_FIELDS if key in usage}
     if counted:
         events[0].data = {**events[0].data, "usage": counted}
+        response_id = getattr(message, "message_id", None)
+        if response_id:
+            events[0].data["provider_response_id"] = str(response_id)
 
 
 def _tool_result_events(message: Any, session_id: str | None) -> list[AgentEvent]:

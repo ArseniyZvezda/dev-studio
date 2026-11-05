@@ -144,15 +144,26 @@ describe('what a session has running', () => {
   it('shows both counters before spending and distinguishes unknown native cost from zero', () => {
     const studio = subagents([started('studio_1', { task_type: 'studio_agent' })])[0]!
     const native = subagents([started('native_1')])[0]!
-    expect(subagentUsage(studio)).toBe('Tokens: 0 · API Cost: $0')
-    expect(subagentUsage(native)).toBe('Tokens: 0 · API Cost: unavailable')
+    expect(subagentUsage(studio)).toBe('Without cache reads: 0 · Cache reads: 0 · API Cost: $0')
+    expect(subagentUsage(native)).toBe('Without cache reads: 0 · Cache reads: 0 · API Cost: unavailable')
     const reported = subagents([
       started('native_1'),
       frame('task_progress', {
         task_id: 'native_1', usage: { total_tokens: 25, total_cost_usd: 0 },
       }),
     ])[0]!
-    expect(subagentUsage(reported)).toBe('Tokens: 25 · API Cost: $0')
+    expect(subagentUsage(reported)).toBe('Without cache reads: 0 · Cache reads: 0 · Unclassified: 25 · API Cost: $0')
+  })
+
+  it('keeps compact uncached/cache counters separate after archiving and newer live updates', () => {
+    const row = saved({ total_tokens: 12_200_000, total_uncached_tokens: 185_000, total_cached_tokens: 12_000_000 })
+    expect(subagentUsage(subagents([], [row])[0]!))
+      .toBe('Without cache reads: 185K · Cache reads: 12M · Unclassified: 15K · API Cost: $0.03')
+    const progress = { ...frame('task_progress', { task_id: row.id, usage: {
+      total_tokens: 12_400_000, total_uncached_tokens: 200_000, total_cached_tokens: 12_000_000,
+    } }), created_at: '2026-09-04T10:02:00Z' }
+    expect(subagents([progress], [row])[0]).toMatchObject({ tokens: 12_400_000,
+      uncachedTokens: 200_000, cachedTokens: 12_000_000 })
   })
 
   it('retains last valid counters when a terminal report omits or contains invalid telemetry', () => {

@@ -23,6 +23,8 @@ class TaskSubagent(SQLModel, table=True):
     session_id: str | None = None
     summary: str = Field(default="", sa_column=Column(Text, nullable=False))
     total_tokens: int = 0
+    total_uncached_tokens: int = 0
+    total_cached_tokens: int = 0
     total_cost_usd: float = 0.0
     num_turns: int = 0
     tool_uses: int = 0

@@ -53,6 +53,8 @@ export interface Subagent {
   startedAt: string
   endedAt: string | null
   tokens: number
+  uncachedTokens: number
+  cachedTokens: number
   /** Native runtimes can omit cost; zero is a known value, not missing telemetry. */
   costUsd: number | null
   toolUses: number
@@ -122,13 +124,30 @@ function timestamp(value: string): number {
 }
 
 /** Explicit per-agent counters, including a reported zero spend (§10.3, §10.4). */
-export function subagentUsage(entry: Pick<Subagent, 'tokens' | 'costUsd'>): string {
-  return [
-    t('taskDetail.delegated.tokens', { tokens: formatTokens(entry.tokens) }),
-    t('taskDetail.delegated.apiCost', {
+export function subagentUsage(entry: Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens' | 'costUsd'>): string {
+  const unknown = Math.max(0, entry.tokens - entry.uncachedTokens - entry.cachedTokens)
+  const parts = [
+    t('tokenUsage.uncachedValue', { tokens: formatTokens(entry.uncachedTokens) }),
+    t('tokenUsage.cachedValue', { tokens: formatTokens(entry.cachedTokens) }),
+  ]
+  if (unknown > 0) parts.push(t('tokenUsage.unclassifiedValue', { tokens: formatTokens(unknown) }))
+  parts.push(t('taskDetail.delegated.apiCost', {
       cost: entry.costUsd === null ? t('taskDetail.delegated.usageUnavailable') : formatCost(entry.costUsd),
-    }),
-  ].join(' · ')
+  }))
+  return parts.join(' · ')
+}
+
+/** Native lifecycle events may report only a total; the missing split stays unknown. */
+function tokenBreakdown(
+  usage: Record<string, unknown> | null,
+  previous?: Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'>,
+): Pick<Subagent, 'tokens' | 'uncachedTokens' | 'cachedTokens'> {
+  const tokens = count(usage?.total_tokens) ?? previous?.tokens ?? 0
+  const uncachedTokens = count(usage?.total_uncached_tokens) ?? previous?.uncachedTokens ?? 0
+  const cachedTokens = count(usage?.total_cached_tokens) ?? previous?.cachedTokens ?? 0
+  return uncachedTokens + cachedTokens <= tokens
+    ? { tokens, uncachedTokens, cachedTokens }
+    : { tokens, uncachedTokens: 0, cachedTokens: 0 }
 }
 
 /** The fields a lifecycle frame is read from — an `AgentMessage`, or the event that will
@@ -163,7 +182,9 @@ export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = 
       typeLabel: typeLabel('studio_agent'), backend: row.backend, model: row.model,
       status: row.status === 'queued' || row.status === 'running' ? 'running' : asStatus(row.status),
       holdsRun: true, startedAt: row.created_at, endedAt: row.finished_at,
-      tokens: count(row.total_tokens) ?? 0, costUsd: count(row.total_cost_usd),
+      ...tokenBreakdown({ total_tokens: row.total_tokens, total_uncached_tokens: row.total_uncached_tokens,
+        total_cached_tokens: row.total_cached_tokens }),
+      costUsd: count(row.total_cost_usd),
       toolUses: count(row.tool_uses) ?? 0, lastTool: '', summary: row.summary,
     })
     updatedAt.set(row.id, timestamp(row.updated_at))
@@ -220,7 +241,7 @@ export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = 
         holdsRun: HOLDING_TASK_TYPES.has(type),
         startedAt: message.created_at,
         endedAt: null,
-        tokens: Math.max(count(usage?.total_tokens) ?? 0, previous?.tokens ?? 0),
+        ...tokenBreakdown((count(usage?.total_tokens) ?? 0) >= (previous?.tokens ?? 0) ? usage : null, previous),
         costUsd: count(usage?.total_cost_usd) ?? previous?.costUsd ?? (type === 'studio_agent' ? 0 : null),
         toolUses: Math.max(count(usage?.tool_uses) ?? 0, previous?.toolUses ?? 0),
         lastTool: '',
@@ -236,7 +257,7 @@ export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = 
 
     if (subtype === 'task_progress') {
       const usage = record(data.usage)
-      found.tokens = count(usage?.total_tokens) ?? found.tokens
+      Object.assign(found, tokenBreakdown(usage, found))
       found.costUsd = count(usage?.total_cost_usd) ?? found.costUsd
       found.toolUses = count(usage?.tool_uses) ?? found.toolUses
       found.lastTool = text(data.last_tool_name) || found.lastTool
@@ -246,7 +267,7 @@ export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = 
       found.endedAt = message.created_at
       found.summary = text(data.summary)
       const usage = record(data.usage)
-      found.tokens = count(usage?.total_tokens) ?? found.tokens
+      Object.assign(found, tokenBreakdown(usage, found))
       found.costUsd = count(usage?.total_cost_usd) ?? found.costUsd
       found.toolUses = count(usage?.tool_uses) ?? found.toolUses
     } else if (subtype === 'task_updated') {

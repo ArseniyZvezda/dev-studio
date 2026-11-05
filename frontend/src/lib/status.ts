@@ -184,21 +184,22 @@ export function formatCost(usd: number): string {
 }
 
 /**
- * A token count at the precision a header has room for: `150K`, `1.2M`.
+ * Compact token counts throughout the UI: `150K`, `1.2M`, including tooltips (§10.4).
  *
  * Three significant figures at most — `1.5K` and `12K` and `150K` are all the same width
  * on screen, which is what lets the figure sit in a row of other figures without the row
  * jumping as a run grows. Below a thousand the number is short enough to stand as it is.
  */
 export function formatTokens(count: number | null | undefined): string {
-  const value = Math.max(0, Math.round(count ?? 0))
-  if (value < 1000) return `${value}`
+  const value = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+  if (value > 0 && value < 1) return `${Number(value.toPrecision(3))}`
+  if (value < 999.95) return `${Number(value.toFixed(1))}`
   const scaled = (amount: number, unit: string) => {
     const text = amount < 10 ? amount.toFixed(1).replace(/\.0$/, '') : `${Math.round(amount)}`
     return `${text}${unit}`
   }
-  if (value < 1_000_000) return scaled(value / 1000, 'K')
-  if (value < 1_000_000_000) return scaled(value / 1_000_000, 'M')
+  if (value < 999_500) return scaled(value / 1000, 'K')
+  if (value < 999_500_000) return scaled(value / 1_000_000, 'M')
   return scaled(value / 1_000_000_000, 'B')
 }
 

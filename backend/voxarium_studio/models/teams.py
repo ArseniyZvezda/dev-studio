@@ -368,12 +368,11 @@ class TeamTask(SQLModel, table=True):
     total_cost_usd: float = 0.0
     num_turns: int = 0
     total_tokens: int = 0
-    """Every token the task's sessions consumed: input, output and both cache halves.
-
-    One figure rather than a breakdown because it is read beside the turns and the cost in
-    the task header; the per-run split stays on the ``result`` transcript entry's ``usage``.
-    Accumulated across continuations and resumes exactly as the other two are.
-    """
+    """All processed tokens, including repeated cached context (§10.4)."""
+    total_uncached_tokens: int = 0
+    """Input, cache writes and output; legacy unclassified usage stays in total only."""
+    total_cached_tokens: int = 0
+    """Repeated cache reads, already included in total_tokens."""
     commit_message: str | None = Field(default=None, sa_column=Column(Text))
     """The commit description drafted when the task last reached ``needs_review`` (§10.4).
 
@@ -489,6 +488,8 @@ class AgentChat(SQLModel, table=True):
     total_cost_usd: float = 0.0
     num_turns: int = 0
     total_tokens: int = 0
+    total_uncached_tokens: int = 0
+    total_cached_tokens: int = 0
     created_at: datetime = Field(default_factory=utcnow, index=True, sa_type=UtcDateTime)
     last_message_at: datetime = Field(default_factory=utcnow, index=True, sa_type=UtcDateTime)
     """When anything was last said in it, by either side — what the chat list sorts by."""

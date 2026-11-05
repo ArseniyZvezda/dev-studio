@@ -379,6 +379,43 @@ describe('the line under the rows', () => {
       .toBe(40)
   })
 
+  it('counts output increments per provider response across repeated frames and continued results', () => {
+    const reply = (id: string, output: number) => spent(output, {
+      data: { provider_response_id: id, usage: { output_tokens: output } },
+    })
+    const feed = [reply('response_a', 10), reply('response_a', 20), reply('response_a', 12),
+      reply('response_b', 7)]
+    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+      expect(liveLine(feed, level).tokens).toBe(27)
+    }
+    feed.push(message({ role: 'system', kind: 'result',
+      data: { continued: true, usage: { output_tokens: 27 } } }),
+      reply('response_a', 20), reply('response_c', 5), spent(5, { role: 'system', kind: 'result' }))
+    expect(liveLine(feed, 'compact').tokens).toBe(32)
+  })
+
+  it('uses the latest repaired output before the cutoff while retaining dialogue and new output', () => {
+    const evidence = (output: number) => [{ kind: 'result', role: 'system', text: '',
+      created_at: '2026-09-04T10:00:00Z', data: { usage: { output_tokens: output } } }]
+    const repair = (output: number, created_at: string) => message({ kind: 'accounting', role: 'system',
+      created_at, data: { repair: { cutoff_at: '2026-09-04T10:01:00' }, evidence: evidence(output) } })
+    const feed = [spent(200, { text: 'Original answer' }), spent(400, { role: 'system', kind: 'result' }),
+      repair(25, '2026-09-04T11:00:00Z'), repair(30, '2026-09-04T12:00:00Z'),
+      spent(5, { text: 'Fresh answer', created_at: '2026-09-04T13:00:00Z' })]
+    expect(liveLine(feed, 'compact')).toMatchObject({ tokens: 35, activity: 'Fresh answer' })
+    expect(transcriptRows(feed, 'advanced').some(row => row.message.text === 'Original answer')).toBe(true)
+  })
+
+  it('retains canonical output after compression or archive without charging retained results twice', () => {
+    for (const kind of ['accounting', 'compressed summary', 'context_summary']) {
+      const retained = message({ kind, data: { evidence: [
+        { kind: 'result', role: 'system', created_at: '2026-09-04T10:00:00Z', data: { usage: { output_tokens: 30 } } },
+        { kind: 'system', text: 'usage_update', created_at: '2026-09-04T10:00:01Z', data: { usage: { output_tokens: 30 } } },
+      ] } })
+      expect(liveLine([retained, spent(5, { created_at: '2026-09-04T11:00:00Z' })], 'compact').tokens).toBe(35)
+    }
+  })
+
   it('closes continued segments separately before summing their output', () => {
     const feed = [spent(10), spent(20),
       message({ role: 'system', kind: 'result', data: { continued: true, usage: { output_tokens: 30 } } }),

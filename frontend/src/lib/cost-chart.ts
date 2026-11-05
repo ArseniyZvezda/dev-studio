@@ -7,7 +7,7 @@
  */
 
 import { formatDate, formatNumber } from '@/i18n'
-import { formatCost } from '@/lib/status'
+import { formatCost, formatTokens } from '@/lib/status'
 
 /** The same geometry displays either resource and either aggregation (§10.4). */
 export interface MetricPoint {
@@ -138,17 +138,14 @@ export function formatAxisCost(value: number): string {
   return `$${formatNumber(value, { maximumFractionDigits: 1 })}`
 }
 
-/** Compact plot labels; tooltips retain exact totals and fractional token averages. */
+/** Token usage is compact everywhere, including tooltips and accessible summaries. */
 export function formatMetricValue(value: number, metric: Metric, compact = false): string {
+  if (metric === 'tokens') return formatTokens(value)
   if (compact && value >= 10_000) {
     const amount = formatNumber(value, { notation: 'compact', maximumFractionDigits: 1 })
-    return metric === 'usd' ? `$${amount}` : amount
+    return `$${amount}`
   }
-  if (metric === 'usd') return compact ? formatAxisCost(value) : formatCost(value)
-  if (compact && value > 0 && value < 1) {
-    return formatNumber(value, { maximumSignificantDigits: 3 })
-  }
-  return formatNumber(value, { maximumFractionDigits: 1 })
+  return compact ? formatAxisCost(value) : formatCost(value)
 }
 
 /** `Sep 4` — the day, in the interface language and the UTC frame the series was bucketed in. */

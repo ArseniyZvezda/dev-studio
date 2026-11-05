@@ -36,6 +36,7 @@ const props = defineProps<{
   today: string
   metric: Metric
   mode: StatisticsChartMode
+  metricLabel?: string
 }>()
 
 const container = ref<HTMLElement | null>(null)
@@ -92,7 +93,7 @@ const xTicks = computed(() =>
 const messagePrefix = computed(() => props.mode === 'average'
   ? 'statistics.averageChart'
   : props.metric === 'tokens' ? 'statistics.tokensChart' : 'statistics.chart')
-const metricLabel = computed(() => t(`statistics.metrics.${props.metric}`))
+const metricLabel = computed(() => props.metricLabel ?? t(`statistics.metrics.${props.metric}`))
 
 function formatValue(value: number): string {
   return formatMetricValue(value, props.metric)
@@ -270,6 +271,7 @@ const tooltipStyle = computed(() => {
       aria-atomic="true"
     >
       <p class="font-medium text-secondary">{{ formatDay(activePoint.ms) }}</p>
+      <p v-if="metric === 'tokens'" class="mt-0.5 text-faint">{{ metricLabel }}</p>
       <p class="mt-1 flex items-baseline justify-between gap-2">
         <span class="font-semibold text-primary tabular-nums">
           {{ formatValue(activePoint.value) }}

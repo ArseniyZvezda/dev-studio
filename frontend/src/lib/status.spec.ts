@@ -82,7 +82,10 @@ describe('formatTokens', () => {
     expect(formatTokens(1_500)).toBe('1.5K')
     expect(formatTokens(12_400)).toBe('12K')
     expect(formatTokens(2_000_000)).toBe('2M')
-    expect(formatTokens(999_600)).toBe('1000K')
+    expect(formatTokens(999_600)).toBe('1M')
+    expect(formatTokens(999_600_000)).toBe('1B')
+    expect(formatTokens(185_000)).toBe('185K')
+    expect(formatTokens(12_000_000)).toBe('12M')
   })
 
   it('leaves a small count as it is, and a missing one as zero', () => {
@@ -90,6 +93,9 @@ describe('formatTokens', () => {
     expect(formatTokens(842)).toBe('842')
     expect(formatTokens(undefined)).toBe('0')
     expect(formatTokens(null)).toBe('0')
+    expect(formatTokens(NaN)).toBe('0')
+    expect(formatTokens(12.25)).toBe('12.3')
+    expect(formatTokens(0.025)).toBe('0.025')
   })
 })
 

@@ -25,6 +25,13 @@ def message(task_id: str, kind: str, day: int, data: dict, *, text: str = "", ho
                         data=data, text=text, created_at=at(day, hour))
 
 
+def without_split(rows):
+    """Older total/attribution assertions stay independent of the new bucket tests."""
+    return [{key: value for key, value in row.items()
+             if not any(part in key for part in ("uncached", "cached", "unclassified"))}
+            for row in rows]
+
+
 def test_token_history_preserves_totals_archives_and_run_models():
     tasks = [
         task("done", total_tokens=350, total_cost_usd=2, status=TaskStatus.DONE,
@@ -49,7 +56,7 @@ def test_token_history_preserves_totals_archives_and_run_models():
     assert (totals["spent_tokens"], totals["done_tokens"], totals["cancelled_tokens"],
             totals["in_flight_tokens"]) == (400, 350, 40, 10)
     assert totals["spent_tokens"] == sum(row["spent_tokens"] for row in stats["by_member"])
-    assert stats["by_model_tokens"] == [
+    assert without_split(stats["by_model_tokens"]) == [
         {"model": "changed", "spent_tokens": 150},
         {"model": None, "spent_tokens": 100},
         {"model": "old", "spent_tokens": 100},
@@ -77,7 +84,7 @@ def test_live_snapshot_dates_only_unexplained_tokens_and_never_counts_twice():
     messages.append(message("running", "result", 2, {"total_tokens": 60, "model": "known"}))
     stats = cost_stats(tasks, messages, [])
     assert stats["token_series"][-1]["cumulative_tokens"] == 160
-    assert stats["by_model_tokens"] == [{"model": "known", "spent_tokens": 160}]
+    assert without_split(stats["by_model_tokens"]) == [{"model": "known", "spent_tokens": 160}]
 
 
 def test_inconsistent_history_and_stale_snapshot_fall_back_to_task_total():
@@ -89,9 +96,9 @@ def test_inconsistent_history_and_stale_snapshot_fall_back_to_task_total():
         }),
     ]
     stats = cost_stats(tasks, messages, [])
-    assert stats["token_series"] == [{"day": "2026-10-04", "spent_tokens": 50,
+    assert without_split(stats["token_series"]) == [{"day": "2026-10-04", "spent_tokens": 50,
                                        "cumulative_tokens": 50, "runs": 1}]
-    assert stats["by_model_tokens"] == [{"model": None, "spent_tokens": 50}]
+    assert without_split(stats["by_model_tokens"]) == [{"model": None, "spent_tokens": 50}]
 
 
 @pytest.mark.parametrize("bad", [None, -20, True, "100", 1.5, {}, []])
@@ -119,7 +126,7 @@ def test_daily_average_uses_completed_task_lifetime_totals_and_shared_denominato
         message("resumed", "result", 2, {"total_cost_usd": 6, "total_tokens": 600}),
     ]
     stats = cost_stats(tasks, messages, [])
-    assert stats["average_task_series"] == [
+    assert without_split(stats["average_task_series"]) == [
         {"day": "2026-10-03", "tasks": 2, "average_usd": 4.5, "average_tokens": 450.5},
         {"day": "2026-10-05", "tasks": 1, "average_usd": 2, "average_tokens": 80},
     ]
@@ -163,7 +170,7 @@ def test_retained_usage_snapshot_does_not_reset_the_historical_run_model():
     summary = message("a", compaction.SUMMARY_KIND, 4,
                       {"evidence": compaction.retain_evidence(messages)})
     stats = cost_stats(tasks, compaction.expand_evidence([summary]), [])
-    assert stats["by_model_tokens"] == [{"model": "original", "spent_tokens": 150}]
+    assert without_split(stats["by_model_tokens"]) == [{"model": "original", "spent_tokens": 150}]
     assert stats["by_model"] == [{"model": "original", "spent_usd": 3}]
 
 
@@ -255,5 +262,5 @@ async def test_new_compression_spend_retains_its_tokens_and_model(ctx, monkeypat
                                    role="user", kind="note", text="Preserve the progress")
     await ctx.teams.compress_task(task_row.id)
     stats = await ctx.teams.stats("team_default")
-    assert stats["by_model_tokens"] == [{"model": "summary-model", "spent_tokens": 40}]
+    assert without_split(stats["by_model_tokens"]) == [{"model": "summary-model", "spent_tokens": 40}]
     assert stats["token_series"][-1]["cumulative_tokens"] == 40

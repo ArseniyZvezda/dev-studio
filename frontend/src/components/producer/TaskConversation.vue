@@ -28,7 +28,7 @@ const running = computed(() => props.task.is_running === true)
 const rows = computed(() => taskConversationRows(messages.value))
 const live = computed(() => liveLine(messages.value, 'advanced'))
 const cost = computed(() => taskCost(props.task.total_cost_usd, messages.value))
-const usage = computed(() => taskUsage({ total_tokens: props.task.total_tokens, messages: messages.value }))
+const usage = computed(() => taskUsage({ ...props.task, messages: messages.value }))
 let generation = 0
 let alive = true
 let received: AgentMessage[] = []
@@ -206,10 +206,17 @@ onBeforeUnmount(() => {
         <span class="truncate" :title="live.activity ?? undefined">{{ live.activity || t('chat.answeringNow') }}</span>
       </p>
       <!-- §10.11: lifetime spend follows the same live usage snapshots as TaskDetail. -->
-      <div class="mb-1 flex items-center justify-between gap-2 text-small"
-        :title="t('taskDetail.header.tokensSpentHint')">
-        <span class="text-faint">{{ t('producerPage.taskTokens') }}</span>
-        <span class="font-mono tabular-nums">{{ formatTokens(usage.totalTokens) }}</span>
+      <div class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.uncachedHint')">
+        <span class="text-faint">{{ t('tokenUsage.uncached') }}</span>
+        <span class="font-mono tabular-nums">{{ formatTokens(usage.uncachedTokens) }}</span>
+      </div>
+      <div class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.cachedHint')">
+        <span class="text-faint">{{ t('tokenUsage.cached') }}</span>
+        <span class="font-mono tabular-nums">{{ formatTokens(usage.cachedTokens) }}</span>
+      </div>
+      <div v-if="usage.unclassifiedTokens > 0" class="mb-1 flex items-center justify-between gap-2 text-small" :title="t('tokenUsage.unclassifiedHint')">
+        <span class="text-faint">{{ t('tokenUsage.unclassified') }}</span>
+        <span class="font-mono tabular-nums">{{ formatTokens(usage.unclassifiedTokens) }}</span>
       </div>
       <div class="flex items-center justify-between gap-2 text-small">
         <span class="text-faint">{{ t('producerPage.taskCost') }}</span>

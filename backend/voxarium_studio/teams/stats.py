@@ -30,6 +30,35 @@ from .usage import token_count
 
 #: Below this a residual is floating-point noise, not money nobody accounted for.
 _EPSILON = 1e-9
+_TOKEN_PARTS = ("tokens", "uncached_tokens", "cached_tokens", "unclassified_tokens")
+
+
+def _token_parts(total: Any, uncached: Any = 0, cached: Any = 0) -> dict[str, int]:
+    """Separate confirmed cache reads from new input/output; legacy balances stay unknown."""
+    total = token_count(total) or 0
+    uncached, cached = token_count(uncached) or 0, token_count(cached) or 0
+    if uncached + cached > total:
+        uncached = cached = 0
+    return {"tokens": total, "uncached_tokens": uncached, "cached_tokens": cached,
+            "unclassified_tokens": total - uncached - cached}
+
+
+def _task_tokens(task: TeamTask) -> dict[str, int]:
+    return _token_parts(task.total_tokens, getattr(task, "total_uncached_tokens", 0),
+                        getattr(task, "total_cached_tokens", 0))
+
+
+def _empty_tokens() -> dict[str, int]:
+    return dict.fromkeys(_TOKEN_PARTS, 0)
+
+
+def _add_tokens(target: dict[str, int], values: dict[str, int]) -> None:
+    for key in _TOKEN_PARTS:
+        target[key] += values[key]
+
+
+def _token_fields(values: dict[str, int], prefix: str) -> dict[str, int]:
+    return {f"{prefix}_{key}": value for key, value in values.items()}
 
 
 def _run_cost(message: AgentMessage) -> float:
@@ -82,7 +111,7 @@ def cost_events(
 
 def _token_records(
     tasks: list[TeamTask], messages: list[AgentMessage]
-) -> list[tuple[datetime, int, str, str | None]]:
+) -> list[tuple[datetime, dict[str, int], str, str | None]]:
     """Recorded run tokens plus the task's unexplained balance (§10.4).
 
     Live usage snapshots include tokens already present in results, so they are never
@@ -91,7 +120,7 @@ def _token_records(
     stays in the unknown-model bucket rather than being attributed to today's model.
     """
     recorded: dict[str, str | None] = {}
-    runs: dict[str, list[tuple[datetime, int, str | None]]] = defaultdict(list)
+    runs: dict[str, list[tuple[datetime, dict[str, int], str | None]]] = defaultdict(list)
     snapshots: dict[str, AgentMessage] = {}
     for message in sorted(messages, key=lambda entry: entry.created_at):
         model = message.data.get("model")
@@ -99,30 +128,36 @@ def _token_records(
         if message.kind == "model" or (message.kind == "system" and message.text == "init"):
             recorded[message.task_id] = model
         if message.kind == "result":
-            count = token_count(message.data.get("total_tokens")) or 0
-            if count:
+            count = _token_parts(message.data.get("total_tokens"),
+                                 message.data.get("total_uncached_tokens"),
+                                 message.data.get("total_cached_tokens"))
+            if count["tokens"]:
                 runs[message.task_id].append(
                     (message.created_at, count, model or recorded.get(message.task_id))
                 )
         elif message.kind == "system" and message.data.get("subtype") == "usage_update":
             snapshots[message.task_id] = message
 
-    records: list[tuple[datetime, int, str, str | None]] = []
+    records: list[tuple[datetime, dict[str, int], str, str | None]] = []
     for task in tasks:
-        total = token_count(task.total_tokens) or 0
+        total = _task_tokens(task)
         entries = runs.get(task.id, [])
-        explained = sum(count for _, count, _ in entries)
-        if explained > total:
-            entries, explained = [], 0
+        explained = _empty_tokens()
+        for _, count, _ in entries:
+            _add_tokens(explained, count)
+        # The authoritative task partitions must reconcile too, not just the total.
+        # Old unknown telemetry cannot silently become uncached input after a repair.
+        if any(explained[key] > total[key] for key in _TOKEN_PARTS):
+            entries, explained = [], _empty_tokens()
         records.extend((when, count, task.id, model) for when, count, model in entries)
-        residual = total - explained
-        if residual:
+        residual = {key: total[key] - explained[key] for key in _TOKEN_PARTS}
+        if residual["tokens"]:
             snapshot = snapshots.get(task.id)
             # A stale snapshot must not move a newer task balance back in time.
             when = (
                 snapshot.created_at
                 if snapshot is not None
-                and token_count(snapshot.data.get("task_total_tokens")) == total
+                and token_count(snapshot.data.get("task_total_tokens")) == total["tokens"]
                 else _landing(task)
             )
             records.append((when, residual, task.id, None))
@@ -140,14 +175,14 @@ def average_task_days(tasks: Iterable[TeamTask]) -> list[dict[str, Any]]:
     for task in tasks:
         if _status_of(task) != TaskStatus.DONE or task.finished_at is None:
             continue
-        entry = days.setdefault(_day(task.finished_at), {"tasks": 0, "usd": 0.0, "tokens": 0})
+        entry = days.setdefault(_day(task.finished_at), {"tasks": 0, "usd": 0.0, **_empty_tokens()})
         entry["tasks"] += 1
         entry["usd"] += max(0.0, float(task.total_cost_usd or 0.0))
-        entry["tokens"] += token_count(task.total_tokens) or 0
+        _add_tokens(entry, _task_tokens(task))
     return [
         {"day": day.isoformat(), "tasks": entry["tasks"],
          "average_usd": round(entry["usd"] / entry["tasks"], 6),
-         "average_tokens": round(entry["tokens"] / entry["tasks"], 6)}
+         **{f"average_{key}": round(entry[key] / entry["tasks"], 6) for key in _TOKEN_PARTS}}
         for day, entry in sorted(days.items())
     ]
 
@@ -216,44 +251,44 @@ def cost_stats(
             }
         )
 
-    tokens_per_day: dict[date, int] = defaultdict(int)
+    tokens_per_day: dict[date, dict[str, int]] = defaultdict(_empty_tokens)
     token_runs_per_day: dict[date, int] = defaultdict(int)
-    tokens_per_model: dict[str | None, int] = defaultdict(int)
+    tokens_per_model: dict[str | None, dict[str, int]] = defaultdict(_empty_tokens)
     for when, count, _task_id, model in token_records:
         day = _day(when)
-        tokens_per_day[day] += count
+        _add_tokens(tokens_per_day[day], count)
         token_runs_per_day[day] += 1
-        tokens_per_model[model] += count
+        _add_tokens(tokens_per_model[model], count)
     token_series: list[dict[str, Any]] = []
-    running_tokens = 0
+    running_tokens = _empty_tokens()
     for day in sorted(tokens_per_day):
-        running_tokens += tokens_per_day[day]
+        _add_tokens(running_tokens, tokens_per_day[day])
         token_series.append({
-            "day": day.isoformat(), "spent_tokens": tokens_per_day[day],
-            "cumulative_tokens": running_tokens, "runs": token_runs_per_day[day],
+            "day": day.isoformat(), **_token_fields(tokens_per_day[day], "spent"),
+            **_token_fields(running_tokens, "cumulative"), "runs": token_runs_per_day[day],
         })
 
     spent = done = in_flight = cancelled = 0.0
-    spent_tokens = done_tokens = in_flight_tokens = cancelled_tokens = 0
+    token_totals = {status: _empty_tokens() for status in ("spent", "done", "in_flight", "cancelled")}
     done_count = archived_count = 0
     for task in tasks:
         cost = max(0.0, float(task.total_cost_usd or 0.0))
-        tokens = token_count(task.total_tokens) or 0
+        tokens = _task_tokens(task)
         spent += cost
-        spent_tokens += tokens
+        _add_tokens(token_totals["spent"], tokens)
         status = _status_of(task)
         if status == TaskStatus.DONE:
             done += cost
-            done_tokens += tokens
+            _add_tokens(token_totals["done"], tokens)
             done_count += 1
             if task.archived:
                 archived_count += 1
         elif status == TaskStatus.CANCELLED:
             cancelled += cost
-            cancelled_tokens += tokens
+            _add_tokens(token_totals["cancelled"], tokens)
         else:
             in_flight += cost
-            in_flight_tokens += tokens
+            _add_tokens(token_totals["in_flight"], tokens)
 
     roster = {member.id: member for member in members}
     per_member: dict[str, dict[str, Any]] = {}
@@ -268,13 +303,14 @@ def cost_stats(
                 "avatar_color": member.avatar_color if member else None,
                 "avatar_icon": member.avatar_icon if member else None,
                 "spent_usd": 0.0,
-                "spent_tokens": 0,
+                **_token_fields(_empty_tokens(), "spent"),
                 "tasks": 0,
                 "done": 0,
             },
         )
         entry["spent_usd"] += max(0.0, float(task.total_cost_usd or 0.0))
-        entry["spent_tokens"] += token_count(task.total_tokens) or 0
+        for key, value in _token_fields(_task_tokens(task), "spent").items():
+            entry[key] += value
         entry["tasks"] += 1
         if _status_of(task) == TaskStatus.DONE:
             entry["done"] += 1
@@ -288,10 +324,8 @@ def cost_stats(
             "done_usd": round(done, 6),
             "in_flight_usd": round(in_flight, 6),
             "cancelled_usd": round(cancelled, 6),
-            "spent_tokens": spent_tokens,
-            "done_tokens": done_tokens,
-            "in_flight_tokens": in_flight_tokens,
-            "cancelled_tokens": cancelled_tokens,
+            **{key: value for status, parts in token_totals.items()
+               for key, value in _token_fields(parts, status).items()},
             "tasks": len(tasks),
             "done": done_count,
             "archived": archived_count,
@@ -302,9 +336,9 @@ def cost_stats(
         "by_member": by_member,
         "by_model": model_spend(tasks, messages),
         "by_model_tokens": [
-            {"model": model, "spent_tokens": count}
+            {"model": model, **_token_fields(count, "spent")}
             for model, count in sorted(
-                tokens_per_model.items(), key=lambda row: (-row[1], row[0] or "")
+                tokens_per_model.items(), key=lambda row: (-row[1]["tokens"], row[0] or "")
             )
         ],
         "activity": activity_days(tasks, messages, per_day, tokens_per_day),
@@ -350,7 +384,7 @@ def activity_days(
     tasks: Iterable[TeamTask],
     messages: Iterable[AgentMessage],
     spend_per_day: dict[date, float] | None = None,
-    tokens_per_day: dict[date, int] | None = None,
+    tokens_per_day: dict[date, dict[str, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """What the team did on each UTC day — the cells of the activity heatmap (§10.4).
 
@@ -374,14 +408,14 @@ def activity_days(
     spend = spend_per_day or {}
     tokens = tokens_per_day or {}
     days = (set(runs) | set(finished) | {day for day, usd in spend.items() if usd > _EPSILON}
-            | {day for day, count in tokens.items() if count > 0})
+            | {day for day, count in tokens.items() if count["tokens"] > 0})
     return [
         {
             "day": day.isoformat(),
             "runs": runs[day],
             "finished": finished[day],
             "spent_usd": round(spend.get(day, 0.0), 6),
-            "spent_tokens": tokens.get(day, 0),
+            **_token_fields(tokens.get(day, _empty_tokens()), "spent"),
             "activity": runs[day] + finished[day],
         }
         for day in sorted(days)

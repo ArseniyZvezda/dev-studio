@@ -12,10 +12,60 @@ const telemetry = (data: Record<string, unknown>, created_at = '2026-11-04T10:01
   message({ id: 'state_usage', role: 'system', kind: 'system', text: 'usage_update', data, created_at })
 
 describe('task header usage (§10.4)', () => {
+  it('keeps historical tokens unclassified rather than pretending they were uncached', () => {
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 200, total_cached_tokens: 500, messages: [] }))
+      .toEqual({ totalTokens: 1000, uncachedTokens: 200, cachedTokens: 500, unclassifiedTokens: 300,
+        contextTokens: null, contextWindow: null })
+    expect(taskUsage({ total_tokens: 1000, messages: [] }).unclassifiedTokens).toBe(1000)
+  })
+
+  it('does not resurrect the inflated total from legacy telemetry after history repair', () => {
+    const messages = [telemetry({ task_total_tokens: 9000, context_tokens: 400 })]
+    expect(taskUsage({ total_tokens: 1200, total_uncached_tokens: 200, total_cached_tokens: 1000, messages }))
+      .toEqual({ totalTokens: 1200, uncachedTokens: 200, cachedTokens: 1000, unclassifiedTokens: 0,
+        contextTokens: 400, contextWindow: null })
+  })
+
+  it('accepts newly classified tokens without requiring total spending to increase', () => {
+    const messages = [telemetry({ task_total_tokens: 1000, task_total_uncached_tokens: 200,
+      task_total_cached_tokens: 700 })]
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 0, total_cached_tokens: 0, messages }))
+      .toMatchObject({ totalTokens: 1000, uncachedTokens: 200, cachedTokens: 700, unclassifiedTokens: 100 })
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 200, total_cached_tokens: 800, messages }))
+      .toMatchObject({ totalTokens: 1000, uncachedTokens: 200, cachedTokens: 800, unclassifiedTokens: 0 })
+  })
+
+  it('treats an inconsistent stored breakdown as unknown, matching project statistics', () => {
+    expect(taskUsage({ total_tokens: 1000, total_uncached_tokens: 800, total_cached_tokens: 700, messages: [] }))
+      .toMatchObject({ totalTokens: 1000, uncachedTokens: 0, cachedTokens: 0, unclassifiedTokens: 1000 })
+  })
+
+  it('reads the newest live breakdown as one snapshot without combining repeated totals', () => {
+    const messages = [
+      telemetry({ task_total_tokens: 5000, task_total_uncached_tokens: 2000, task_total_cached_tokens: 3000 }),
+      telemetry({ task_total_tokens: 1500, task_total_uncached_tokens: 400, task_total_cached_tokens: 1000 }),
+    ]
+    expect(taskUsage({ total_tokens: 1200, total_uncached_tokens: 200, total_cached_tokens: 1000, messages }))
+      .toMatchObject({ totalTokens: 1500, uncachedTokens: 400, cachedTokens: 1000, unclassifiedTokens: 100 })
+  })
+
+  it('ignores telemetry covered by the newest repair and accepts subsequent live snapshots', () => {
+    const messages = [
+      telemetry({ task_total_tokens: 9000, task_total_uncached_tokens: 2000, task_total_cached_tokens: 7000 }),
+      message({ kind: 'accounting', data: { accounting_version: 2,
+        repair: { cutoff_at: '2026-11-04T11:00:00' } } }),
+    ]
+    const task = { total_tokens: 1200, total_uncached_tokens: 200, total_cached_tokens: 1000, messages }
+    expect(taskUsage(task).totalTokens).toBe(1200)
+    messages.push(telemetry({ task_total_tokens: 1600, task_total_uncached_tokens: 300,
+      task_total_cached_tokens: 1300 }, '2026-11-04T11:01:00Z'))
+    expect(taskUsage(task)).toMatchObject({ totalTokens: 1600, uncachedTokens: 300, cachedTokens: 1300 })
+  })
+
   it('updates from the socket before the task snapshot and does not charge the final total twice', () => {
     let messages = [telemetry({ total_tokens: 200, task_total_tokens: 1200,
       context_tokens: 180, context_window: 272000 })]
-    expect(taskUsage({ total_tokens: 1000, messages })).toEqual({
+    expect(taskUsage({ total_tokens: 1000, messages })).toMatchObject({
       contextTokens: 180, contextWindow: 272000, totalTokens: 1200,
     })
     messages = upsertTranscript(messages, telemetry({ total_tokens: 450, task_total_tokens: 1450,
@@ -39,7 +89,7 @@ describe('task header usage (§10.4)', () => {
       input_tokens: 100, cache_read_input_tokens: 200, cache_creation_input_tokens: 50,
       output_tokens: 500,
     } } })]
-    expect(taskUsage({ total_tokens: 850, messages })).toEqual({
+    expect(taskUsage({ total_tokens: 850, messages })).toMatchObject({
       contextTokens: 350, contextWindow: null, totalTokens: 850,
     })
   })
@@ -49,7 +99,7 @@ describe('task header usage (§10.4)', () => {
     expect(taskUsage({ total_tokens: 0, messages: [telemetry({ context_tokens: 0 })] }).contextTokens).toBe(0)
     expect(taskUsage({ total_tokens: 10, messages: [telemetry({
       context_tokens: NaN, context_window: -2, task_total_tokens: Infinity,
-    })] })).toEqual({ contextTokens: null, contextWindow: null, totalTokens: 10 })
+    })] })).toMatchObject({ contextTokens: null, contextWindow: null, totalTokens: 10 })
   })
 
   it('keeps a new run context unknown instead of restoring older assistant or member telemetry', () => {
@@ -59,7 +109,7 @@ describe('task header usage (§10.4)', () => {
       { ...telemetry({ task_total_tokens: 800 }), member_id: 'new_agent' },
       message({ kind: 'result', data: { usage: { input_tokens: 700 } } }),
     ]
-    expect(taskUsage({ total_tokens: 800, messages })).toEqual({
+    expect(taskUsage({ total_tokens: 800, messages })).toMatchObject({
       contextTokens: null, contextWindow: null, totalTokens: 800,
     })
   })
@@ -74,7 +124,7 @@ describe('task header usage (§10.4)', () => {
   it('does not reuse context from before compression while retaining the lifetime token total', () => {
     const messages = [telemetry({ task_total_tokens: 1000, context_tokens: 900 }),
       message({ kind: 'compressed summary', text: 'Current work' })]
-    expect(taskUsage({ total_tokens: 1000, messages })).toEqual({
+    expect(taskUsage({ total_tokens: 1000, messages })).toMatchObject({
       contextTokens: null, contextWindow: null, totalTokens: 1000,
     })
   })

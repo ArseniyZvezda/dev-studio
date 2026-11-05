@@ -619,6 +619,9 @@ export interface TeamTask {
   num_turns: number
   /** Input, output and cache tokens across every session, summed — shown beside the turns. */
   total_tokens: number
+  /** Input, cache creation and output; cache reads are tracked separately (§10.4). */
+  total_uncached_tokens?: number
+  total_cached_tokens?: number
   /**
    * Off the board, still on the books (§10.4). Only a `done` task can be archived, and a
    * status move off `done` un-archives it, so this never describes a card the board has to
@@ -688,6 +691,8 @@ export interface AgentChat {
   total_cost_usd: number
   num_turns: number
   total_tokens: number
+  total_uncached_tokens?: number
+  total_cached_tokens?: number
   created_at: string
   last_message_at: string
   /** The member is answering right now. */
@@ -774,6 +779,8 @@ export interface TaskSubagent {
   session_id: string | null
   summary: string
   total_tokens: number
+  total_uncached_tokens?: number
+  total_cached_tokens?: number
   total_cost_usd: number
   num_turns: number
   tool_uses: number
@@ -858,6 +865,12 @@ export interface TokenPoint {
   day: string
   spent_tokens: number
   cumulative_tokens: number
+  spent_uncached_tokens: number
+  spent_cached_tokens: number
+  spent_unclassified_tokens: number
+  cumulative_uncached_tokens: number
+  cumulative_cached_tokens: number
+  cumulative_unclassified_tokens: number
   runs: number
 }
 
@@ -867,6 +880,9 @@ export interface AverageTaskPoint {
   tasks: number
   average_usd: number
   average_tokens: number
+  average_uncached_tokens: number
+  average_cached_tokens: number
+  average_unclassified_tokens: number
 }
 
 export interface MemberSpend {
@@ -877,6 +893,9 @@ export interface MemberSpend {
   avatar_icon: string | null
   spent_usd: number
   spent_tokens: number
+  spent_uncached_tokens: number
+  spent_cached_tokens: number
+  spent_unclassified_tokens: number
   tasks: number
   done: number
 }
@@ -897,6 +916,18 @@ export interface TeamStats {
     done_tokens: number
     in_flight_tokens: number
     cancelled_tokens: number
+    spent_uncached_tokens: number
+    spent_cached_tokens: number
+    spent_unclassified_tokens: number
+    done_uncached_tokens: number
+    done_cached_tokens: number
+    done_unclassified_tokens: number
+    in_flight_uncached_tokens: number
+    in_flight_cached_tokens: number
+    in_flight_unclassified_tokens: number
+    cancelled_uncached_tokens: number
+    cancelled_cached_tokens: number
+    cancelled_unclassified_tokens: number
     tasks: number
     done: number
     archived: number
@@ -906,7 +937,13 @@ export interface TeamStats {
   average_task_series: AverageTaskPoint[]
   by_member: MemberSpend[]
   by_model: { model: string | null; spent_usd: number }[]
-  by_model_tokens: { model: string | null; spent_tokens: number }[]
+  by_model_tokens: {
+    model: string | null
+    spent_tokens: number
+    spent_uncached_tokens: number
+    spent_cached_tokens: number
+    spent_unclassified_tokens: number
+  }[]
   /** One entry per UTC day on which anything happened — the heatmap's cells. */
   activity: ActivityDay[]
 }
@@ -920,6 +957,9 @@ export interface ActivityDay {
   finished: number
   spent_usd: number
   spent_tokens: number
+  spent_uncached_tokens: number
+  spent_cached_tokens: number
+  spent_unclassified_tokens: number
   /** `runs + finished` — what the cell's shade is drawn from. */
   activity: number
 }

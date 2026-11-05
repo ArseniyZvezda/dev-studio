@@ -941,7 +941,11 @@ class _RunState:
         usage = self.effective_usage()
         if not usage and self.context_tokens is None and self.context_window is None:
             return None
-        data: dict[str, Any] = {"subtype": "usage_update", "total_tokens": sum(usage.values())}
+        data: dict[str, Any] = {"subtype": "usage_update", "total_tokens": sum(usage.values()),
+                                "total_cached_tokens": usage.get("cache_read_input_tokens", 0),
+                                "total_uncached_tokens": sum(value for key, value in usage.items()
+                                                             if key != "cache_read_input_tokens"),
+                                "accounting_version": 2}
         if self.context_tokens is not None:
             data["context_tokens"] = self.context_tokens
         if self.context_window is not None:
@@ -1080,6 +1084,10 @@ class _RunState:
             "cost_unavailable": cost is None,
             "model": self.model,
             "total_tokens": sum(usage.values()),
+            "total_cached_tokens": usage.get("cache_read_input_tokens", 0),
+            "total_uncached_tokens": sum(value for key, value in usage.items()
+                                         if key != "cache_read_input_tokens"),
+            "accounting_version": 2,
             "usage": dict(usage),
             "exit_code": exit_code,
             "stop_reason": None,
