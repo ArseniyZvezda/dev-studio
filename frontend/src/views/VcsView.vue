@@ -6,8 +6,7 @@
  * parallel agent work (§10.5), and commits generated assets from a pipeline — and all
  * three go through `VcsBackend`. So this page is deliberately written about *a* version
  * control system rather than about git: nothing here parses one tool's status letters,
- * and a plugin-contributed backend is listed beside the built-in one with the same
- * controls.
+ * and every VCS entity is listed with its own settings, independently of plugins.
  *
  * Two shapes of state, kept apart on purpose. What the working copy holds lives in the
  * store, because the Explorer colours its tree from the same answer; what the *form*
@@ -26,10 +25,9 @@ import {
   GitBranch,
   GitCommitVertical,
   RefreshCw,
-  Terminal,
   TriangleAlert,
 } from 'lucide-vue-next'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { ApiError, api } from '@/api/client'
 import type { VcsBackendOption } from '@/api/types'
@@ -42,10 +40,10 @@ const vcs = useVcsStore()
 
 /** The radio's own value, so a refused write does not move the selection back. */
 const choice = ref('auto')
-/** Executable overrides being edited, keyed by backend id. */
-const executables = reactive<Record<string, string>>({})
+/** Drafts stay local so saving one card cannot erase edits on another (§9.6). */
+const settings = reactive<Record<string, string>>({})
 const formError = ref<string | null>(null)
-const savingExecutable = ref<string | null>(null)
+const savingBackend = ref<string | null>(null)
 
 const message = ref('')
 const addUntracked = ref(false)
@@ -87,18 +85,36 @@ const pending = computed(() => t('vcs.commit.pending', { count: vcs.changeCount 
  * fragments joined with `·`, so a translation can order each line as a whole.
  */
 function backendLine(backend: VcsBackendOption): MessageKey {
-  if (backend.plugin_id) {
-    return backend.supports_isolation ? 'vcs.choose.fromPluginIsolates' : 'vcs.choose.fromPlugin'
-  }
   return backend.supports_isolation ? 'vcs.choose.builtInIsolates' : 'vcs.choose.builtIn'
+}
+
+const fieldLabels: Record<string, MessageKey> = {
+  executable: 'vcs.fields.executable',
+  workspace: 'vcs.fields.workspace',
+  port: 'vcs.fields.port',
+  user: 'vcs.fields.user',
+  client: 'vcs.fields.client',
+  charset: 'vcs.fields.charset',
+}
+
+const fieldHints: Record<string, MessageKey> = {
+  executable: 'vcs.choose.executableHint',
+  workspace: 'vcs.fields.workspaceHint',
+  port: 'vcs.fields.portHint',
+  user: 'vcs.fields.userHint',
+  client: 'vcs.fields.clientHint',
+  charset: 'vcs.fields.charsetHint',
 }
 
 onMounted(async () => {
   // The tree colours itself from the same status, so the subscription is shared.
   vcs.subscribe()
   await vcs.load()
-  seed()
 })
+
+// The overview arrives before the potentially slow workspace status. Seed before the
+// cards render so saving during that read cannot clear configured values (§9.6).
+watch(() => vcs.overview, () => seed(), { immediate: true })
 
 /** `ApiError.detail` is the backend's own sentence; anything else falls back to its message. */
 function reason(cause: unknown): string {
@@ -110,16 +126,12 @@ function seed(): void {
   const data = vcs.overview
   if (!data) return
   choice.value = data.configured
-  for (const backend of data.backends) executables[backend.id] = overrideOf(backend)
-}
-
-/**
- * `executable` is the configured path *or* the program name, so an unconfigured backend
- * would otherwise pre-fill the field with `git` and make an override look set. Empty
- * field, program name as the placeholder.
- */
-function overrideOf(backend: VcsBackendOption): string {
-  return backend.executable === backend.program ? '' : backend.executable
+  for (const backend of data.backends) {
+    for (const field of backend.settings_fields) {
+      const key = `${backend.id}.${field.key}`
+      if (!(key in settings)) settings[key] = backend.settings[field.key] ?? ''
+    }
+  }
 }
 
 async function choose(value: string): Promise<void> {
@@ -134,23 +146,30 @@ async function choose(value: string): Promise<void> {
   }
 }
 
-async function saveExecutable(backend: VcsBackendOption): Promise<void> {
+async function saveSettings(backend: VcsBackendOption): Promise<void> {
+  if (vcs.saving) return
   formError.value = null
-  savingExecutable.value = backend.id
+  savingBackend.value = backend.id
   try {
-    // The settings map is merged per backend, so sending one key leaves the others
-    // alone; an emptied field is sent as an empty string, which is how the override is
-    // cleared rather than left behind.
+    // An empty field clears the override and restores the CLI's native defaults.
     const next = await vcs.updateSettings({
-      settings: { [backend.id]: { executable: executables[backend.id]?.trim() ?? '' } },
+      settings: {
+        [backend.id]: Object.fromEntries(
+          backend.settings_fields.map((field) => [field.key, settings[`${backend.id}.${field.key}`]?.trim() ?? '']),
+        ),
+      },
     })
     const saved = next.backends.find((candidate) => candidate.id === backend.id)
-    if (saved) executables[backend.id] = overrideOf(saved)
+    if (saved) {
+      for (const field of saved.settings_fields) {
+        settings[`${saved.id}.${field.key}`] = saved.settings[field.key] ?? ''
+      }
+    }
     await vcs.refresh()
   } catch (cause) {
     formError.value = reason(cause)
   } finally {
-    savingExecutable.value = null
+    savingBackend.value = null
   }
 }
 
@@ -306,6 +325,7 @@ async function showDiff(): Promise<void> {
         <!-- Choosing one -->
         <section class="vxs-enter">
           <h2 class="mb-2 font-medium">{{ t('vcs.choose.title') }}</h2>
+          <p class="mb-3 text-small text-muted">{{ t('vcs.choose.intro') }}</p>
           <div class="space-y-2">
             <label
               class="flex cursor-pointer items-start gap-3 rounded-lg border border-line bg-surface p-3"
@@ -328,7 +348,7 @@ async function showDiff(): Promise<void> {
               v-for="backend in backends"
               :key="backend.id"
               class="rounded-lg border border-line bg-surface p-3"
-              :class="{ 'opacity-60': !backend.available }"
+              :class="{ 'border-accent': backend.active }"
             >
               <label class="flex cursor-pointer items-start gap-3">
                 <input
@@ -354,9 +374,6 @@ async function showDiff(): Promise<void> {
                   </span>
                   <span class="block text-small text-faint">
                     <I18nT :keypath="backendLine(backend)">
-                      <template #plugin>
-                        <span class="font-mono">{{ backend.plugin_id }}</span>
-                      </template>
                       <template #program>
                         <span class="font-mono">{{ backend.program }}</span>
                       </template>
@@ -371,30 +388,44 @@ async function showDiff(): Promise<void> {
                 </span>
               </label>
 
-              <div class="mt-2 flex items-center gap-2 pl-7">
-                <Terminal class="size-3.5 shrink-0 text-faint" />
-                <input
-                  v-model="executables[backend.id]"
-                  class="min-w-0 flex-1 rounded-md border border-line bg-inset px-2 py-1 font-mono outline-none focus:border-accent"
-                  :placeholder="backend.program"
-                  spellcheck="false"
-                  @keyup.enter="saveExecutable(backend)"
-                />
+              <form class="mt-3 space-y-3 pl-7" @submit.prevent="saveSettings(backend)">
+                <div v-for="field in backend.settings_fields" :key="field.key">
+                  <label
+                    :for="`vcs-${backend.id}-${field.key}`"
+                    class="mb-1 block text-small text-muted"
+                  >
+                    {{ fieldLabels[field.key] ? t(fieldLabels[field.key]!) : field.key }}
+                  </label>
+                  <input
+                    :id="`vcs-${backend.id}-${field.key}`"
+                    v-model="settings[`${backend.id}.${field.key}`]"
+                    type="text"
+                    class="w-full min-w-0 rounded-md border border-line bg-inset px-2 py-1 font-mono outline-none focus:border-accent disabled:opacity-50"
+                    :placeholder="field.default ?? (field.key === 'executable' ? backend.program : '')"
+                    :aria-describedby="fieldHints[field.key] ? `vcs-${backend.id}-${field.key}-hint` : undefined"
+                    :disabled="vcs.saving"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <p
+                    v-if="fieldHints[field.key]"
+                    :id="`vcs-${backend.id}-${field.key}-hint`"
+                    class="mt-1 text-small text-faint"
+                  >
+                    {{ t(fieldHints[field.key]!, { program: backend.program }) }}
+                  </p>
+                </div>
+                <p v-if="backend.id === 'perforce'" class="text-small text-muted">
+                  {{ t('vcs.fields.perforceAuth') }}
+                </p>
                 <button
+                  type="submit"
                   class="shrink-0 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
                   :disabled="vcs.saving"
-                  @click="saveExecutable(backend)"
                 >
-                  {{ savingExecutable === backend.id ? t('common.saving') : t('common.save') }}
+                  {{ savingBackend === backend.id ? t('common.saving') : t('common.save') }}
                 </button>
-              </div>
-              <p class="mt-1 pl-7 text-small text-faint">
-                <I18nT keypath="vcs.choose.executableHint">
-                  <template #program>
-                    <span class="font-mono">{{ backend.program }}</span>
-                  </template>
-                </I18nT>
-              </p>
+              </form>
             </div>
 
             <label

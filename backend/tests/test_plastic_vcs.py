@@ -1,4 +1,4 @@
-"""The Plastic plugin, without Plastic.
+"""The independent Plastic entity and built-in nodes, without Plastic.
 
 There is no free Unity Version Control server to test against, so what is covered here is
 everything on this side of the process boundary: which ``cm`` command line each operation
@@ -12,8 +12,6 @@ of it: an unrecognised status code costs a change's kind, never its path.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
@@ -21,24 +19,8 @@ import pytest
 from voxarium_studio.plugins.api import NodeContext
 from voxarium_studio.vcs.base import CHANGE_KINDS, ToolResult, VcsError
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / "plugins_builtin" / "plastic"
-
-
-def _load(module_name: str, file_name: str):
-    """Import a plugin module the way the loader does — plugin root on the path."""
-    if str(PLUGIN_ROOT) not in sys.path:
-        sys.path.insert(0, str(PLUGIN_ROOT))
-    spec = importlib.util.spec_from_file_location(module_name, PLUGIN_ROOT / file_name)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# `plugin.py` does `from plastic_vcs import PlasticBackend`, so that name has to be the
-# real module in sys.modules before the entry module is executed.
-plastic_vcs = _load("plastic_vcs", "plastic_vcs.py")
-plastic_plugin = _load("voxarium_studio_test_plastic_plugin", "plugin.py")
+from voxarium_studio.vcs import plastic as plastic_vcs
+from voxarium_studio.vcs import nodes as plastic_plugin
 
 PlasticBackend = plastic_vcs.PlasticBackend
 
@@ -169,6 +151,18 @@ def test_the_workspace_setting_redirects_the_root(tmp_path: Path) -> None:
     backend = PlasticBackend(tmp_path / "project", {"workspace": str(elsewhere)})
 
     assert backend.root == elsewhere
+
+
+def test_a_relative_workspace_is_resolved_against_the_managed_project(tmp_path: Path) -> None:
+    backend = PlasticBackend(tmp_path / "game", {"workspace": ".."})
+    assert backend.root == tmp_path
+
+
+async def test_explicit_paths_keep_the_managed_project_frame_with_workspace_override(tmp_path: Path) -> None:
+    project = tmp_path / "game"
+    backend = FakeCm(project, {"workspace": ".."}, handler=default_handler())
+    await backend.commit("asset", paths=["Assets/rock.vox"])
+    assert backend.call_starting("checkin")[1] == str(project / "Assets/rock.vox")
 
 
 # --------------------------------------------------------------------------- the backend
@@ -571,14 +565,12 @@ async def test_a_project_outside_a_workspace_is_reported_too(tmp_path: Path, mon
 # --------------------------------------------------------------------------- registration
 
 
-def test_the_plugin_contributes_its_nodes_backend_and_page(registry) -> None:
-    plugin = registry.plugin("plastic")
-
-    assert plugin is not None and plugin.status == "loaded"
-    assert set(plugin.node_type_ids) == {"plastic.checkin", "plastic.add", "plastic.status"}
-    assert plugin.vcs_backend_ids == ["plastic"]
-    assert plugin.page_ids == ["plastic-settings"]
-    assert [backend.id for backend in registry.vcs_backends()] == ["plastic"]
+def test_plastic_nodes_are_available_without_a_plugin(registry) -> None:
+    assert registry.plugin("plastic") is None
+    assert not any(page.id == "plastic-settings" for page in registry.pages())
+    for node_id in ("plastic.checkin", "plastic.add", "plastic.status"):
+        assert registry.node_type(node_id).plugin_id == "vcs:plastic"
+        assert registry.node_class(node_id) is not None
 
 
 async def test_every_node_returns_exactly_its_declared_output_ports(
@@ -619,33 +611,23 @@ def test_the_backend_satisfies_the_abstraction_as_it_stands(tmp_path: Path) -> N
         assert getattr(PlasticBackend, name) is not getattr(VcsBackend, name), name
 
 
-async def test_the_settings_page_and_the_vcs_page_cannot_disagree(ctx) -> None:
-    """Both surfaces write one key into one dict, with one fixed precedence.
+def test_legacy_settings_move_to_the_vcs_entity_with_explicit_values_winning() -> None:
+    from voxarium_studio.core.config import AppConfig
 
-    `SettingsPage.js` writes `executable`/`workspace` into the *plugin's* settings; the
-    VCS page writes `config.vcs.settings["plastic"]`. `AppContext.vcs_settings` merges the
-    two with the second on top, so "where is cm" has exactly one answer — and the plugin
-    page keeps working, including for `workspace`, which only it knows about.
-    """
-    ctx.config.plugin_state("plastic").settings = {
-        "executable": "C:/plugin/cm.exe",
-        "workspace": "D:/Workspaces/MyGame",
+    config = AppConfig.model_validate({
+        "plugins": {"plastic": {"enabled": False, "settings": {
+            "executable": "C:/plugin/cm.exe", "workspace": "D:/Workspaces/MyGame"
+        }}},
+        "vcs": {"settings": {"plastic": {"executable": "C:/vcs-page/cm.exe"}}},
+    })
+    assert "plastic" not in config.plugins
+    assert config.vcs.settings["plastic"] == {
+        "executable": "C:/vcs-page/cm.exe", "workspace": "D:/Workspaces/MyGame"
     }
-
-    assert ctx.vcs_settings("plastic") == {
-        "executable": "C:/plugin/cm.exe",
-        "workspace": "D:/Workspaces/MyGame",
-    }
-
-    ctx.config.vcs.settings["plastic"] = {"executable": "C:/vcs-page/cm.exe"}
-    merged = ctx.vcs_settings("plastic")
-
-    assert merged["executable"] == "C:/vcs-page/cm.exe"  # the explicit choice wins
-    assert merged["workspace"] == "D:/Workspaces/MyGame"  # the plugin's other key stands
-    assert PlasticBackend(ctx.paths.root, merged).executable == "C:/vcs-page/cm.exe"
+    assert AppConfig.model_validate(config.model_dump()).model_dump() == config.model_dump()
 
 
-def test_the_vcs_page_can_configure_a_plugin_backend(client) -> None:
+def test_the_vcs_page_can_configure_plastic(client) -> None:
     overview = client.put(
         "/api/vcs/settings", json={"settings": {"plastic": {"executable": "C:/nope/cm.exe"}}}
     ).json()

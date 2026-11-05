@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from ..schemas.nodes import NodeTypeSchema
-from ..vcs.base import VcsBackend
 from .api import BaseNode
 from .manifest import PluginManifest
 
@@ -162,7 +161,6 @@ class LoadedPlugin:
     page_ids: list[str] = field(default_factory=list)
     previewer_ids: list[str] = field(default_factory=list)
     grammar_ids: list[str] = field(default_factory=list)
-    vcs_backend_ids: list[str] = field(default_factory=list)
     hook_ids: list[str] = field(default_factory=list)
     action_ids: list[str] = field(default_factory=list)
     search_provider_ids: list[str] = field(default_factory=list)
@@ -188,7 +186,6 @@ class LoadedPlugin:
             "pages": list(self.page_ids),
             "previewers": list(self.previewer_ids),
             "grammars": list(self.grammar_ids),
-            "vcs_backends": list(self.vcs_backend_ids),
             "hooks": list(self.hook_ids),
             "actions": list(self.action_ids),
             "search_providers": list(self.search_provider_ids),
@@ -210,7 +207,6 @@ class Registry:
         self._pages: dict[str, PluginPage] = {}
         self._previewers: dict[str, FilePreviewer] = {}
         self._grammars: dict[str, SyntaxGrammar] = {}
-        self._vcs_backends: dict[str, type[VcsBackend]] = {}
         self._hooks: dict[str, PluginHook] = {}
         self._actions: dict[str, PluginAction] = {}
         self._search_providers: dict[str, SearchProvider] = {}
@@ -296,8 +292,7 @@ class Registry:
     ) -> None:
         """Teach the Explorer to highlight a language (§6.2).
 
-        Grammars live on the registry rather than in a module-level table for the same
-        reason version control backends do: disabling the plugin has to withdraw them.
+        Grammars live on the registry so disabling a plugin withdraws its grammars.
         A grammar surviving a reload would leave the Explorer colouring a file type from
         a file nothing serves any more.
         """
@@ -314,20 +309,6 @@ class Registry:
         plugin = self._plugins.get(plugin_id)
         if plugin is not None and id not in plugin.grammar_ids:
             plugin.grammar_ids.append(id)
-
-    def register_vcs_backend(self, *, plugin_id: str, backend: type[VcsBackend]) -> None:
-        """Teach the Studio a version control system it did not ship with.
-
-        Backends live on the registry rather than in a module-level table so that
-        disabling the plugin actually withdraws them — a stale class surviving a reload
-        would leave the Studio detecting a system nothing can drive any more.
-        """
-        if backend.id in self._vcs_backends and self._vcs_backends[backend.id] is not backend:
-            raise ValueError(f"Version control backend {backend.id!r} is already registered")
-        self._vcs_backends[backend.id] = backend
-        plugin = self._plugins.get(plugin_id)
-        if plugin is not None and backend.id not in plugin.vcs_backend_ids:
-            plugin.vcs_backend_ids.append(backend.id)
 
     def register_hook(self, *, plugin_id: str, id: str, event: str | None, handler: Any) -> None:
         """Ask for ``handler`` to run on an event, or on the project opening (§9.7).
@@ -391,8 +372,6 @@ class Registry:
             self._previewers.pop(previewer_id, None)
         for grammar_id in plugin.grammar_ids:
             self._grammars.pop(grammar_id, None)
-        for backend_id in plugin.vcs_backend_ids:
-            self._vcs_backends.pop(backend_id, None)
         for hook_id in plugin.hook_ids:
             self._hooks.pop(f"{plugin_id}:{hook_id}", None)
         for action_id in plugin.action_ids:
@@ -446,15 +425,6 @@ class Registry:
         """
         return sorted(self._grammars.values(), key=lambda g: g.id)
 
-    def vcs_backends(self) -> list[type[VcsBackend]]:
-        """Plugin-contributed backends, asked before the built-in git one (§10.5)."""
-        return sorted(self._vcs_backends.values(), key=lambda backend: backend.id)
-
-    def plugin_for_vcs_backend(self, backend_id: str) -> str | None:
-        return next(
-            (p.id for p in self._plugins.values() if backend_id in p.vcs_backend_ids), None
-        )
-
     def project_opened_hooks(self) -> list[PluginHook]:
         """Hooks for the Studio opening the project, in registration order."""
         return [hook for hook in self._hooks.values() if hook.event is None]
@@ -502,7 +472,6 @@ class Registry:
         self._pages.clear()
         self._previewers.clear()
         self._grammars.clear()
-        self._vcs_backends.clear()
         self._hooks.clear()
         self._actions.clear()
         self._search_providers.clear()

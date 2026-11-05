@@ -107,7 +107,7 @@ class AppContext:
         self.is_git_repo = is_git_repo(paths.root)
         self.vcs: VcsBackend | None = None
         """The version control system the project is under — resolved in :meth:`startup`,
-        because detection runs a command and plugins may contribute backends (§10.5)."""
+        because detection runs a command (§9.6, §10.5)."""
 
         self._plugin_state: dict[str, dict[str, Any]] = {}
         """``PluginHost.state`` per plugin — what a plugin keeps across a reload of its own
@@ -292,15 +292,13 @@ class AppContext:
     async def detect_vcs(self) -> VcsBackend | None:
         """Resolve which system the project is under and hand it to the orchestrator.
 
-        Re-run whenever plugins change: enabling the Plastic plugin is exactly how a
-        project stops being "just a git checkout" as far as the Studio is concerned.
+        VCS entities are independent of the plugin registry (§9.6).
         """
         if self.config.vcs.disabled:
             self.vcs = None
         else:
             self.vcs = await detect_backend(
                 self.paths.root,
-                extra=self.registry.vcs_backends(),
                 configured=self.config.vcs.selected(),
                 settings_for=self.vcs_settings,
             )
@@ -312,30 +310,8 @@ class AppContext:
         return self.vcs
 
     def vcs_settings(self, backend_id: str) -> dict[str, Any]:
-        """Everything configuring one backend, from both places it can be configured.
-
-        The precedence is deliberate, and it is what stops the two settings surfaces from
-        disagreeing about where a tool lives:
-
-        1. **The plugin's own settings**, when a plugin ships this backend. That is where
-           `plastic`'s settings page writes (`executable`, `workspace`), and it has to
-           keep working — the page predates the VCS page and is still the only place that
-           knows about `workspace` at all.
-        2. **``config.vcs.settings[<backend id>]``**, overlaid on top. This is what the
-           VCS page writes, for every backend including the built-in ones, which have no
-           plugin half to write to. An explicit choice made there is the more recent and
-           more specific one, so it wins.
-
-        Keys merge rather than sections replacing each other, so setting `executable` on
-        the VCS page leaves a `workspace` set on the plugin page standing.
-        """
-        merged: dict[str, Any] = {}
-        plugin_id = self.registry.plugin_for_vcs_backend(backend_id)
-        state = self.config.plugins.get(plugin_id) if plugin_id else None
-        if state is not None:
-            merged.update(state.settings)
-        merged.update(self.config.vcs.settings.get(backend_id, {}))
-        return merged
+        """Settings owned by one independent Version Control card (§9.6)."""
+        return dict(self.config.vcs.settings.get(backend_id, {}))
 
     # ---- task ids ----
 

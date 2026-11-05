@@ -763,6 +763,8 @@ class PipelineRunner:
         return params
 
     def _plugin_settings(self, plugin_id: str) -> dict[str, Any]:
+        if plugin_id.startswith("vcs:"):
+            return dict(self.config.vcs.settings.get(plugin_id.removeprefix("vcs:"), {}))
         state = self.config.plugins.get(plugin_id)
         return dict(state.settings) if state else {}
 

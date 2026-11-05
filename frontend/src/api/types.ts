@@ -380,7 +380,6 @@ export interface LoadedPlugin {
   pages: string[]
   previewers: string[]
   grammars: string[]
-  vcs_backends: string[]
   /** Functions the plugin runs on the project opening or on an event (§9.7). */
   hooks: string[]
   /** Its own endpoints — `POST /api/plugins/{id}/actions/{action}`. */
@@ -1458,14 +1457,22 @@ export interface VcsStatus {
   changes: VcsFileChange[]
 }
 
-/** One candidate backend on the VCS settings page — built-in or plugin-contributed. */
+/** A setting declared by an independent VCS entity (§9.6). */
+export interface VcsSettingsField {
+  key: string
+  type: 'string' | 'path'
+  default?: string
+}
+
+/** Every VCS entity is listed, whether its CLI is installed or not. */
 export interface VcsBackendOption extends VcsInfo {
-  /** Which plugin ships it, or null for a built-in. */
-  plugin_id: string | null
   /** The command-line tool it drives, before any configured override. */
   program: string
   /** What it will actually run — the configured path, or `program`. */
   executable: string
+  /** Configured values; empty fields use the entity's defaults or CLI environment. */
+  settings: Record<string, string>
+  settings_fields: VcsSettingsField[]
   /** Whether this backend claims the open project. */
   detected: boolean
   /** Whether it is the one currently driving. */

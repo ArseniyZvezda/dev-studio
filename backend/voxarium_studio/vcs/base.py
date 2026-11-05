@@ -6,9 +6,9 @@ assets. All three went straight to ``git`` before this module existed, which mad
 Perforce or Plastic project a second-class citizen.
 
 ``VcsBackend`` is the seam, following the same shape as ``AgentBackend`` in §10.6: the
-Studio ships one implementation (:mod:`voxarium_studio.vcs.git`) and a plugin contributes the
-rest through ``registry.add_vcs_backend()``. Everything a backend needs to drive a
-command-line tool — running it, killing it on cancellation, turning a non-zero exit into
+Studio ships its implementations in this package, independently of plugin activation
+(§9.6). Everything a backend needs to drive a command-line tool — running it, killing it
+on cancellation, turning a non-zero exit into
 an error — lives here, so an implementation is mostly argument building and output
 parsing.
 
@@ -243,6 +243,7 @@ async def run_tool(
     timeout: float | None = DEFAULT_TIMEOUT,
     log_fn: LogFn | None = None,
     env: dict[str, str] | None = None,
+    input: str | None = None,
 ) -> ToolResult:
     """Run a VCS command line and collect its output.
 
@@ -261,6 +262,7 @@ async def run_tool(
             program,
             *args,
             cwd=str(cwd),
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, **(env or {})} if env else None,
@@ -277,7 +279,7 @@ async def run_tool(
             await process.wait()
 
     try:
-        raw_out, raw_err = await asyncio.wait_for(process.communicate(), timeout)
+        raw_out, raw_err = await asyncio.wait_for(process.communicate(input.encode("utf-8") if input is not None else None), timeout)
     except asyncio.TimeoutError as exc:
         await terminate()
         raise VcsError(f"{program} {' '.join(args)} did not finish within {timeout}s") from exc
@@ -314,6 +316,16 @@ class VcsBackend(ABC):
 
     executable_setting: ClassVar[str] = "executable"
     """Settings key holding an absolute path to ``program`` when it is not on PATH."""
+
+    settings_fields: ClassVar[tuple[dict[str, str], ...]] = ()
+    """Entity-specific fields on its Version Control card (§9.6)."""
+
+    @classmethod
+    def setting_fields(cls) -> list[dict[str, str]]:
+        return [
+            {"key": cls.executable_setting, "type": "path", "default": cls.program},
+            *(dict(field) for field in cls.settings_fields),
+        ]
 
     supports_isolation: ClassVar[bool] = False
     """Whether :meth:`create_workspace` can give an agent task its own checkout (§10.5)."""
@@ -451,9 +463,10 @@ class VcsBackend(ABC):
         timeout: float | None = DEFAULT_TIMEOUT,
         log_fn: LogFn | None = None,
         check: bool = False,
+        input: str | None = None,
     ) -> ToolResult:
         result = await run_tool(
-            self.executable, args, cwd=cwd or self.root, timeout=timeout, log_fn=log_fn
+            self.executable, args, cwd=cwd or self.root, timeout=timeout, log_fn=log_fn, input=input
         )
         if check and not result.ok:
             raise VcsError(

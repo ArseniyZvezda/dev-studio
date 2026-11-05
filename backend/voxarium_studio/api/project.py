@@ -259,7 +259,7 @@ async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
     # Whether each system's command-line tool is installed — what a commit node needs
     # before it will do anything, and the same shape as the agent backends above.
     vcs_backends = {}
-    for backend_cls in candidate_backends(ctx.registry.vcs_backends()):
+    for backend_cls in candidate_backends():
         backend = backend_cls(ctx.paths.root, ctx.vcs_settings(backend_cls.id))
         available, reason = backend.is_available()
         vcs_backends[backend_cls.id] = {

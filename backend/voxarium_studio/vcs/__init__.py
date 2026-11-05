@@ -1,16 +1,9 @@
-"""Version control abstraction — see :mod:`voxarium_studio.vcs.base`.
-
-Resolution order for "what is this project under": an explicit ``vcs.backend`` in
-``config.yaml`` wins; otherwise plugin-contributed backends get asked before the built-in
-git one. A plugin backend is only present because someone installed and enabled that
-plugin for this project, so it is the more specific answer when a Plastic workspace or a
-Perforce client happens to also sit inside a git repository.
-"""
+"""Independent VCS entities and deterministic project detection (§9.6)."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,29 +22,25 @@ from .base import (
     run_tool,
 )
 from .git import GitBackend
+from .plastic import PlasticBackend
+from .perforce import PerforceBackend
 
 log = logging.getLogger(__name__)
 
-BUILTIN_BACKENDS: tuple[type[VcsBackend], ...] = (GitBackend,)
+BUILTIN_BACKENDS: tuple[type[VcsBackend], ...] = (PlasticBackend, PerforceBackend, GitBackend)
 
 SettingsFn = Callable[[str], dict[str, Any]]
-"""Per-backend settings lookup — for a plugin backend, that plugin's project settings."""
+"""Per-entity settings from config.vcs.settings."""
 
 
-def candidate_backends(
-    extra: Sequence[type[VcsBackend]] = (),
-) -> list[type[VcsBackend]]:
-    """Plugin backends first, then the built-ins, de-duplicated by id."""
-    ordered: dict[str, type[VcsBackend]] = {}
-    for backend in (*extra, *BUILTIN_BACKENDS):
-        ordered.setdefault(backend.id, backend)
-    return list(ordered.values())
+def candidate_backends() -> list[type[VcsBackend]]:
+    """All VCS entities, always available; specific workspaces precede Git (§9.6)."""
+    return list(BUILTIN_BACKENDS)
 
 
 async def detect_backend(
     root: Path,
     *,
-    extra: Sequence[type[VcsBackend]] = (),
     configured: str | None = None,
     settings_for: SettingsFn | None = None,
 ) -> VcsBackend | None:
@@ -61,7 +50,7 @@ async def detect_backend(
     rather than raising, because a hand-edited ``config.yaml`` must not stop the Studio
     from starting.
     """
-    backends = candidate_backends(extra)
+    backends = candidate_backends()
 
     def build(backend_cls: type[VcsBackend]) -> VcsBackend:
         settings = settings_for(backend_cls.id) if settings_for else {}
@@ -98,6 +87,8 @@ __all__ = [
     "CommitResult",
     "FileChange",
     "GitBackend",
+    "PlasticBackend",
+    "PerforceBackend",
     "IsolatedWorkspace",
     "LogFn",
     "ToolResult",

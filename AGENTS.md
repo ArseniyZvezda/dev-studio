@@ -155,7 +155,9 @@ which is also why the `preview3d.view` pipeline node ships no viewer of its own:
 host for whichever previewer claimed the file's suffix and mounts that
 (`runtime.filePreviewer`). Adding a format is adding a previewer plugin, never a branch.
 
-Version control goes through `VcsBackend` (`backend/voxarium_studio/vcs/`, §9.6): git is built in
-because the rest of the design already assumes it, and every other system arrives as a
-plugin registering a backend — `plastic` is the first. Team task isolation (§10.5) asks
-the detected backend rather than assuming worktrees.
+Version control goes through the independent `VcsBackend` entities in
+`backend/voxarium_studio/vcs/` (§9.6), not through plugins. Git, Plastic SCM and Perforce
+are always listed on Version Control; all their settings live on their own cards and
+in `vcs.settings[<id>]`. Adding a system means extending the VCS catalog, as described
+in `docs/vcs.md`. Team task isolation (§10.5) asks the detected backend rather than
+assuming worktrees.

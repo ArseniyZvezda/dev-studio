@@ -4,8 +4,8 @@ Three different callers, one abstraction underneath. The VCS settings page needs
 every candidate backend and choose between them; the Explorer needs a normalised list of
 changed files to colour its tree with; a commit button and a diff pane need the two write
 and read operations :class:`~voxarium_studio.vcs.base.VcsBackend` already defines. None of them
-mention git — that is the whole point of §9.6, and a plugin-contributed backend appears
-here the moment its plugin is enabled.
+mention git — the independent VCS catalog supplies every card regardless of plugin state
+(§9.6).
 
 Two behaviours are worth stating outright, because both were decided rather than fallen
 into:
@@ -81,7 +81,7 @@ def _configured(ctx: AppContext) -> str:
 
 
 def _known_ids(ctx: AppContext) -> list[str]:
-    return [backend.id for backend in candidate_backends(ctx.registry.vcs_backends())]
+    return [backend.id for backend in candidate_backends()]
 
 
 def _require_backend(ctx: AppContext) -> VcsBackend:
@@ -142,7 +142,7 @@ async def _head(backend: VcsBackend | None) -> tuple[str | None, str | None]:
 async def _overview(ctx: AppContext) -> dict[str, Any]:
     active = ctx.vcs
     backends: list[dict[str, Any]] = []
-    for backend_cls in candidate_backends(ctx.registry.vcs_backends()):
+    for backend_cls in candidate_backends():
         is_active = active is not None and active.id == backend_cls.id
         # Reuse the live instance for the active one: it is configured identically, and
         # asking the object that is actually driving keeps the page honest.
@@ -154,7 +154,8 @@ async def _overview(ctx: AppContext) -> dict[str, Any]:
         backends.append(
             {
                 **backend.to_json(),
-                "plugin_id": ctx.registry.plugin_for_vcs_backend(backend_cls.id),
+                "settings": dict(backend.settings),
+                "settings_fields": backend_cls.setting_fields(),
                 "program": backend_cls.program,
                 "executable": backend.executable,
                 "detected": await _detected(backend),
@@ -349,23 +350,26 @@ async def update_vcs_settings(payload: VcsSettingsInput, ctx: Ctx) -> dict[str, 
 
     This is a patch and it **merges**, per section *and* per key: sending
     ``{"settings": {"git": {"executable": "…"}}}`` must not drop a `plastic` section, nor
-    a `workspace` key already set on git's own. Assigning a nested section wholesale has
+    a `workspace` key already set on Plastic's own. Assigning a nested section wholesale has
     been a real bug here before (see the settings endpoint in `project.py`), which is why
     `exclude_unset` decides what was actually sent rather than what Pydantic defaulted.
 
-    Clearing a key removes it rather than storing an empty string, because these keys are
-    overlays: an empty ``executable`` stored here would shadow the one a plugin's own
-    settings page set, and the field would look cleared while the tool it names is still
-    what the plugin configured.
+    Clearing a key returns to the CLI default. Validate the complete patch before changing
+    the live config, so an invalid field cannot silently switch the active backend.
     """
     sent = payload.model_dump(exclude_unset=True)
     known = _known_ids(ctx)
 
+    selected = ctx.config.vcs.backend
     if "backend" in sent:
-        ctx.config.vcs.backend = _checked_choice(sent["backend"], known)
+        selected = _checked_choice(sent["backend"], known)
 
+    stored = {key: dict(values) for key, values in ctx.config.vcs.settings.items()}
     if "settings" in sent:
-        stored = {key: dict(values) for key, values in ctx.config.vcs.settings.items()}
+        fields = {
+            backend.id: {field["key"] for field in backend.setting_fields()}
+            for backend in candidate_backends()
+        }
         for backend_id, values in (sent["settings"] or {}).items():
             if backend_id not in known:
                 raise HTTPException(
@@ -377,15 +381,29 @@ async def update_vcs_settings(payload: VcsSettingsInput, ctx: Ctx) -> dict[str, 
                 )
             section = stored.get(backend_id, {})
             for key, value in (values or {}).items():
+                if key not in fields[backend_id]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Unknown setting {key!r} for version control backend {backend_id!r}",
+                    )
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(
+                        status_code=400, detail=f"Version control setting {backend_id}.{key} must be text"
+                    )
+                if isinstance(value, str) and any(char in value for char in ("\0", "\r", "\n")):
+                    raise HTTPException(
+                        status_code=400, detail=f"Version control setting {backend_id}.{key} must be one line"
+                    )
                 if value is None or (isinstance(value, str) and not value.strip()):
                     section.pop(key, None)
                 else:
-                    section[key] = value
+                    section[key] = value.strip()
             if section:
                 stored[backend_id] = section
             else:
                 stored.pop(backend_id, None)
-        ctx.config.vcs.settings = stored
+    ctx.config.vcs.backend = selected
+    ctx.config.vcs.settings = stored
 
     ctx.save_config()
     await ctx.detect_vcs()

@@ -126,7 +126,12 @@ def test_the_builtin_plugins_load(registry: Registry) -> None:
 
 def test_node_type_ids_are_namespaced_by_their_plugin(registry: Registry) -> None:
     for schema in registry.node_types():
-        assert schema.id.split(".", 1)[0] == schema.plugin_id
+        namespace = schema.id.split(".", 1)[0]
+        if schema.plugin_id.startswith("vcs:"):
+            assert namespace == schema.plugin_id.removeprefix("vcs:")
+            assert registry.plugin(schema.plugin_id) is None
+        else:
+            assert namespace == schema.plugin_id
 
 
 def test_all_three_execution_kinds_have_a_built_in_example(registry: Registry) -> None:

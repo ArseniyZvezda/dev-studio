@@ -218,14 +218,11 @@ def _describe_vcs(paths, config, registry) -> str:
         return "disabled in config.yaml"
 
     def settings_for(backend_id: str) -> dict:
-        plugin_id = registry.plugin_for_vcs_backend(backend_id)
-        state = config.plugins.get(plugin_id) if plugin_id else None
-        return dict(state.settings) if state else {}
+        return dict(config.vcs.settings.get(backend_id, {}))
 
     backend = asyncio.run(
         detect_backend(
             paths.root,
-            extra=registry.vcs_backends(),
             configured=config.vcs.selected(),
             settings_for=settings_for,
         )

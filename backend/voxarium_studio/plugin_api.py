@@ -23,16 +23,6 @@ from .plugins.api import (
     SearchResult,
 )
 from .schemas.nodes import ExecutionSpec, NodeTypeSchema, PortSchema, PortType, ResourceClass
-from .vcs import (
-    CommitResult,
-    FileChange,
-    IsolatedWorkspace,
-    LogFn,
-    VcsBackend,
-    VcsError,
-    VcsStatus,
-    run_tool,
-)
 from .ws.events import EventType
 
 __all__ = [
@@ -40,14 +30,10 @@ __all__ = [
     "AutomationActionHandler",
     "AutomationCancelled",
     "BaseNode",
-    "CommitResult",
     "Event",
     "EventHook",
     "EventType",
     "ExecutionSpec",
-    "FileChange",
-    "IsolatedWorkspace",
-    "LogFn",
     "NodeContext",
     "NodeTypeSchema",
     "PluginHost",
@@ -60,8 +46,4 @@ __all__ = [
     "SearchQuery",
     "SearchResponse",
     "SearchResult",
-    "VcsBackend",
-    "VcsError",
-    "VcsStatus",
-    "run_tool",
 ]

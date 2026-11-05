@@ -5,10 +5,9 @@ artist with an uncommitted workspace and no record of which run produced what. T
 nodes close that loop: the checkin node takes the file an import node just wrote and
 commits it with a comment naming the pipeline.
 
-The nodes are ``python_function`` rather than ``python_script``, unlike the ``unreal``
-plugin next door. The work is one ``cm`` subprocess driven by
-:class:`~plastic_vcs.PlasticBackend`, which is already async and kills the process if the
-run is cancelled — so nothing blocks the event loop, and the alternative would have meant
+The nodes are ``python_function`` rather than ``python_script``. The work is one ``cm``
+subprocess driven by :class:`~voxarium_studio.vcs.plastic.PlasticBackend`, which is async
+and kills the process if the run is cancelled — so nothing blocks the event loop, and the alternative would have meant
 a second copy of the Plastic logic living in a script that cannot import ``voxarium_studio``.
 
 ``cacheable=False`` throughout: these nodes mutate the workspace and read state that
@@ -20,17 +19,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from voxarium_studio.plugin_api import (
+from ..plugins.api import (
     BaseNode,
     ExecutionSpec,
     NodeContext,
     NodeTypeSchema,
-    PluginRegistry,
     PortSchema,
-    VcsError,
 )
 
-from plastic_vcs import PlasticBackend
+from .base import VcsError
+from .plastic import PlasticBackend
+from ..plugins.registry import Registry
 
 CATEGORY = "Version Control"
 ACCENT = "#F0A02F"
@@ -40,7 +39,7 @@ CHECKIN_TIMEOUT = 1800.0
 
 
 def _backend(ctx: NodeContext) -> PlasticBackend:
-    """One backend per node run, configured from the plugin's project settings."""
+    """One backend per node run, configured from vcs.settings.plastic."""
     return PlasticBackend(ctx.project_root, ctx.settings)
 
 
@@ -90,7 +89,7 @@ def _paths_port() -> PortSchema:
         required=False,
         default="",
         connectable=False,
-        description="One per line (or comma-separated). Relative paths resolve against the workspace.",
+        description="One per line (or comma-separated). Relative paths resolve against the managed project.",
     )
 
 
@@ -292,30 +291,20 @@ async def _require_workspace(backend: PlasticBackend, ctx: NodeContext) -> None:
     if not available:
         raise VcsError(
             f"{reason}. Install the Unity Version Control client, or set the path to `cm` "
-            "on the Plastic SCM settings page."
+            "on the Plastic SCM card on the Version Control page."
         )
     if not await backend.detect():
         root = Path(backend.root)
         raise VcsError(
-            f"{root} is not inside a Plastic workspace. Point the plugin at one on the "
-            "Plastic SCM settings page if the workspace root is elsewhere."
+            f"{root} is not inside a Plastic workspace. Choose its workspace on the "
+            "Plastic SCM card on the Version Control page if the workspace root is elsewhere."
         )
     await ctx.log(f"workspace: {backend.workspace_root() or backend.root}")
 
 
-def register(registry: PluginRegistry) -> None:
-    # The backend first: it is what makes the Studio itself aware of Plastic, whether or
-    # not any pipeline uses the nodes below.
-    registry.add_vcs_backend(PlasticBackend)
-
-    registry.add_node_type(PlasticCheckinNode)
-    registry.add_node_type(PlasticAddNode)
-    registry.add_node_type(PlasticStatusNode)
-
-    registry.add_page(
-        id="plastic-settings",
-        title="Plastic SCM",
-        route="/plugins/plastic/settings",
-        icon="git-branch",
-        component="frontend/SettingsPage.js",
-    )
+def register_nodes(registry: Registry) -> None:
+    """Keep published node IDs available without a plugin enable switch (§9.6)."""
+    for node in (PlasticCheckinNode, PlasticAddNode, PlasticStatusNode):
+        registry.register_node_type(
+            node.schema.model_copy(update={"plugin_id": "vcs:plastic"}), node
+        )

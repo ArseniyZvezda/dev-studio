@@ -2,7 +2,7 @@
 
 This is a :class:`~voxarium_studio.vcs.base.VcsBackend`, so registering it teaches the whole
 Studio about Plastic at once: the project header reports it, the settings page shows
-whether ``cm`` is installed, and the plugin's own checkin nodes run against the same
+whether ``cm`` is installed, and the built-in checkin nodes run against the same
 object rather than shelling out on their own.
 
 Two things shape the implementation:
@@ -28,7 +28,7 @@ workspace (see :meth:`PlasticBackend.workspace_patch`).
 Isolation is left unsupported. Git worktrees are a local, instant second checkout;
 Plastic's equivalent is a server-side workspace with its own selector and disk copy,
 which is far too heavy to create per agent task. Team tasks on a Plastic project
-therefore fall back to the path-lock heuristic in §10.5.
+therefore fall back to explicit write-path locks in §10.5.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from voxarium_studio.plugin_api import (
+from .base import (
     CommitResult,
     FileChange,
     LogFn,
@@ -83,6 +83,7 @@ _BRANCH_BARE = re.compile(r"(?:^|\s)(/[^@\s]*)@")
 
 class PlasticBackend(VcsBackend):
     id: ClassVar[str] = "plastic"
+    settings_fields = ({"key": "workspace", "type": "path"},)
     name: ClassVar[str] = "Plastic SCM (Unity Version Control)"
     program: ClassVar[str] = "cm"
 
@@ -91,11 +92,23 @@ class PlasticBackend(VcsBackend):
 
     def __init__(self, root: Path, settings: dict[str, Any] | None = None) -> None:
         super().__init__(root, settings)
+        self.project_root = Path(root)
         # The managed project is normally the workspace, but a studio that keeps one big
         # Plastic workspace with the Unity project inside it can point at the real root.
         configured = str(self.settings.get("workspace") or "").strip()
         if configured:
-            self.root = Path(configured).expanduser()
+            workspace = Path(configured).expanduser()
+            self.root = (workspace if workspace.is_absolute() else self.project_root / workspace).resolve()
+
+    def _targets(self, paths: Sequence[str]) -> list[str]:
+        """Explicit paths stay project-relative when the CLI runs at another root (§9.6)."""
+        targets = _clean(paths)
+        if self.root == self.project_root:
+            return targets
+        return [
+            str(self.project_root / path) if not Path(path).is_absolute() else path
+            for path in targets
+        ]
 
     # ---- discovery -------------------------------------------------------------
 
@@ -148,7 +161,7 @@ class PlasticBackend(VcsBackend):
         ``cm diff`` compares two changesets, which is not what a reviewer looking at
         uncommitted work wants, so this reports the pending change list instead.
         """
-        changes = await self._changes(paths=[str(path)] if path else None)
+        changes = await self._changes(paths=self._targets([str(path)]) if path else None)
         return "\n".join(f"{change.kind:>10}  {change.path}" for change in changes)
 
     async def workspace_patch(self, path: Path | str, file: str | None = None) -> str:
@@ -188,7 +201,7 @@ class PlasticBackend(VcsBackend):
         With no isolation (see the module docstring) the only workspace a caller can
         name is this one, and a second instance would only re-read the settings.
         """
-        if _key(path) == _key(self.root):
+        if _key(path) in {_key(self.root), _key(self.project_root)}:
             return self
         return type(self)(Path(path), dict(self.settings))
 
@@ -214,7 +227,7 @@ class PlasticBackend(VcsBackend):
         self, paths: Sequence[str], *, recursive: bool = True, log_fn: LogFn | None = None
     ) -> list[str]:
         private = [change.path for change in await self._changes() if change.kind == "untracked"]
-        targets = _clean(paths) or private
+        targets = self._targets(paths) or private
         if not targets:
             return []
 
@@ -274,7 +287,7 @@ class PlasticBackend(VcsBackend):
         if not message.strip():
             raise VcsError("A checkin comment is required")
 
-        targets = _clean(paths or [])
+        targets = self._targets(paths or [])
         pending = await self._changes(paths=targets or None, include_private=add_untracked)
         branch, _ = await self._workspace_header()
         if not pending:

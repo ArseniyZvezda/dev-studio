@@ -138,9 +138,6 @@ async function installEnv(plugin: LoadedPlugin) {
                 <template v-if="plugin.search_providers.length">
                   · {{ t('plugins.card.search', { providers: plugin.search_providers.join(', ') }) }}
                 </template>
-                <template v-if="plugin.vcs_backends.length">
-                  · {{ t('plugins.card.versionControl', { backends: plugin.vcs_backends.join(', ') }) }}
-                </template>
                 <template v-if="plugin.has_backend">
                   · {{ plugin.has_venv ? t('plugins.card.venvReady') : t('plugins.card.venvNotBuilt') }}
                 </template>

@@ -21,8 +21,8 @@ from fastapi.testclient import TestClient
 
 from voxarium_studio.core.config import VcsConfig
 from voxarium_studio.main import create_app
-from voxarium_studio.plugins.registry import LoadedPlugin, Registry
 from voxarium_studio.teams import worktree as wt
+from voxarium_studio import vcs as vcs_module
 from voxarium_studio.vcs import CHANGE_KINDS, GitBackend, candidate_backends, detect_backend
 from voxarium_studio.vcs.base import CommitResult, VcsBackend, VcsError, VcsStatus, run_tool
 from voxarium_studio.vcs.git import _parse_porcelain
@@ -270,7 +270,7 @@ async def test_run_tool_streams_output_to_the_log() -> None:
 
 
 class FakeBackend(VcsBackend):
-    """Minimal third-party backend, standing in for what a plugin contributes."""
+    """Minimal entity for testing catalog resolution."""
 
     id: ClassVar[str] = "fake"
     name: ClassVar[str] = "Fake VCS"
@@ -299,46 +299,40 @@ class FakeBackend(VcsBackend):
 
 
 @requires_git
-async def test_a_plugin_backend_is_asked_before_git(git_repo: Path) -> None:
-    """A Plastic workspace inside a git checkout must resolve to Plastic, not to git."""
-    resolved = await detect_backend(git_repo, extra=[FakeBackend])
-    assert isinstance(resolved, FakeBackend)
-
-    FakeBackend.claims = False
-    try:
-        assert isinstance(await detect_backend(git_repo, extra=[FakeBackend]), GitBackend)
-    finally:
-        FakeBackend.claims = True
+async def test_a_specific_workspace_is_asked_before_git(git_repo: Path, monkeypatch) -> None:
+    monkeypatch.setattr(vcs_module, "BUILTIN_BACKENDS", (FakeBackend, GitBackend))
+    assert isinstance(await detect_backend(git_repo), FakeBackend)
+    monkeypatch.setattr(FakeBackend, "claims", False)
+    assert isinstance(await detect_backend(git_repo), GitBackend)
 
 
-async def test_configured_backend_wins_over_detection(tmp_path: Path) -> None:
-    resolved = await detect_backend(tmp_path, extra=[FakeBackend], configured="git")
-    assert isinstance(resolved, GitBackend)  # even though tmp_path is not a repo
+async def test_configured_backend_wins_over_detection(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(vcs_module, "BUILTIN_BACKENDS", (FakeBackend, GitBackend))
+    assert isinstance(await detect_backend(tmp_path, configured="git"), GitBackend)
 
 
-async def test_unknown_configured_backend_falls_back_to_detection(tmp_path: Path) -> None:
-    resolved = await detect_backend(tmp_path, extra=[FakeBackend], configured="mercurial")
-    assert isinstance(resolved, FakeBackend)
+async def test_unknown_configured_backend_falls_back_to_detection(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(vcs_module, "BUILTIN_BACKENDS", (FakeBackend, GitBackend))
+    assert isinstance(await detect_backend(tmp_path, configured="mercurial"), FakeBackend)
 
 
-async def test_a_backend_that_raises_while_detecting_is_skipped(tmp_path: Path) -> None:
+async def test_a_backend_that_raises_while_detecting_is_skipped(tmp_path: Path, monkeypatch) -> None:
     class Exploding(FakeBackend):
         id: ClassVar[str] = "exploding"
 
         async def detect(self) -> bool:
             raise RuntimeError("no server")
 
-    resolved = await detect_backend(tmp_path, extra=[Exploding, FakeBackend])
-    assert isinstance(resolved, FakeBackend)
+    monkeypatch.setattr(vcs_module, "BUILTIN_BACKENDS", (Exploding, FakeBackend))
+    assert isinstance(await detect_backend(tmp_path), FakeBackend)
 
 
 async def test_nothing_detected_is_not_an_error(tmp_path: Path) -> None:
     assert await detect_backend(tmp_path) is None
 
 
-def test_candidate_order_puts_plugins_first_and_dedupes() -> None:
-    ids = [backend.id for backend in candidate_backends([FakeBackend, GitBackend])]
-    assert ids == ["fake", "git"]
+def test_catalog_always_contains_all_entities_in_detection_order() -> None:
+    assert [backend.id for backend in candidate_backends()] == ["plastic", "perforce", "git"]
 
 
 def test_config_reads_none_as_disabled() -> None:
@@ -346,38 +340,6 @@ def test_config_reads_none_as_disabled() -> None:
     assert VcsConfig(backend="auto").selected() is None
     assert VcsConfig(backend="plastic").selected() == "plastic"
     assert VcsConfig().disabled is False
-
-
-# --------------------------------------------------------------------------- extension point
-
-
-def test_a_plugin_can_contribute_and_withdraw_a_backend(tmp_path: Path) -> None:
-    from voxarium_studio.plugins.api import PluginRegistry
-    from voxarium_studio.plugins.manifest import PluginManifest
-
-    registry = Registry(project_root=tmp_path)
-    manifest = PluginManifest(id="faker", name="Faker", version="0.1.0")
-    registry.add_plugin(LoadedPlugin(manifest=manifest))
-
-    PluginRegistry(registry, "faker", {}).add_vcs_backend(FakeBackend)
-
-    assert registry.vcs_backends() == [FakeBackend]
-    assert registry.plugin_for_vcs_backend("fake") == "faker"
-    assert registry.plugin("faker").to_json()["vcs_backends"] == ["fake"]
-
-    # Disabling the plugin has to take the backend with it, or the Studio keeps detecting
-    # a system nothing can drive any more.
-    registry.remove_plugin("faker")
-    assert registry.vcs_backends() == []
-
-
-def test_registering_a_non_backend_is_refused(tmp_path: Path) -> None:
-    from voxarium_studio.plugins.api import PluginRegistry
-
-    plugin_registry = PluginRegistry(Registry(project_root=tmp_path), "faker", {})
-
-    with pytest.raises(TypeError):
-        plugin_registry.add_vcs_backend(object)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- isolation fallback
@@ -427,7 +389,8 @@ OPTION_KEYS = {
     "available",
     "reason",
     "supports_isolation",
-    "plugin_id",
+    "settings",
+    "settings_fields",
     "program",
     "executable",
     "detected",
@@ -450,20 +413,21 @@ def test_overview_answers_the_frozen_shape(git_client: TestClient) -> None:
     git = next(option for option in overview["backends"] if option["id"] == "git")
     assert set(git) == OPTION_KEYS
     assert git["detected"] is True and git["active"] is True
-    assert git["plugin_id"] is None  # built in, not shipped by a plugin
+    assert git["settings"] == {}
+    assert git["settings_fields"] == [{"key": "executable", "type": "path", "default": "git"}]
     assert git["program"] == "git" and git["executable"] == "git"
 
 
-def test_a_plugin_backend_is_listed_as_a_candidate(client: TestClient) -> None:
+def test_every_vcs_entity_is_listed_as_a_candidate(client: TestClient) -> None:
     """Plastic is not installed on the machine, but its backend is still on offer."""
     overview = client.get("/api/vcs").json()
 
     plastic = next(option for option in overview["backends"] if option["id"] == "plastic")
     assert set(plastic) == OPTION_KEYS
-    assert plastic["plugin_id"] == "plastic"
+    assert plastic["settings"] == {}
+    assert {field["key"] for field in plastic["settings_fields"]} == {"executable", "workspace"}
     assert plastic["active"] is False
-    # Plugin backends are asked before git, so they come first in the list too.
-    assert [option["id"] for option in overview["backends"]] == ["plastic", "git"]
+    assert [option["id"] for option in overview["backends"]] == ["plastic", "perforce", "git"]
 
 
 @requires_git
@@ -589,7 +553,7 @@ def test_settings_merge_key_by_key(git_client: TestClient, git_project: Path) ->
     """A patch that names one key must leave every other key standing."""
     import yaml
 
-    git_client.put("/api/vcs/settings", json={"settings": {"git": {"workspace": "/elsewhere"}}})
+    git_client.put("/api/vcs/settings", json={"settings": {"plastic": {"workspace": "/elsewhere"}}})
     git_client.put(
         "/api/vcs/settings", json={"settings": {"git": {"executable": shutil.which("git")}}}
     )
@@ -597,7 +561,7 @@ def test_settings_merge_key_by_key(git_client: TestClient, git_project: Path) ->
     stored = git_client.get("/api/settings").json()["vcs"]["settings"]
     on_disk = yaml.safe_load((git_project / "voxarium_studio" / "config.yaml").read_text(encoding="utf-8"))
 
-    assert stored["git"]["workspace"] == "/elsewhere"  # the unrelated key survived
+    assert stored["plastic"]["workspace"] == "/elsewhere"  # the unrelated key survived
     assert stored["git"]["executable"] == shutil.which("git")
     assert on_disk["vcs"]["settings"] == stored  # …and it is in config.yaml, not just memory
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .paths import ProjectPaths
 from .prompts import AgentPromptsConfig
@@ -325,8 +325,7 @@ class McpConfig(BaseModel):
 class VcsConfig(BaseModel):
     """Which version control system this project is under (§10.5).
 
-    Left unset the Studio auto-detects, asking plugin-contributed backends before the
-    built-in git one. Name a backend here when detection would pick the wrong one — a
+    Left unset the Studio auto-detects Plastic and Perforce workspaces before Git. Name a backend here when detection would pick the wrong one — a
     Plastic workspace living inside a git checkout, say — or to turn the integration off
     entirely with ``backend: none``.
     """
@@ -336,11 +335,7 @@ class VcsConfig(BaseModel):
     settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Per-backend settings keyed by backend id — ``{"git": {"executable": "…/git.exe"}}``.
 
-    Git is built in rather than a plugin, so it had nowhere to keep the ``executable``
-    override that :attr:`~voxarium_studio.vcs.base.VcsBackend.executable` has always looked for.
-    A *plugin* backend is still configured through its plugin's settings as well; what
-    goes here wins over that, because it is the choice made on the VCS page itself
-    (:meth:`voxarium_studio.core.context.AppContext.vcs_settings`).
+    These settings are owned exclusively by the entity's Version Control card (§9.6).
     """
 
     def selected(self) -> str | None:
@@ -448,6 +443,16 @@ class AppConfig(BaseModel):
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     plugins: dict[str, PluginConfig] = Field(default_factory=dict)
     node_cache_enabled: bool = True
+
+    @model_validator(mode="after")
+    def migrate_plastic_plugin(self) -> "AppConfig":
+        """Move legacy settings once; clearing a card must never revive them (§9.6)."""
+        legacy = self.plugins.pop("plastic", None)
+        if legacy is not None:
+            merged = {**legacy.settings, **self.vcs.settings.get("plastic", {})}
+            if merged:
+                self.vcs.settings["plastic"] = merged
+        return self
 
     def task_code(self, fallback_name: str = "") -> str:
         """The code to prefix task ids with, always a usable one (§10.2).

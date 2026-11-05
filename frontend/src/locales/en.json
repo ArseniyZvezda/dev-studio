@@ -1769,17 +1769,30 @@
     },
     "choose": {
       "title": "Which system to use",
+      "intro": "All supported systems are listed here. Configure each system on its card and choose which one manages this project.",
       "auto": "Detect automatically",
-      "autoHint": "Plugin backends are asked first, then the built-in git — a plugin is enabled deliberately, so it is the better answer when a Plastic workspace sits inside a git repository (§9.6).",
+      "autoHint": "Checks Plastic SCM and Perforce workspaces first, then Git. You can choose a system explicitly when more than one recognises the project.",
       "active": "active",
       "claims": "claims this project",
-      "fromPlugin": "from the {plugin} plugin · drives {program}",
-      "fromPluginIsolates": "from the {plugin} plugin · drives {program} · isolates agent tasks",
       "builtIn": "built in · drives {program}",
       "builtInIsolates": "built in · drives {program} · isolates agent tasks",
       "executableHint": "Only needed when {program} is not on PATH — give the full path to the executable. Empty means run it by name.",
       "none": "None — turn the integration off",
       "noneHint": "The Studio stops asking, even in a repository it would otherwise recognise."
+    },
+    "fields": {
+      "executable": "CLI executable",
+      "workspace": "Workspace root",
+      "workspaceHint": "Leave empty to find the Plastic workspace from the project folder. A relative path is resolved from the project folder.",
+      "port": "Server address (P4PORT)",
+      "portHint": "For example, ssl:perforce.example.com:1666. Leave empty to use your Perforce configuration.",
+      "user": "User (P4USER)",
+      "userHint": "Leave empty to use the user from your Perforce configuration.",
+      "client": "Workspace (P4CLIENT)",
+      "clientHint": "The existing Perforce workspace that contains this project. Leave empty to use your Perforce configuration.",
+      "charset": "Character set (P4CHARSET)",
+      "charsetHint": "For Unicode servers, for example utf8. Leave empty to use your Perforce configuration.",
+      "perforceAuth": "Authentication uses the local Perforce login ticket. Run p4 login for this server and user before connecting."
     },
     "commit": {
       "title": "Commit",
@@ -1990,7 +2003,6 @@
         "other": "{count} previewers"
       },
       "search": "search: {providers}",
-      "versionControl": "version control: {backends}",
       "venvReady": "venv ready",
       "venvNotBuilt": "venv not built",
       "buildEnv": "Build env"

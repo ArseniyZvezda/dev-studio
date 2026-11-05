@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..core.config import AppConfig, effective_launch_root
 from ..core.paths import ProjectPaths
 from ..schemas.nodes import ExecutionSpec, NodeTypeSchema, PortSchema
-from ..vcs.base import VcsBackend
 from ..ws.bus import Event, EventBus
 from ..ws.events import EventType
 
@@ -383,22 +382,6 @@ class PluginRegistry:
             aliases=list(aliases or []),
         )
 
-    def add_vcs_backend(self, backend: type[VcsBackend]) -> None:
-        """Contribute a version control system (§10.5).
-
-        Once registered, the Studio can detect a project under it, report it in the UI,
-        and use it to isolate parallel agent work if the backend supports that. The
-        plugin's own nodes get the same object, so a commit node and the Studio's own
-        integration never drift apart.
-        """
-        if not isinstance(backend, type) or not issubclass(backend, VcsBackend):
-            raise TypeError(f"{backend!r} must be a VcsBackend subclass")
-        if not getattr(backend, "id", ""):
-            raise ValueError(f"{backend.__name__} must define an `id` class attribute")
-        self._registry.register_vcs_backend(plugin_id=self.plugin_id, backend=backend)
-        log.debug("Registered version control backend %s", backend.id)
-
-    # ---- hooks, actions and search (§9.7) ----
 
     def on_project_opened(self, handler: ProjectOpenedHook, *, id: str | None = None) -> None:
         """Run ``handler(host)`` when the Studio opens a project this plugin is enabled in.
@@ -528,5 +511,4 @@ __all__ = [
     "SearchQuery",
     "SearchResponse",
     "SearchResult",
-    "VcsBackend",
 ]

@@ -58,6 +58,8 @@ def discover_manifests(paths: ProjectPaths) -> list[PluginManifest]:
             except Exception as exc:
                 log.error("Invalid plugin manifest %s: %s", manifest_path, exc)
                 continue
+            if manifest.id == "plastic":
+                continue  # migrated to the independent VCS catalog (§9.6)
             if manifest.id in found:
                 log.info(
                     "Plugin %r from %s overrides the %s copy",
@@ -232,7 +234,10 @@ def load_plugin(
 
 def load_all(paths: ProjectPaths, config: AppConfig) -> Registry:
     """Build a fresh registry from disk. Also used to hot-reload after enable/disable."""
+    from ..vcs.nodes import register_nodes
+
     registry = Registry(project_root=paths.root)
+    register_nodes(registry)
     for manifest in discover_manifests(paths):
         load_plugin(registry, manifest, config=config)
     loaded = [p for p in registry.plugins() if p.status == "loaded"]
