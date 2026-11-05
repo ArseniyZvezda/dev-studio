@@ -3,6 +3,7 @@
 from .automation import AutomationRun
 from .base import new_id, utcnow
 from .pipeline import NodeCacheEntry, NodeRun, NodeStatus, Run, RunStatus
+from .subagents import SubagentMessage, TaskSubagent
 from .teams import (
     AgentChat,
     AgentChatMessage,
@@ -24,6 +25,8 @@ __all__ = [
     "Run",
     "RunStatus",
     "TaskStatus",
+    "TaskSubagent",
+    "SubagentMessage",
     "Team",
     "TeamMember",
     "TeamTask",

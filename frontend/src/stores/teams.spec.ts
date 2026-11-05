@@ -281,6 +281,22 @@ describe('doneCost', () => {
 })
 
 describe('the activity line', () => {
+  it('counts Studio-managed subagents without an open transcript and closes only the finished child', async () => {
+    const store = await storeWith([task()])
+    const emit = (text: string, data: Record<string, unknown>, kind = 'system') =>
+      handlers.get('team.member.message')?.(messageEvent({ role: 'system', kind, text, data }) as never)
+    emit('task_started', { task_id: 'codex_1', task_type: 'studio_agent', backend: 'codex' })
+    emit('task_started', { task_id: 'qwen_1', task_type: 'studio_agent', backend: 'qwen_code' })
+    expect(store.openTask).toBeNull()
+    expect(store.runningSubagents['task_1']).toBe(2)
+    emit('', { continued: true }, 'result')
+    expect(store.runningSubagents['task_1']).toBe(2)
+    emit('task_notification', { task_id: 'codex_1', task_type: 'studio_agent', status: 'completed' })
+    expect(store.runningSubagents['task_1']).toBe(1)
+    emit('task_notification', { task_id: 'qwen_1', task_type: 'studio_agent', status: 'stopped' })
+    expect(store.runningSubagents['task_1']).toBeUndefined()
+  })
+
   it('follows a task whose transcript is not open', async () => {
     const store = await storeWith([task()])
     expect(store.openTask).toBeNull()

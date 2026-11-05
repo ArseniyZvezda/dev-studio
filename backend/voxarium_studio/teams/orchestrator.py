@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -28,7 +28,7 @@ from ..core.mcp import enabled_servers as project_mcp_servers
 from ..core.paths import ProjectPaths
 from ..core.prompts import AgentPromptsConfig
 from ..engine.jobs import JobEngine, JobHandle
-from ..models.base import utcnow
+from ..models.base import new_id, utcnow
 from ..models.teams import (
     TERMINAL_TASK_STATUSES,
     AgentChat,
@@ -72,6 +72,7 @@ from .file_observer import FileObserver
 from .project_skills import MemberSkills, Skill, SkillStore
 from .project_skills import prompt_list as skill_prompt_list
 from .slots import agent_slot, span
+from .subagents import SubagentManager, results_prompt
 from .store import TeamStore
 from .tools import build_toolset
 from .usage import RunUsage
@@ -152,6 +153,7 @@ class TeamOrchestrator:
         # §10.5: publishing a new write set and taking a run's snapshot are atomic.
         self._write_paths_guards: dict[str, asyncio.Lock] = {}
         self._temp_locks: dict[str, asyncio.Lock] = {}
+        self.subagents = SubagentManager(self)
         self.paused_teams: set[str] = set()
         """Producer execution gates, installed before startup dispatch (§10.11)."""
         self._ending: set[str] = set()
@@ -1561,6 +1563,7 @@ class TeamOrchestrator:
             task.started_at = None
             task.finished_at = None
             session.add(task)
+            await self.subagents.delete_for_task(session, task_id)
             for message in (
                 await session.exec(select(AgentMessage).where(AgentMessage.task_id == task_id))
             ).all():
@@ -1621,6 +1624,7 @@ class TeamOrchestrator:
                 await session.delete(message)
             doomed = await session.get(TeamTask, task_id)
             if doomed is not None:
+                await self.subagents.delete_for_task(session, task_id)
                 await session.delete(doomed)
 
         await self.bus.publish(
@@ -1710,6 +1714,21 @@ class TeamOrchestrator:
         )
 
     async def report_result(
+        self, task_id: str, *, result_type: str, summary: str, actor_id: str | None = None,
+    ) -> TeamTask:
+        # Serialize completion with spawning: parallel MCP calls must not publish a
+        # finished parent while a worker is being registered (§10.3).
+        run = self.subagents.runs.get(task_id)
+        async with run.lock if run else contextlib.nullcontext():
+            if run and (run.closing or self.subagents.runs.get(task_id) is not run):
+                raise ValueError("This task run is closing")
+            if self.subagents.has_active(task_id) or self.subagents.has_pending(task_id):
+                raise ValueError("Wait for or stop subagents and read their results before finish_task")
+            return await self._report_result(
+                task_id, result_type=result_type, summary=summary, actor_id=actor_id,
+            )
+
+    async def _report_result(
         self,
         task_id: str,
         *,
@@ -2220,7 +2239,8 @@ class TeamOrchestrator:
                     },
                 )
 
-            toolset = build_toolset(self, member=member, task=task)
+            run_id = new_id("run")
+            toolset = build_toolset(self, member=member, task=task, run_id=run_id)
             async with self._temp_locks.setdefault(task_id, asyncio.Lock()):
                 temp_dir = task_temp.ensure_task_temp(self.paths, task)
             system_prompt = _build_system_prompt(
@@ -2304,10 +2324,16 @@ class TeamOrchestrator:
 
             # Says so in the transcript when the run has to queue behind `concurrency.agents`:
             # the task already reads In progress, and a silent wait looks like a hang.
-            async with agent_slot(self.jobs, self.record_message, task_id, member_id):
-                limit = await self._consume(backend, request, task_id, member_id)
-                if limit is None:
-                    await self._auto_compress(backend, request)
+            async with agent_slot(self.jobs, self.record_message, task_id, member_id) as lease:
+                self.subagents.open_run(request, lease, run_id)
+                try:
+                    limit = await self._consume(backend, request, task_id, member_id)
+                    if limit is None:
+                        await self._auto_compress(backend, request)
+                finally:
+                    # Workers must be gone before the task releases its write locks,
+                    # temporary files or checkout (§10.3, §10.5).
+                    await self.subagents.close_run(task_id)
             # Outside the slot, and deliberately: a task waiting hours for a window to
             # refill must not be holding a concurrency slot the other members need (§10.3).
             if limit is not None:
@@ -2432,6 +2458,31 @@ class TeamOrchestrator:
             )
         return None
 
+    async def _drain_parent_events(
+        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str,
+    ) -> _RunOutcome:
+        """A closing parent turn joins workers and consumes their results (§10.3)."""
+        while True:
+            outcome = await self._drain_events(backend, request, task_id, member_id)
+            if outcome.errored:
+                return outcome
+            results = await self.subagents.collect_pending(task_id)
+            if not results:
+                return outcome
+            saved = await self._reload(task_id)
+            prompt = results_prompt(results)
+            # A backend without resumption still gets the original task and workspace
+            # instructions, plus worker results. Each additional round spends a launch
+            # from the bounded per-run worker budget, so this loop is finite.
+            if not saved.agent_session_id:
+                prompt = request.prompt + "\n\n" + prompt
+            await self.record_message(
+                task_id, member_id, role="system", kind="continued",
+                text="Subagents finished; returning their results to the parent agent.",
+            )
+            request = replace(request, prompt=prompt, images=[], recovery_prompt="",
+                              resume_session_id=saved.agent_session_id)
+
     async def _drain(
         self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str
     ) -> _RunOutcome:
@@ -2451,7 +2502,7 @@ class TeamOrchestrator:
                             "\n\nCurrent request:\n" + request.prompt),
                 )
         if task and task.worktree_path and Path(task.worktree_path).exists():
-            return await self._drain_events(backend, request, task_id, member_id)
+            return await self._drain_parent_events(backend, request, task_id, member_id)
 
         async def record(paths: list[str], error: str | None) -> None:
             # Chunk for storage/transport, never truncate the observation as Explorer does.
@@ -2481,7 +2532,9 @@ class TeamOrchestrator:
             except Exception as exc:
                 await observer.cancel()
                 await record([], f"File observation unavailable: {exc}")
-            return await self._drain_events(backend, request, task_id, member_id)
+            # Observe the whole parent/worker group, including the interval where
+            # the parent's CLI has ended and children are still writing (§10.3).
+            return await self._drain_parent_events(backend, request, task_id, member_id)
         except asyncio.CancelledError:
             # Cancellation covers preparation too (§10.4). Do not start another disk
             # traversal after Stop; already persisted observations remain available.
@@ -2523,7 +2576,10 @@ class TeamOrchestrator:
             # cancelled before its result. The result only adds the uncredited balance.
             live_usage = usage.observe(event)
             if not (event.kind == "system" and event.data.get("subtype") == "usage_update"):
-                await self._publish_message(task_id, member_id, event)
+                visible = event
+                if event.kind == "result" and self.subagents.has_pending(task_id):
+                    visible = replace(event, data={**event.data, "continued": True})
+                await self._publish_message(task_id, member_id, visible)
             if live_usage:
                 await self._publish_usage_update(
                     task_id, member_id, usage, delta=usage.total - credited_tokens,
@@ -2995,25 +3051,24 @@ class TeamOrchestrator:
 
     async def _store_result_stats(self, task_id: str, data: dict[str, Any]) -> None:
         async with self.db.session() as session:
-            task = await session.get(TeamTask, task_id)
-            if task is None:
-                return
-            task.total_cost_usd += float(data.get("total_cost_usd") or 0.0)
-            task.num_turns += int(data.get("num_turns") or 0)
-            task.total_tokens += int(data.get("total_tokens") or 0)
-            session.add(task)
+            await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
+                total_cost_usd=TeamTask.total_cost_usd + float(data.get("total_cost_usd") or 0.0),
+                num_turns=TeamTask.num_turns + int(data.get("num_turns") or 0),
+                total_tokens=TeamTask.total_tokens + int(data.get("total_tokens") or 0),
+            ))
 
     async def _publish_usage_update(
         self, task_id: str, member_id: str, usage: RunUsage, *, delta: int = 0,
     ) -> None:
         """One persisted counter and one replaceable WS row, independent of backend (§10.4)."""
         async with self.db.session() as session:
+            await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
+                total_tokens=TeamTask.total_tokens + delta,
+            ))
             task = await session.get(TeamTask, task_id)
             if task is None:
                 return
-            task.total_tokens += delta
             task_total = task.total_tokens
-            session.add(task)
         await self._publish_message(task_id, member_id, usage.snapshot(task_total))
 
     async def _cleanup_task_temp(self, task: TeamTask) -> None:

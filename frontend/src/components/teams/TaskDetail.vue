@@ -90,7 +90,7 @@ import {
   statusLabel,
 } from '@/lib/status'
 import type { Subagent } from '@/lib/subagents'
-import { running as stillRunning, subagents } from '@/lib/subagents'
+import { running as stillRunning, subagents, subagentUsage } from '@/lib/subagents'
 import { useTaskClock } from '@/lib/task-clock'
 import {
   RESULT_TYPES,
@@ -559,7 +559,7 @@ const live = computed(() => liveLine(props.task.messages, verbosity.value))
  * and in the scroller it was carried away exactly while a session sat waiting on five agents
  * with nothing else to show.
  */
-const delegated = computed(() => subagents(props.task.messages))
+const delegated = computed(() => subagents(props.task.messages, props.task.subagents))
 const delegatedRunning = computed(() => stillRunning(delegated.value))
 /** Work the run is actually held open for — a background shell is shown and is not that. */
 const heldFor = computed(() => delegatedRunning.value.filter((entry) => entry.holdsRun).length)
@@ -640,7 +640,7 @@ function subagentNote(entry: Subagent): string {
     parts.push(t(SUBAGENT_ENDINGS[entry.status]))
   }
   if (entry.toolUses) parts.push(t('taskDetail.delegated.calls', { count: entry.toolUses }))
-  if (entry.tokens) parts.push(formatTokens(entry.tokens))
+  parts.push(subagentUsage(entry))
   return parts.join(' · ')
 }
 
@@ -1238,6 +1238,11 @@ async function complete() {
                   :style="{ background: subagentColor(entry) }"
                 />
                 <span class="shrink-0 text-small text-faint">{{ entry.typeLabel }}</span>
+                <span
+                  v-if="entry.backend"
+                  class="shrink-0 text-small text-faint"
+                  :title="entry.model || entry.backend"
+                >{{ entry.backend }}</span>
                 <span class="truncate" :class="entry.status === 'running' ? '' : 'text-faint'">
                   {{ entry.description }}
                 </span>

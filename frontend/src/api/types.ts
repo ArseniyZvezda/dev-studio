@@ -759,6 +759,28 @@ export interface TeamDetail extends Team {
 export interface TaskDetail extends TeamTask {
   assignee: TeamMember | null
   messages: AgentMessage[]
+  /** §10.3: durable worker state, including after transcript compression or archiving. */
+  subagents?: TaskSubagent[]
+}
+
+export interface TaskSubagent {
+  id: string
+  task_id: string
+  member_id: string
+  description: string
+  backend: string
+  model: string
+  effort: string | null
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'stopped'
+  session_id: string | null
+  summary: string
+  total_tokens: number
+  total_cost_usd: number
+  num_turns: number
+  tool_uses: number
+  created_at: string
+  updated_at: string
+  finished_at: string | null
 }
 
 /** What `POST …/tasks/{id}/remote-control` answers with (§10.8). */

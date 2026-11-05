@@ -1157,7 +1157,10 @@
         "failed": "сбой",
         "stopped": "остановлено"
       },
-      "calls": "вызовов: {count}"
+      "calls": "вызовов: {count}",
+      "tokens": "Токены: {tokens}",
+      "apiCost": "API Cost: {cost}",
+      "usageUnavailable": "нет данных"
     },
     "edit": {
       "titlePlaceholder": "Название задачи",

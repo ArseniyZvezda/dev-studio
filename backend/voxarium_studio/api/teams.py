@@ -12,6 +12,7 @@ from sqlmodel import select
 
 from ..core.context import AppContext
 from ..core.security import UNTRUSTED_FILE_HEADERS
+from ..models.subagents import TaskSubagent
 from ..models.teams import (
     TERMINAL_TASK_STATUSES,
     AgentMessage,
@@ -794,10 +795,16 @@ async def get_task(team_id: str, task_id: str, ctx: Ctx) -> dict[str, Any]:
             ).all()
         )
         assignee = await session.get(TeamMember, task.assignee_id)
+        # §10.3: worker counters survive task transcript compaction and archiving.
+        subagents = (await session.exec(
+            select(TaskSubagent).where(TaskSubagent.task_id == task_id)
+            .order_by(TaskSubagent.created_at, TaskSubagent.id)
+        )).all()
     return {
         **_task_json(ctx, task),
         "assignee": assignee.model_dump(mode="json") if assignee else None,
         "messages": [m.model_dump(mode="json") for m in messages],
+        "subagents": [row.model_dump(mode="json") for row in subagents],
     }
 
 

@@ -126,6 +126,41 @@ and work may be handed on only a few levels deep; a refusal names the limit you 
 
 A member marked `human` is a person: they pick tasks up by hand, and there is no session to talk to.
 
+## Splitting your current task into subagents (§10.3)
+
+Use **`spawn_subagent`** for parallel or smaller pieces of the task you are currently running.
+Give each child a short `description` and a self-contained `prompt`: context, exact file
+ownership, expected result and checks. It starts immediately when an agent slot is available
+and returns its `id` (pass it as `subagent_id` to controls); it does not create a task on the board or require a team route.
+The default backend, model and effort are those of your run. You may choose another registered
+`backend`, but must also provide a compatible `model` when changing backends.
+
+Children share your working directory, checkout, permitted tools and declared write scope.
+Assign disjoint files to parallel writers and integrate their results yourself; a subagent
+does not grant additional write permission. Your run may launch at most
+`teams.max_delegated_tasks_per_task` worker turns (8 by default, including follow-ups). Studio-managed children cannot
+create further children, mutate the task board or author Studio project definitions. Their
+Studio tools provide read-only task and document context; they return their result as final
+text and do not call `finish_task`.
+
+- **`list_subagents`** lists your task's children, status, results, tokens and API Cost.
+- **`get_subagent`** reads one child's recorded transcript and result.
+- **`wait_subagents`** waits for one child (`subagent_id`) or all children, up to `timeout`
+  seconds (0–60, default 30), and returns their latest status. A timeout leaves work running.
+  This releases your agent slot so children can progress even when parallel sessions is 1.
+  Before the tool returns, your session must reacquire its slot; that queue can extend the
+  wall-clock duration beyond `timeout` while other sessions are running.
+  Use this tool instead of polling or sleeping in a shell.
+- **`stop_subagent`** stops queued or running work and preserves its files, transcript and usage.
+- **`send_subagent_message`** starts a follow-up for a completed, failed or stopped child,
+  resuming its session when available. For a running child, wait or stop it first.
+
+Read and integrate child results before `finish_task`; it refuses while children are active or their results are unread.
+If your turn ends first, Studio waits and resumes you with their results. Stopping the parent
+stops its children. Their tokens and reported API Cost count once in the parent task totals;
+the UI also shows each child's own counters. A Studio restart marks interrupted children
+stopped; their saved results and usage remain available.
+
 ## Finishing: result type, summary and review
 
 End every run by calling **`finish_task`**. Both arguments are required:

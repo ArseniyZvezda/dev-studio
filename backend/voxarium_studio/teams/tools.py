@@ -43,6 +43,7 @@ from ..models.teams import (
     TeamTask,
 )
 from .docs import DocStore
+from .subagent_tools import build_subagent_tools
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
     from .orchestrator import TeamOrchestrator
@@ -91,7 +92,8 @@ def _text(body: str, *, is_error: bool = False) -> dict[str, Any]:
 
 def build_toolset(
     orchestrator: "TeamOrchestrator", *, member: TeamMember, task: TeamTask | None = None,
-    producer=None, chat_id: str | None = None,
+    producer=None, chat_id: str | None = None, subagent_id: str | None = None,
+    run_id: str | None = None,
 ) -> StudioToolset | None:
     """Build the board + delegation + docs toolset for one member working on one task.
 
@@ -775,6 +777,14 @@ def build_toolset(
                 is_error=True,
             )
         try:
+            if run_id is not None:
+                orchestrator.subagents.require_run(task.id, member.id, run_id)
+            if orchestrator.subagents.has_active(task.id):
+                return _text(
+                    "Subagents are still working. Use wait_subagents or stop_subagent, "
+                    "review their results, then call finish_task.",
+                    is_error=True,
+                )
             updated = await orchestrator.report_result(
                 task.id,
                 result_type=str(args.get("result_type") or ""),
@@ -801,9 +811,17 @@ def build_toolset(
         read_doc,
         write_doc,
     ]
-    if orchestrator.authoring is not None:
+    if subagent_id is not None:
+        # §10.3: children work files in the parent's scope; only the parent owns the
+        # task lifecycle, delegation and project-authoring mutations.
+        tools = [list_team, list_tasks, get_task, list_docs, read_doc]
+    else:
+        tools.extend(build_subagent_tools(
+            orchestrator, member_id=member.id, task_id=task.id if task else None, run_id=run_id,
+        ))
+    if subagent_id is None and orchestrator.authoring is not None:
         tools.extend(orchestrator.authoring.tools())
-    if producer:
+    if subagent_id is None and producer:
         tools.extend(producer.tools(chat_id))
         # One mutation at a time with Send/Approve/Stop, including parallel MCP calls.
         # Check the mode afresh: a toolset held by a stopped runtime loses its authority.

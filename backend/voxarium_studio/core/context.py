@@ -164,6 +164,7 @@ class AppContext:
         await self.db.create_missing_indexes()
         await self.detect_vcs()
         await self.teams.sync_definitions()
+        await self.teams.subagents.recover()
         self._teams_ready = True
         await self.chats.producer.restore_paused()
         await self.chats.producer.start()

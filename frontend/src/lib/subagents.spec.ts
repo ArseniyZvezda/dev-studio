@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import type { AgentMessage } from '@/api/types'
-import { running, subagentActivity, subagents } from '@/lib/subagents'
+import type { AgentMessage, TaskSubagent } from '@/api/types'
+import { running, subagentActivity, subagents, subagentUsage, trackDelegated } from '@/lib/subagents'
 
 let sequence = 0
 
@@ -40,7 +40,136 @@ const started = (id: string, overrides: Record<string, unknown> = {}) =>
 const heldResult = () => message({ role: 'system', kind: 'result', data: { continued: true } })
 const finalResult = () => message({ role: 'system', kind: 'result', data: {} })
 
+const saved = (overrides: Partial<TaskSubagent> = {}): TaskSubagent => ({
+  id: 'studio_1', task_id: 'task_1', member_id: 'team_default__dev',
+  description: 'Review implementation', backend: 'codex', model: 'gpt-test', effort: null,
+  status: 'completed', session_id: 'child_session', summary: 'Review complete.',
+  total_tokens: 1500, total_cost_usd: 0.03, num_turns: 2, tool_uses: 4,
+  created_at: '2026-09-04T10:00:00Z', updated_at: '2026-09-04T10:01:00Z',
+  finished_at: '2026-09-04T10:01:00Z', ...overrides,
+})
+
+describe('durable Studio-managed work (§10.3)', () => {
+  it('retains archived or compressed workers when lifecycle messages are gone', () => {
+    for (const messages of [[], [message({ kind: 'compressed summary', text: 'Task summary' })]]) {
+      const list = subagents(messages, [saved()])
+      expect(list).toHaveLength(1)
+      expect(list[0]).toMatchObject({
+        id: 'studio_1', backend: 'codex', model: 'gpt-test', status: 'completed',
+        tokens: 1500, costUsd: 0.03, toolUses: 4, summary: 'Review complete.',
+      })
+    }
+  })
+
+  it('keeps a saved follow-up running despite older completion and parent result frames', () => {
+    const row = saved({ status: 'running', finished_at: null, summary: '' })
+    const list = subagents([
+      started('studio_1', { task_type: 'studio_agent' }),
+      frame('task_notification', { task_id: 'studio_1', status: 'completed' }),
+      finalResult(),
+    ], [row])
+    expect(list[0]).toMatchObject({ status: 'running', tokens: 1500, costUsd: 0.03 })
+  })
+
+  it('uses newer live progress and completion instead of the durable snapshot', () => {
+    const row = saved({ status: 'running', finished_at: null, summary: '' })
+    const progress = {
+      ...frame('task_progress', {
+        task_id: 'studio_1', task_type: 'studio_agent', last_tool_name: 'Read',
+        usage: { total_tokens: 2000, total_cost_usd: 0.05, tool_uses: 6 },
+      }),
+      created_at: '2026-09-04T10:02:00Z',
+    }
+    const finish = {
+      ...frame('task_notification', { task_id: 'studio_1', status: 'completed', summary: 'Updated review.' }),
+      created_at: '2026-09-04T10:03:00Z',
+    }
+    expect(subagents([progress, finish], [row])[0]).toMatchObject({
+      status: 'completed', tokens: 2000, costUsd: 0.05, toolUses: 6, summary: 'Updated review.',
+    })
+  })
+
+  it('reopens a completed worker on a newer start while retaining its lifetime counters', () => {
+    const restarted = {
+      ...started('studio_1', { task_type: 'studio_agent', backend: 'codex', model: 'gpt-test' }),
+      created_at: '2026-09-04T10:02:00Z',
+    }
+    expect(subagents([restarted], [saved()])[0]).toMatchObject({
+      status: 'running', endedAt: null, tokens: 1500, costUsd: 0.03, toolUses: 4,
+    })
+  })
+
+  it('accepts a completion newer than the snapshot by less than a millisecond', () => {
+    const row = saved({
+      status: 'running', finished_at: null, summary: '', updated_at: '2026-09-04T10:01:00.000100Z',
+    })
+    const finish = {
+      ...frame('task_notification', { task_id: 'studio_1', status: 'completed' }),
+      created_at: '2026-09-04T10:01:00.000200Z',
+    }
+    expect(subagents([finish], [row])[0]?.status).toBe('completed')
+  })
+})
+
 describe('what a session has running', () => {
+  it('tracks Studio-managed work from different backends alongside native delegation', () => {
+    const start = started('studio_1', {
+      task_type: 'studio_agent', backend: 'codex', model: 'gpt-test',
+      description: 'Review the implementation',
+    })
+    const progress = frame('task_progress', {
+      task_id: 'studio_1', task_type: 'studio_agent', last_tool_name: 'Read',
+      usage: { total_tokens: 1200, total_cost_usd: 0.025, tool_uses: 3 },
+    })
+    const finish = frame('task_notification', {
+      task_id: 'studio_1', task_type: 'studio_agent', status: 'completed',
+      summary: 'Review complete.', usage: { total_tokens: 1500, total_cost_usd: 0.03, tool_uses: 4 },
+    })
+    const feed = [started('native_1'), start, progress, heldResult()]
+    expect(subagents(feed)[1]).toMatchObject({
+      id: 'studio_1', typeLabel: 'sub-agent', backend: 'codex', model: 'gpt-test',
+      status: 'running', holdsRun: true, tokens: 1200, costUsd: 0.025, toolUses: 3, lastTool: 'Read',
+    })
+    const live = trackDelegated(['native_1'], start)!
+    expect(live).toEqual(['native_1', 'studio_1'])
+    expect(trackDelegated(live, heldResult())).toBeNull()
+    expect(trackDelegated(live, finish)).toEqual(['native_1'])
+    expect(subagents([...feed, finish])[1]).toMatchObject({
+      status: 'completed', summary: 'Review complete.', tokens: 1500, costUsd: 0.03, toolUses: 4,
+    })
+    expect(running(subagents([...feed, finish])).map((entry) => entry.id)).toEqual(['native_1'])
+    expect(subagentActivity(start)).toBe('sub-agent started · Review the implementation')
+  })
+
+  it('shows both counters before spending and distinguishes unknown native cost from zero', () => {
+    const studio = subagents([started('studio_1', { task_type: 'studio_agent' })])[0]!
+    const native = subagents([started('native_1')])[0]!
+    expect(subagentUsage(studio)).toBe('Tokens: 0 · API Cost: $0')
+    expect(subagentUsage(native)).toBe('Tokens: 0 · API Cost: unavailable')
+    const reported = subagents([
+      started('native_1'),
+      frame('task_progress', {
+        task_id: 'native_1', usage: { total_tokens: 25, total_cost_usd: 0 },
+      }),
+    ])[0]!
+    expect(subagentUsage(reported)).toBe('Tokens: 25 · API Cost: $0')
+  })
+
+  it('retains last valid counters when a terminal report omits or contains invalid telemetry', () => {
+    const list = subagents([
+      started('studio_1', { task_type: 'studio_agent' }),
+      frame('task_progress', {
+        task_id: 'studio_1', usage: { total_tokens: 2100, total_cost_usd: 0.12, tool_uses: 5 },
+      }),
+      frame('task_progress', {
+        task_id: 'studio_1', usage: { total_tokens: NaN, total_cost_usd: -1, tool_uses: Infinity },
+      }),
+      frame('task_notification', { task_id: 'studio_1', status: 'stopped' }),
+    ])
+    expect(list[0]).toMatchObject({ status: 'stopped', tokens: 2100, costUsd: 0.12, toolUses: 5 })
+    expect(subagentUsage(list[0]!)).toContain('API Cost: $0.12')
+  })
+
   it('opens on task_started and closes on the notification', () => {
     const list = subagents([
       started('task_a'),

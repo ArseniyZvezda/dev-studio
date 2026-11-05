@@ -1093,7 +1093,10 @@
         "failed": "failed",
         "stopped": "stopped"
       },
-      "calls": "{count} calls"
+      "calls": "{count} calls",
+      "tokens": "Tokens: {tokens}",
+      "apiCost": "API Cost: {cost}",
+      "usageUnavailable": "unavailable"
     },
     "edit": {
       "titlePlaceholder": "Task title",
