@@ -42,9 +42,32 @@ export function skillChips(
 export function skillOptions(
   skills: readonly SkillEntry[],
   given: readonly string[],
+  backend?: string,
 ): SkillEntry[] {
   const taken = new Set(given)
-  return skills.filter((skill) => !taken.has(skill.name))
+  return skills.filter((skill) => !taken.has(skill.name) &&
+    (!backend || !skill.backends?.length || skill.backends.includes(backend)))
+}
+
+export function skillDisplayName(skill: Pick<SkillEntry, 'name' | 'display_name'>): string {
+  return skill.display_name || skill.name
+}
+
+/** Keep identically named skills distinguishable without showing their opaque assignment ids. */
+export function skillOptionLabel(skill: SkillEntry): string {
+  const name = skillDisplayName(skill)
+  if (!skill.source) return name
+  const scope = skill.scope ? t(`skills.scope.${skill.scope}`) : ''
+  return `${name} · ${[skill.source, scope].filter(Boolean).join(' · ')}`
+}
+
+export function filterSkills(skills: readonly SkillEntry[], query: string): SkillEntry[] {
+  const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
+  return skills.filter((skill) => {
+    const text = [skillDisplayName(skill), skill.description, skill.source, skill.path,
+      ...(skill.backends ?? [])].join(' ').toLocaleLowerCase()
+    return terms.every((term) => text.includes(term))
+  })
 }
 
 /**

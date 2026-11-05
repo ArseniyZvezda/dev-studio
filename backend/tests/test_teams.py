@@ -3646,6 +3646,14 @@ async def _run_fake(
     return events, sent, seen
 
 
+async def test_claude_uses_resolved_team_run_settings(monkeypatch):
+    _, _, seen = await _run_fake(
+        monkeypatch, [[_ResultMessage("Done.")]], permission_mode="plan", max_turns=87,
+    )
+    assert seen[0].permission_mode == "plan"
+    assert seen[0].max_turns == 87
+
+
 @pytest.mark.parametrize("model", ["haiku", "opus", "claude-opus-5-5"])
 async def test_text_generation_keeps_the_selected_model_without_plan_mode(monkeypatch, model):
     events, _, seen = await _run_fake(

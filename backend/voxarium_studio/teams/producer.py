@@ -715,6 +715,7 @@ class ProducerService:
         summary_prompt = self.chats.config.teams.prompts.text("producer_compact")
         summary_request = replace(
             request, member=request.member.model_copy(update={"max_turns": 2, "allowed_tools": []}),
+            max_turns=2,
             session_key=f"{chat_id}:summary", resume_session_id=None, recovery_prompt="",
             prompt=(f"{summary_prompt}\n\nPrevious summary:\n{chat.producer_summary}\n\nTranscript:\n" +
                     (history if len(history) <= 96_000 else history[:24_000] +

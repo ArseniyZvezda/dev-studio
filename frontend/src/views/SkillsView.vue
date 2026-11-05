@@ -24,6 +24,7 @@ import {
   GraduationCap,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   UserMinus,
 } from 'lucide-vue-next'
@@ -38,7 +39,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
-import { describeFiles } from '@/lib/skills'
+import { describeFiles, filterSkills, skillDisplayName } from '@/lib/skills'
 import { useSkillsStore } from '@/stores/skills'
 
 const store = useSkillsStore()
@@ -48,6 +49,8 @@ const busy = ref<string | null>(null)
 
 const overview = computed(() => store.overview)
 const skills = computed(() => overview.value?.skills ?? [])
+const search = ref('')
+const filteredSkills = computed(() => filterSkills(skills.value, search.value))
 const folder = computed(() => overview.value?.path ?? 'voxarium_studio/skills')
 
 onMounted(() => {
@@ -318,6 +321,13 @@ async function reveal(path: string): Promise<void> {
         <p class="truncate text-small text-faint">{{ folder }}</p>
       </div>
       <button
+        class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
+        :disabled="store.loading"
+        @click="store.refresh()"
+      >
+        <RefreshCw class="size-3.5" :class="{ 'animate-spin': store.loading }" /> {{ t('common.refresh') }}
+      </button>
+      <button
         class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover"
         :title="t('skills.openFolderTitle', { folder })"
         @click="reveal(folder)"
@@ -404,9 +414,18 @@ async function reveal(path: string): Promise<void> {
             </div>
           </form>
 
+          <input
+            v-if="skills.length"
+            v-model="search"
+            type="search"
+            :placeholder="t('skills.search')"
+            :aria-label="t('skills.search')"
+            class="mb-3 w-full rounded-md border border-line bg-inset px-3 py-1.5 outline-none focus:border-accent"
+          />
+          <p v-if="skills.length && !filteredSkills.length" class="py-3 text-muted">{{ t('skills.noMatches') }}</p>
           <ul class="space-y-2">
             <li
-              v-for="skill in skills"
+              v-for="skill in filteredSkills"
               :key="skill.name"
               class="rounded-lg border bg-surface"
               :class="editor?.name === skill.name ? 'border-accent-border' : 'border-line'"
@@ -415,9 +434,11 @@ async function reveal(path: string): Promise<void> {
                 <GraduationCap class="mt-0.5 size-5 shrink-0" style="color: var(--vxs-nav-skills)" />
 
                 <div class="min-w-0 flex-1">
-                  <p class="truncate font-medium">{{ skill.name }}</p>
+                  <p class="truncate font-medium" :title="skill.path">{{ skillDisplayName(skill) }}</p>
                   <p v-if="skill.source" class="text-small text-faint">
-                    {{ t('skills.list.builtin', { source: skill.source }) }}
+                    {{ skill.scope ? t(`skills.scope.${skill.scope}`) : t('skills.scope.builtin') }} · {{ skill.source }}
+                    <span v-if="skill.backends?.length"> · {{ skill.backends.join(', ') }}</span>
+                    <span v-else-if="skill.scope !== 'builtin' && skill.scope"> · {{ t('skills.allBackends') }}</span>
                   </p>
                   <ClampText v-if="skill.description" class="text-muted" :text="skill.description" />
                   <p v-if="skill.warning" class="mt-0.5 flex items-start gap-1.5 text-small text-warning">
@@ -432,7 +453,7 @@ async function reveal(path: string): Promise<void> {
                       {{ describeFiles(skill) }}
                     </span>
                     <span>·</span>
-                    <span v-if="skill.source">{{ t('skills.list.availableToAll') }}</span>
+                    <span v-if="skill.automatic ?? (!!skill.source && !skill.scope)">{{ t('skills.list.availableToAll') }}</span>
                     <template v-else-if="skill.used_by.length">
                       <span>{{ t('skills.list.givenTo') }}</span>
                       <span
@@ -636,7 +657,7 @@ async function reveal(path: string): Promise<void> {
             <p class="text-small text-faint">
               <I18nT
                 keypath="skills.usage.note"
-                :params="{ settings: t('settings.title'), section: t('agentPrompts.title') }"
+                :params="{ settings: t('teams.settings.title'), section: t('agentPrompts.title') }"
               >
                 <template #dir><span class="font-mono">.claude/skills/</span></template>
                 <template #fragment>

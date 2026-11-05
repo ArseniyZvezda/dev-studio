@@ -4,7 +4,7 @@ These fragments used to be string literals inside the orchestrator and the Claud
 backend, which meant part of what a member was told existed nowhere but the source —
 the UI showed the roster and the brief while the rest of the context arrived invisibly.
 Each fragment is now a template whose built-in text is the default: ``SPECS`` below is
-the complete inventory, the Settings page lists it via ``GET /api/settings/prompts``,
+the complete inventory, Team Settings lists it via ``GET /api/settings/prompts``,
 and ``teams.prompts`` in ``config.yaml`` stores only what the user changed.
 
 Deliberately **not** here: the member's identity *data* (names, roles and routes are the
@@ -106,7 +106,7 @@ SPECS: dict[str, PromptSpec] = {
     # (`teams/project_skills.py`).
     "member_skills": PromptSpec(
         "You have skills: folders of instructions for particular kinds of work, provided by the "
-        "project or the Studio's packages. When your work matches a skill's description, read "
+        "project, installed agents or the Studio's packages. When your work matches a skill's description, read "
         "its SKILL.md before you "
         "start and follow it; any other file it points to is in the same folder, and paths "
         "in it are relative to that folder.\n{skills}",

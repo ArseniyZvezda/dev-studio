@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SkillEntry } from '@/api/types'
 
-import { describeFiles, inSkillsFolder, skillChips, skillOptions } from './skills'
+import { describeFiles, filterSkills, inSkillsFolder, skillChips, skillOptions } from './skills'
 
 function skill(name: string, extra: Partial<SkillEntry> = {}): SkillEntry {
   return {
@@ -51,6 +51,22 @@ describe('skillOptions', () => {
       'designer',
       'writer',
     ])
+  })
+
+  it('offers shared and native installed skills for the selected backend', () => {
+    const all = [skill('project'), skill('shared', { backends: [] }),
+      skill('claude', { backends: ['claude_code'] }), skill('codex', { backends: ['codex'] })]
+    expect(skillOptions(all, ['project'], 'codex').map((entry) => entry.name)).toEqual(['shared', 'codex'])
+    expect(skillOptions(all, ['shared'], 'claude_code').map((entry) => entry.name)).toEqual(['project', 'claude'])
+  })
+})
+
+describe('filterSkills', () => {
+  it('finds installed skills by their readable names and source, independently of ids', () => {
+    const installed = skill('installed:opaque', { display_name: 'Level Design', source: 'codex' })
+    expect(filterSkills([skill('other'), installed], 'design CODEX')).toEqual([installed])
+    expect(filterSkills([installed], 'missing')).toEqual([])
+    expect(filterSkills([installed], '  ')).toEqual([installed])
   })
 })
 

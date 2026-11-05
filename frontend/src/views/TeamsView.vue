@@ -11,13 +11,12 @@
  *
  * The page has two modes and `editing` is the switch for both halves of it: locked, the
  * chart only pans and zooms and there is nothing here that writes; editing, the roster can
- * be restructured, the settings rail opens and everything saves as you go. The default is
+ * be restructured, the settings rails are editable and changes save as you go. The default is
  * locked because reading the team is the common visit, and on a canvas the gesture for
  * reading (drag) and the gesture for restructuring (drag) are the same one.
  *
- * What is edited on this page ends up in `voxarium_studio/teams/<team>.yaml`, comments and all —
- * the file is meant to be read and committed, so the UI is an editor for it rather than
- * a second, hidden store.
+ * The roster is saved in `voxarium_studio/teams/<team>.yaml`, comments and all; shared run
+ * defaults and agent prompts live in `voxarium_studio/config.yaml` (§10.2, §10.3).
  */
 import { Check, Pencil, UserPlus, Users } from 'lucide-vue-next'
 import { onMounted, ref, watch } from 'vue'
@@ -25,6 +24,7 @@ import { onMounted, ref, watch } from 'vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import MemberEditor from '@/components/teams/MemberEditor.vue'
 import OrgChart from '@/components/teams/OrgChart.vue'
+import TeamSettings from '@/components/teams/TeamSettings.vue'
 import type { MemberKind } from '@/api/types'
 import { t } from '@/i18n'
 import { useSkillsStore } from '@/stores/skills'
@@ -81,17 +81,20 @@ async function addMember() {
 
 <template>
   <div class="flex h-full">
+    <aside class="w-[22rem] shrink-0 border-r border-line bg-surface">
+      <TeamSettings :editing="editing" />
+    </aside>
     <section class="flex min-w-0 flex-1 flex-col">
-      <header class="vxs-pane flex shrink-0 items-center gap-2 border-b border-pane px-pane py-2">
+      <header class="vxs-pane flex shrink-0 flex-wrap items-center gap-2 border-b border-pane px-pane py-2">
         <span class="flex-1 truncate text-title font-medium">
           {{ teams.team?.name ?? t('teams.page.fallbackTitle') }}
         </span>
-        <span v-if="editing" class="shrink-0 text-small text-faint">
+        <span v-if="editing" class="order-last w-full text-small text-faint">
           {{ t('teams.page.savesAsYouGo') }}
         </span>
         <button
           v-if="editing"
-          class="flex items-center gap-1.5 rounded-pill border border-line px-3 py-1 hover:bg-hover"
+          class="flex shrink-0 items-center gap-1.5 rounded-pill border border-line px-3 py-1 hover:bg-hover"
           :title="t('teams.page.addMemberTitle')"
           @click="openMemberForm()"
         >
@@ -99,7 +102,7 @@ async function addMember() {
           {{ t('teams.page.addMember') }}
         </button>
         <button
-          class="flex items-center gap-1.5 rounded-pill px-3 py-1 font-medium"
+          class="flex shrink-0 items-center gap-1.5 rounded-pill px-3 py-1 font-medium"
           :class="editing ? 'vxs-btn-primary' : 'border border-line hover:bg-hover'"
           :title="editing ? t('teams.page.lockTitle') : t('teams.page.editTitle')"
           @click="editing = !editing"

@@ -26,6 +26,20 @@ from voxarium_studio.plugins.registry import Registry
 from voxarium_studio.updates import UpdateService
 
 
+@pytest.fixture(autouse=True)
+def agent_skills_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Installed skill catalogs must never depend on the developer's real home."""
+    from voxarium_studio.teams import installed_skills
+
+    home = tmp_path / "agent-home"
+    home.mkdir()
+    monkeypatch.setattr(installed_skills, "user_home", lambda: home)
+    monkeypatch.setattr(installed_skills, "admin_skill_roots", lambda: ())
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return home
+
+
 @pytest.fixture(autouse=True, scope="session")
 def studio_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """Redirect the machine-level Studio directory for the whole run.

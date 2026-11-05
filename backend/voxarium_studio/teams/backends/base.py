@@ -12,9 +12,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from ...core.config import MAX_MESSAGE_BYTES_DEFAULT
+from ...core.config import MAX_MESSAGE_BYTES_DEFAULT, TeamsConfig
 from ...core.prompts import default as _default_prompt
 from ...models.teams import TeamMember, TeamTask
+
+
+def member_run_settings(member: TeamMember, settings: TeamsConfig) -> dict[str, Any]:
+    """Resolve shared run settings once, without rewriting stored member overrides (§10.3)."""
+    source = member if member.run_settings_override else settings
+    return {"permission_mode": source.permission_mode, "max_turns": source.max_turns}
 
 
 @dataclass(slots=True)
@@ -89,6 +95,14 @@ class AgentRunRequest:
     Null after resolution means the model's own default, which is what a member nobody has
     tuned has too — so a backend passes it on only when it is set, and never has to know
     whether the level came from the task or the role.
+    """
+
+    permission_mode: str | None = None
+    max_turns: int | None = None
+    """Effective Team Settings or the member's enabled override (§10.3).
+
+    Callers resolve these with :func:`member_run_settings`. A direct backend caller can
+    omit them to use its member's values; internal text-only requests set their own bounds.
     """
 
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -181,6 +195,10 @@ class AgentRunRequest:
             self.model = self.member.model
         if self.effort is None:
             self.effort = self.member.effort
+        if self.permission_mode is None:
+            self.permission_mode = self.member.permission_mode
+        if self.max_turns is None:
+            self.max_turns = self.member.max_turns
         if not self.session_key:
             if self.task is None:
                 raise ValueError("AgentRunRequest needs a task or a session_key")

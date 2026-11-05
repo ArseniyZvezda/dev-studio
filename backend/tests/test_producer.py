@@ -625,6 +625,7 @@ async def test_compaction_replaces_history_and_continues_with_one_summary(produc
     await producer.chats.send(chat.id, "Continue with the next step", UserContext())
     await finished(producer, chat.id)
     summary_request = ProducerBackend.requests[-2]
+    assert summary_request.max_turns == 2
     assert f"Previous summary:\n{saved.producer_summary}" in summary_request.prompt
     assert "[system/producer_compacted]" not in summary_request.prompt
     transcript = await producer.chats.messages(chat.id)

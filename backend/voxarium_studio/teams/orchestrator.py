@@ -65,6 +65,7 @@ from .backends.base import (
     RemoteControl,
     get_backend,
     live_session,
+    member_run_settings,
 )
 from .backends.recovery import recovery_prompt
 from .docs import DocStore
@@ -1439,6 +1440,7 @@ class TeamOrchestrator:
             raise ValueError("There is no new dialogue to compress")
         request = AgentRunRequest(
             member=member, task=task, workdir=self._recorded_workdir(messages),
+            **member_run_settings(member, self.config.teams),
             prompt="", system_prompt="", model=task.model or member.model,
             effort=task.effort or member.effort,
             max_message_bytes=self.config.teams.max_message_bytes,
@@ -2304,6 +2306,7 @@ class TeamOrchestrator:
             )
             request = AgentRunRequest(
                 member=member,
+                **member_run_settings(member, self.config.teams),
                 task=task,
                 workdir=workdir,
                 writable_roots=[worktree_created, temp_dir] if worktree_created else [self.paths.root],

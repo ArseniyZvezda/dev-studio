@@ -90,7 +90,7 @@ def _command(launcher: list[str], request: AgentRunRequest, config: Path
              ) -> tuple[list[str], str, list[AgentEvent]]:
     argv = [*launcher, "--output-format", "stream-json", "--input-format", "text",
             "--chat-recording", "--approval-mode",
-            _MODES.get(request.member.permission_mode, "default"), "--mcp-config", str(config)]
+            _MODES.get(request.permission_mode, "default"), "--mcp-config", str(config)]
     if request.strict_mcp_config:
         # An empty array explicitly disables all implicit servers; same-name configs
         # supplied by --mcp-config take precedence over Qwen's discovered configs.
@@ -100,7 +100,7 @@ def _command(launcher: list[str], request: AgentRunRequest, config: Path
     for root in request.writable_roots:
         argv += ["--include-directories", str(root.resolve())]
     allowed = _allowed_tools([*request.member.allowed_tools, *request.extra_allowed_tools])
-    if allowed and request.member.permission_mode != "plan":
+    if allowed and request.permission_mode != "plan":
         argv += ["--allowed-tools", *allowed]
     notes = []
     model = request.model.strip()
@@ -110,7 +110,7 @@ def _command(launcher: list[str], request: AgentRunRequest, config: Path
                                data={"subtype": "model_fallback", "model": model}))
     elif model:
         argv += ["--model", model]
-    if request.effort or request.member.max_turns:
+    if request.effort or request.max_turns:
         notes.append(AgentEvent(kind="system", text="Qwen Code uses its own reasoning and "
                                "turn limits; Studio effort and Max turns do not apply.",
                                data={"subtype": "unsupported_settings"}))

@@ -76,6 +76,11 @@ def _skill_json(ctx: AppContext, skill: Skill, users: list[dict[str, Any]]) -> d
         "updated_at": skill.updated_at,
         "used_by": users,
         "source": skill.source,
+        "display_name": skill.display_name or skill.name,
+        "scope": skill.scope,
+        "backends": list(skill.backends),
+        "readonly": skill.readonly,
+        "automatic": skill.automatic,
     }
 
 
@@ -158,6 +163,13 @@ async def delete_skill(name: str, ctx: Ctx) -> dict[str, Any]:
     """
     if ctx.skills.is_builtin(name):
         raise HTTPException(status_code=403, detail=f"Built-in skill {name!r} is maintained by its package")
+    if name.startswith("installed:"):
+        try:
+            installed = ctx.skills.get(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if installed is not None:
+            raise HTTPException(status_code=403, detail=f"Installed skill {name!r} is maintained outside Studio")
     folder_there = name in ctx.skills.folder_names()
     holders = (await _users(ctx)).get(name, [])
     if not folder_there and not holders:

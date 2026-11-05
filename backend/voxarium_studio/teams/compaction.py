@@ -168,6 +168,7 @@ async def summarize(backend: Any, request: AgentRunRequest, messages: list[Agent
         request,
         member=request.member.model_copy(update={"max_turns": 2, "allowed_tools": [],
                                                   "permission_mode": "plan"}),
+        permission_mode="plan", max_turns=2,
         session_key=f"{request.session_key}:summary", resume_session_id=None,
         recovery_prompt="", system_prompt=instruction, agent_name=None,
         mcp_servers={}, extra_allowed_tools=[], plugin_dirs=[], images=[],

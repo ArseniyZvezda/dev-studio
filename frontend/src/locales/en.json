@@ -1266,6 +1266,12 @@
       "emptyHintEditing": "Add one above, or define them in {dir} — that file is the team, and the editor writes back to it.",
       "emptyHintLocked": "Press Edit to add one, or define them in {dir} — that file is the team, and the editor writes back to it."
     },
+    "settings": {
+      "title": "Team Settings",
+      "description": "Shared defaults for every agent. Enable an agent's override to give that agent different values.",
+      "lockedHint": "Press Edit to change the shared defaults and agent prompts.",
+      "invalidTurns": "Max turns must be a whole number from 1 to 1000."
+    },
     "chart": {
       "reportsToEdge": "{target} reports to {source}",
       "mayAssignEdge": "{source} may assign work to {target}",
@@ -1325,17 +1331,17 @@
       "always": "always",
       "routesHint": "Their own manager and reports are always reachable; this adds sideways routes, like a tester sending a fix straight to the developer.",
       "responsibility": "Responsibility",
-      "responsibilityProducerHint": "Read-only here. Edit Producer System Prompt in Settings → Agent prompts → Producer Mode.",
+      "responsibilityProducerHint": "Read-only here. Edit Producer System Prompt in Teams → Team Settings → Agent prompts → Producer Mode.",
       "responsibilityAgentHint": "Folded into the agent's system prompt — write it as instructions, not a job ad.",
       "responsibilityPersonHint": "Shown to whoever assigns them work.",
       "skills": "Skills",
-      "skillMissing": "Not in {folder} any more, so this agent is not told about it",
+      "skillMissing": "Not found in the skill catalog (including {folder}), so this agent is not told about it",
       "takeOffSkill": "Take {skill} off {member}",
       "takeOffSkillUnnamed": "Take {skill} off this member",
       "addSkill": "Add a skill…",
       "noSkills": "The project has no skills yet — {link}.",
       "noSkillsLink": "create one on the Skills page",
-      "skillsHint": "Named in this agent's system prompt with their descriptions, for task runs and chats alike; the agent reads a skill's SKILL.md when its work calls for it. A skill in {folder} reaches nobody it is not given to here.",
+      "skillsHint": "Choose Studio skills from {folder}, shared installations or skills installed for this backend. Assigned skills are described in task and chat prompts; the agent reads SKILL.md when needed.",
       "agentSection": "Agent",
       "backend": "Backend",
       "backendUnavailable": "{name} (unavailable)",
@@ -1350,6 +1356,10 @@
       "runsAsGenerated": "Blank: the Studio writes {file} from this member, so {command} works in your terminal too. Name an existing agent here to run as that instead.",
       "permissionMode": "Permission mode",
       "maxTurns": "Max turns",
+      "runSettingsOverride": "Override Team Settings",
+      "permissionModeOverride": "Permission mode Override",
+      "maxTurnsOverride": "Max turns Override",
+      "inheritedRunSettings": "From Team Settings: {mode} · Max turns: {turns}",
       "effort": "Effort",
       "effortDefault": "Leave it to the model",
       "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows whatever the model does by default.",
@@ -1837,10 +1847,18 @@
     }
   },
   "skills": {
+    "search": "Search skills, descriptions or sources",
+    "noMatches": "No matching skills",
+    "allBackends": "All backends",
+    "scope": {
+      "builtin": "Built-in",
+      "project": "Project installation",
+      "global": "Global installation"
+    },
     "title": "Skills",
     "openFolder": "Open folder",
     "openFolderTitle": "Open {folder} in your file manager",
-    "intro": "A skill is a folder of instructions for one kind of work: a {file} and any files it refers to. Built-ins from the Studio and enabled plugins are available to every agent. Assign project skills in a member's settings on the Teams page. Agents receive descriptions and read the {file} when needed. Built-in instructions are maintained by their packages and can be read here.",
+    "intro": "Skills from the Studio, the project and installed agents are listed here. Each skill contains a {file} and supporting files. Assign project and installed skills in the member settings on Teams. Built-in skills are available automatically. Installed and built-in files are read-only here.",
     "names": "{rest} and {last}",
     "files": {
       "one": "SKILL.md + {amount} file",
@@ -1854,7 +1872,7 @@
       "editTitle": "Edit SKILL.md",
       "builtin": "Built-in · {source}",
       "availableToAll": "Available to all agents",
-      "viewTitle": "Read built-in SKILL.md",
+      "viewTitle": "Read SKILL.md",
       "view": "Read",
       "revealTitle": "Open this skill's folder in your file manager",
       "deleteTitle": "Delete this skill",
@@ -1906,7 +1924,7 @@
     "usage": {
       "title": "How agents use them",
       "body": "A member given skills is sent, with every task run and every chat message, one line per skill: its name, its description and the path of its {file}. The agent reads that file when its work matches the description, and the other files in the folder when the instructions point to them — each skill's folder is readable by that member, even from an isolated checkout.",
-      "note": "Project skills are not Claude Code's own {dir}, so a terminal session does not pick them up. Studio sessions receive all built-ins and the project skills assigned to their member. The wording of that line is {fragment} under {settings} → {section}."
+      "note": "Studio project skills are separate from native {dir} installations. The catalog also discovers shared and backend-specific installations. Assigned skills are described by {fragment} under {settings} → {section}."
     }
   },
   "mcp": {

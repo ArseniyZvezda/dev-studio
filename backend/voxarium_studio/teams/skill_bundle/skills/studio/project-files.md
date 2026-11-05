@@ -12,7 +12,7 @@ team's AI workflow is versioned together with the game.
 | `voxarium_studio/teams/*.yaml` | The team roster: members, roles, who reports to whom, models, tools, skills. | No. People edit it on the Teams page, and it decides who you are and where you may route work. |
 | `voxarium_studio/skills/<name>/` | The project's skills: a `SKILL.md` (a `description` in its frontmatter, then instructions) and the files it refers to. A skill reaches only the members it is given to; yours, if any, are listed in your system prompt with their paths. | Only when the task is about a skill — and a skill's name is its folder's, so renaming the folder takes it away from everyone who has it. |
 | `voxarium_studio/automations.yaml` | What the project does by itself: one trigger and one action per automation. Enabled entries listen while the project is open; changing a task or writing a watched file may start an action. | When the task calls for automations, use the MCP tools described in SKILL.md. People also edit these on the Automations page. |
-| `voxarium_studio/config.yaml` | Project settings: plugins, appearance, limits, the prompts sent to agents. | No — the Settings page owns it. |
+| `voxarium_studio/config.yaml` | Project settings: plugins, appearance, limits, the prompts sent to agents. | No — Settings and Teams → Team Settings own it. |
 | `voxarium_studio/app.db` | The database: tasks, transcripts, runs. | Never. |
 | `voxarium_studio/runs/`, `voxarium_studio/assets/` | Run logs and generated artifacts. | Read only. |
 | `voxarium_studio/worktrees/` | Isolated checkouts, one per task. | Only the one your system prompt names as yours. |
@@ -86,9 +86,9 @@ The sections of the rail, for when someone asks where to find something:
 - **Documents** — the shared documents.
 - **Pipelines** — the AI pipelines and their runs.
 - **Tasks** — the task board.
-- **Teams** — the org chart and every member's settings.
+- **Teams** — the org chart, every member's settings, and the Team Settings panel to its left: shared Permission mode, Max turns and Agent prompts. Individual run settings apply only with Override Team Settings enabled.
 - **Statistics** — what the team's work has cost.
 - **Automations** — what the project does by itself: trigger → action, and a log of what fired.
-- **Version Control**, **Skills** (the project's skills and who has each), **MCP Servers**,
+- **Version Control**, **Skills** (Studio and installed agent skills, their sources and assignments), **MCP Servers**,
   **Plugins**.
-- **Settings** — appearance, limits, and Agent prompts: the lines the Studio adds to every session.
+- **Settings** — appearance, execution limits and other project settings.

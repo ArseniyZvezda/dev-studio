@@ -10,7 +10,10 @@ named by where it was put.
 The same catalog includes read-only package sources: ``voxarium_studio:studio`` and the skill
 folders declared by loaded plugins. These are available to every session without roster
 assignment, and keep their canonical package paths rather than being copied into a project.
-The namespaced Studio id is a public id only, never a filesystem component.
+The namespaced Studio id is a public id only, never a filesystem component. Installed
+agent skills join this catalog as read-only entries with stable opaque ids, an origin and
+backend metadata. They remain opt-in; assigning one resolves its original installation
+path through ``installed_skills.py`` without copying or modifying the installation.
 
 **Project skills are not connected by default.** The folder is not ``.claude/skills/``, so neither the
 developer's terminal nor an agent session discovers a skill in it. A member is given skills on
@@ -51,6 +54,7 @@ import yaml
 from ..core.paths import ProjectPaths
 from ..explorer.service import remove_path
 from .docs import put_back, rename_directory
+from .installed_skills import InstalledSkill, discover_installed_skills
 from .skill import rule_path
 
 log = logging.getLogger(__name__)
@@ -110,7 +114,9 @@ def check_name(name: str) -> str:
     checkout does not have must still load.
     """
     # A packaged skill's public id is not used as a filesystem component.
-    if name == "voxarium_studio:studio":
+    if name == "voxarium_studio:studio" or (
+        isinstance(name, str) and re.fullmatch(r"installed:[0-9a-f]{32}", name)
+    ):
         return name
     if not isinstance(name, str) or not name:
         raise ValueError("A skill needs a name")
@@ -218,7 +224,13 @@ class Skill:
     """``SKILL.md``'s modification time — what a conditional write is checked against."""
 
     source: str | None = None
-    """Package/plugin owning a read-only built-in; None for a project skill."""
+    """Read-only package/backend origin; None for a Studio-managed project skill."""
+
+    display_name: str | None = None
+    scope: str = "project"
+    backends: tuple[str, ...] = ()
+    readonly: bool = False
+    automatic: bool = False
 
     @property
     def skill_file(self) -> Path:
@@ -277,12 +289,12 @@ def prompt_list(skills: Iterable[Skill]) -> str:
     lines = []
     for skill in skills:
         about = f": {skill.description}" if skill.description else ""
-        lines.append(f"- {skill.name}{about} (instructions: {skill.skill_file})")
+        lines.append(f"- {skill.display_name or skill.name}{about} (instructions: {skill.skill_file})")
     return "\n".join(lines)
 
 
 class SkillStore:
-    """Project folders plus read-only package sources (§10.10), read fresh on every call.
+    """Project folders, packages and installed agent skills (§10.10), read fresh on every call.
 
     Built-in public ids take precedence over project folders and never become paths under
     the project. The provider reads the current plugin registry, including after a reload.
@@ -291,9 +303,11 @@ class SkillStore:
     def __init__(
         self, paths: ProjectPaths,
         *, builtins: Callable[[], dict[str, tuple[Path, str]]] | None = None,
+        installed: Callable[[], dict[str, InstalledSkill]] | None = None,
     ) -> None:
         self.paths = paths
         self._builtins = builtins or (lambda: {})
+        self._installed = installed or (lambda: discover_installed_skills(paths.root))
 
     def is_builtin(self, name: str) -> bool:
         return name in self._builtins()
@@ -301,6 +315,11 @@ class SkillStore:
     def _require_project_skill(self, name: str) -> None:
         if self.is_builtin(name):
             raise PermissionError(f"Built-in skill {name!r} is maintained by its package")
+        if name.startswith("installed:"):
+            raise PermissionError(f"Installed skill {name!r} is maintained outside Studio")
+
+    def is_readonly(self, name: str) -> bool:
+        return self.is_builtin(name) or name.startswith("installed:")
 
     @property
     def directory(self) -> Path:
@@ -357,10 +376,14 @@ class SkillStore:
             else:
                 skills.append(skill)
         for name, (directory, source) in builtins.items():
-            skill = self._read(directory, name=name, source=source)
+            skill = self._read(directory, name=name, source=source, scope="builtin", automatic=True)
             if skill is not None:
                 skills.append(skill)
-        skills.sort(key=lambda skill: (skill.name.casefold(), skill.name))
+        for entry in self._installed().values():
+            skill = self._read_installed(entry)
+            if skill is not None:
+                skills.append(skill)
+        skills.sort(key=lambda skill: ((skill.display_name or skill.name).casefold(), skill.name))
         return skills, invalid
 
     def get(self, name: str) -> Skill | None:
@@ -374,7 +397,10 @@ class SkillStore:
         builtin = self._builtins().get(name)
         if builtin is not None:
             directory, source = builtin
-            return self._read(directory, name=name, source=source)
+            return self._read(directory, name=name, source=source, scope="builtin", automatic=True)
+        if name.startswith("installed:"):
+            entry = self._installed().get(name)
+            return self._read_installed(entry) if entry else None
         if name not in self.folder_names():
             return None
         return self._read(self.directory / name)
@@ -382,10 +408,16 @@ class SkillStore:
     def for_member(self, names: Iterable[str]) -> MemberSkills:
         found: list[Skill] = []
         missing: list[str] = []
-        for name in normalise_names(names):
+        names = normalise_names(names)
+        installed = self._installed() if any(name.startswith("installed:") for name in names) else {}
+        for name in names:
             skill = None
             try:
-                skill = self.get(name)
+                if name.startswith("installed:"):
+                    entry = installed.get(name)
+                    skill = self._read_installed(entry) if entry else None
+                else:
+                    skill = self.get(name)
             except ValueError:
                 skill = None
             if skill is None:
@@ -412,7 +444,17 @@ class SkillStore:
         text = data.decode("utf-8", errors="replace").removeprefix("\ufeff")
         return skill, text.replace("\r\n", "\n"), b"\r\n" in data
 
-    def _read(self, folder: Path, *, name: str | None = None, source: str | None = None) -> Skill | None:
+    def _read_installed(self, entry: InstalledSkill) -> Skill | None:
+        return self._read(
+            entry.directory, name=entry.name, source=entry.source, scope=entry.scope,
+            backends=entry.backends, display_name=entry.display_name,
+        )
+
+    def _read(
+        self, folder: Path, *, name: str | None = None, source: str | None = None,
+        scope: str = "project", backends: tuple[str, ...] = (),
+        display_name: str | None = None, automatic: bool = False,
+    ) -> Skill | None:
         skill_file = folder / SKILL_FILE
         try:
             if not skill_file.is_file():
@@ -434,6 +476,11 @@ class SkillStore:
             file_count=count,
             updated_at=_timestamp(stat.st_mtime),
             source=source,
+            display_name=display_name or name or folder.name,
+            scope=scope,
+            backends=backends,
+            readonly=source is not None,
+            automatic=automatic,
         )
 
     # ------------------------------------------------------------------ writing
@@ -539,11 +586,16 @@ def _files(folder: Path) -> tuple[tuple[str, ...], int]:
     listed: list[str] = []
     count = 0
     pending = deque([folder])
+    visited: set[Path] = set()
     while pending and count < MAX_COUNTED_FILES:
         current = pending.popleft()
         try:
+            resolved = current.resolve()
+            if resolved in visited:
+                continue
+            visited.add(resolved)
             entries = sorted(current.iterdir(), key=lambda entry: entry.name.casefold())
-        except OSError:
+        except (OSError, RuntimeError):
             continue
         for entry in entries:
             try:

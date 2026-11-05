@@ -26,7 +26,7 @@ import { computed } from 'vue'
 import type { TeamMember } from '@/api/types'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import { t } from '@/i18n'
-import { skillChips } from '@/lib/skills'
+import { skillChips, skillDisplayName } from '@/lib/skills'
 import { statusColor } from '@/lib/status'
 import { useSkillsStore } from '@/stores/skills'
 
@@ -91,8 +91,8 @@ const skillsTitle = computed(() =>
       chip.missing
         ? t('teams.node.skillMissing', { name: chip.name })
         : chip.skill?.description
-          ? `${chip.name} — ${chip.skill.description}`
-          : chip.name,
+          ? `${skillDisplayName(chip.skill)} — ${chip.skill.description}`
+          : chip.skill ? skillDisplayName(chip.skill) : chip.name,
     )
     .join('\n'),
 )
@@ -157,7 +157,7 @@ const skillsTitle = computed(() =>
           class="max-w-full truncate rounded-sm bg-inset px-1.5 py-0.5 font-mono text-small"
           :class="chip.missing ? 'text-warning line-through' : 'text-muted'"
         >
-          {{ chip.name }}
+          {{ chip.skill ? skillDisplayName(chip.skill) : chip.name }}
         </span>
         <span v-if="skills.length > SHOWN_SKILLS" class="text-small text-faint">
           +{{ skills.length - SHOWN_SKILLS }}

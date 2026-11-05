@@ -529,7 +529,7 @@ def _build_command(
         argv += ["-c", f"model_reasoning_effort={_toml_string(effort)}"]
 
     argv += ["-c", 'approval_policy="never"']
-    sandbox = _SANDBOX_FOR_MODE.get(request.member.permission_mode, "workspace-write")
+    sandbox = _SANDBOX_FOR_MODE.get(request.permission_mode, "workspace-write")
     if sandbox == "danger-full-access":
         argv += ["--dangerously-bypass-approvals-and-sandbox"]
     else:

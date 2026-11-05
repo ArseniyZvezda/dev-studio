@@ -258,7 +258,7 @@ async def test_a_database_predating_a_column_gains_it_with_the_model_default(
     await db.close()
 
     async with Database(paths.db_file)._engine.begin() as conn:  # noqa: SLF001 - test setup
-        for column in ("max_turns", "pos_x", "tags"):
+        for column in ("max_turns", "run_settings_override", "pos_x", "tags"):
             await conn.execute(text(f'ALTER TABLE team_member DROP COLUMN "{column}"'))
 
     reopened = Database(paths.db_file)
@@ -266,6 +266,7 @@ async def test_a_database_predating_a_column_gains_it_with_the_model_default(
     async with reopened.session() as session:
         member = await session.get(TeamMember, "m")
         assert member.max_turns == 40, "a NOT NULL column is backfilled with its default"
+        assert member.run_settings_override is False, "existing members inherit Team Settings"
         assert member.tags == [], "a JSON column backfills as an empty list, never null"
         assert member.pos_x is None, (
             "a nullable column means null: backfilling pos_x with 0 would tell the org "

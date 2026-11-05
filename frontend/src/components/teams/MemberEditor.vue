@@ -27,8 +27,9 @@ import MemberMark from '@/components/teams/MemberMark.vue'
 import MemberSelect from '@/components/teams/MemberSelect.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
-import { skillChips, skillOptions } from '@/lib/skills'
+import { skillChips, skillDisplayName, skillOptionLabel, skillOptions } from '@/lib/skills'
 import { useSkillsStore } from '@/stores/skills'
+import { useSessionStore } from '@/stores/session'
 import { useTeamsStore } from '@/stores/teams'
 
 const props = defineProps<{ member: TeamMember }>()
@@ -36,6 +37,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const teams = useTeamsStore()
 const skillsStore = useSkillsStore()
+const session = useSessionStore()
 
 // The picker offers what the folder holds now — a skill created on the Skills page a moment ago
 // included — and follows the folder while the rail is open.
@@ -58,6 +60,7 @@ interface Draft {
   effort: string | null
   allowed_tools: string[]
   skills: string[]
+  run_settings_override: boolean
   max_turns: number
   permission_mode: string
   isolate_worktree: boolean
@@ -81,6 +84,7 @@ function draftOf(member: TeamMember): Draft {
     effort: member.effort,
     allowed_tools: [...(member.allowed_tools ?? [])],
     skills: [...(member.skills ?? [])],
+    run_settings_override: member.run_settings_override ?? false,
     max_turns: member.max_turns,
     permission_mode: member.permission_mode,
     isolate_worktree: member.isolate_worktree,
@@ -107,6 +111,10 @@ const look = computed(() => ({
   avatar_icon: draft.value.avatar_icon,
 }))
 const options = computed(() => teams.options)
+const inheritedRunSettings = computed(() => ({
+  permission_mode: session.project?.config.teams.permission_mode ?? 'bypassPermissions',
+  max_turns: session.project?.config.teams.max_turns ?? 40,
+}))
 
 /**
  * The name the Studio would write this member under, mirroring `slug_for` in
@@ -260,9 +268,12 @@ const patch = computed<MemberUpdate>(() => {
   if (current.model.trim() !== original.model) result.model = current.model.trim()
   // Null and "" both mean "the model decides"; only a real change is worth a request.
   if ((current.effort || null) !== (original.effort || null)) result.effort = current.effort || null
-  if (current.permission_mode !== original.permission_mode)
+  if (current.run_settings_override !== (original.run_settings_override ?? false))
+    result.run_settings_override = current.run_settings_override
+  if (current.run_settings_override && current.permission_mode !== original.permission_mode)
     result.permission_mode = current.permission_mode
-  if (Number(current.max_turns) !== original.max_turns) result.max_turns = Number(current.max_turns)
+  if (current.run_settings_override && Number(current.max_turns) !== original.max_turns)
+    result.max_turns = Number(current.max_turns)
   if (current.isolate_worktree !== original.isolate_worktree)
     result.isolate_worktree = current.isolate_worktree
   if (current.solo_mode !== original.solo_mode) result.solo_mode = current.solo_mode
@@ -281,7 +292,7 @@ const patch = computed<MemberUpdate>(() => {
 
 /** The member's skills against the folder — a name the folder lost is marked, not dropped. */
 const chips = computed(() => skillChips(draft.value.skills, skillsStore.skills))
-const addableSkills = computed(() => skillOptions(skillsStore.skills ?? [], draft.value.skills))
+const addableSkills = computed(() => skillOptions(skillsStore.skills ?? [], draft.value.skills, draft.value.agent_backend))
 const skillsFolder = computed(() => skillsStore.overview?.path ?? 'voxarium_studio/skills')
 
 function addSkill(event: Event): void {
@@ -298,7 +309,10 @@ function dropSkill(name: string): void {
 }
 
 const dirty = computed(() => Object.keys(patch.value).length > 0)
-const valid = computed(() => draft.value.name.trim().length > 0)
+const validTurns = computed(() => !draft.value.run_settings_override || (
+  Number.isInteger(draft.value.max_turns) && draft.value.max_turns >= 1 && draft.value.max_turns <= 1000
+))
+const valid = computed(() => draft.value.name.trim().length > 0 && validTurns.value)
 
 /** Long enough that typing a role title is one save, short enough to feel immediate. */
 const SAVE_DELAY = 600
@@ -606,7 +620,7 @@ async function remove() {
               class="truncate font-mono text-[12px]"
               :class="chip.missing ? 'text-warning line-through' : ''"
             >
-              {{ chip.name }}
+              {{ chip.skill ? skillDisplayName(chip.skill) : chip.name }}
             </span>
             <button
               type="button"
@@ -631,7 +645,7 @@ async function remove() {
             :value="skill.name"
             :title="skill.description"
           >
-            {{ skill.name }}
+            {{ skillOptionLabel(skill) }}
           </option>
         </select>
         <p v-else-if="skillsStore.skills && !skillsStore.skills.length" class="text-small text-faint">
@@ -737,19 +751,28 @@ async function remove() {
           </span>
         </label>
 
-        <div class="flex gap-2">
-          <label class="flex-1">
-            <span class="mb-1 block text-small text-faint">{{ t('teams.editor.permissionMode') }}</span>
-            <select v-model="draft.permission_mode" class="field">
-              <option v-for="mode in options?.permission_modes ?? []" :key="mode" :value="mode">
-                {{ mode }}
-              </option>
-            </select>
+        <div class="space-y-2 rounded-md border border-line p-2">
+          <label class="flex cursor-pointer items-center gap-2">
+            <input v-model="draft.run_settings_override" type="checkbox" class="accent-[var(--vxs-accent)]" />
+            <span>{{ t('teams.editor.runSettingsOverride') }}</span>
           </label>
-          <label class="w-28 shrink-0">
-            <span class="mb-1 block text-small text-faint">{{ t('teams.editor.maxTurns') }}</span>
-            <input v-model.number="draft.max_turns" type="number" min="1" max="1000" class="field" />
-          </label>
+          <div v-if="draft.run_settings_override" class="space-y-2">
+            <label class="block">
+              <span class="mb-1 block text-small text-faint">{{ t('teams.editor.permissionModeOverride') }}</span>
+              <select v-model="draft.permission_mode" class="field">
+                <option v-for="mode in options?.permission_modes ?? []" :key="mode" :value="mode">
+                  {{ mode }}
+                </option>
+              </select>
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-small text-faint">{{ t('teams.editor.maxTurnsOverride') }}</span>
+              <input v-model.number="draft.max_turns" type="number" min="1" max="1000" class="field" />
+            </label>
+          </div>
+          <p v-else class="text-small text-faint">
+            {{ t('teams.editor.inheritedRunSettings', { mode: inheritedRunSettings.permission_mode, turns: inheritedRunSettings.max_turns }) }}
+          </p>
         </div>
 
         <label class="block">
@@ -842,7 +865,8 @@ async function remove() {
           class="flex-1 truncate text-small"
           :class="!valid || failed ? 'text-warning' : 'text-faint'"
         >
-          <template v-if="!valid">{{ t('teams.editor.nameNeeded') }}</template>
+          <template v-if="!draft.name.trim()">{{ t('teams.editor.nameNeeded') }}</template>
+          <template v-else-if="!validTurns">{{ t('teams.settings.invalidTurns') }}</template>
           <template v-else-if="failed">{{ t('teams.editor.notSaved') }}</template>
           <template v-else-if="saving || dirty">{{ t('common.saving') }}</template>
           <!-- Not naming the file: a team's id and its filename are independent (see

@@ -202,6 +202,7 @@ class MemberUpdate(BaseModel):
     """Folder names under ``voxarium_studio/skills/`` — the whole list, as it should be (§10.10). Null
     is the same edit as an empty list: the member is given no skills."""
 
+    run_settings_override: bool = False
     max_turns: int | None = Field(default=None, ge=1, le=1000)
     permission_mode: str | None = None
     isolate_worktree: bool | None = None
@@ -240,12 +241,9 @@ class MemberCreate(BaseModel):
 
 def _permission_modes() -> list[str]:
     """Read the modes off the installed SDK so the UI cannot offer one it would reject."""
-    try:
-        from claude_agent_sdk.types import PermissionMode
+    from ..core.config import permission_modes
 
-        return [str(value) for value in get_args(PermissionMode)]
-    except Exception:  # SDK absent (teams extra not installed) — the documented defaults
-        return ["default", "acceptEdits", "plan", "bypassPermissions"]
+    return permission_modes()
 
 
 def _effort_levels() -> list[str]:
@@ -457,9 +455,9 @@ async def _validate_member(
     if is_producer(member) and fields.get("kind", "agent") != "agent":
         raise HTTPException(400, "The built-in Producer must remain an agent.")
     if is_producer(member) and "responsibility" in fields:
-        # §10.11: the built-in role mirrors the Producer System Prompt in Settings.
+        # §10.11: the built-in role mirrors the Producer System Prompt in Team Settings.
         raise HTTPException(
-            400, "The built-in Producer responsibility is read-only. Edit Producer System Prompt in Settings.",
+            400, "The built-in Producer responsibility is read-only. Edit Producer System Prompt in Teams → Team Settings.",
         )
     if "name" in fields and not str(fields["name"] or "").strip():
         raise HTTPException(status_code=400, detail="A member needs a name")
@@ -475,6 +473,9 @@ async def _validate_member(
             status_code=400,
             detail=f"Unknown permission mode. Available: {', '.join(_permission_modes())}",
         )
+
+    if "max_turns" in fields and fields["max_turns"] is None:
+        raise HTTPException(status_code=400, detail="Max turns must be between 1 and 1000")
 
     # Which agents exist is Claude Code's answer, not ours — it reads the project, the
     # user's home and every plugin, and it says so plainly when a name is missing. So this

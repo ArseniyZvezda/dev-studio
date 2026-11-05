@@ -50,7 +50,7 @@ from ..models.base import utcnow
 from ..models.teams import AgentChat, AgentChatMessage, MemberKind, Team, TeamMember
 from ..ws.events import EventType
 from . import skill as studio_skill
-from .backends.base import AgentEvent, AgentRunRequest, get_backend
+from .backends.base import AgentEvent, AgentRunRequest, get_backend, member_run_settings
 from .backends.recovery import recovery_prompt
 from .slots import agent_slot
 from .tools import build_toolset
@@ -492,6 +492,7 @@ class ChatService:
             )
             request = AgentRunRequest(
                 member=member,
+                **member_run_settings(member, self.config.teams),
                 task=None,
                 session_key=chat_id,
                 workdir=workdir,

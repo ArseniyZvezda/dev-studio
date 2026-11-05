@@ -16,6 +16,11 @@ import type { AgentPromptsConfig, PromptSpec } from '@/api/types'
 import { hasMessage, t, type MessageKey } from '@/i18n'
 import { useSessionStore } from '@/stores/session'
 
+const props = withDefaults(defineProps<{ disabled?: boolean; compact?: boolean }>(), {
+  disabled: false,
+  compact: false,
+})
+const emit = defineEmits<{ saving: [boolean] }>()
 const session = useSessionStore()
 
 const specs = ref<Record<string, PromptSpec> | null>(null)
@@ -168,7 +173,9 @@ watch(overrides, () => {
 })
 
 async function push(key: string, value: string | null) {
+  if (props.disabled || saving.value !== null) return
   saving.value = key
+  emit('saving', true)
   saveError.value = null
   try {
     const updated = await api.updateSettings({
@@ -180,6 +187,7 @@ async function push(key: string, value: string | null) {
     saveError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     saving.value = null
+    emit('saving', false)
   }
 }
 
@@ -201,7 +209,7 @@ async function reset(key: string) {
 <template>
   <section>
     <h2 class="mb-2 font-medium">{{ t('agentPrompts.title') }}</h2>
-    <div class="vxs-card space-y-3 rounded-lg border border-card bg-surface p-4 shadow-card">
+    <div :class="compact ? 'space-y-3' : 'vxs-card space-y-3 rounded-lg border border-card bg-surface p-4 shadow-card'">
       <p class="text-small text-faint">
         {{ t('agentPrompts.intro') }}
         <template v-if="specs">
@@ -229,8 +237,8 @@ async function reset(key: string) {
             :key="key"
             class="rounded-md border border-line bg-inset/40"
           >
-            <summary class="flex cursor-pointer items-center gap-2 px-2 py-1.5">
-              <span class="shrink-0">{{ copyOf(key).label }}</span>
+            <summary class="flex cursor-pointer flex-wrap items-center gap-2 px-2 py-1.5">
+              <span class="min-w-0 break-words">{{ copyOf(key).label }}</span>
               <span
                 v-if="statusOf(key) === 'edited'"
                 class="shrink-0 rounded-sm bg-accent-soft px-1 text-[10px] text-accent"
@@ -263,15 +271,16 @@ async function reset(key: string) {
               </p>
               <textarea
                 v-model="drafts[key]"
+                :disabled="disabled"
                 :aria-label="copyOf(key).label"
                 :rows="rowsFor(key)"
                 spellcheck="false"
                 class="w-full resize-y rounded-md border border-line bg-inset p-2 font-mono text-[12px] leading-relaxed outline-none focus:border-accent"
               />
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <button
                   class="rounded-md border border-line px-3 py-1 hover:bg-hover disabled:opacity-50"
-                  :disabled="saving !== null || !isDirty(key)"
+                  :disabled="disabled || saving !== null || !isDirty(key)"
                   @click="save(key)"
                 >
                   {{ saving === key ? t('common.saving') : t('common.save') }}
@@ -279,7 +288,7 @@ async function reset(key: string) {
                 <button
                   v-if="statusOf(key) !== 'default' || isDirty(key)"
                   class="rounded-md border border-line px-3 py-1 hover:bg-hover disabled:opacity-50"
-                  :disabled="saving !== null"
+                  :disabled="disabled || saving !== null"
                   @click="reset(key)"
                 >
                   {{ t('agentPrompts.resetToDefault') }}

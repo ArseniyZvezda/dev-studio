@@ -59,6 +59,7 @@ class MemberDefinition(BaseModel):
             return [value]
         return value
 
+    run_settings_override: bool = False
     max_turns: int = 40
     permission_mode: str = "bypassPermissions"
     isolate_worktree: bool = True
@@ -147,7 +148,7 @@ class TeamStore:
         return self.directory / f"{team_id}.yaml"
 
     async def sync_to_db(self, session) -> list[Team]:
-        """Upsert YAML roles; the Producer's responsibility comes from Settings (§10.11)."""
+        """Upsert YAML roles; the Producer's responsibility comes from Team Settings (§10.11)."""
         teams: list[Team] = []
         for definition in self.load_definitions():
             team = await session.get(Team, definition.id)
@@ -191,6 +192,7 @@ class TeamStore:
                 member.effort = member_def.effort
                 member.allowed_tools = list(member_def.allowed_tools)
                 member.skills = list(member_def.skills)
+                member.run_settings_override = member_def.run_settings_override
                 member.max_turns = member_def.max_turns
                 member.permission_mode = member_def.permission_mode
                 member.isolate_worktree = member_def.isolate_worktree
@@ -305,6 +307,7 @@ class TeamStore:
                 "agent_backend": member.agent_backend,
                 "model": member.model,
                 "allowed_tools": member.allowed_tools,
+                "run_settings_override": member.run_settings_override,
                 "max_turns": member.max_turns,
                 "permission_mode": member.permission_mode,
                 "isolate_worktree": member.isolate_worktree,

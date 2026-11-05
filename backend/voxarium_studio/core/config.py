@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .paths import ProjectPaths
 from .prompts import AgentPromptsConfig
@@ -134,6 +134,16 @@ class ConcurrencyConfig(BaseModel):
         return {"gpu": self.gpu, "cpu": self.cpu, "io": self.io, "agent": self.agents}
 
 
+def permission_modes() -> list[str]:
+    """Modes supported by the installed runtime, shared by config and member editing."""
+    try:
+        from claude_agent_sdk.types import PermissionMode
+
+        return [str(value) for value in get_args(PermissionMode)]
+    except Exception:
+        return ["default", "acceptEdits", "plan", "bypassPermissions"]
+
+
 class TeamsConfig(BaseModel):
     """Bounds on autonomous agent work (§10.4).
 
@@ -142,6 +152,17 @@ class TeamsConfig(BaseModel):
     the models choosing to stop. ``agents`` in ``concurrency`` caps how many run at once;
     these cap how far the work is allowed to spread.
     """
+
+    permission_mode: str = "bypassPermissions"
+    max_turns: int = Field(default=40, ge=1, le=1000)
+    """Shared run settings, unless a member explicitly enables its override (§10.3)."""
+
+    @field_validator("permission_mode")
+    @classmethod
+    def _permission_mode(cls, value: str) -> str:
+        if value not in permission_modes():
+            raise ValueError(f"Unknown permission mode. Available: {', '.join(permission_modes())}")
+        return value
 
     max_delegation_depth: int = Field(default=3, ge=0)
     """How many times a task may be delegated onward. 0 forbids agent-created tasks."""
@@ -243,8 +264,8 @@ class TeamsConfig(BaseModel):
     """Overrides for the fixed lines the Studio says to an agent — see ``core/prompts.py``.
 
     Only what the user changed is stored (``save_config`` drops the ``None`` fields), so an
-    untouched project follows the built-in wording as it evolves. Edited on the Settings
-    page, which reads the defaults from ``GET /api/settings/prompts``.
+    untouched project follows the built-in wording as it evolves. Edited in Teams → Team
+    Settings, which reads the defaults from ``GET /api/settings/prompts``.
     """
 
     commit_proposals: bool = True

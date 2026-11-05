@@ -513,6 +513,8 @@ export interface TeamMember {
    * folder no longer has stays here until it is taken off, and is not offered to the session.
    */
   skills: string[]
+  /** Use this member's permission mode and turn budget instead of Team Settings (§10.2). */
+  run_settings_override: boolean
   max_turns: number
   permission_mode: string
   isolate_worktree: boolean
@@ -981,6 +983,7 @@ export interface MemberUpdate {
   allowed_tools?: string[]
   /** The whole list as it should be. A name being *added* must be a skill the project has. */
   skills?: string[]
+  run_settings_override?: boolean
   max_turns?: number
   permission_mode?: string
   isolate_worktree?: boolean
@@ -1334,6 +1337,8 @@ export interface PromptSpec {
 
 /** Ceilings on autonomous delegation — every hop is a billed agent session (§10.4). */
 export interface TeamsConfig {
+  permission_mode: string
+  max_turns: number
   commit_backend: string
   commit_model: string
   commit_proposals: boolean
@@ -1806,7 +1811,15 @@ export interface SkillUser {
  */
 export interface SkillEntry {
   name: string
-  /** Package/plugin providing a read-only built-in; absent for project skills. */
+  /** Human-facing name; installed skills keep a separate stable assignment id in `name`. */
+  display_name?: string
+  scope?: 'builtin' | 'project' | 'global'
+  /** Native discovery origins. Empty means shared by all backends. */
+  backends?: string[]
+  readonly?: boolean
+  /** Package skills are included automatically; installed skills can be assigned explicitly. */
+  automatic?: boolean
+  /** Package/plugin or native agent installation; absent for Studio project skills. */
   source?: string | null
   /** Project-relative folder, or an absolute package folder for a built-in. */
   path: string

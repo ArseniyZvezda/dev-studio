@@ -81,6 +81,8 @@ async def runner(ctx, monkeypatch):
 
 async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usage(runner):
     ctx, install, start = runner
+    ctx.config.teams.permission_mode = "acceptEdits"
+    ctx.config.teams.max_turns = 67
     parent_requests, child_requests = [], []
 
     async def child(request):
@@ -132,6 +134,8 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert worker.session_key == rows[0].id and worker.session_key != task.id
     assert worker.model == "child-model" and worker.member.agent_backend == "test_other_backend"
     assert worker.member.permission_mode == parent_request.member.permission_mode
+    assert worker.permission_mode == parent_request.permission_mode == "acceptEdits"
+    assert worker.max_turns == parent_request.max_turns == 67
     assert worker.workdir == parent_request.workdir
     assert worker.writable_roots == parent_request.writable_roots
     assert "source.py" in worker.system_prompt

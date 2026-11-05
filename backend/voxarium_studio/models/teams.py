@@ -169,6 +169,9 @@ class TeamMember(SQLModel, table=True):
     take off the roster — and is simply not offered to the session.
     """
 
+    run_settings_override: bool = False
+    """Use this member's permission mode and turn limit instead of Team Settings (§10.3)."""
+
     max_turns: int = 40
     permission_mode: str = "bypassPermissions"
     isolate_worktree: bool = True

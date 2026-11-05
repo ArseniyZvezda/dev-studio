@@ -369,8 +369,8 @@ class ClaudeCodeBackend(AgentBackend):
             # the flag is what makes the MCP page's on/off switch mean anything.
             strict_mcp_config=request.strict_mcp_config,
             model=request.model,
-            max_turns=request.member.max_turns,
-            permission_mode=request.member.permission_mode,
+            max_turns=request.max_turns,
+            permission_mode=request.permission_mode,
             # Append onto the stock Claude Code prompt rather than replacing it, so the
             # member keeps normal coding-agent behaviour. With `--agent` the three compose:
             # the agent's own prompt, this append, and the preset underneath both — checked

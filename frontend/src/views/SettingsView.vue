@@ -21,7 +21,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { ThemeConfig } from '@/api/types'
 import StartupSettings from '@/components/settings/StartupSettings.vue'
-import AgentPrompts from '@/components/settings/AgentPrompts.vue'
 import CommitDescriptionSettings from '@/components/settings/CommitDescriptionSettings.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
@@ -68,7 +67,6 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-explorer', titleKey: 'settings.explorer.title' },
   { id: 'settings-execution', titleKey: 'settings.execution.title' },
   { id: 'settings-agents', titleKey: 'settings.agents.title' },
-  { id: 'settings-prompts', titleKey: 'agentPrompts.title' },
   { id: 'settings-tasks', titleKey: 'settings.tasks.title' },
   { id: 'settings-project', titleKey: 'settings.project.title' },
   { id: 'settings-updates', titleKey: 'settings.updates.title' },
@@ -938,8 +936,6 @@ async function clearCache() {
               <CommitDescriptionSettings />
             </div>
           </section>
-
-          <AgentPrompts id="settings-prompts" class="vxs-enter scroll-mt-4" />
 
           <section id="settings-tasks" class="vxs-enter scroll-mt-4">
             <h2 class="mb-2 font-medium">{{ t('settings.tasks.title') }}</h2>

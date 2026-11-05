@@ -78,6 +78,11 @@ def _skill_json(store: SkillStore, skill: Skill) -> dict[str, Any]:
         "description": skill.description,
         "warning": skill.warning,
         "source": skill.source,
+        "display_name": skill.display_name or skill.name,
+        "scope": skill.scope,
+        "backends": list(skill.backends),
+        "readonly": skill.readonly,
+        "automatic": skill.automatic,
         "files": list(skill.files),
         "updated_at": skill.updated_at,
     }
@@ -147,8 +152,8 @@ class ProjectAuthoring:
 
     def check_skill_target(self, name: str) -> None:
         """Keep MCP writes inside project skills, including through symlinks/junctions."""
-        if self.skills.is_builtin(name):
-            raise PermissionError(f"Built-in skill {name!r} is maintained by its package")
+        if self.skills.is_readonly(name):
+            raise PermissionError(f"Skill {name!r} is maintained outside the project's skills directory")
         check_name(name)
         directory = self.skills.directory.resolve()
         target = (directory / name / "SKILL.md").resolve()
