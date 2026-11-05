@@ -833,6 +833,21 @@ export interface CostPoint {
   runs: number
 }
 
+export interface TokenPoint {
+  day: string
+  spent_tokens: number
+  cumulative_tokens: number
+  runs: number
+}
+
+/** Lifetime totals averaged over tasks in Done with a finish date on this UTC day (§10.4). */
+export interface AverageTaskPoint {
+  day: string
+  tasks: number
+  average_usd: number
+  average_tokens: number
+}
+
 export interface MemberSpend {
   member_id: string
   name: string
@@ -840,6 +855,7 @@ export interface MemberSpend {
   avatar_color: string | null
   avatar_icon: string | null
   spent_usd: number
+  spent_tokens: number
   tasks: number
   done: number
 }
@@ -856,13 +872,20 @@ export interface TeamStats {
     done_usd: number
     in_flight_usd: number
     cancelled_usd: number
+    spent_tokens: number
+    done_tokens: number
+    in_flight_tokens: number
+    cancelled_tokens: number
     tasks: number
     done: number
     archived: number
   }
   series: CostPoint[]
+  token_series: TokenPoint[]
+  average_task_series: AverageTaskPoint[]
   by_member: MemberSpend[]
   by_model: { model: string | null; spent_usd: number }[]
+  by_model_tokens: { model: string | null; spent_tokens: number }[]
   /** One entry per UTC day on which anything happened — the heatmap's cells. */
   activity: ActivityDay[]
 }
@@ -875,6 +898,7 @@ export interface ActivityDay {
   /** Tasks that reached `done` that day. */
   finished: number
   spent_usd: number
+  spent_tokens: number
   /** `runs + finished` — what the cell's shade is drawn from. */
   activity: number
 }

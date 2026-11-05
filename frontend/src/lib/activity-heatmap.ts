@@ -157,20 +157,24 @@ export interface WindowTotals {
   runs: number
   finished: number
   spent_usd: number
+  spent_tokens: number
   /** Days on the grid with any activity at all. */
   activeDays: number
 }
 
 /** What the visible grid adds up to — the caption under it. */
 export function windowTotals(weeks: HeatWeek[]): WindowTotals {
-  const totals: WindowTotals = { runs: 0, finished: 0, spent_usd: 0, activeDays: 0 }
+  const totals: WindowTotals = { runs: 0, finished: 0, spent_usd: 0, spent_tokens: 0, activeDays: 0 }
   for (const week of weeks) {
     for (const cell of week.cells) {
       if (!cell.entry) continue
       totals.runs += cell.entry.runs
       totals.finished += cell.entry.finished
       totals.spent_usd += cell.entry.spent_usd
-      if (cell.entry.activity > 0 || cell.entry.spent_usd > 0) totals.activeDays += 1
+      totals.spent_tokens += cell.entry.spent_tokens
+      if (cell.entry.activity > 0 || cell.entry.spent_usd > 0 || cell.entry.spent_tokens > 0) {
+        totals.activeDays += 1
+      }
     }
   }
   return totals
@@ -180,9 +184,10 @@ export function windowTotals(weeks: HeatWeek[]): WindowTotals {
  * `2 runs · 1 task finished · $0.41`, or `No activity` — the tooltip's second line. Each part
  * is a whole plural message; only the separator between them is not.
  */
-export function describeCell(cell: HeatCell): string {
+export function describeCell(cell: HeatCell, metric: 'tokens' | 'usd' = 'usd'): string {
   const entry = cell.entry
-  if (!entry || (entry.activity <= 0 && entry.spent_usd <= 0)) {
+  const spent = entry ? (metric === 'tokens' ? entry.spent_tokens : entry.spent_usd) : 0
+  if (!entry || (entry.activity <= 0 && spent <= 0)) {
     return t('statistics.activity.noActivity')
   }
   const parts: string[] = []
@@ -190,6 +195,8 @@ export function describeCell(cell: HeatCell): string {
   if (entry.finished) {
     parts.push(t('statistics.activity.tasksFinished', { count: entry.finished }))
   }
-  if (entry.spent_usd > 0) parts.push(formatCost(entry.spent_usd))
+  if (spent > 0) {
+    parts.push(metric === 'tokens' ? t('statistics.tokens', { count: spent }) : formatCost(spent))
+  }
   return parts.join(' · ')
 }

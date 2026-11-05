@@ -26,6 +26,7 @@ from datetime import date, datetime
 from typing import Any
 
 from ..models.teams import AgentMessage, TeamMember, TeamTask, TaskStatus
+from .usage import token_count
 
 #: Below this a residual is floating-point noise, not money nobody accounted for.
 _EPSILON = 1e-9
@@ -79,6 +80,78 @@ def cost_events(
     return events
 
 
+def _token_records(
+    tasks: list[TeamTask], messages: list[AgentMessage]
+) -> list[tuple[datetime, int, str, str | None]]:
+    """Recorded run tokens plus the task's unexplained balance (§10.4).
+
+    Live usage snapshots include tokens already present in results, so they are never
+    summed. A current snapshot can date the balance (including a cancelled run without
+    a result); otherwise the same landing fallback as money applies. Missing history
+    stays in the unknown-model bucket rather than being attributed to today's model.
+    """
+    recorded: dict[str, str | None] = {}
+    runs: dict[str, list[tuple[datetime, int, str | None]]] = defaultdict(list)
+    snapshots: dict[str, AgentMessage] = {}
+    for message in sorted(messages, key=lambda entry: entry.created_at):
+        model = message.data.get("model")
+        model = model.strip() if isinstance(model, str) and model.strip() else None
+        if message.kind == "model" or (message.kind == "system" and message.text == "init"):
+            recorded[message.task_id] = model
+        if message.kind == "result":
+            count = token_count(message.data.get("total_tokens")) or 0
+            if count:
+                runs[message.task_id].append(
+                    (message.created_at, count, model or recorded.get(message.task_id))
+                )
+        elif message.kind == "system" and message.data.get("subtype") == "usage_update":
+            snapshots[message.task_id] = message
+
+    records: list[tuple[datetime, int, str, str | None]] = []
+    for task in tasks:
+        total = token_count(task.total_tokens) or 0
+        entries = runs.get(task.id, [])
+        explained = sum(count for _, count, _ in entries)
+        if explained > total:
+            entries, explained = [], 0
+        records.extend((when, count, task.id, model) for when, count, model in entries)
+        residual = total - explained
+        if residual:
+            snapshot = snapshots.get(task.id)
+            # A stale snapshot must not move a newer task balance back in time.
+            when = (
+                snapshot.created_at
+                if snapshot is not None
+                and token_count(snapshot.data.get("task_total_tokens")) == total
+                else _landing(task)
+            )
+            records.append((when, residual, task.id, None))
+    records.sort(key=lambda event: event[0])
+    return records
+
+
+def average_task_days(tasks: Iterable[TeamTask]) -> list[dict[str, Any]]:
+    """Lifetime spend of completed tasks, grouped by their UTC completion day (§10.4).
+
+    Zero-spend tasks share the denominator. Tasks without a recorded completion date
+    cannot be placed on this chart; pending, cancelled and review tasks do not qualify.
+    """
+    days: dict[date, dict[str, Any]] = {}
+    for task in tasks:
+        if _status_of(task) != TaskStatus.DONE or task.finished_at is None:
+            continue
+        entry = days.setdefault(_day(task.finished_at), {"tasks": 0, "usd": 0.0, "tokens": 0})
+        entry["tasks"] += 1
+        entry["usd"] += max(0.0, float(task.total_cost_usd or 0.0))
+        entry["tokens"] += token_count(task.total_tokens) or 0
+    return [
+        {"day": day.isoformat(), "tasks": entry["tasks"],
+         "average_usd": round(entry["usd"] / entry["tasks"], 6),
+         "average_tokens": round(entry["tokens"] / entry["tasks"], 6)}
+        for day, entry in sorted(days.items())
+    ]
+
+
 def _day(when: datetime) -> date:
     """The UTC calendar day a moment falls on. Stored timestamps are UTC (``UtcDateTime``)."""
     return when.date()
@@ -114,8 +187,14 @@ def cost_stats(
     ``activity``
         One entry per UTC day on which anything happened, oldest first — the activity
         heatmap's cells (:func:`activity_days`).
+    ``token_series``, ``by_model_tokens``
+        The corresponding token timeline and historical-model breakdown. Totals,
+        members and activity also carry token counts alongside their existing costs.
+    ``average_task_series``
+        Full lifetime cost and tokens per completed task, grouped by completion day.
     """
     events = cost_events(tasks, messages)
+    token_records = _token_records(tasks, messages)
 
     per_day: dict[date, float] = defaultdict(float)
     runs_per_day: dict[date, int] = defaultdict(int)
@@ -137,21 +216,44 @@ def cost_stats(
             }
         )
 
+    tokens_per_day: dict[date, int] = defaultdict(int)
+    token_runs_per_day: dict[date, int] = defaultdict(int)
+    tokens_per_model: dict[str | None, int] = defaultdict(int)
+    for when, count, _task_id, model in token_records:
+        day = _day(when)
+        tokens_per_day[day] += count
+        token_runs_per_day[day] += 1
+        tokens_per_model[model] += count
+    token_series: list[dict[str, Any]] = []
+    running_tokens = 0
+    for day in sorted(tokens_per_day):
+        running_tokens += tokens_per_day[day]
+        token_series.append({
+            "day": day.isoformat(), "spent_tokens": tokens_per_day[day],
+            "cumulative_tokens": running_tokens, "runs": token_runs_per_day[day],
+        })
+
     spent = done = in_flight = cancelled = 0.0
+    spent_tokens = done_tokens = in_flight_tokens = cancelled_tokens = 0
     done_count = archived_count = 0
     for task in tasks:
         cost = max(0.0, float(task.total_cost_usd or 0.0))
+        tokens = token_count(task.total_tokens) or 0
         spent += cost
+        spent_tokens += tokens
         status = _status_of(task)
         if status == TaskStatus.DONE:
             done += cost
+            done_tokens += tokens
             done_count += 1
             if task.archived:
                 archived_count += 1
         elif status == TaskStatus.CANCELLED:
             cancelled += cost
+            cancelled_tokens += tokens
         else:
             in_flight += cost
+            in_flight_tokens += tokens
 
     roster = {member.id: member for member in members}
     per_member: dict[str, dict[str, Any]] = {}
@@ -166,11 +268,13 @@ def cost_stats(
                 "avatar_color": member.avatar_color if member else None,
                 "avatar_icon": member.avatar_icon if member else None,
                 "spent_usd": 0.0,
+                "spent_tokens": 0,
                 "tasks": 0,
                 "done": 0,
             },
         )
         entry["spent_usd"] += max(0.0, float(task.total_cost_usd or 0.0))
+        entry["spent_tokens"] += token_count(task.total_tokens) or 0
         entry["tasks"] += 1
         if _status_of(task) == TaskStatus.DONE:
             entry["done"] += 1
@@ -184,14 +288,26 @@ def cost_stats(
             "done_usd": round(done, 6),
             "in_flight_usd": round(in_flight, 6),
             "cancelled_usd": round(cancelled, 6),
+            "spent_tokens": spent_tokens,
+            "done_tokens": done_tokens,
+            "in_flight_tokens": in_flight_tokens,
+            "cancelled_tokens": cancelled_tokens,
             "tasks": len(tasks),
             "done": done_count,
             "archived": archived_count,
         },
         "series": series,
+        "token_series": token_series,
+        "average_task_series": average_task_days(tasks),
         "by_member": by_member,
         "by_model": model_spend(tasks, messages),
-        "activity": activity_days(tasks, messages, per_day),
+        "by_model_tokens": [
+            {"model": model, "spent_tokens": count}
+            for model, count in sorted(
+                tokens_per_model.items(), key=lambda row: (-row[1], row[0] or "")
+            )
+        ],
+        "activity": activity_days(tasks, messages, per_day, tokens_per_day),
     }
 
 
@@ -234,6 +350,7 @@ def activity_days(
     tasks: Iterable[TeamTask],
     messages: Iterable[AgentMessage],
     spend_per_day: dict[date, float] | None = None,
+    tokens_per_day: dict[date, int] | None = None,
 ) -> list[dict[str, Any]]:
     """What the team did on each UTC day — the cells of the activity heatmap (§10.4).
 
@@ -255,13 +372,16 @@ def activity_days(
             finished[_day(task.finished_at)] += 1
 
     spend = spend_per_day or {}
-    days = set(runs) | set(finished) | {day for day, usd in spend.items() if usd > _EPSILON}
+    tokens = tokens_per_day or {}
+    days = (set(runs) | set(finished) | {day for day, usd in spend.items() if usd > _EPSILON}
+            | {day for day, count in tokens.items() if count > 0})
     return [
         {
             "day": day.isoformat(),
             "runs": runs[day],
             "finished": finished[day],
             "spent_usd": round(spend.get(day, 0.0), 6),
+            "spent_tokens": tokens.get(day, 0),
             "activity": runs[day] + finished[day],
         }
         for day in sorted(days)

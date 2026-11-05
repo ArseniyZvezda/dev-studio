@@ -35,6 +35,12 @@ const spent = (output: number, overrides: Partial<AgentMessage> = {}) =>
 const kinds = (rows: ReturnType<typeof transcriptRows>) => rows.map((row) => row.message.kind)
 
 describe('compressed task context (§10.4)', () => {
+  it.each(['compact', 'advanced', 'verbose'] as const)('hides archive accounting metadata in %s', (level) => {
+    const accounting = message({ kind: 'accounting', role: 'system', data: { evidence: [] } })
+    expect(transcriptRows([accounting], level)).toEqual([])
+    expect(liveLine([accounting], level).activity).toBe('')
+  })
+
   it.each(['compact', 'advanced', 'verbose'] as const)('keeps the handoff visible in %s', (level) => {
     const summary = message({ kind: 'compressed summary', text: 'Completed work. Next steps.' })
     expect(kinds(transcriptRows([summary, message({ kind: 'tool_result', role: 'system' })], level)))

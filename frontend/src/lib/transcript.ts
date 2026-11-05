@@ -237,6 +237,7 @@ function outputTokens(message: TranscriptMessage): number {
 
 /** Whether a message survives this level. Compact and Advanced hide the same things. */
 function shows(message: TranscriptMessage, verbosity: Verbosity): boolean {
+  if (message.kind === 'accounting') return false
   if (message.kind === 'system' && ['thinking_tokens', 'usage_update'].includes(message.text)) return false
   if (verbosity === 'verbose') return true
   return ALWAYS_KINDS.has(message.kind) || message.role !== 'system'

@@ -24,6 +24,7 @@ const day = (iso: string, overrides: Partial<ActivityDay> = {}): ActivityDay => 
   runs: 1,
   finished: 0,
   spent_usd: 0,
+  spent_tokens: 0,
   activity: 1,
   ...overrides,
 })
@@ -145,14 +146,17 @@ describe('windowTotals', () => {
   it('adds up what is on the grid and counts the days that had anything', () => {
     const weeks = heatmapWeeks(
       [
-        day('2026-09-01', { runs: 2, finished: 1, spent_usd: 0.5, activity: 3 }),
+        day('2026-09-01', { runs: 2, finished: 1, spent_usd: 0.5, spent_tokens: 1200, activity: 3 }),
         day('2026-09-03', { runs: 0, finished: 0, spent_usd: 0.25, activity: 0 }),
+        day('2026-09-04', { runs: 0, finished: 0, spent_tokens: 300, activity: 0 }),
         day('2026-01-01', { runs: 9, activity: 9 }),
       ],
       TODAY,
       2,
     )
-    expect(windowTotals(weeks)).toEqual({ runs: 2, finished: 1, spent_usd: 0.75, activeDays: 2 })
+    expect(windowTotals(weeks)).toEqual({
+      runs: 2, finished: 1, spent_usd: 0.75, spent_tokens: 1500, activeDays: 3,
+    })
   })
 })
 
@@ -172,6 +176,14 @@ describe('describeCell', () => {
     expect(
       describeCell(cellFor(day(TODAY, { runs: 0, finished: 0, spent_usd: 0.05, activity: 0 }))),
     ).toBe('$0.05')
+  })
+
+  it('shows token spend instead of dollars in the token column, including token-only residuals', () => {
+    const entry = day(TODAY, { runs: 2, finished: 1, spent_usd: 0.41, spent_tokens: 1250, activity: 3 })
+    expect(describeCell(cellFor(entry), 'tokens')).toBe('2 runs · 1 task finished · 1,250 tokens')
+    expect(describeCell(cellFor(day(TODAY, { runs: 0, spent_tokens: 1, activity: 0 })), 'tokens'))
+      .toBe('1 token')
+    expect(describeCell(cellFor(null), 'tokens')).toBe('No activity')
   })
 })
 

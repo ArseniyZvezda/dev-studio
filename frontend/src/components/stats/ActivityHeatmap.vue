@@ -30,11 +30,15 @@ import {
 import { dayMs, formatDay } from '@/lib/cost-chart'
 import { formatCost } from '@/lib/status'
 
-const props = defineProps<{
-  activity: ActivityDay[]
-  /** ISO date the grid ends on. A prop rather than `new Date()` so a render is a function of its inputs. */
-  today: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    activity: ActivityDay[]
+    /** ISO date the grid ends on. A prop rather than `new Date()` so a render is a function of its inputs. */
+    today: string
+    metric?: 'tokens' | 'usd'
+  }>(),
+  { metric: 'usd' },
+)
 
 const container = ref<HTMLElement | null>(null)
 const svg = ref<SVGSVGElement | null>(null)
@@ -80,7 +84,11 @@ const caption = computed(() => {
     t('statistics.activity.runs', { count: sums.runs }),
     t('statistics.activity.tasksFinished', { count: sums.finished }),
   ]
-  if (sums.spent_usd > 0) parts.push(formatCost(sums.spent_usd))
+  if (props.metric === 'tokens') {
+    if (sums.spent_tokens > 0) parts.push(t('statistics.tokens', { count: sums.spent_tokens }))
+  } else if (sums.spent_usd > 0) {
+    parts.push(formatCost(sums.spent_usd))
+  }
   return t('statistics.activity.caption', {
     count: weeks.value,
     days: t('statistics.activity.activeDays', { count: sums.activeDays }),
@@ -233,7 +241,7 @@ const tooltipStyle = computed(() => {
       :style="{ ...tooltipStyle, transform: 'translate(-50%, calc(-100% - 10px))' }"
     >
       <p class="font-medium text-secondary">{{ formatDay(activeCell.ms) }}</p>
-      <p class="mt-0.5 text-primary">{{ describeCell(activeCell) }}</p>
+      <p class="mt-0.5 text-primary">{{ describeCell(activeCell, metric) }}</p>
     </div>
   </div>
 </template>

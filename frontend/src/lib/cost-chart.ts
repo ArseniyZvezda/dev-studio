@@ -6,8 +6,20 @@
  * by, and none of them needs a browser to be wrong in.
  */
 
-import type { CostPoint } from '@/api/types'
 import { formatDate, formatNumber } from '@/i18n'
+import { formatCost } from '@/lib/status'
+
+/** The same geometry displays either resource and either aggregation (§10.4). */
+export interface MetricPoint {
+  day: string
+  value: number
+  spent: number
+  /** Runs for cumulative totals; completed tasks for daily averages. */
+  count: number
+}
+
+export type Metric = 'tokens' | 'usd'
+export type StatisticsChartMode = 'cumulative' | 'average'
 
 const DAY_MS = 86_400_000
 
@@ -33,6 +45,20 @@ export function smoothCostPath(points: readonly { px: number; py: number }[]): s
   return parts.join(' ')
 }
 
+/** Only an accumulated total remains meaningful after the last recorded day (§10.4). */
+export function metricLinePath(
+  points: readonly { px: number; py: number }[],
+  end: number,
+  mode: StatisticsChartMode,
+): string {
+  const last = points[points.length - 1]
+  const curve = [...points]
+  if (mode === 'cumulative' && last && end > last.px + 0.5) {
+    curve.push({ px: end, py: last.py })
+  }
+  return smoothCostPath(curve)
+}
+
 /** Milliseconds since the epoch for an ISO calendar date, at UTC midnight. */
 export function dayMs(day: string): number {
   return Date.parse(`${day}T00:00:00Z`)
@@ -50,7 +76,7 @@ export function todayIso(now = new Date()): string {
  * flat tail says so. The week floor is taken *backwards*, so a single point has somewhere
  * to be drawn and the axis never runs into days that have not happened.
  */
-export function dayDomain(series: CostPoint[], today: string): { start: number; end: number } {
+export function dayDomain(series: readonly { day: string }[], today: string): { start: number; end: number } {
   const todayMs = dayMs(today)
   const first = series.length ? dayMs(series[0]!.day) : todayMs
   const last = series.length ? dayMs(series[series.length - 1]!.day) : todayMs
@@ -101,10 +127,28 @@ export function niceTicks(max: number, count = 4): number[] {
  */
 export function formatAxisCost(value: number): string {
   if (!value) return '$0'
-  if (value < 1) return `$${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  // Daily averages can yield fractional-cent ticks, including a 0.005 step crossing
+  // one cent. Retain those digits while ordinary ticks still read as `$0.20`.
+  if (value < 1) return `$${formatNumber(value, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: Math.min(20, Math.max(2, 2 - Math.floor(Math.log10(value)))),
+  })}`
   // Grouped like the totals beside the chart, so `$8,000` on the axis and `$6,933.06` at the
   // line's end read as the same kind of number.
   return `$${formatNumber(value, { maximumFractionDigits: 1 })}`
+}
+
+/** Compact plot labels; tooltips retain exact totals and fractional token averages. */
+export function formatMetricValue(value: number, metric: Metric, compact = false): string {
+  if (compact && value >= 10_000) {
+    const amount = formatNumber(value, { notation: 'compact', maximumFractionDigits: 1 })
+    return metric === 'usd' ? `$${amount}` : amount
+  }
+  if (metric === 'usd') return compact ? formatAxisCost(value) : formatCost(value)
+  if (compact && value > 0 && value < 1) {
+    return formatNumber(value, { maximumSignificantDigits: 3 })
+  }
+  return formatNumber(value, { maximumFractionDigits: 1 })
 }
 
 /** `Sep 4` — the day, in the interface language and the UTC frame the series was bucketed in. */

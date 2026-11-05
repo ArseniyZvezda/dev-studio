@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The project's running cost, as a line over the days it was spent on (§10.4).
+ * Token and API cost totals or daily task averages over recorded UTC days (§10.4).
  *
  * One series, so one colour — the accent — and no legend: the section title names what is
  * plotted. The line is 2px, the area under it a wash of the same hue, the markers ringed in
@@ -11,29 +11,31 @@
  *
  * Hover finds the nearest day by x — a reader aims at a date, never at a 2px line — and the
  * keyboard walks the same points, so nothing here is reachable by pointer alone. Drawn as
- * plain SVG: there is one chart in the app, and a library would be a dependency for one
- * `<path>`.
+ * plain SVG, shared by both resources and both aggregation modes.
  */
 import { useElementSize } from '@vueuse/core'
 import { computed, ref } from 'vue'
 
-import type { CostPoint } from '@/api/types'
-import { t } from '@/i18n'
+import { formatNumber, t } from '@/i18n'
 import {
   dayDomain,
   dayMs,
   dayTicks,
-  formatAxisCost,
+  formatMetricValue,
   formatDay,
   niceTicks,
-  smoothCostPath,
+  metricLinePath,
+  type Metric,
+  type MetricPoint,
+  type StatisticsChartMode,
 } from '@/lib/cost-chart'
-import { formatCost } from '@/lib/status'
 
 const props = defineProps<{
-  series: CostPoint[]
+  series: MetricPoint[]
   /** ISO date the x axis runs to. A prop rather than `new Date()` so a render is a function of its inputs. */
   today: string
+  metric: Metric
+  mode: StatisticsChartMode
 }>()
 
 const container = ref<HTMLElement | null>(null)
@@ -42,15 +44,15 @@ const { width: measured } = useElementSize(container)
 
 const HEIGHT = 240
 // Right margin holds the end label; left holds the axis ticks; bottom the day labels.
-const MARGIN = { top: 16, right: 72, bottom: 28, left: 52 }
+const MARGIN = { top: 16, right: 88, bottom: 28, left: 76 }
 
-const width = computed(() => Math.max(320, Math.round(measured.value || 640)))
+const width = computed(() => Math.max(280, Math.round(measured.value || 640)))
 const plotWidth = computed(() => width.value - MARGIN.left - MARGIN.right)
 const plotHeight = HEIGHT - MARGIN.top - MARGIN.bottom
 const baseline = MARGIN.top + plotHeight
 
 const domain = computed(() => dayDomain(props.series, props.today))
-const yTicks = computed(() => niceTicks(props.series[props.series.length - 1]?.cumulative_usd ?? 0))
+const yTicks = computed(() => niceTicks(Math.max(0, ...props.series.map((point) => point.value))))
 const yMax = computed(() => yTicks.value[yTicks.value.length - 1] || 1)
 
 function x(ms: number): number {
@@ -67,37 +69,46 @@ const points = computed(() =>
     ...entry,
     ms: dayMs(entry.day),
     px: x(dayMs(entry.day)),
-    py: y(entry.cumulative_usd),
+    py: y(entry.value),
   })),
 )
 
 const last = computed(() => points.value[points.value.length - 1] ?? null)
 
-/** The curve, carried flat to today when the last spend was earlier than that. */
-const linePath = computed(() => {
-  if (!points.value.length) return ''
-  const curve = points.value.map(({ px, py }) => ({ px, py }))
-  const end = x(domain.value.end)
-  if (last.value && end > last.value.px + 0.5) {
-    curve.push({ px: end, py: last.value.py })
-  }
-  return smoothCostPath(curve)
-})
+/** Daily averages stop at the last observation; cumulative totals keep their flat tail. */
+const linePath = computed(() => metricLinePath(points.value, x(domain.value.end), props.mode))
 
 const areaPath = computed(() => {
   if (!linePath.value || !points.value.length) return ''
-  const end = Math.max(x(domain.value.end), last.value?.px ?? 0)
+  const end = props.mode === 'cumulative' ? x(domain.value.end) : last.value!.px
   const first = points.value[0]!.px
   return `${linePath.value} L${end.toFixed(1)} ${baseline} L${first.toFixed(1)} ${baseline} Z`
 })
 
-const xTicks = computed(() => dayTicks(domain.value.start, domain.value.end))
+const xTicks = computed(() =>
+  dayTicks(domain.value.start, domain.value.end, Math.max(2, Math.floor(plotWidth.value / 78))),
+)
+
+const messagePrefix = computed(() => props.mode === 'average'
+  ? 'statistics.averageChart'
+  : props.metric === 'tokens' ? 'statistics.tokensChart' : 'statistics.chart')
+const metricLabel = computed(() => t(`statistics.metrics.${props.metric}`))
+
+function formatValue(value: number): string {
+  return formatMetricValue(value, props.metric)
+}
+
+function formatPlotValue(value: number): string {
+  return formatMetricValue(value, props.metric, true)
+}
 
 const summary = computed(() => {
-  if (!last.value) return t('statistics.chart.summaryEmpty')
-  return t('statistics.chart.summary', {
+  if (!last.value) return t(`${messagePrefix.value}.summaryEmpty`, { metric: metricLabel.value })
+  return t(`${messagePrefix.value}.summary`, {
     count: points.value.length,
-    total: formatCost(last.value.cumulative_usd),
+    total: formatValue(last.value.value),
+    value: formatValue(last.value.value),
+    metric: metricLabel.value,
     from: formatDay(points.value[0]!.ms),
     to: formatDay(last.value.ms),
   })
@@ -140,7 +151,7 @@ function step(delta: number): void {
 const tooltipStyle = computed(() => {
   const point = activePoint.value
   if (!point) return {}
-  const left = Math.min(width.value - 96, Math.max(96, point.px))
+  const left = Math.min(width.value - 108, Math.max(108, point.px))
   return { left: `${left}px`, top: `${point.py}px` }
 })
 </script>
@@ -152,7 +163,7 @@ const tooltipStyle = computed(() => {
       class="grid place-items-center text-faint"
       :style="{ height: `${HEIGHT}px` }"
     >
-      {{ t('statistics.chart.empty') }}
+      {{ t(`${messagePrefix}.empty`) }}
     </p>
 
     <svg
@@ -193,7 +204,7 @@ const tooltipStyle = computed(() => {
           :y="y(tick) + 3.5"
           text-anchor="end"
         >
-          {{ formatAxisCost(tick) }}
+          {{ formatPlotValue(tick) }}
         </text>
         <text
           v-for="tick in xTicks"
@@ -245,31 +256,38 @@ const tooltipStyle = computed(() => {
         :y="last.py + 3.5"
         class="fill-primary text-small font-medium tabular-nums"
       >
-        {{ formatCost(last.cumulative_usd) }}
+        {{ formatPlotValue(last.value) }}
       </text>
     </svg>
 
     <!-- HTML rather than SVG text, so it wraps, layers and themes like every other tooltip. -->
     <div
       v-if="activePoint"
-      class="vxs-card pointer-events-none absolute z-10 w-44 -translate-x-1/2 rounded-md border border-card bg-elevated p-2 text-small shadow-lg"
+      class="vxs-card pointer-events-none absolute z-10 w-52 -translate-x-1/2 rounded-md border border-card bg-elevated p-2 text-small shadow-lg"
       :style="{ ...tooltipStyle, transform: 'translate(-50%, calc(-100% - 12px))' }"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
     >
       <p class="font-medium text-secondary">{{ formatDay(activePoint.ms) }}</p>
       <p class="mt-1 flex items-baseline justify-between gap-2">
         <span class="font-semibold text-primary tabular-nums">
-          {{ formatCost(activePoint.cumulative_usd) }}
+          {{ formatValue(activePoint.value) }}
         </span>
-        <span class="text-faint">{{ t('statistics.chart.runningTotal') }}</span>
+        <span class="text-faint">
+          {{ t(mode === 'average' ? 'statistics.averageChart.perTask' : 'statistics.chart.runningTotal') }}
+        </span>
       </p>
-      <p class="flex items-baseline justify-between gap-2">
-        <span class="text-primary tabular-nums">+{{ formatCost(activePoint.spent_usd) }}</span>
+      <p v-if="mode === 'cumulative'" class="flex items-baseline justify-between gap-2">
+        <span class="text-primary tabular-nums">+{{ formatValue(activePoint.spent) }}</span>
         <span class="text-faint">{{ t('statistics.chart.thatDay') }}</span>
       </p>
       <p class="flex items-baseline justify-between gap-2">
-        <span class="text-primary tabular-nums">{{ activePoint.runs }}</span>
+        <span class="text-primary tabular-nums">{{ formatNumber(activePoint.count) }}</span>
         <!-- A plural with no number in it: the figure is the span before, aligned apart. -->
-        <span class="text-faint">{{ t('statistics.chart.runs', { count: activePoint.runs }) }}</span>
+        <span class="text-faint">
+          {{ t(mode === 'average' ? 'statistics.averageChart.tasks' : 'statistics.chart.runs', { count: activePoint.count }) }}
+        </span>
       </p>
     </div>
   </div>

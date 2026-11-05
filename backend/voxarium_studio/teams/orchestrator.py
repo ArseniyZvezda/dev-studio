@@ -481,7 +481,7 @@ class TeamOrchestrator:
                     (
                         await session.exec(
                             select(AgentMessage)
-                            .where(AgentMessage.kind.in_(["result", "model", "system", *compaction.SUMMARY_KINDS]))
+                            .where(AgentMessage.kind.in_(["result", "model", "system", *compaction.EVIDENCE_KINDS]))
                             .where(AgentMessage.task_id.in_(task_ids))  # type: ignore[attr-defined]
                         )
                     ).all()
@@ -1301,12 +1301,33 @@ class TeamOrchestrator:
 
             session.add(task)
             if fields.get("archived"):
-                # spec §10.4: archiving discards only rows hidden below Verbose.
+                # spec §10.4: discard verbose rows but retain compact accounting so
+                # archiving cannot move historical spend to the task's finishing day.
+                accounting = list((await session.exec(select(AgentMessage).where(
+                    AgentMessage.task_id == task_id,
+                    AgentMessage.role == "system",
+                    AgentMessage.kind.in_(["result", "model", "system", compaction.ACCOUNTING_KIND]),
+                ))).all())
+                evidence = compaction.retain_evidence(accounting)
                 await session.exec(delete(AgentMessage).where(
                     AgentMessage.task_id == task_id,
                     AgentMessage.role == "system",
                     AgentMessage.kind.not_in(ALWAYS_KINDS),
                 ))
+                if evidence:
+                    summary = (await session.exec(select(AgentMessage).where(
+                        AgentMessage.task_id == task_id,
+                        AgentMessage.kind.in_(compaction.SUMMARY_KINDS),
+                    ).order_by(AgentMessage.created_at.desc()))).first()
+                    if summary is not None:
+                        summary.data = {**summary.data,
+                                        "evidence": [*summary.data.get("evidence", []), *evidence]}
+                        session.add(summary)
+                    else:
+                        session.add(AgentMessage(
+                            task_id=task_id, member_id=task.assignee_id, role="system",
+                            kind=compaction.ACCOUNTING_KIND, data={"evidence": evidence},
+                        ))
             started_before = task.started_at is not None
             unblocked = not await self._unmet_dependencies(session, task)
             assignee_id = task.assignee_id
@@ -1457,6 +1478,7 @@ class TeamOrchestrator:
             evidence.append({"kind": "result", "role": "system", "text": "",
                              "created_at": utcnow().isoformat(),
                              "data": {"total_cost_usd": data.get("total_cost_usd", 0),
+                                      "total_tokens": data.get("total_tokens", 0),
                                       "model": data.get("model") or request.model}})
         entry = AgentMessage(
             task_id=task_id, member_id=request.member.id, role="assistant",

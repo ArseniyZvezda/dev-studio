@@ -17,6 +17,8 @@ SUMMARY_CHARS = 12_000
 INPUT_KINDS = frozenset({"text", "note", "summary"})
 SUMMARY_KIND = "compressed summary"
 SUMMARY_KINDS = frozenset({SUMMARY_KIND, "context_summary"})  # Read older saved handoffs too.
+ACCOUNTING_KIND = "accounting"
+EVIDENCE_KINDS = SUMMARY_KINDS | {ACCOUNTING_KIND}
 
 
 def has_dialogue(messages: list[AgentMessage]) -> bool:
@@ -55,7 +57,7 @@ def expand_evidence(messages: list[AgentMessage]) -> list[AgentMessage]:
     """Read retained accounting/file facts, without resurrecting the old dialogue."""
     expanded = []
     for message in messages:
-        if message.kind not in SUMMARY_KINDS:
+        if message.kind not in EVIDENCE_KINDS:
             expanded.append(message)
             continue
         for record in message.data.get("evidence", []):
@@ -73,7 +75,12 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
     for message in expand_evidence(messages):
         data = message.data
         if message.kind == "result":
-            data = {key: data[key] for key in ("total_cost_usd", "model") if key in data}
+            data = {key: data[key] for key in ("total_cost_usd", "total_tokens", "model") if key in data}
+        elif message.kind == "system" and data.get("subtype") == "usage_update":
+            # §10.4: keep the latest accounting checkpoint so token-only/cancelled
+            # work retains its date after the dialogue is compressed.
+            data = {key: data[key] for key in ("subtype", "total_tokens", "task_total_tokens")
+                    if key in data}
         elif message.kind in {"model", "system"}:
             if message.kind == "system" and message.text != "init":
                 continue
@@ -95,6 +102,7 @@ def retain_evidence(messages: list[AgentMessage]) -> list[dict[str, Any]]:
             continue
         records.append({"kind": message.kind, "role": message.role,
                         "text": (message.text if message.kind == "file_observation_error"
+                                 else "usage_update" if data.get("subtype") == "usage_update"
                                  else "init" if message.kind == "system" else ""),
                         "data": data, "created_at": message.created_at.isoformat()})
     return records

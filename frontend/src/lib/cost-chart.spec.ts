@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { CostPoint } from '@/api/types'
-import { dayDomain, dayMs, dayTicks, formatAxisCost, niceTicks, smoothCostPath } from '@/lib/cost-chart'
+import {
+  dayDomain, dayMs, dayTicks, formatAxisCost, formatMetricValue, metricLinePath, niceTicks, smoothCostPath,
+} from '@/lib/cost-chart'
 
 const DAY = 86_400_000
 
@@ -76,8 +78,48 @@ describe('formatAxisCost', () => {
   it('groups a tick in the thousands', () => {
     expect(formatAxisCost(8000)).toBe('$8,000')
   })
+
+  it('keeps sub-cent daily averages distinguishable', () => {
+    expect([0.001, 0.002, 0.003].map(formatAxisCost)).toEqual(['$0.001', '$0.002', '$0.003'])
+  })
+
+  it('keeps fractional-cent ticks distinct when the scale crosses one cent', () => {
+    expect(niceTicks(0.02).map(formatAxisCost)).toEqual([
+      '$0', '$0.005', '$0.01', '$0.015', '$0.02',
+    ])
+  })
 })
 
+describe('compact metric labels', () => {
+  it('fits millions on the plot while keeping exact token totals in tooltips', () => {
+    expect(formatMetricValue(12_345_678, 'tokens', true)).toBe('12.3M')
+    expect(formatMetricValue(12_345_678, 'tokens')).toBe('12,345,678')
+    expect(formatMetricValue(12_345_678, 'usd', true)).toBe('$12.3M')
+  })
+
+  it('keeps fractional token-average ticks distinct instead of rounding them to zero', () => {
+    expect(niceTicks(0.1).map(value => formatMetricValue(value, 'tokens', true))).toEqual([
+      '0', '0.025', '0.05', '0.075', '0.1',
+    ])
+  })
+})
+
+describe('metricLinePath', () => {
+  const points = [{ px: 0, py: 20 }, { px: 60, py: 100 }]
+
+  it('leaves unobserved days empty after a daily average', () => {
+    expect(metricLinePath(points, 120, 'average')).toBe(smoothCostPath(points))
+    expect(metricLinePath(points, 120, 'cumulative')).toBe(
+      smoothCostPath([...points, { px: 120, py: 100 }]),
+    )
+  })
+
+  it('does not invent a line for no observations or mutate the input', () => {
+    expect(metricLinePath([], 120, 'cumulative')).toBe('')
+    metricLinePath(points, 120, 'cumulative')
+    expect(points).toHaveLength(2)
+  })
+})
 
 describe('smoothCostPath', () => {
   it('handles no data and a single point', () => {
@@ -99,5 +141,18 @@ describe('smoothCostPath', () => {
       }
     })
     expect(segments[2]!.split(' ').map(Number).filter((_, i) => i % 2)).toEqual([20, 20, 20])
+  })
+
+  it('does not overshoot daily averages when the values rise and fall', () => {
+    const points = [{ px: 0, py: 20 }, { px: 30, py: 150 }, { px: 100, py: 40 }, { px: 160, py: 100 }]
+    const segments = smoothCostPath(points).split(' C').slice(1)
+    segments.forEach((segment, i) => {
+      const low = Math.min(points[i]!.py, points[i + 1]!.py)
+      const high = Math.max(points[i]!.py, points[i + 1]!.py)
+      segment.split(' ').map(Number).filter((_, j) => j % 2).forEach((value) => {
+        expect(value).toBeGreaterThanOrEqual(low)
+        expect(value).toBeLessThanOrEqual(high)
+      })
+    })
   })
 })
