@@ -86,7 +86,7 @@ const HISTORY_KINDS = new Set([
  * `continued` is here for a sharper reason — it is the line that explains the empty
  * `result` beside it when a session stopped mid-work and the Studio resumed it (§10.3).
  */
-const ALWAYS_KINDS = new Set([...HISTORY_KINDS, 'tool_use', 'continued'])
+const ALWAYS_KINDS = new Set([...HISTORY_KINDS, 'tool_use', 'continued', 'effort_solver'])
 
 /** Rows drawn as a timeline line rather than a card: nobody is speaking in them. */
 export const TIMELINE_KINDS = new Set([...HISTORY_KINDS, 'continued'])
@@ -282,6 +282,7 @@ function shows(message: TranscriptMessage, verbosity: Verbosity): boolean {
 function opensBlock(message: TranscriptMessage): boolean {
   return (
     LEAD_KINDS.has(message.kind) ||
+    message.kind === 'effort_solver' ||
     isSkillCall(message) ||
     (isMcpCall(message) && !isFileEdit(message))
   )
@@ -388,6 +389,16 @@ export function tailLine(message: TranscriptMessage): string {
   if (message.kind === 'status') return oneLine(statusText(message), TAIL_LIMIT)
   if (message.kind === 'edited') return oneLine(editedText(message), TAIL_LIMIT)
   if (message.kind === 'commit') return oneLine(commitText(message), TAIL_LIMIT)
+  // §10.3: effort belongs to the shared slider in run metadata and the detailed record.
+  // Keep a structured model notice useful in the short activity line without duplicating
+  // its effort as prose; older records without data keep their original wording below.
+  if (message.kind === 'model' && typeof message.data?.effort === 'string') {
+    const model = typeof message.data.model === 'string' ? message.data.model : ''
+    return oneLine([
+      model ? `${t('tasks.overrides.model')}: ${model}` : null,
+      message.data.source === 'task' ? t('taskDetail.runSettings.overridden') : null,
+    ].filter(Boolean).join(' · '), TAIL_LIMIT)
+  }
   if (message.kind === 'tool_use') {
     return [toolName(message), toolSubject(message)].filter(Boolean).join(' · ')
   }

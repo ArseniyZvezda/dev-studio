@@ -84,7 +84,7 @@ _BRANCH_BARE = re.compile(r"(?:^|\s)(/[^@\s]*)@")
 class PlasticBackend(VcsBackend):
     id: ClassVar[str] = "plastic"
     settings_fields = ({"key": "workspace", "type": "path"},)
-    name: ClassVar[str] = "Plastic SCM (Unity Version Control)"
+    name: ClassVar[str] = "Plastic SCM (UVC)"
     program: ClassVar[str] = "cm"
 
     supports_isolation: ClassVar[bool] = False

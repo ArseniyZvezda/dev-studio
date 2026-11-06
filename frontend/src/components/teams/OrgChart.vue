@@ -15,11 +15,7 @@
  *   * solid, arrowed, top-to-bottom — the management vertical (`manager_id`);
  *   * dashed, side-to-side — a sideways route (`can_assign_to`).
  *
- * **The canvas is locked until the page turns editing on.** Every gesture here rewrites the
- * roster file, and the shapes that read a team — dragging to pan, clicking a node — are the
- * same ones that would restructure it, so reading the chart must not be one slip away from
- * reassigning someone. Locked, the canvas still pans and zooms and nothing else; editing, it
- * behaves as before.
+ * The canvas is always editable (§10.2); each completed gesture saves the roster file.
  *
  * Layout is derived until someone moves a node, and their placement is then kept
  * (`pos_x`/`pos_y` on the member, saved on drop): a team nobody has arranged carries no
@@ -38,7 +34,7 @@ import {
   type Node,
   type NodeTypesObject,
 } from '@vue-flow/core'
-import { LayoutGrid, Lock, Unlink } from 'lucide-vue-next'
+import { LayoutGrid, Unlink } from 'lucide-vue-next'
 import { computed, markRaw, ref, watch, type Ref } from 'vue'
 
 import MemberNode from '@/components/teams/MemberNode.vue'
@@ -47,8 +43,6 @@ import { layoutOrgTree, type Point } from '@/lib/org-layout'
 import { useTeamsStore } from '@/stores/teams'
 import { useThemeStore } from '@/stores/theme'
 
-/** `editing` is owned by the page, because it also gates the member rail and the add form. */
-const props = defineProps<{ editing: boolean }>()
 const emit = defineEmits<{ configure: [string] }>()
 
 const teams = useTeamsStore()
@@ -88,7 +82,7 @@ function build(): void {
       active: 0,
       review: 0,
       waiting: 0,
-      editing: props.editing,
+      editing: true,
       routesToAnyone: (member.can_assign_to ?? []).includes('*'),
       onConfigure: (memberId: string) => emit('configure', memberId),
     },
@@ -125,19 +119,6 @@ watch(() => teams.tasks, paintCounts, { deep: true })
 // rather than rebuilt, for the reason the counts are: a colour must not throw the viewport,
 // the selection or an undropped position away.
 watch(() => teams.members, paintCounts)
-
-// Layered on rather than rebuilt for the same reason the counts are: toggling the lock must
-// not throw away the viewport, the selection or a position the user has not dropped yet.
-watch(
-  () => props.editing,
-  (editing) => {
-    for (const node of nodes.value) if (node.data) node.data.editing = editing
-    if (!editing) {
-      selectedEdge.value = null
-      hint.value = null
-    }
-  },
-)
 
 /**
  * Edges are derived from the roster on every change; there is no local edge state to keep
@@ -194,7 +175,6 @@ const selectedEdgeLabel = computed(() => {
 })
 
 onConnect(async (connection: Connection) => {
-  if (!props.editing) return
   hint.value = null
   const { source, target, sourceHandle, targetHandle } = connection
   if (!source || !target || source === target) return
@@ -227,13 +207,11 @@ onConnect(async (connection: Connection) => {
 })
 
 onEdgeClick(({ edge }) => {
-  if (!props.editing) return
   selectedEdge.value = edge as Edge
   hint.value = null
 })
 
 onNodeClick(({ node }) => {
-  if (!props.editing) return
   selectedEdge.value = null
   emit('configure', node.id)
 })
@@ -241,13 +219,8 @@ onNodeClick(({ node }) => {
 /**
  * A drop is the save. `nodes` is everything the gesture moved, not just the one under the
  * cursor, so a multi-node drag round-trips in one request.
- *
- * Guarded like the others rather than trusting `nodes-draggable`: this is the one handler
- * that writes, and anything that turns dragging back on underneath the prop would otherwise
- * put coordinates in a committed file from a chart the UI is calling locked.
  */
 onNodeDragStop(({ nodes: moved }) => {
-  if (!props.editing) return
   const positions: Record<string, Point> = {}
   for (const node of moved) {
     positions[node.id] = { x: Math.round(node.position.x), y: Math.round(node.position.y) }
@@ -297,18 +270,10 @@ async function tidy(): Promise<void> {
       :max-zoom="1.6"
       :default-viewport="{ zoom: 0.9 }"
       :connection-radius="30"
-      :nodes-draggable="editing"
-      :nodes-connectable="editing"
-      :nodes-focusable="editing"
-      :elements-selectable="editing"
-      :edges-focusable="editing"
       fit-view-on-init
     >
       <Background v-if="theme.canvasGrid !== 'none'" :variant="theme.canvasGrid === 'lines' ? BackgroundVariant.Lines : BackgroundVariant.Dots" pattern-color="var(--vxs-canvas-dot)" :gap="18" />
-      <!-- Without `show-interactive="false"` the Controls ship a padlock that calls
-           `setInteractive(true)` straight into the Vue Flow store, overriding the
-           `nodes-draggable`/`nodes-connectable`/`elements-selectable` props below until they
-           next change — a second, hidden lock that disagrees with the page's own. -->
+      <!-- The Team page is always editable; the canvas does not offer a separate lock. -->
       <Controls :show-interactive="false" />
 
       <Panel position="top-left" class="flex flex-wrap items-center gap-3 text-small">
@@ -325,7 +290,7 @@ async function tidy(): Promise<void> {
         </span>
       </Panel>
 
-      <Panel v-if="editing" position="top-right">
+      <Panel position="top-right">
         <button
           class="flex items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-small shadow-md hover:bg-hover"
           :title="t('teams.chart.tidyTitle')"
@@ -354,17 +319,12 @@ async function tidy(): Promise<void> {
         <p class="rounded-md bg-warning-soft px-2 py-1.5 text-warning shadow-lg">{{ hint }}</p>
       </Panel>
 
-      <Panel v-else-if="editing" position="bottom-center">
+      <Panel v-else position="bottom-center">
         <p class="rounded-md bg-surface px-2 py-1 text-small text-faint">
           {{ t('teams.chart.editingHelp') }}
         </p>
       </Panel>
 
-      <Panel v-else position="bottom-center">
-        <p class="flex items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-small text-faint">
-          <Lock class="size-3" /> {{ t('teams.chart.lockedHelp') }}
-        </p>
-      </Panel>
     </VueFlow>
   </div>
 </template>

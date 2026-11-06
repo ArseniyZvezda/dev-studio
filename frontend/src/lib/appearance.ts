@@ -153,6 +153,19 @@ export function exportTheme(theme: ThemeConfig): string {
   return JSON.stringify(theme, null, 2) + '\n'
 }
 
+/** Appearance export belongs to Settings; the project accent stays in its project (§7). */
+export function exportApplicationTheme(theme: ThemeConfig): string {
+  const { accent: _accent, ...applicationTheme } = theme
+  return JSON.stringify(applicationTheme, null, 2) + '\n'
+}
+
+/** Accept old theme exports while leaving the current project's accent untouched (§7). */
+export function parseImportedApplicationTheme(text: string): Partial<Omit<ThemeConfig, 'accent'>> {
+  const { accent: _accent, ...applicationTheme } = parseImportedTheme(text)
+  if (!Object.keys(applicationTheme).length) throw new Error(t('appearance.import.empty'))
+  return applicationTheme
+}
+
 const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/
 const TOKEN_NAME = /^--[a-zA-Z0-9_-]+$/
 

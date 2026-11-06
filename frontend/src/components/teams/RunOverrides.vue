@@ -19,6 +19,7 @@
 import { computed, onMounted } from 'vue'
 
 import type { TeamMember } from '@/api/types'
+import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import { t } from '@/i18n'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -56,13 +57,6 @@ const unlistedModel = computed(() =>
   props.model && !choices.value.some((entry) => entry.id === props.model) ? props.model : null,
 )
 
-/** The levels the installed SDK accepts, plus whatever this task already carries. */
-const effortLevels = computed(() => {
-  const levels = teams.options?.effort_levels ?? []
-  const current = props.effort
-  return current && !levels.includes(current) ? [...levels, current] : levels
-})
-
 /** What inheriting resolves to right now — the whole reason the default row is readable. */
 const inherited = computed(() => ({
   model: props.member?.model ?? '',
@@ -79,9 +73,6 @@ function sameAsMember(value: string): string {
 /** Blank is the first option, and it means the override is dropped rather than set empty. */
 function pickModel(value: string): void {
   emit('update:model', value || null)
-}
-function pickEffort(value: string): void {
-  emit('update:effort', value || null)
 }
 </script>
 
@@ -103,16 +94,16 @@ function pickEffort(value: string): void {
         <option v-if="unlistedModel" :value="unlistedModel">{{ unlistedModel }}</option>
       </select>
     </label>
-    <label class="min-w-0 flex-1">
+    <label class="shrink-0">
       <span class="mb-1 block text-small text-faint">{{ t('tasks.overrides.effort') }}</span>
-      <select
-        :value="effort ?? ''"
-        class="w-full rounded-md border border-line bg-inset px-2 py-1.5 outline-none focus:border-accent"
-        @change="pickEffort(($event.target as HTMLSelectElement).value)"
-      >
-        <option value="">{{ sameAsMember(inherited.effort) }}</option>
-        <option v-for="level in effortLevels" :key="level" :value="level">{{ level }}</option>
-      </select>
+      <ModelEffortSlider
+        :model-value="effort"
+        :levels="teams.options?.effort_levels"
+        :label="t('tasks.overrides.effort')"
+        :default-label="t('modelEffort.inherit')"
+        :default-title="sameAsMember(inherited.effort)"
+        @update:model-value="emit('update:effort', $event)"
+      />
     </label>
   </div>
 </template>

@@ -298,6 +298,18 @@ class SubagentManager:
                     recovery_prompt=(f"Delegated assignment: {row.description}\nPrevious result: {row.summary}\n\n{prompt}"),
                     model=row.model, effort=row.effort, mcp_servers=servers, extra_allowed_tools=allowed,
                 )
+                # §10.10: a worker is a fresh use of its parent member, including when
+                # its backend differs. Inherited system instructions contain only the
+                # skill catalog; required documents and skill bodies accompany this turn.
+                from .required_context import load_required_context
+                required = load_required_context(
+                    self.owner.config.teams, member, self.owner.skills, self.owner.docs)
+                request.extra_allowed_tools = list(dict.fromkeys([
+                    *request.extra_allowed_tools, *required.skills.allowed_tools(),
+                ]))
+                if not row.session_id:
+                    request.prompt = required.prepend(request.prompt)
+                request.recovery_prompt = required.prepend(request.recovery_prompt)
                 row.status, row.summary = "running", ""
                 row.updated_at = utcnow()
                 async with self.owner.db.session() as session:

@@ -20,6 +20,8 @@ from sqlmodel import select
 from ..core.paths import ProjectPaths
 from ..core.prompts import AgentPromptsConfig
 from ..models.teams import Team, TeamMember, TeamTask
+from .director_identity import DIRECTOR_ID, is_director
+from .effort_solver import DEFAULT_SYSTEM_PROMPT, EFFORT_SOLVER_ID, EffortWeights, is_effort_solver
 from .producer_identity import PRODUCER_ID, is_producer
 
 log = logging.getLogger(__name__)
@@ -44,11 +46,16 @@ class MemberDefinition(BaseModel):
     effort: str | None = None
     """``low`` … ``max``, or omitted for whatever the model does by default."""
 
+    effort_solver_weights: EffortWeights | None = None
+
     allowed_tools: list[str] = Field(default_factory=lambda: ["Read", "Grep", "Glob"])
     skills: list[str] = Field(default_factory=list)
     """Folder names under ``voxarium_studio/skills/`` this member may use (§10.10). Omitted when empty."""
 
-    @field_validator("skills", mode="before")
+    required_skills: list[str] = Field(default_factory=list)
+    required_documents: list[str] = Field(default_factory=list)
+
+    @field_validator("skills", "required_skills", "required_documents", mode="before")
     @classmethod
     def _skills_as_written(cls, value: Any) -> Any:
         # Hand-written YAML: `skills:` left empty reads as null and a lone name as a string, and
@@ -178,11 +185,18 @@ class TeamStore:
                 member.name = member_def.name
                 member.role_title = member_def.role_title
                 member.kind = member_def.kind
-                member.builtin = "producer" if is_producer(member) else None
-                if member.builtin:
+                member.builtin = (
+                    "producer" if is_producer(member) else "director" if is_director(member)
+                    else "effort_solver" if is_effort_solver(member) else None
+                )
+                if is_producer(member) or is_effort_solver(member):
                     member.kind = "agent"
+                elif is_director(member):
+                    member.kind = "human"
                 member.manager_id = manager_key
                 member.responsibility = member_def.responsibility
+                if is_effort_solver(member) and not member.responsibility.strip():
+                    member.responsibility = DEFAULT_SYSTEM_PROMPT
                 self.sync_producer_responsibility(member)
                 member.can_assign_to = _assign_keys(definition.id, member_def.can_assign_to)
                 member.tags = list(member_def.tags)
@@ -190,8 +204,14 @@ class TeamStore:
                 member.agent = member_def.agent
                 member.model = member_def.model
                 member.effort = member_def.effort
+                member.effort_solver_weights = (
+                    member_def.effort_solver_weights.model_dump()
+                    if is_effort_solver(member) and member_def.effort_solver_weights is not None else None
+                )
                 member.allowed_tools = list(member_def.allowed_tools)
                 member.skills = list(member_def.skills)
+                member.required_skills = list(member_def.required_skills)
+                member.required_documents = list(member_def.required_documents)
                 member.run_settings_override = member_def.run_settings_override
                 member.max_turns = member_def.max_turns
                 member.permission_mode = member_def.permission_mode
@@ -203,6 +223,21 @@ class TeamStore:
                 member.pos_y = member_def.pos_y
                 member.sort_order = order
                 session.add(member)
+
+            # §10.2: the reserved Director survives omission and is always a person.
+            director_id = _member_key(team.id, DIRECTOR_ID)
+            missing_director = director_id not in declared_ids
+            if missing_director:
+                director = await session.get(TeamMember, director_id)
+                if director is None:
+                    director = TeamMember(
+                        id=director_id, team_id=team.id, name="Director", role_title="Director",
+                        builtin="director", kind="human", sort_order=-1,
+                    )
+                director.builtin = "director"
+                director.kind = "human"
+                session.add(director)
+                declared_ids.add(director_id)
 
             # §10.11: omission from hand-edited YAML never deletes the built-in role or
             # resets its saved settings. Write it back so the roster stays portable.
@@ -220,6 +255,26 @@ class TeamStore:
                 self.sync_producer_responsibility(producer)
                 session.add(producer)
                 declared_ids.add(producer_id)
+
+            # §10.11: the scorer is a permanent agent; a hand-edited roster cannot
+            # remove it, and restoring an omitted row retains its custom settings.
+            solver_id = _member_key(team.id, EFFORT_SOLVER_ID)
+            missing_solver = solver_id not in declared_ids
+            if missing_solver:
+                solver = await session.get(TeamMember, solver_id)
+                if solver is None:
+                    solver = TeamMember(
+                        id=solver_id, team_id=team.id, name="Effort Solver", role_title="Effort Solver",
+                        builtin="effort_solver", responsibility=DEFAULT_SYSTEM_PROMPT,
+                        allowed_tools=[], isolate_worktree=False,
+                        avatar_color="#a855f7", sort_order=len(declared_ids),
+                    )
+                solver.builtin = "effort_solver"
+                solver.kind = "agent"
+                if not solver.responsibility.strip():
+                    solver.responsibility = DEFAULT_SYSTEM_PROMPT
+                session.add(solver)
+                declared_ids.add(solver_id)
 
             # Members deleted from YAML are removed — but only while nothing points at
             # them. A member with tasks is kept: their board is history the user can still
@@ -244,7 +299,7 @@ class TeamStore:
                 log.info("Member %s removed from %s.yaml", existing.id, definition.id)
                 await session.delete(existing)
 
-            if missing_producer:
+            if missing_producer or missing_director or missing_solver:
                 await session.flush()
                 # Append only the built-in entry: materialising defaults on every other
                 # member would rewrite an untouched roster and its explanatory comments.
@@ -254,18 +309,25 @@ class TeamStore:
                 round_trip.preserve_quotes = True
                 round_trip.indent(mapping=2, sequence=4, offset=2)
                 payload = round_trip.load(path.read_text(encoding="utf-8")) or {}
-                values = {key: getattr(producer, key) for key in MemberDefinition.model_fields}
-                prefix = f"{team.id}__"
-                values["id"] = PRODUCER_ID
-                values["manager_id"] = (producer.manager_id.removeprefix(prefix)
-                                         if producer.manager_id else None)
-                values["can_assign_to"] = [key.removeprefix(prefix) for key in producer.can_assign_to]
-                entry = MemberDefinition(**values).model_dump(exclude_defaults=True)
-                # §10.11: Settings owns this template; never freeze a copy in the roster.
-                entry.pop("responsibility", None)
                 if payload.get("members") is None:
                     payload["members"] = []
-                payload["members"].append(entry)
+                restored = (
+                    ([director] if missing_director else [])
+                    + ([producer] if missing_producer else [])
+                    + ([solver] if missing_solver else [])
+                )
+                for builtin in restored:
+                    values = {key: getattr(builtin, key) for key in MemberDefinition.model_fields}
+                    prefix = f"{team.id}__"
+                    values["id"] = builtin.id.removeprefix(prefix)
+                    values["manager_id"] = (builtin.manager_id.removeprefix(prefix)
+                                             if builtin.manager_id else None)
+                    values["can_assign_to"] = [key.removeprefix(prefix) for key in builtin.can_assign_to]
+                    entry = MemberDefinition(**values).model_dump(exclude_defaults=True)
+                    if is_producer(builtin):
+                        # §10.11: Settings owns this template; never freeze a copy in the roster.
+                        entry.pop("responsibility", None)
+                    payload["members"].append(entry)
                 stream = StringIO()
                 round_trip.dump(payload, stream)
                 text = stream.getvalue()
@@ -325,10 +387,16 @@ class TeamStore:
             # default".
             if member.skills:
                 entry["skills"] = list(member.skills)
+            if member.required_skills:
+                entry["required_skills"] = list(member.required_skills)
+            if member.required_documents:
+                entry["required_documents"] = list(member.required_documents)
             if member.avatar_icon:
                 entry["avatar_icon"] = member.avatar_icon
             if member.effort:
                 entry["effort"] = member.effort
+            if is_effort_solver(member) and member.effort_solver_weights is not None:
+                entry["effort_solver_weights"] = EffortWeights.model_validate(member.effort_solver_weights).model_dump()
             if member.agent:
                 entry["agent"] = member.agent
             if member.pos_x is not None and member.pos_y is not None:

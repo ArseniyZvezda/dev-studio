@@ -26,6 +26,8 @@ def _default_literal(column: Column) -> str | None:  # type: ignore[type-arg]
     rows read back as ``x`` — that is what keeps a project's database usable after the
     Studio gains a field, without a migration framework.
     """
+    if "migration_default" in column.info:
+        return column.info["migration_default"]
     default = getattr(column, "default", None)
     if default is not None and getattr(default, "is_scalar", False):
         value = default.arg
@@ -61,11 +63,14 @@ def _add_missing_columns(conn: Connection) -> None:
     model would otherwise surface as ``no such column`` against a project that has been
     open since before the field existed. Only additive: nothing is dropped or retyped.
     """
+    backfill_producer_started = False
     for table in SQLModel.metadata.sorted_tables:
         rows = conn.exec_driver_sql(f"PRAGMA table_info('{table.name}')").fetchall()
         if not rows:
             continue  # create_all just made it — already current.
         existing = {row[1] for row in rows}
+        if table.name == "agent_chat" and "producer_started" not in existing:
+            backfill_producer_started = True
         for column in table.columns:
             if column.name in existing:
                 continue
@@ -76,6 +81,35 @@ def _add_missing_columns(conn: Connection) -> None:
                 f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}{clause}'
             )
             log.info("Added column %s.%s to %s", table.name, column.name, conn.engine.url)
+
+    if backfill_producer_started:
+        # §10.11: old workspace drafts were enabled and could inherit a team pause
+        # before their first message. A runtime session id alone is insufficient:
+        # compaction clears it, and a failed first turn may never receive one.
+        conn.exec_driver_sql("""
+            UPDATE agent_chat SET producer_started = 1
+            WHERE COALESCE(producer_summary, '') != ''
+               OR COALESCE(producer_compacted_through, '') != ''
+               OR COALESCE(producer_plan_summary, '') != ''
+               OR COALESCE(producer_plan_version, 0) > 0
+               OR COALESCE(producer_checklist, '[]') NOT IN ('[]', 'null', '')
+               OR COALESCE(producer_plan, '[]') NOT IN ('[]', 'null', '')
+               OR COALESCE(producer_watch, '[]') NOT IN ('[]', 'null', '')
+               OR COALESCE(producer_questions, '[]') NOT IN ('[]', 'null', '')
+               OR COALESCE(producer_release_pending, '[]') NOT IN ('[]', 'null', '')
+               OR ((producer_mode = 1 OR producer_workspace = 1) AND (
+                   producer_state NOT IN ('off', 'discussing', 'not_started')
+                   OR COALESCE(agent_session_id, '') != ''
+                   OR COALESCE(error, '') != ''
+                   OR COALESCE(num_turns, 0) > 0
+                   OR COALESCE(total_cost_usd, 0) > 0
+                   OR EXISTS (SELECT 1 FROM agent_chat_message
+                              WHERE agent_chat_message.chat_id = agent_chat.id)
+               ))
+        """)
+        conn.exec_driver_sql("""
+            UPDATE agent_chat SET producer_paused = 0 WHERE producer_started = 0
+        """)
 
 
 def _add_missing_indexes(conn: Connection) -> None:

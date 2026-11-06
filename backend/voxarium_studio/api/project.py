@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..build_info import build_info, changelog_path
 from ..core.config import (
+    ApplicationThemeConfig,
     ConcurrencyConfig,
     DocsConfig,
     TeamsConfig,
@@ -16,6 +18,13 @@ from ..core.config import (
     UpdatesConfig,
     normalise_project_code,
     resolve_launch_root,
+    save_config,
+)
+from ..core.application_config import (
+    ApplicationConfig,
+    apply_application_config,
+    load_application_config,
+    save_application_config,
 )
 from ..core.context import AppContext
 from ..core.prompts import SPECS
@@ -49,6 +58,19 @@ class SettingsUpdate(BaseModel):
     updates: UpdatesConfig | None = None
     node_cache_enabled: bool | None = None
     show_data_dir: bool | None = None
+    language: Literal["en", "ru"] | None = None
+
+
+class ApplicationSettingsUpdate(BaseModel):
+    """Settings can only change application preferences, never project fields (§5.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    theme: ApplicationThemeConfig | None = None
+    updates: UpdatesConfig | None = None
+    node_cache_enabled: bool | None = None
+    show_data_dir: bool | None = None
+    language: Literal["en", "ru"] | None = None
 
 
 class OpenProjectRequest(BaseModel):
@@ -180,72 +202,130 @@ async def get_prompt_specs() -> dict[str, Any]:
 
 
 @router.put("/settings")
-async def update_settings(payload: SettingsUpdate, ctx: Ctx) -> dict[str, Any]:
-    """Persist settings to config.yaml so they travel with the project.
+async def update_settings(payload: SettingsUpdate, request: Request, ctx: Ctx) -> dict[str, Any]:
+    """Compatibility endpoint: route each field to its owning config (§5.2)."""
+    async with _settings_lock(request):
+        return await _save_settings(payload, ctx)
 
-    The nested sections **merge**, the same way `PATCH …/members/{id}` does. They are full
-    models with defaults for every field, so assigning one wholesale turns a partial body
-    into a reset: `{"theme": {"radius": "round"}}` would validate into a ThemeConfig whose
-    `mode` is the default `dark`, and setting the corners would quietly undo light mode.
-    `exclude_unset` is what distinguishes "the client sent this" from "this is the
-    default", so an omitted field keeps whatever is already in config.yaml.
+
+@router.put("/settings/application")
+async def update_application_settings(
+    payload: ApplicationSettingsUpdate, request: Request, ctx: Ctx,
+) -> dict[str, Any]:
+    """Global-only endpoint; accepts no project code, accent or agent settings."""
+    async with _settings_lock(request):
+        return await _save_settings(
+            SettingsUpdate.model_validate(payload.model_dump(exclude_unset=True)), ctx,
+        )
+
+
+def _settings_lock(request: Request) -> asyncio.Lock:
+    # A replacement reads the application config before its awaited startup, and joins
+    # work_contexts only afterwards (§5.1). Share the switch lock so a global save cannot
+    # miss that in-flight context and leave it with stale preferences or update policy.
+    return request.app.state.project_lock
+
+
+async def _save_settings(payload: SettingsUpdate, ctx: AppContext) -> dict[str, Any]:
+    """Validate the entire patch before touching live state or either file (§5.2).
+
+    Nested models merge only explicitly supplied fields. Defaults in a one-field request
+    must not reset the rest of the user's preferences or the project's configuration.
     """
+    draft = ctx.config.model_copy(deep=True)
+    application = load_application_config()
+    project_changed = False
+    application_changed = False
+    prompts_changed = False
     if payload.project_name is not None:
-        ctx.config.project_name = payload.project_name
+        draft.project_name = payload.project_name
+        project_changed = True
     if payload.project_code is not None:
-        # Blank means "go back to the derived code", so it is stored as null rather than as
-        # an empty string a later reader would have to special-case (§10.2).
         try:
-            ctx.config.project_code = normalise_project_code(payload.project_code)
+            draft.project_code = normalise_project_code(payload.project_code)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        project_changed = True
     if payload.theme is not None:
-        ctx.config.theme = ctx.config.theme.model_copy(
-            update=payload.theme.model_dump(exclude_unset=True)
-        )
+        patch = payload.theme.model_dump(exclude_unset=True)
+        if "accent" in patch:
+            draft.theme.accent = patch.pop("accent")
+            project_changed = True
+        if patch:
+            application.theme = application.theme.model_copy(update=patch)
+            application_changed = True
     if payload.concurrency is not None:
-        ctx.config.concurrency = ctx.config.concurrency.model_copy(
+        draft.concurrency = draft.concurrency.model_copy(
             update=payload.concurrency.model_dump(exclude_unset=True)
         )
-        ctx.jobs.update_limits(ctx.config.concurrency.as_dict())
+        project_changed = True
     if payload.teams is not None:
         patch = payload.teams.model_dump(exclude_unset=True)
+        from ..teams.required_context import checked_documents, checked_skills
+        try:
+            if "required_skills" in patch:
+                patch["required_skills"] = checked_skills(
+                    ctx.skills, patch["required_skills"], draft.teams.required_skills)
+            if "required_documents" in patch:
+                patch["required_documents"] = checked_documents(
+                    ctx.teams.docs, patch["required_documents"], draft.teams.required_documents)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if "commit_backend" in patch:
-            from voxarium_studio.teams.backends.base import available_backends
-
             if patch["commit_backend"] not in available_backends():
                 raise HTTPException(status_code=400, detail="Unknown commit description backend")
         if "launch_root" in patch:
             patch["launch_root"] = _checked_launch_root(ctx, patch["launch_root"])
         prompts_changed = "prompts" in patch
         if prompts_changed:
-            # The same partial-patch rule as the sections around it, one level down:
-            # `model_copy` does not validate, so without this the nested section would be
-            # replaced by a raw dict holding only the fields the client sent.
-            patch["prompts"] = ctx.config.teams.prompts.model_copy(update=patch["prompts"])
-        ctx.config.teams = ctx.config.teams.model_copy(update=patch)
-        if prompts_changed:
-            # The identity templates are baked into `.claude/agents/*.md` (§10.3), so an
-            # edit here has to reach the files a terminal reads too. Unchanged definitions
-            # are left alone, mtime and all.
-            await ctx.teams.sync_agent_definitions()
+            patch["prompts"] = draft.teams.prompts.model_copy(update=patch["prompts"])
+        draft.teams = draft.teams.model_copy(update=patch)
+        project_changed = True
     if payload.docs is not None:
-        ctx.config.docs = ctx.config.docs.model_copy(
+        draft.docs = draft.docs.model_copy(
             update=payload.docs.model_dump(exclude_unset=True)
         )
+        project_changed = True
     if payload.updates is not None:
-        ctx.config.updates = ctx.config.updates.model_copy(
+        application.updates = application.updates.model_copy(
             update=payload.updates.model_dump(exclude_unset=True)
         )
-        # The poller is already running against the old setting, so the service is told
-        # rather than left to find out at the next project switch (§12.1).
-        await ctx.updates.configure(ctx.config.updates)
+        application_changed = True
     if payload.node_cache_enabled is not None:
-        ctx.config.node_cache_enabled = payload.node_cache_enabled
+        application.node_cache_enabled = payload.node_cache_enabled
+        application_changed = True
     if payload.show_data_dir is not None:
-        ctx.config.explorer.show_data_dir = payload.show_data_dir
-    ctx.save_config()
+        application.show_data_dir = payload.show_data_dir
+        application_changed = True
+    if "language" in payload.model_fields_set:
+        application.language = payload.language
+        application_changed = True
+
+    apply_application_config(draft, application)
+    if project_changed:
+        save_config(ctx.paths, draft)
+    if application_changed:
+        save_application_config(application)
+    # Services share this AppConfig object. Keep its identity when committing the draft.
+    for name in type(draft).model_fields:
+        setattr(ctx.config, name, getattr(draft, name))
+    if payload.concurrency is not None:
+        ctx.jobs.update_limits(ctx.config.concurrency.as_dict())
+    if application_changed:
+        await _configure_application(ctx, application)
+    if prompts_changed:
+        await ctx.teams.sync_agent_definitions()
     return ctx.config.model_dump(mode="json")
+
+
+async def _configure_application(ctx: AppContext, application: ApplicationConfig) -> None:
+    # Projects continue running in the background (§5.1). All resident contexts must
+    # adopt global preferences now, not only after reopening or restarting the Studio.
+    contexts = ctx.work_contexts()
+    for resident in contexts:
+        apply_application_config(resident.config, application)
+    for resident in contexts:
+        await resident.updates.configure(resident.config.updates)
 
 
 @router.get("/status")
@@ -281,14 +361,15 @@ async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
 
 
 @router.post("/settings/reload")
-async def reload_everything(ctx: Ctx) -> dict[str, Any]:
+async def reload_everything(request: Request, ctx: Ctx) -> dict[str, Any]:
     """Re-read config.yaml and re-scan plugins, for when files were edited by hand."""
     try:
-        ctx.reload_config()
-        # §10.11: hand-edited prompts also refresh the Producer's derived responsibility.
-        await ctx.teams.sync_agent_definitions()
-        await ctx.updates.configure(ctx.config.updates)
-        await ctx.reload_plugins()
+        async with _settings_lock(request):
+            ctx.reload_config()
+            # §10.11: hand-edited prompts also refresh the Producer's derived responsibility.
+            await ctx.teams.sync_agent_definitions()
+            await _configure_application(ctx, load_application_config())
+            await ctx.reload_plugins()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

@@ -130,11 +130,11 @@ watch(() => route.query.chat, id => {
 
 <template>
   <div class="flex h-full min-h-0 flex-col" data-producer-workspace>
-    <ProducerControls v-if="!loading && producer && chat.view === 'chat'" toolbar />
     <p v-if="teams.error" class="px-4 py-2 text-danger" role="alert">{{ teams.error }}</p>
     <p v-if="chat.error && chat.view === 'list'" class="px-4 py-2 text-danger" role="alert">{{ chat.error }}</p>
     <div class="producer-workspace min-h-0 flex-1">
       <section class="producer-pinned flex min-h-0 flex-col border-r border-line bg-surface" :aria-label="t('producerPage.chat')">
+        <ProducerControls v-if="!loading && producer && chat.view === 'chat'" toolbar />
         <header class="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
           <select :value="selection" :disabled="loading || chat.busy || changingChat" :aria-label="t('producerPage.selectChat')"
             class="min-w-0 flex-1 rounded-md border border-line bg-inset px-2 py-1.5 outline-none focus:border-accent"

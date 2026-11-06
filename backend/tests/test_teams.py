@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from sqlmodel import select
 
 from voxarium_studio.core.config import MAX_MESSAGE_BYTES_DEFAULT
@@ -2438,7 +2439,7 @@ def test_effort_round_trips_through_the_team_file(project: Path, client) -> None
     """Written only once chosen, and removed again when cleared — the `pos_*` rule, and for
     the same reason: a null on every row of a file meant to be read is noise."""
     roster = project / "voxarium_studio" / "teams" / "default-team.yaml"
-    assert "effort" not in roster.read_text(encoding="utf-8")
+    assert all("effort" not in member for member in yaml.safe_load(roster.read_text("utf-8"))["members"])
 
     saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"effort": "xhigh"})
     assert saved.status_code == 200 and saved.json()["effort"] == "xhigh"
@@ -2446,7 +2447,7 @@ def test_effort_round_trips_through_the_team_file(project: Path, client) -> None
 
     cleared = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"effort": None})
     assert cleared.json()["effort"] is None, "null is a value here — back to the model's default"
-    assert "effort" not in roster.read_text(encoding="utf-8")
+    assert all("effort" not in member for member in yaml.safe_load(roster.read_text("utf-8"))["members"])
 
 
 def test_an_unknown_effort_level_is_refused(client) -> None:
@@ -2965,7 +2966,7 @@ async def test_the_roster_is_projected_into_claude_code_agents(teams: AppContext
     await teams.teams.sync_agent_definitions()
 
     written = _definitions(teams)
-    assert set(written) == {DESIGNER_AGENT, "igor", "producer"}, "agents only, including the built-in Producer"
+    assert set(written) == {DESIGNER_AGENT, "igor", "producer", "effort-solver"}, "agents only, including built-in agents"
     assert f"name: {DESIGNER_AGENT}" in written[DESIGNER_AGENT]
     assert f"voxarium_studio_member: {DESIGNER}" in written[DESIGNER_AGENT], "ours to rewrite"
     assert "Game Designer" in written[DESIGNER_AGENT]

@@ -13,7 +13,7 @@ import { computed, ref } from 'vue'
 
 import { ApiError, api, recoverRuntime } from '@/api/client'
 import type { ProjectInfo, ProjectTaskCounts, RecentProject, StatusInfo } from '@/api/types'
-import { t } from '@/i18n'
+import { setLocale, t } from '@/i18n'
 import { FRONTEND_VERSION, waitForBackendVersion } from '@/lib/runtime-version'
 import { onEvent, ws } from '@/ws/connection'
 import { useDocsStore } from './docs'
@@ -53,6 +53,8 @@ export const useSessionStore = defineStore('session', () => {
       listenForProjectSwitch()
       ws.connect()
       if (versionMismatch.value) return
+      // The browser cache is only the startup fallback; the user's config wins (§6.4).
+      if (info.config?.language) await setLocale(info.config.language)
       useThemeStore().hydrate(info.config?.theme)
       const docs = useDocsStore()
       docs.hydrate(info.config?.docs)
@@ -120,12 +122,18 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function refreshStatus(): Promise<void> {
-    try {
-      status.value = await api.status()
-    } catch {
-      /* Status is diagnostic only — a failure here must not break the UI. */
-    }
+  let statusRequest: Promise<void> | null = null
+  function refreshStatus(): Promise<void> {
+    if (statusRequest) return statusRequest
+    statusRequest = (async () => {
+      try {
+        status.value = await api.status()
+      } catch {
+        // §6.1: a failed check must not leave stale green backend indicators behind.
+        status.value = null
+      }
+    })().finally(() => { statusRequest = null })
+    return statusRequest
   }
 
   async function refreshRecent(): Promise<void> {

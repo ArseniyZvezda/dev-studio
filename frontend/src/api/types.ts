@@ -485,8 +485,17 @@ export type TaskResultType = 'done' | 'question' | 'error'
 /** `human` members have no agent session — their tasks wait in an inbox (§10.2). */
 export type MemberKind = 'agent' | 'human'
 
+/** The four relative weights used by the built-in Effort Solver (§10.11). */
+export interface EffortSolverWeights {
+  complexity: number
+  creativity: number
+  depth: number
+  coverage: number
+}
+
 export interface TeamMember {
-  builtin?: 'producer' | null
+  builtin?: 'producer' | 'director' | 'effort_solver' | null
+  effort_solver_weights?: EffortSolverWeights | null
   id: string
   team_id: string
   name: string
@@ -513,6 +522,10 @@ export interface TeamMember {
    * folder no longer has stays here until it is taken off, and is not offered to the session.
    */
   skills: string[]
+  /** Mandatory startup skills, added to the shared Team Settings requirements (§10.10). */
+  required_skills?: string[]
+  /** Documents paths, relative to voxarium_studio/docs, included in full on startup. */
+  required_documents?: string[]
   /** Use this member's permission mode and turn budget instead of Team Settings (§10.2). */
   run_settings_override: boolean
   max_turns: number
@@ -670,13 +683,18 @@ export interface AgentMessage {
  * and MCP servers a task run gets, with the user's whereabouts in place of a brief.
  */
 export type ProducerPolicy = 'careful' | 'independent'
+export type ProducerEffortMode = 'agent' | 'auto'
 
 export interface AgentChat {
   producer_mode?: boolean
   /** Producer workspace chats keep their mode enabled until deletion (§10.11). */
   producer_workspace?: boolean
+  /** The first Producer turn has been accepted; remains true across restarts (§10.11). */
+  producer_started?: boolean
   producer_paused?: boolean
   producer_policy?: ProducerPolicy
+  /** Task effort comes from the assignee unless the Producer must choose it (§10.11). */
+  producer_effort_mode?: ProducerEffortMode
   /** Approximate task API budget in USD; old servers use the $150 default (§10.11). */
   estimate_task_cost_usd?: number
   producer_state?: 'off' | 'discussing' | 'running' | 'awaiting_approval' | 'awaiting_user' | 'waiting' | 'error'
@@ -975,6 +993,7 @@ export interface ActivityDay {
 }
 
 export interface MemberUpdate {
+  effort_solver_weights?: EffortSolverWeights | null
   name?: string
   role_title?: string
   kind?: MemberKind
@@ -991,6 +1010,8 @@ export interface MemberUpdate {
   allowed_tools?: string[]
   /** The whole list as it should be. A name being *added* must be a skill the project has. */
   skills?: string[]
+  required_skills?: string[]
+  required_documents?: string[]
   run_settings_override?: boolean
   max_turns?: number
   permission_mode?: string
@@ -1248,6 +1269,8 @@ export interface DocsConfig {
 
 export interface AppConfig {
   version: number
+  /** User-wide preference; absent/null keeps the browser's startup language (§6.4). */
+  language?: 'en' | 'ru' | null
   project_name: string | null
   /**
    * Short code in front of every task id — `VS` in `VS-01` (§10.2). Null means "not
@@ -1347,6 +1370,9 @@ export interface PromptSpec {
 export interface TeamsConfig {
   permission_mode: string
   max_turns: number
+  /** Mandatory startup context for every agent, supplemented by each member (§10.10). */
+  required_skills?: string[]
+  required_documents?: string[]
   commit_backend: string
   commit_model: string
   commit_proposals: boolean
@@ -1388,6 +1414,15 @@ export interface SettingsUpdate {
   updates?: Partial<UpdatesConfig>
   node_cache_enabled?: boolean
   show_data_dir?: boolean
+}
+
+/** Settings shared by every managed project, persisted in the user config (§5.1). */
+export interface ApplicationSettingsUpdate {
+  theme?: Partial<Omit<ThemeConfig, 'accent'>>
+  updates?: Partial<UpdatesConfig>
+  node_cache_enabled?: boolean
+  show_data_dir?: boolean
+  language?: 'en' | 'ru' | null
 }
 
 /** The version control system the managed project is under, if any (§10.5). */

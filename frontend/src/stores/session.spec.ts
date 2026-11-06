@@ -2,7 +2,7 @@ import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { api, listeners, recoverRuntime, waitForVersion, reload } = vi.hoisted(() => ({
-  api: { project: vi.fn(), projectTaskCounts: vi.fn() },
+  api: { project: vi.fn(), projectTaskCounts: vi.fn(), status: vi.fn() },
   listeners: new Map<string, () => void>(),
   recoverRuntime: vi.fn(), waitForVersion: vi.fn(), reload: vi.fn(),
 }))
@@ -27,9 +27,11 @@ vi.mock('./docs', () => ({ useDocsStore: () => ({ hydrate: vi.fn(), restoreFolds
 import { useSessionStore } from './session'
 import { ApiError } from '@/api/client'
 import { FRONTEND_VERSION } from '@/lib/runtime-version'
+import { locale, setLocale } from '@/i18n'
 
 let pinia: Pinia
-beforeEach(() => {
+beforeEach(async () => {
+  await setLocale('en')
   pinia = createPinia()
   setActivePinia(pinia)
   listeners.clear()
@@ -41,7 +43,24 @@ beforeEach(() => {
   api.project.mockResolvedValue({ root: 'D:/game', config: {}, version: { version: FRONTEND_VERSION } })
   api.projectTaskCounts.mockResolvedValue({ in_progress: 2, needs_review: 1 })
 })
-afterEach(() => { disposePinia(pinia); vi.unstubAllGlobals() })
+afterEach(async () => { disposePinia(pinia); vi.unstubAllGlobals(); await setLocale('en') })
+
+describe('application language', () => {
+  it('applies the user config preference over the browser startup language', async () => {
+    await setLocale('ru')
+    api.project.mockResolvedValue({
+      root: 'D:/game', config: { language: 'en' }, version: { version: FRONTEND_VERSION },
+    })
+    await useSessionStore().load()
+    expect(locale.value).toBe('en')
+  })
+
+  it('keeps the startup language when no user preference has been saved', async () => {
+    await setLocale('ru')
+    await useSessionStore().load()
+    expect(locale.value).toBe('ru')
+  })
+})
 
 describe('frontend/backend compatibility', () => {
   it('uses the compiled frontend version and detects a changed backend on reconnect', async () => {
@@ -109,6 +128,39 @@ describe('frontend/backend compatibility', () => {
     await session.recoverVersionMismatch()
     expect(session.recoveryState).toBe('failed')
     expect(recoverRuntime).not.toHaveBeenCalled()
+  })
+})
+
+describe('backend readiness', () => {
+  const status = {
+    database: true, event_seq: 0, ws_clients: 1, jobs: [], vcs_backends: {},
+    agent_backends: { codex: { available: true, reason: 'Ready' } },
+  }
+
+  it('clears stale readiness after a failed check and recovers on the next check', async () => {
+    const session = useSessionStore()
+    api.status.mockResolvedValue(status)
+    await session.refreshStatus()
+    expect(session.status?.agent_backends.codex?.available).toBe(true)
+
+    api.status.mockRejectedValueOnce(new Error('offline'))
+    await session.refreshStatus()
+    expect(session.status).toBeNull()
+
+    await session.refreshStatus()
+    expect(session.status?.agent_backends.codex?.available).toBe(true)
+  })
+
+  it('shares an in-flight check between the navigation and task page', async () => {
+    let resolve!: (value: typeof status) => void
+    api.status.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const session = useSessionStore()
+    const navigation = session.refreshStatus()
+    const taskPage = session.refreshStatus()
+    expect(api.status).toHaveBeenCalledOnce()
+    resolve(status)
+    await Promise.all([navigation, taskPage])
+    expect(session.status).toEqual(status)
   })
 })
 

@@ -251,6 +251,8 @@ class ChatService:
     async def create_chat(self, member_id: str, *, title: str = "", producer_mode: bool = False,
                           locale: str = "en") -> AgentChat:
         """Open a chat with an agent member. ``KeyError`` for nobody, ``ValueError`` for a person."""
+        if member_id in self.orchestrator.removing_members:
+            raise ValueError("This member is being removed. Wait for the team to refresh.")
         async with self.db.session() as session:
             member = await session.get(TeamMember, member_id)
             if member is None:
@@ -267,7 +269,6 @@ class ChatService:
                 member_id=member_id, title=title.strip(), producer_mode=producer_mode,
                 producer_workspace=producer_mode, producer_locale=locale,
                 producer_state="discussing" if producer_mode else "off",
-                producer_paused=producer_mode and member.team_id in self.orchestrator.paused_teams,
             )
             session.add(chat)
         await self._publish_chat(chat)
@@ -288,7 +289,7 @@ class ChatService:
             return await self.producer._save(
                 chat_id, producer_workspace=True, producer_mode=True, producer_locale=locale,
                 producer_state="discussing", error=None,
-                producer_paused=member.team_id in self.orchestrator.paused_teams,
+                producer_paused=chat.producer_started and member.team_id in self.orchestrator.paused_teams,
             )
 
     async def delete_chat(self, chat_id: str) -> bool:
@@ -356,6 +357,11 @@ class ChatService:
             chat = await session.get(AgentChat, chat_id)
             if chat is None:
                 raise KeyError(f"No chat {chat_id!r}")
+            member = await session.get(TeamMember, chat.member_id)
+            if member is None or member.kind == MemberKind.HUMAN:
+                raise ValueError("This conversation is read-only because its agent was removed.")
+            if member.id in self.orchestrator.removing_members:
+                raise ValueError("This member is being removed. Wait for the team to refresh.")
             if chat.producer_mode:
                 await self.producer.require_resumed(chat_id)
             if not chat.title:
@@ -389,6 +395,8 @@ class ChatService:
 
         if chat.producer_mode:
             await self.producer.require_resumed(chat_id)
+        if member_id in self.orchestrator.removing_members:
+            raise ValueError("This member is being removed. Wait for the team to refresh.")
         self.jobs.submit(
             chat_id,
             JOB_KIND,
@@ -447,7 +455,7 @@ class ChatService:
             )
             toolset = build_toolset(orchestrator, member=member, task=None,
                                     producer=self.producer if chat.producer_mode else None,
-                                    chat_id=chat_id)
+                                    chat_id=chat_id, producer_effort_mode=chat.producer_effort_mode)
             if chat.producer_mode and toolset is None:
                 raise ValueError("Producer Mode needs the built-in Studio MCP tools enabled.")
             from .orchestrator import _build_system_prompt, code_graph_file
@@ -455,7 +463,11 @@ class ChatService:
             # The member's skills reach a chat as they reach a task (§10.10) — the same folders,
             # read fresh each turn, with no transcript line: a chat is not a record of what a run
             # was told, and the page it lives on shows the conversation, not the service notes.
-            member_skills = orchestrator.skills.for_session(member.skills)
+            from .required_context import load_required_context
+            required = load_required_context(self.config.teams, member, orchestrator.skills, orchestrator.docs)
+            member_skills = orchestrator.skills.for_session([
+                *(member.skills or []), *(skill.name for skill in required.skills.found),
+            ])
             system_prompt = _build_system_prompt(
                 member=member,
                 team=team,
@@ -486,7 +498,7 @@ class ChatService:
             # tools the member reaches the board with.
             project_mcp = project_mcp_servers(self.paths, self.config)
             recovered_prompt = (
-                recovery_prompt(prompt, await self.messages(chat_id))
+                required.prepend(recovery_prompt(prompt, await self.messages(chat_id)))
                 if resume_session_id and getattr(backend, "session_recovery", False)
                 else ""
             )
@@ -497,7 +509,7 @@ class ChatService:
                 session_key=chat_id,
                 workdir=workdir,
                 writable_roots=[self.paths.root],
-                prompt=prompt,
+                prompt=required.prepend(prompt) if not resume_session_id else prompt,
                 images=images or [],
                 system_prompt=system_prompt,
                 agent_name=agent_name,
@@ -529,10 +541,12 @@ class ChatService:
                     if not request.resume_session_id and fresh.producer_summary:
                         request.prompt = self.config.teams.prompts.text(
                             "producer_summary", summary=fresh.producer_summary, prompt=request.prompt)
-                    request.recovery_prompt = recovery_prompt(
+                    request.recovery_prompt = required.prepend(recovery_prompt(
                         self.config.teams.prompts.text(
                             "producer_summary", summary=fresh.producer_summary, prompt=request.prompt),
-                        await self.messages(chat_id))
+                        await self.messages(chat_id)))
+                    if not request.resume_session_id:
+                        request.prompt = required.prepend(request.prompt)
                 try:
                     await self._consume(backend, request, chat_id, member_id)
                 except Exception as exc:
@@ -551,6 +565,7 @@ class ChatService:
                             "producer_state", state=await self.producer.context(chat_id), prompt=prompt)
                         request.prompt = self.config.teams.prompts.text(
                             "producer_summary", summary=fresh.producer_summary, prompt=state_prompt)
+                        request.prompt = required.prepend(request.prompt)
                         await self._set_error(chat_id, None)
                         await self._consume(backend, request, chat_id, member_id)
         except asyncio.CancelledError:

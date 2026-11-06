@@ -9,17 +9,13 @@
  * counts ride along on the nodes — read-only context, and exactly what you want in view
  * while deciding whether to move a line.
  *
- * The page has two modes and `editing` is the switch for both halves of it: locked, the
- * chart only pans and zooms and there is nothing here that writes; editing, the roster can
- * be restructured, the settings rails are editable and changes save as you go. The default is
- * locked because reading the team is the common visit, and on a canvas the gesture for
- * reading (drag) and the gesture for restructuring (drag) are the same one.
+ * The page is always editable (§10.2): roster gestures and settings save as you go.
  *
  * The roster is saved in `voxarium_studio/teams/<team>.yaml`, comments and all; shared run
  * defaults and agent prompts live in `voxarium_studio/config.yaml` (§10.2, §10.3).
  */
-import { Check, Pencil, UserPlus, Users } from 'lucide-vue-next'
-import { onMounted, ref, watch } from 'vue'
+import { UserPlus, Users } from 'lucide-vue-next'
+import { onMounted, ref } from 'vue'
 
 import EmptyState from '@/components/ui/EmptyState.vue'
 import MemberEditor from '@/components/teams/MemberEditor.vue'
@@ -33,18 +29,8 @@ import { useTeamsStore } from '@/stores/teams'
 const teams = useTeamsStore()
 const skills = useSkillsStore()
 
-const editing = ref(false)
 const memberFormOpen = ref(false)
 const newMember = ref({ name: '', roleTitle: '', kind: 'agent' as MemberKind, managerId: '' })
-
-// Leaving edit mode puts the page back to read-only whole: the rail and the add form are
-// both editors, and leaving one open over a locked canvas would offer what the mode says
-// is unavailable.
-watch(editing, (on) => {
-  if (on) return
-  memberFormOpen.value = false
-  teams.editMember(null)
-})
 
 onMounted(async () => {
   teams.subscribe()
@@ -82,33 +68,23 @@ async function addMember() {
 <template>
   <div class="flex h-full">
     <aside class="w-[22rem] shrink-0 border-r border-line bg-surface">
-      <TeamSettings :editing="editing" />
+      <TeamSettings />
     </aside>
     <section class="flex min-w-0 flex-1 flex-col">
       <header class="vxs-pane flex shrink-0 flex-wrap items-center gap-2 border-b border-pane px-pane py-2">
         <span class="flex-1 truncate text-title font-medium">
           {{ teams.team?.name ?? t('teams.page.fallbackTitle') }}
         </span>
-        <span v-if="editing" class="order-last w-full text-small text-faint">
+        <span class="order-last w-full text-small text-faint">
           {{ t('teams.page.savesAsYouGo') }}
         </span>
         <button
-          v-if="editing"
           class="flex shrink-0 items-center gap-1.5 rounded-pill border border-line px-3 py-1 hover:bg-hover"
           :title="t('teams.page.addMemberTitle')"
           @click="openMemberForm()"
         >
           <UserPlus class="size-3.5" />
           {{ t('teams.page.addMember') }}
-        </button>
-        <button
-          class="flex shrink-0 items-center gap-1.5 rounded-pill px-3 py-1 font-medium"
-          :class="editing ? 'vxs-btn-primary' : 'border border-line hover:bg-hover'"
-          :title="editing ? t('teams.page.lockTitle') : t('teams.page.editTitle')"
-          @click="editing = !editing"
-        >
-          <component :is="editing ? Check : Pencil" class="size-3.5" />
-          {{ editing ? t('common.done') : t('common.edit') }}
         </button>
       </header>
 
@@ -185,24 +161,15 @@ async function addMember() {
         <EmptyState
           v-if="!teams.members.length && !teams.loading"
           :title="t('teams.page.emptyTitle')"
-          :hint="
-            editing
-              ? t('teams.page.emptyHintEditing', { dir: 'voxarium_studio/teams/' })
-              : t('teams.page.emptyHintLocked', { dir: 'voxarium_studio/teams/' })
-          "
+          :hint="t('teams.page.emptyHintEditing', { dir: 'voxarium_studio/teams/' })"
         >
           <template #icon><Users class="mx-auto mb-3 size-8 text-faint" /></template>
         </EmptyState>
-        <OrgChart v-else :editing="editing" @configure="teams.editMember($event)" />
+        <OrgChart v-else @configure="teams.editMember($event)" />
       </div>
     </section>
 
-    <!-- Gated on `editing` as well as on there being a member: `editingMemberId` lives in
-         the store and outlives this page (§ two pages, one store), while `editing` is local
-         and starts false on every mount. Without the first half, leaving for Tasks and
-         coming back brought the rail up over a locked chart. Keeping the id is deliberate —
-         pressing Edit again reopens on whoever was being configured. -->
-    <aside v-if="editing && teams.editingMember" class="w-96 shrink-0">
+    <aside v-if="teams.editingMember" class="w-96 shrink-0">
       <MemberEditor :member="teams.editingMember" @close="teams.editMember(null)" />
     </aside>
   </div>

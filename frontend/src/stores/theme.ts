@@ -1,17 +1,16 @@
 /**
  * Applies the persisted theme (spec §7) to the document.
  *
- * Themes live in the managed project's `voxarium_studio/config.yaml`, not in browser storage —
- * the appearance travels with the project, which is the same rule the rest of the app's
- * state follows. Applying one is only ever a matter of setting attributes and a few
+ * Appearance lives in the user config; only the accent travels in the managed project's
+ * `voxarium_studio/config.yaml` (§5.1, §7). The API returns the combined theme.
+ * Applying one is only ever a matter of setting attributes and a few
  * custom properties on `<html>`; nothing is rebuilt and no classes are regenerated,
  * because every utility resolves through `var(--vxs-*)` at runtime.
  *
  * Every knob is an attribute (`data-sidebar`, `data-font`, …) whose values are blocks in
  * `tokens.css`; the store writes exactly three custom properties of its own — the accent
- * *seed*, the node tint and, when a project has picked one, the text size — plus whatever
- * `custom_tokens` names. A font that is not on the machine is fetched the first time a
- * project asks for it, and never before.
+ * *seed*, the node tint and, when the user has picked one, the text size — plus whatever
+ * `custom_tokens` names. A font that is not on the machine is fetched when first selected.
  *
  * The seed rather than the accent itself: `:root` points `--vxs-accent` at
  * `--vxs-accent-seed`, so a `custom_tokens` override of `--vxs-accent` still wins — it is
@@ -22,7 +21,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { ThemeConfig } from '@/api/types'
+import type { AppConfig, ThemeConfig } from '@/api/types'
 import { DEFAULT_THEME, fontStylesheet } from '@/lib/appearance'
 
 export const useThemeStore = defineStore('theme', () => {
@@ -51,7 +50,7 @@ export const useThemeStore = defineStore('theme', () => {
   const canvasGrid = computed(() => theme.value.canvas_grid)
 
   /**
-   * Fetch a Google Fonts face the first time a project asks for it. Idempotent: the link
+   * Fetch a Google Fonts face the first time the user asks for it. Idempotent: the link
    * is keyed by the choice, and a face `index.html` or the OS already provides has no
    * stylesheet to fetch.
    */
@@ -77,7 +76,7 @@ export const useThemeStore = defineStore('theme', () => {
 
     // A token dropped from `custom_tokens` has to leave the element too, or the editor's
     // remove button would appear to do nothing until the next reload. Done before the
-    // built-ins below, so a project that had overridden one of those gets it back.
+    // built-ins below, so removing an override restores the built-in value.
     for (const property of appliedTokens) {
       if (!(property in next.custom_tokens)) {
         root.style.removeProperty(property)
@@ -95,7 +94,7 @@ export const useThemeStore = defineStore('theme', () => {
     ensureFontLoaded(next.mono_font)
 
     // Escape-hatch overrides from config.yaml, e.g. {"--vxs-bg-surface": "#101114"}.
-    // Applied last so a project can override anything the presets decided.
+    // Applied last so user overrides take precedence over the presets.
     for (const [property, value] of Object.entries(next.custom_tokens)) {
       if (!property.startsWith('--')) continue
       root.style.setProperty(property, value)
@@ -120,13 +119,13 @@ export const useThemeStore = defineStore('theme', () => {
     apply({ ...DEFAULT_THEME, ...(next ?? {}) })
   }
 
-  /** Optimistically apply, then persist to `config.yaml`. */
-  async function update(patch: Partial<ThemeConfig>): Promise<void> {
+  /** Optimistically apply, then accept the validated effective theme or roll back. */
+  async function persist(patch: Partial<ThemeConfig>, save: () => Promise<AppConfig>): Promise<void> {
     const previous = theme.value
     apply({ ...previous, ...patch })
     saving.value = true
     try {
-      const config = await api.updateSettings({ theme: patch })
+      const config = await save()
       apply({ ...DEFAULT_THEME, ...config.theme })
     } catch (error) {
       apply(previous)
@@ -136,5 +135,17 @@ export const useThemeStore = defineStore('theme', () => {
     }
   }
 
-  return { theme, saving, resolvedMode, canvasGrid, hydrate, update }
+  /** Appearance settings belong to the user, independently of the open project (§7). */
+  async function update(patch: Partial<Omit<ThemeConfig, 'accent'>>): Promise<void> {
+    // A legacy imported object may still contain accent at runtime despite its TS type.
+    const { accent: _accent, ...applicationTheme } = patch as Partial<ThemeConfig>
+    await persist(applicationTheme, () => api.updateApplicationSettings({ theme: applicationTheme }))
+  }
+
+  /** The one theme field that identifies the current project (§7). */
+  async function updateAccent(accent: string): Promise<void> {
+    await persist({ accent }, () => api.updateSettings({ theme: { accent } }))
+  }
+
+  return { theme, saving, resolvedMode, canvasGrid, hydrate, update, updateAccent }
 })

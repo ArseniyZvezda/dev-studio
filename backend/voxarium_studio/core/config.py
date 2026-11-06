@@ -1,4 +1,4 @@
-"""``voxarium_studio/config.yaml`` — the human-editable, git-committable project config (§5)."""
+"""Effective config and the project-owned ``voxarium_studio/config.yaml`` (§5.2)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .paths import ProjectPaths
 from .prompts import AgentPromptsConfig
@@ -66,34 +66,23 @@ def derive_project_code(name: str | None) -> str:
     return code if PROJECT_CODE_PATTERN.match(code) else FALLBACK_PROJECT_CODE
 
 
-class ThemeConfig(BaseModel):
-    """Persisted theme selection; applied by the frontend theme store (§7).
+class ApplicationThemeConfig(BaseModel):
+    """User-wide appearance, excluding the project's accent (§5.2, §7).
 
-    Every field is one knob on Settings → Appearance, and every value is an attribute the
-    store stamps on ``<html>`` — the colours themselves live in ``tokens.css``.
-
-    Five fields left this model on 2026-09-11, and the shape of the page changed with them.
-    ``palette`` and ``surfaces`` were folded into ``look``, the compositions a project could
-    pick rather than a grid of combinations most of which nobody wanted; ``radius`` and
-    ``density`` were fixed at the values the 2026-09 redesign had chosen and are now plain
-    ``tokens.css`` values; and ``reduce_motion`` went back to being the reader's own OS
-    setting, which the stylesheet already honours. ``look`` itself left on 2026-09-16, when
-    every look but Graphite was deleted: with one left there is nothing to pick, and the
-    Graphite palette is simply what ``tokens.css`` says. A project written before either date
-    still loads — pydantic ignores what this model does not declare — with the rest of its
-    theme intact, and the next save drops the stale keys.
+    Settings → Appearance writes these fields to the user's application config. The
+    frontend stamps attributes and custom properties on ``<html>``; colours themselves
+    live in ``tokens.css``. ThemeConfig accepts the obsolete appearance fields in older
+    project files by ignoring them, and the first loaded project seeds user preferences.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     mode: Literal["dark", "light", "system"] = "dark"
 
-    accent: str = "#a394e8"
-    """One ``#rrggbb``, painted as a mark — a focus ring, a selected edge, a run's progress, a
-    link — and never as a ground. The default is the Graphite design's own violet."""
-
     text_size: int | None = Field(default=None, ge=11, le=18)
     """Body text in px, or ``None`` to take the app's own size — the same arrangement as
-    :attr:`DocsConfig.font_size`, and for the same reason: a number here would silently
-    override that size for every project that never asked."""
+    :attr:`DocsConfig.font_size`, and for the same reason: a default number would silently
+    override the app's stylesheet size without the user choosing it."""
 
     font: Literal["google-sans", "inter", "ibm-plex", "roboto", "system"] = "google-sans"
     mono_font: Literal["cascadia", "jetbrains", "fira", "system"] = "jetbrains"
@@ -114,6 +103,16 @@ class ThemeConfig(BaseModel):
     custom_tokens: dict[str, str] = Field(default_factory=dict)
     """Raw CSS custom property overrides, e.g. ``{"--vxs-bg-surface": "#101114"}``. Applied
     last, so they win over every preset."""
+
+
+class ThemeConfig(ApplicationThemeConfig):
+    """Effective theme: application appearance plus the project accent (§5.2, §7)."""
+
+    # Old project files may still contain the appearance controls removed in §7.
+    model_config = ConfigDict(extra="ignore")
+
+    accent: str = "#a394e8"
+    """One ``#rrggbb``, painted as a mark, never as a ground. Stored with the project."""
 
 
 class ConcurrencyConfig(BaseModel):
@@ -152,6 +151,10 @@ class TeamsConfig(BaseModel):
     the models choosing to stop. ``agents`` in ``concurrency`` caps how many run at once;
     these cap how far the work is allowed to spread.
     """
+
+    required_skills: list[str] = Field(default_factory=list)
+    required_documents: list[str] = Field(default_factory=list)
+    """Initial context for every agent, supplemented by the member's requirements (§10.10)."""
 
     permission_mode: str = "bypassPermissions"
     max_turns: int = Field(default=40, ge=1, le=1000)
@@ -369,14 +372,7 @@ class VcsConfig(BaseModel):
 
 
 class UpdatesConfig(BaseModel):
-    """Watching the Studio's own repository for a newer release tag (§12.1).
-
-    Per project like everything else in this file, which is the odd part: which Studio you
-    are running is not a property of the game you point it at. It lives here anyway
-    because this is the file the Settings page writes and a machine-level second config
-    format would cost more than the duplication does — the check is idempotent and reads
-    the same repository whichever project is open.
-    """
+    """Application-wide checks for a newer Studio release (§5.2, §12.1)."""
 
     enabled: bool = True
     check_interval_minutes: int = Field(default=180, ge=5)
@@ -386,7 +382,7 @@ class UpdatesConfig(BaseModel):
 
 class ExplorerConfig(BaseModel):
     show_data_dir: bool = False
-    """Whether ``voxarium_studio/`` itself shows up in the Explorer tree (§6.2)."""
+    """Application preference: show ``voxarium_studio/`` in every Explorer tree (§5.2)."""
 
     ignore: list[str] = Field(
         default_factory=lambda: [
@@ -402,8 +398,8 @@ class ExplorerConfig(BaseModel):
     )
     # There is deliberately no preview size limit here. How much a browser can be handed is
     # the Studio's own number and applies to every project it opens — `MAX_PREVIEW_BYTES` in
-    # `explorer/service.py`. The two fields above are genuinely per-project: which folders
-    # this tree hides. An older config still carrying `max_preview_bytes` loads fine and is
+    # `explorer/service.py`. The ignore list remains per-project. An older config still
+    # carrying `max_preview_bytes` loads fine and is
     # ignored, and the next `save_config` drops it.
 
 
@@ -443,7 +439,11 @@ class PluginConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    """Effective configuration; persistence separates application and project fields (§5.2)."""
+
     version: int = CONFIG_VERSION
+    language: Literal["en", "ru"] | None = None
+    """Application language; null allows first-use migration from this browser's choice."""
     project_name: str | None = None
     project_code: str | None = None
     """Short code every task id is displayed with — ``VS`` in ``VS-01`` (§10.2).
@@ -528,24 +528,66 @@ DEFAULT_PLASTIC_IGNORE = """\
 """
 
 
-def load_config(paths: ProjectPaths) -> AppConfig:
-    """Read ``config.yaml``, falling back to defaults when absent or unreadable."""
+def load_config(paths: ProjectPaths, *, migrate_application: bool = False) -> AppConfig:
+    """Read effective settings; migration is opt-in for actual project opens (§5.2).
+
+    Diagnostic reads (including ``studio info``) never establish user preferences. A
+    missing or unreadable project file must not seed defaults and suppress migration of
+    a later valid legacy project, even when an actual open requested migration.
+    """
+    from .application_config import (
+        application_config_file, apply_application_config, load_application_config,
+    )
+
+    raw, successfully_read = _read_project_config(paths)
+    if application_config_file().exists():
+        # Ignore obsolete global values before validation: an old text size or update
+        # interval outside today's bounds does not invalidate this project's own data.
+        raw = _project_fields(raw)
+    config = AppConfig.model_validate(raw)
+    apply_application_config(config, load_application_config(
+        legacy=config, migrate=migrate_application and successfully_read,
+    ))
+    return config
+
+
+def _read_project_config(paths: ProjectPaths) -> tuple[dict[str, Any], bool]:
+    """Keep successful reads distinct from fallback defaults for one-time migration."""
+    fallback = {"project_name": paths.root.name}
     if not paths.config_file.exists():
-        return AppConfig(project_name=paths.root.name)
+        return fallback, False
     try:
         raw = yaml.safe_load(paths.config_file.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
         log.warning("Could not read %s (%s) — falling back to defaults", paths.config_file, exc)
-        return AppConfig(project_name=paths.root.name)
+        return fallback, False
     if not isinstance(raw, dict):
         log.warning("%s is not a mapping — falling back to defaults", paths.config_file)
-        return AppConfig(project_name=paths.root.name)
-    return AppConfig.model_validate(raw)
+        return fallback, False
+    return raw, True
+
+
+def _project_fields(raw: dict[str, Any]) -> dict[str, Any]:
+    """The disk schema owns accent/ignore, but none of their global siblings (§5.2)."""
+    payload = dict(raw)
+    if "theme" in payload:
+        theme = payload["theme"]
+        payload["theme"] = (
+            {"accent": theme["accent"]} if isinstance(theme, dict) and "accent" in theme else {}
+        )
+    for key in ("language", "updates", "node_cache_enabled"):
+        payload.pop(key, None)
+    if isinstance(payload.get("explorer"), dict):
+        payload["explorer"] = {
+            key: value for key, value in payload["explorer"].items() if key != "show_data_dir"
+        }
+    return payload
 
 
 def save_config(paths: ProjectPaths, config: AppConfig) -> None:
+    """Write only project-owned fields; global saves use application_config (§5.2)."""
     paths.data.mkdir(parents=True, exist_ok=True)
-    payload = config.model_dump(mode="json", exclude_none=True)
+    payload = _project_fields(config.model_dump(mode="json", exclude_none=True))
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, indent=2)
     tmp = paths.config_file.with_suffix(".yaml.tmp")
     tmp.write_text(text, encoding="utf-8")

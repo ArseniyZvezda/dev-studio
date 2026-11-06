@@ -50,7 +50,9 @@ async def _users(ctx: AppContext) -> dict[str, list[dict[str, Any]]]:
     members.sort(key=lambda member: (member.team_id, member.sort_order, member.name))
     users: dict[str, list[dict[str, Any]]] = {}
     for member in members:
-        for name in member.skills or []:
+        required = [*(ctx.config.teams.required_skills if member.kind == "agent" else []),
+                    *(member.required_skills or [])]
+        for name in dict.fromkeys([*(member.skills or []), *required]):
             users.setdefault(name, []).append(
                 {
                     "id": member.id,
@@ -161,6 +163,19 @@ async def delete_skill(name: str, ctx: Ctx) -> dict[str, Any]:
     The folder goes first, so a folder the system will not let go of (409) leaves every member
     exactly as they were.
     """
+    # §10.10: deleting availability must not silently remove a startup requirement.
+    # The settings/editor can explicitly remove the requirement, even after its file
+    # disappeared outside Studio; until then it is visible and startup fails clearly.
+    async with ctx.db.session() as session:
+        required = name in ctx.config.teams.required_skills or any(
+            name in (member.required_skills or [])
+            for member in (await session.exec(select(TeamMember))).all()
+        )
+    if required:
+        raise HTTPException(status_code=409, detail=(
+            f"Skill {name!r} is required at agent startup. Remove it from required skills "
+            "in Team Settings and member settings before deleting it."
+        ))
     if ctx.skills.is_builtin(name):
         raise HTTPException(status_code=403, detail=f"Built-in skill {name!r} is maintained by its package")
     if name.startswith("installed:"):

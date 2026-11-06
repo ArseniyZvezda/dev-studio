@@ -9,16 +9,22 @@
  * following it as the Studio evolves), `''` removes an optional fragment, and a
  * `required` one falls back to its default rather than opening a run with nothing.
  */
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { AgentPromptsConfig, PromptSpec } from '@/api/types'
 import { hasMessage, t, type MessageKey } from '@/i18n'
 import { useSessionStore } from '@/stores/session'
 
-const props = withDefaults(defineProps<{ disabled?: boolean; compact?: boolean }>(), {
+const props = withDefaults(defineProps<{
+  disabled?: boolean
+  compact?: boolean
+  autosave?: boolean
+  saveSettings?: typeof api.updateSettings
+}>(), {
   disabled: false,
   compact: false,
+  autosave: false,
 })
 const emit = defineEmits<{ saving: [boolean] }>()
 const session = useSessionStore()
@@ -27,6 +33,7 @@ const specs = ref<Record<string, PromptSpec> | null>(null)
 const loadError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
 const saving = ref<string | null>(null)
+const failedKeys = reactive(new Set<string>())
 
 const drafts = reactive<Record<string, string>>({})
 /** What each draft was last seeded from, so an external config change only refreshes clean rows. */
@@ -172,18 +179,21 @@ watch(overrides, () => {
   }
 })
 
-async function push(key: string, value: string | null) {
-  if (props.disabled || saving.value !== null) return
+async function push(key: string, value: string | null, submitted: string) {
   saving.value = key
   emit('saving', true)
+  failedKeys.delete(key)
   saveError.value = null
   try {
-    const updated = await api.updateSettings({
+    const updated = await (props.saveSettings ?? api.updateSettings)({
       teams: { prompts: { [key]: value } as Partial<AgentPromptsConfig> },
     })
     if (session.project) session.project = { ...session.project, config: updated }
-    seed(key)
+    // A response for an earlier draft must not erase text typed while it was saving.
+    seeded[key] = effectiveOf(key)
+    if (drafts[key] === submitted) drafts[key] = seeded[key]
   } catch (cause) {
+    failedKeys.add(key)
     saveError.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
     saving.value = null
@@ -191,18 +201,68 @@ async function push(key: string, value: string | null) {
   }
 }
 
+// §10.2: Team edits save after a pause in typing. Keep only the newest queued value per
+// prompt and send requests serially so config responses cannot arrive out of order.
+const pending = new Map<string, { value: string | null; draft: string }>()
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let flushing: Promise<void> | null = null
+let leaving = false
+
+function valueToSave(key: string): string | null {
+  const spec = specs.value![key]!
+  const draft = drafts[key] ?? ''
+  if (draft === spec.default) return null
+  if (draft.trim() === '') return spec.required ? null : ''
+  return draft
+}
+
+function scheduleSave(key: string): void {
+  if (!props.autosave || !specs.value?.[key]) return
+  failedKeys.delete(key)
+  // While this key is in flight, even a return to its old value needs a follow-up save.
+  if (isDirty(key) || saving.value === key) {
+    pending.set(key, { value: valueToSave(key), draft: drafts[key] ?? '' })
+  } else pending.delete(key)
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => void flush(), 600)
+}
+
+function flush(): Promise<void> {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  if (flushing) return flushing
+  if (props.disabled && !leaving) return Promise.resolve()
+  flushing = (async () => {
+    while (pending.size && (!props.disabled || leaving)) {
+      const [key, job] = pending.entries().next().value!
+      pending.delete(key)
+      await push(key, job.value, job.draft)
+    }
+  })().finally(() => { flushing = null })
+  return flushing
+}
+
+watch(() => props.disabled, (disabled) => {
+  if (!disabled && pending.size) void flush()
+})
+
+onBeforeUnmount(() => {
+  leaving = true
+  void flush()
+})
+
 /** Retyping the default stores nothing; blank stores a removal (or resets a required one). */
 async function save(key: string) {
-  const spec = specs.value?.[key]
-  if (!spec) return
-  const draft = drafts[key] ?? ''
-  if (draft === spec.default) return push(key, null)
-  if (draft.trim() === '') return push(key, spec.required ? null : '')
-  return push(key, draft)
+  if (!specs.value?.[key] || props.disabled) return
+  pending.set(key, { value: valueToSave(key), draft: drafts[key] ?? '' })
+  await flush()
 }
 
 async function reset(key: string) {
-  await push(key, null)
+  if (props.disabled) return
+  drafts[key] = specs.value?.[key]?.default ?? ''
+  pending.set(key, { value: null, draft: drafts[key]! })
+  await flush()
 }
 </script>
 
@@ -271,6 +331,7 @@ async function reset(key: string) {
               </p>
               <textarea
                 v-model="drafts[key]"
+                @input="scheduleSave(key)"
                 :disabled="disabled"
                 :aria-label="copyOf(key).label"
                 :rows="rowsFor(key)"
@@ -279,12 +340,16 @@ async function reset(key: string) {
               />
               <div class="flex flex-wrap items-center gap-2">
                 <button
+                  v-if="!autosave || failedKeys.has(key)"
                   class="rounded-md border border-line px-3 py-1 hover:bg-hover disabled:opacity-50"
                   :disabled="disabled || saving !== null || !isDirty(key)"
                   @click="save(key)"
                 >
-                  {{ saving === key ? t('common.saving') : t('common.save') }}
+                  {{ saving === key ? t('common.saving') : t(autosave ? 'common.retry' : 'common.save') }}
                 </button>
+                <span v-else-if="saving === key" class="text-small text-faint" role="status">
+                  {{ t('common.saving') }}
+                </span>
                 <button
                   v-if="statusOf(key) !== 'default' || isDirty(key)"
                   class="rounded-md border border-line px-3 py-1 hover:bg-hover disabled:opacity-50"

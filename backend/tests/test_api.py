@@ -237,8 +237,9 @@ def test_team_listing_omits_tasks_but_the_detail_carries_them(client: TestClient
 
     detail = client.get(f"/api/teams/{teams[0]['id']}").json()
     assert isinstance(detail["tasks"], list)
-    assert len(detail["members"]) == 5
+    assert len(detail["members"]) == 6
     assert sum(m.get("builtin") == "producer" for m in detail["members"]) == 1
+    assert sum(m.get("builtin") == "effort_solver" for m in detail["members"]) == 1
     assert client.get("/api/teams/ghost").status_code == 404
 
 

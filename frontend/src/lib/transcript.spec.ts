@@ -286,6 +286,35 @@ describe('Compact', () => {
 })
 
 describe('the line under the rows', () => {
+  it.each(['compact', 'advanced'] as const)('keeps structured model metadata without textual effort in %s', (level) => {
+    const entry = message({
+      role: 'system', kind: 'model',
+      text: 'Running this task on model model-test, effort high — set on the task, not on Developer.',
+      data: { model: 'model-test', effort: 'high', source: 'task' },
+    })
+    expect(liveLine([entry], level).activity).toBe('Model: model-test · Set on this task')
+    expect(liveLine([entry], level).activity).not.toContain('high')
+    expect(transcriptRows([entry], 'verbose')[0]?.message).toEqual(entry)
+  })
+
+  it('retains the source when a structured model notice has no model name', () => {
+    const entry = message({
+      role: 'system', kind: 'model', text: 'Running with effort high.',
+      data: { model: null, effort: 'high', source: 'task' },
+    })
+    expect(liveLine([entry], 'compact').activity).toBe('Set on this task')
+    expect(liveLine([{ ...entry, data: { model: 'model-test', effort: 'high' } }], 'compact').activity)
+      .toBe('Model: model-test')
+  })
+
+  it.each(['compact', 'advanced'] as const)('preserves unstructured historical model text and prose in %s', (level) => {
+    const text = 'Running this task on model model-test, effort high.'
+    const historical = message({ role: 'system', kind: 'model', text })
+    expect(liveLine([historical], level).activity).toBe(text)
+    const prose = message({ kind: 'text', text, data: { model: 'model-test', effort: 'high' } })
+    expect(liveLine([prose], level).activity).toBe(text)
+  })
+
   it('names the newest thing logged, at both levels that hide something', () => {
     const feed = [
       message({ kind: 'text', text: 'Looking at the movement code.' }),

@@ -169,6 +169,43 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert not ctx.teams.subagents.runs and not ctx.jobs.is_running(rows[0].id)
 
 
+async def test_subagent_receives_required_materials_with_its_first_message(runner):
+    ctx, install, start = runner
+    folder = ctx.paths.skills / "mandatory"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("# Required\nAPPLY ALL STEPS", encoding="utf-8")
+    ctx.paths.docs.mkdir(parents=True, exist_ok=True)
+    (ctx.paths.docs / "mandatory.md").write_text("COMPLETE DOCUMENT", encoding="utf-8")
+    ctx.config.teams.required_skills = ["mandatory"]
+    ctx.config.teams.required_documents = ["mandatory.md"]
+    child_requests = []
+
+    async def child(request):
+        child_requests.append(request)
+        yield result("Child findings", session="child-requirements")
+
+    install("test_required_worker", child)
+    calls = 0
+
+    async def parent(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await ctx.teams.subagents.create(request.task.id, MEMBER,
+                description="Inspect with required context", prompt="Inspect files",
+                backend="test_required_worker", model="worker-model")
+        yield result("Waiting" if calls == 1 else "Complete")
+
+    _, job = await start(parent)
+    await asyncio.wait_for(job, 8)
+    assert len(child_requests) == 1
+    child_request = child_requests[0]
+    assert child_request.resume_session_id is None
+    assert child_request.prompt.count("APPLY ALL STEPS") == 1
+    assert child_request.prompt.count("COMPLETE DOCUMENT") == 1
+    assert child_request.recovery_prompt.count("COMPLETE DOCUMENT") == 1
+
+
 async def test_wait_then_followup_works_with_one_slot_and_counts_each_turn_once(runner):
     ctx, _, start = runner
     child_requests = []

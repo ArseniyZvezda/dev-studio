@@ -1,4 +1,28 @@
 {
+  "effortSolver": {
+    "name": "Effort Solver",
+    "weights": "Effort Solver weights",
+    "weightsHint": "Higher weights give a criterion more influence. Higher complexity, creativity and depth increase effort; higher coverage reduces it. The result is normalized to 1–5.",
+    "invalidWeights": "Use non-negative finite weights, with at least one greater than zero.",
+    "builtin": "Built-in Effort Solver: always an AI agent and cannot be deleted.",
+    "dimensions": {
+      "complexity": "Complexity",
+      "creativity": "Creativity",
+      "depth": "Depth",
+      "coverage": "Coverage"
+    },
+    "levels": {
+      "1": "Low",
+      "2": "Mid",
+      "3": "High",
+      "4": "XHigh",
+      "5": "Max"
+    }
+  },
+  "modelEffort": {
+    "default": "Auto",
+    "inherit": "From member"
+  },
   "attachments": {
     "add": "Attach files",
     "hint": "Drop files or paste an image · up to 20 MiB each",
@@ -112,6 +136,7 @@
       "skills": "Skills",
       "mcp": "MCP Servers",
       "plugins": "Plugins",
+      "projectSettings": "Project Settings",
       "settings": "Settings"
     },
     "pluginPages": "Plugins",
@@ -125,6 +150,14 @@
       "title": "What each release of the Studio changed"
     },
     "vcs": "VCS: {name}",
+    "agentBackends": {
+      "claude_code": "Claude Code",
+      "codex": "Codex",
+      "qwen": "Qwen Code",
+      "ready": "Ready",
+      "unavailable": "Backend unavailable",
+      "unknown": "Backend status is not available yet. Waiting for the next check."
+    },
     "connection": {
       "live": "Live — receiving events",
       "connecting": "Connecting…",
@@ -1268,6 +1301,25 @@
       "emptyHintEditing": "Add one above, or define them in {dir} — that file is the team, and the editor writes back to it.",
       "emptyHintLocked": "Press Edit to add one, or define them in {dir} — that file is the team, and the editor writes back to it."
     },
+    "requirements": {
+      "title": "Required at startup",
+      "sharedHint": "Applies to every agent in this project. Each agent can add its own skills and documents.",
+      "memberHint": "These requirements add to Team Settings. Shared requirements are marked below and stay active.",
+      "skills": "Required skills",
+      "skillsHint": "Automatically applied when a new agent session starts.",
+      "documents": "Required documents",
+      "documentsHint": "The full content of each document is included in the first message of every new agent session.",
+      "inherited": "From Team Settings",
+      "addSkill": "Add a required skill…",
+      "addDocument": "Add a required document…",
+      "removeSkill": "Remove required skill: {name}",
+      "removeDocument": "Remove required document: {name}",
+      "missingSkill": "Skill unavailable. The agent cannot start until this requirement is restored or removed.",
+      "missingDocument": "Document unavailable. The agent cannot start until this requirement is restored or removed.",
+      "searchDocuments": "Search documents by title or path…",
+      "noMatchingDocuments": "No documents match your search.",
+      "noDocuments": "No more documents to add. Create documents on the Documents page."
+    },
     "settings": {
       "title": "Team Settings",
       "description": "Shared defaults for every agent. Enable an agent's override to give that agent different values.",
@@ -1372,13 +1424,17 @@
       "tools": "Tools",
       "otherTools": "Other tools, comma separated",
       "studioTools": "The Studio's own tools ({prefix}*) for delegation and documents are always available and need no entry here.",
-      "confirmRemove": "Remove {name} from the team? Their tasks and reports must be moved first.",
+      "confirmRemove": "Permanently delete {name}?",
+      "removeConsequences": "This cannot be undone. All assigned tasks, including archived ones, direct reports and chat history will transfer to Director. Running tasks and chats will stop; their history will be kept.",
+      "removeTaskCount": "Assigned tasks: {count}",
+      "removePermanently": "Delete permanently",
       "nameNeeded": "A name is needed before this saves",
       "notSaved": "Not saved — see above",
       "savedToYaml": "Saved to the team's YAML",
       "removeTitle": "Remove from the team",
       "keep": "Keep",
-      "builtinProducer": "Built-in Producer: this agent cannot be deleted."
+      "builtinProducer": "Built-in Producer: always an AI agent and cannot be deleted.",
+      "builtinDirector": "Built-in Director: always a person and cannot be deleted."
     },
     "mark": {
       "person": "Person — works outside the Studio"
@@ -1865,6 +1921,21 @@
     }
   },
   "skills": {
+    "picker": {
+      "add": "Add a skill…",
+      "all": "All",
+      "shared": "Shared",
+      "studio": "Studio",
+      "global": "Global",
+      "project": "Project",
+      "backend": "Backend",
+      "scope": "Location",
+      "clearSearch": "Clear search",
+      "reset": "Clear search and filters",
+      "empty": "No more skills to add",
+      "results": "Available: {count}",
+      "keyboard": "Navigate · Enter to add"
+    },
     "search": "Search skills, descriptions or sources",
     "noMatches": "No matching skills",
     "allBackends": "All backends",
@@ -2050,6 +2121,7 @@
     }
   },
   "chat": {
+    "removedAgentHistory": "This agent was deleted. The conversation is kept under Director as read-only history.",
     "chooseConversation": "Select a chat or start a new conversation.",
     "openPage": "Open Chats page",
     "title": "Chat",
@@ -2138,6 +2210,7 @@
       "dependencies": "Depends on: {tasks}",
       "states": {
         "off": "Stopped",
+        "not_started": "Not started",
         "discussing": "Waiting for your reply",
         "running": "Coordinating work",
         "awaiting_approval": "Waiting for plan approval",
@@ -2161,12 +2234,26 @@
       },
       "pausedShort": "Paused",
       "estimate": "Estimate Task Cost",
+      "taskCost": "Task Cost",
+      "effort": "Effort",
+      "effortModes": {
+        "agent": "Agent",
+        "auto": "Auto",
+        "agentHint": "New tasks use their assignee’s default effort.",
+        "autoHint": "Effort Solver evaluates each new task’s title and description, then calculates its effort using the configured weights."
+      },
       "estimateUsd": "Estimate Task Cost in US dollars",
       "estimateHint": "Approximate API cost per task. During review, the Producer checks the remaining budget and moves work that cannot fit into new tasks. Default: $150.",
       "estimateInvalid": "Enter an amount greater than zero in US dollars."
     }
   },
+  "projectSettings": {
+    "title": "Project Settings",
+    "accent": "Accent Color",
+    "maintenance": "Project cache and execution"
+  },
   "settings": {
+    "scopeHint": "Application preferences shared by all projects on this computer.",
     "commitDescription": {
       "title": "Commit descriptions",
       "hint": "Choose the backend and model that write commit descriptions for tasks. Applies to the next generation, including Retry.",
@@ -2183,7 +2270,7 @@
     "language": {
       "title": "Language",
       "label": "Interface",
-      "hint": "Kept in this browser rather than in {file}, so everyone who opens the project reads it in their own language."
+      "hint": "Saved in the application's {file} and used for all your projects."
     },
     "appearance": {
       "title": "Appearance",
@@ -2193,7 +2280,7 @@
       "textSize": "Text size",
       "pixels": "{size} px",
       "textSizeInherited": "The app's own size, until you pick one of your own.",
-      "textSizePicked": "Picked for this project.",
+      "textSizePicked": "Used for all your projects.",
       "useDefaultSize": "Use the default size",
       "fonts": "Fonts",
       "fontInterface": "Interface",
@@ -2210,7 +2297,7 @@
       "addToken": "Add a token",
       "exportTheme": "Export theme…",
       "importTheme": "Import…",
-      "customTokensHint": "Applied last, so they win over the preset. Saved to {file} with everything else, so the theme travels with the project."
+      "customTokensHint": "Applied last, so they win over the preset. Saved in the application's {file} and used for all your projects."
     },
     "explorer": {
       "title": "Explorer",
@@ -2333,7 +2420,7 @@
   },
   "agentPrompts": {
     "title": "Agent prompts",
-    "intro": "Everything the Studio itself tells an agent, beyond the roster and the brief. Reword any line, or clear it and save to drop it from the prompt entirely; Reset returns a line to the built-in text and keeps it following future updates.",
+    "intro": "Everything the Studio itself tells an agent, beyond the roster and the brief. Reword any line, or clear it to drop it from the prompt entirely. Changes save automatically. Reset returns a line to the built-in text and keeps it following future updates.",
     "changed": "{count} changed.",
     "allBuiltIn": "All on the built-in text.",
     "loadError": "Could not load the built-in prompts: {error}",
@@ -2342,8 +2429,8 @@
     "notSent": "Not sent.",
     "placeholders": "Placeholders:",
     "resetToDefault": "Reset to default",
-    "cannotRemove": "Cannot be removed — saved blank, it falls back to the default.",
-    "saveBlankToRemove": "Save it blank to drop this line from the prompt.",
+    "cannotRemove": "Cannot be removed — an empty line falls back to the default.",
+    "saveBlankToRemove": "Clear this line to drop it from the prompt.",
     "groups": {
       "identity": {
         "title": "Who the member is",

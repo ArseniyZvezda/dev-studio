@@ -16,12 +16,14 @@ import type {
   AutomationsOverview,
   AgentChat,
   ProducerPolicy,
+  ProducerEffortMode,
   AgentChatMessage,
   AgentMessage,
   ChatContext,
   ChatCreate,
   ChatDetail,
   AppConfig,
+  ApplicationSettingsUpdate,
   CreateEntryRequest,
   DeleteRequest,
   DocDetail,
@@ -382,6 +384,8 @@ export const api = {
   status: () => request<StatusInfo>('GET', '/status'),
   settings: () => request<AppConfig>('GET', '/settings'),
   updateSettings: (body: SettingsUpdate) => request<AppConfig>('PUT', '/settings', { body }),
+  updateApplicationSettings: (body: ApplicationSettingsUpdate) =>
+    request<AppConfig>('PUT', '/settings/application', { body }),
   /** The built-in text behind every line the Studio says to an agent, in send order. */
   promptSpecs: () => request<Record<string, PromptSpec>>('GET', '/settings/prompts'),
   reloadSettings: () =>
@@ -522,12 +526,14 @@ export const api = {
   createChat: (body: ChatCreate) => request<AgentChat>('POST', '/chats', { body }),
   useProducerWorkspace: (chatId: string, locale: string) =>
     request<AgentChat>('POST', `/chats/${chatId}/producer/workspace`, { body: { locale } }),
-  startProducer: (chatId: string, locale: 'en' | 'ru', policy?: ProducerPolicy, estimateTaskCostUsd?: number) =>
-    request<AgentChat>('POST', `/chats/${chatId}/producer/start`, { body: { locale, policy, estimate_task_cost_usd: estimateTaskCostUsd } }),
+  startProducer: (chatId: string, locale: 'en' | 'ru', policy?: ProducerPolicy, estimateTaskCostUsd?: number, effortMode?: ProducerEffortMode) =>
+    request<AgentChat>('POST', `/chats/${chatId}/producer/start`, { body: { locale, policy, estimate_task_cost_usd: estimateTaskCostUsd, effort_mode: effortMode } }),
   setProducerSettings: (chatId: string, estimateTaskCostUsd: number) =>
     request<AgentChat>('PATCH', `/chats/${chatId}/producer/settings`, { body: { estimate_task_cost_usd: estimateTaskCostUsd } }),
   setProducerPolicy: (chatId: string, policy: ProducerPolicy) =>
     request<AgentChat>('PATCH', `/chats/${chatId}/producer/policy`, { body: { policy } }),
+  setProducerEffortMode: (chatId: string, mode: ProducerEffortMode) =>
+    request<AgentChat>('PATCH', `/chats/${chatId}/producer/effort`, { body: { mode } }),
   stopProducer: (chatId: string) => request<AgentChat>('POST', `/chats/${chatId}/producer/stop`),
   pauseProducer: (chatId: string) => request<AgentChat>('POST', `/chats/${chatId}/producer/pause`),
   resumeProducer: (chatId: string) => request<AgentChat>('POST', `/chats/${chatId}/producer/resume`),
@@ -569,10 +575,11 @@ export const api = {
     }),
   createMember: (teamId: string, body: MemberCreate) =>
     request<TeamMember>('POST', `/teams/${teamId}/members`, { body }),
-  deleteMember: (teamId: string, memberId: string) =>
+  deleteMember: (teamId: string, memberId: string, reassignToDirector = false) =>
     request<{ member_id: string; removed: boolean }>(
       'DELETE',
       `/teams/${teamId}/members/${memberId}`,
+      { query: { reassign_to_director: reassignToDirector } },
     ),
   createTask: (teamId: string, body: TaskCreate) =>
     request<TeamTask>('POST', `/teams/${teamId}/tasks`, {

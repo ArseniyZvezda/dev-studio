@@ -94,6 +94,7 @@ def build_toolset(
     orchestrator: "TeamOrchestrator", *, member: TeamMember, task: TeamTask | None = None,
     producer=None, chat_id: str | None = None, subagent_id: str | None = None,
     run_id: str | None = None,
+    producer_effort_mode: str = "agent",
 ) -> StudioToolset | None:
     """Build the board + delegation + docs toolset for one member working on one task.
 

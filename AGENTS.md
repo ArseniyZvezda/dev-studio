@@ -27,9 +27,14 @@ names and misplaced files:
 | **managed project** | the user's game project the Studio is pointed at (`voxarium_studio run <path>`) |
 | **`voxarium_studio/`** | the Studio's data directory *inside* the managed project — no leading dot |
 
-The Studio keeps no global machine state beyond the plugin registry and the list of
-recently opened projects (paths only — §5.1; `$VOXARIUM_STUDIO_HOME` relocates both). Runs, logs,
-pipelines, team definitions, the team's shared documents and the SQLite database all live in
+The Studio keeps the plugin registry, recently opened project paths, and global application
+settings in the user's config directory (§5.1–5.2; `$VOXARIUM_STUDIO_HOME` relocates all three).
+Global settings live in its `config.yaml` and appear only on Settings: language, appearance
+except accent, Explorer visibility, node-cache reuse, and updates. Project Settings (under
+Plugins) owns the project's accent, AI agents, Tasks, and project cache operations. Keep the
+storage split: effective runtime config combines both scopes, but project saves must never
+write global fields into the managed project's `config.yaml`.
+Runs, logs, pipelines, team definitions, the team's shared documents and the SQLite database all live in
 the managed project's `voxarium_studio/` directory, so a project is portable and its AI workflow is
 diffable in git. The one file the Studio writes *outside* it is `.mcp.json` at the project
 root — Codex's own MCP server config, shared with the developer's terminal (§10.7).

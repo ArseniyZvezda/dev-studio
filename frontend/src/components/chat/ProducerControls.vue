@@ -2,7 +2,7 @@
 /** Shared controls for the Producer page, popup and Chats page (§10.11). */
 import { Clapperboard, Pause, Play, Square } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
-import type { ProducerPolicy } from '@/api/types'
+import type { ProducerEffortMode, ProducerPolicy } from '@/api/types'
 import { t } from '@/i18n'
 import { useChatStore } from '@/stores/chat'
 import { useTeamsStore } from '@/stores/teams'
@@ -14,21 +14,31 @@ const current = computed(() => chat.view === 'chat' ? chat.activeChat : null)
 const member = computed(() => teams.teams.flatMap(team => team.members).find(member => member.id ===
   (chat.view === 'new' ? chat.newMemberId : current.value?.member_id)))
 const active = computed(() => current.value?.producer_mode === true)
-const paused = computed(() => current.value?.producer_paused === true)
-const state = computed(() => current.value?.producer_state ?? 'discussing')
+const started = computed(() => current.value?.producer_started === true)
+const paused = computed(() => started.value && current.value?.producer_paused === true)
+const state = computed(() => active.value && !started.value ? 'not_started' : current.value?.producer_state ?? 'discussing')
 const plan = computed(() => current.value?.producer_plan ?? [])
 const newPolicy = ref<ProducerPolicy>('careful')
 const policy = computed(() => current.value?.producer_policy ?? newPolicy.value)
+const newEffortMode = ref<ProducerEffortMode>('agent')
+const effortMode = computed(() => current.value?.producer_effort_mode ?? newEffortMode.value)
 const estimate = ref<number | string>(150)
 const estimateValid = computed(() => typeof estimate.value === 'number' && Number.isFinite(estimate.value) && estimate.value > 0)
 const estimateDirty = computed(() => !!current.value && estimate.value !== (current.value.estimate_task_cost_usd ?? 150))
 watch([() => chat.view, () => current.value?.id, () => current.value?.estimate_task_cost_usd, () => chat.newMemberId], () => {
   estimate.value = current.value?.estimate_task_cost_usd ?? 150
 }, { immediate: true })
-watch(() => [chat.view, chat.newMemberId], () => { newPolicy.value = 'careful' })
+watch(() => [chat.view, chat.newMemberId], () => {
+  newPolicy.value = 'careful'
+  newEffortMode.value = 'agent'
+})
 function changePolicy(value: ProducerPolicy) {
   if (current.value) void chat.setProducerPolicy(value)
   else newPolicy.value = value
+}
+function changeEffortMode(value: ProducerEffortMode) {
+  if (current.value) void chat.setProducerEffortMode(value)
+  else newEffortMode.value = value
 }
 function saveEstimate() {
   if (estimateValid.value && estimateDirty.value) void chat.setProducerEstimateTaskCost(Number(estimate.value))
@@ -38,7 +48,7 @@ function saveEstimate() {
 <template>
   <section v-if="member?.builtin === 'producer' && chat.view !== 'list'"
     class="shrink-0 border-b border-line bg-inset/50 px-3 py-2" :aria-label="t('chat.producer.label')">
-    <div :class="toolbar ? 'flex flex-wrap items-center gap-x-5 gap-y-2' : ''">
+    <div>
       <div class="flex flex-wrap items-center gap-2" :class="toolbar ? 'min-w-0 flex-1' : ''">
         <Clapperboard class="size-4 text-accent" />
         <span v-if="toolbar || active" class="font-medium" :class="!toolbar ? 'flex-1' : ''">{{ t('chat.producer.label') }}</span>
@@ -47,7 +57,7 @@ function saveEstimate() {
         </span>
         <template v-if="active">
           <button class="vxs-btn flex items-center gap-1 border border-line rounded-md px-2 py-1 text-small hover:bg-hover disabled:opacity-50"
-            :disabled="chat.busy" :title="t(paused ? 'chat.producer.resumeHint' : 'chat.producer.pauseHint')"
+            :disabled="chat.busy || !started" :title="t(paused ? 'chat.producer.resumeHint' : 'chat.producer.pauseHint')"
             @click="chat.producerAction(paused ? 'resume' : 'pause')">
             <Play v-if="paused" class="size-3" /><Pause v-else class="size-3" />
             {{ t(paused ? 'chat.producer.resume' : 'chat.producer.pause') }}
@@ -58,36 +68,48 @@ function saveEstimate() {
           </button>
         </template>
         <button v-else-if="!toolbar && !current?.producer_workspace" class="vxs-btn-primary flex items-center gap-1.5 px-3 py-1.5 disabled:opacity-50"
-          :disabled="chat.busy || !!current?.is_running || !estimateValid" @click="chat.producerAction('start', policy, Number(estimate))">
+          :disabled="chat.busy || !!current?.is_running || !estimateValid" @click="chat.producerAction('start', policy, Number(estimate), effortMode)">
           <Play class="size-3.5" />{{ t('chat.producer.start') }}
         </button>
       </div>
-      <div class="flex flex-wrap items-center gap-2" :class="toolbar ? '' : 'mt-2'">
-        <span v-if="!toolbar" class="text-small text-faint">{{ t('chat.producer.policy') }}</span>
-        <div class="inline-flex rounded-md border border-line p-0.5" role="group" :aria-label="t('chat.producer.policy')">
-          <button v-for="choice in (['careful', 'independent'] as const)" :key="choice"
-            class="rounded px-2 py-1 text-small disabled:opacity-50"
-            :class="policy === choice ? 'bg-accent-soft font-medium' : 'hover:bg-hover'"
-            :aria-pressed="policy === choice" :title="t(`chat.producer.policies.${choice}Hint`)"
-            :disabled="chat.busy || paused || !!current?.is_running" @click="changePolicy(choice)">
-            {{ t(`chat.producer.policies.${choice}`) }}
-          </button>
+      <!-- §10.11: all Producer settings share the row below its title. -->
+      <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2" data-producer-settings>
+        <div class="flex flex-wrap items-center gap-2">
+          <span v-if="!toolbar" class="text-small text-faint">{{ t('chat.producer.policy') }}</span>
+          <div class="inline-flex rounded-md border border-line p-0.5" role="group" :aria-label="t('chat.producer.policy')">
+            <button v-for="choice in (['careful', 'independent'] as const)" :key="choice"
+              class="rounded px-2 py-1 text-small disabled:opacity-50"
+              :class="policy === choice ? 'bg-accent-soft font-medium' : 'hover:bg-hover'"
+              :aria-pressed="policy === choice" :title="t(`chat.producer.policies.${choice}Hint`)"
+              :disabled="chat.busy || paused || !!current?.is_running" @click="changePolicy(choice)">
+              {{ t(`chat.producer.policies.${choice}`) }}
+            </button>
+          </div>
         </div>
-      </div>
-      <form class="flex flex-wrap items-center gap-2" :class="toolbar ? '' : 'mt-2'" @submit.prevent="saveEstimate">
-        <label class="flex items-center gap-2 text-small" :title="t('chat.producer.estimateHint')">
-          <span>{{ t('chat.producer.estimate') }}</span>
-          <span class="flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-1">
-            <span class="text-faint" aria-hidden="true">$</span>
-            <input v-model.number="estimate" type="number" min="0.01" step="0.01" inputmode="decimal"
-              class="w-20 min-w-0 bg-transparent outline-none disabled:opacity-50"
-              :aria-label="t('chat.producer.estimateUsd')" :aria-invalid="!estimateValid"
-              :disabled="chat.busy || !!current?.is_running" />
-          </span>
+        <form class="flex flex-wrap items-center gap-2" @submit.prevent="saveEstimate">
+          <label class="flex items-center gap-2 text-small" :title="t('chat.producer.estimateHint')">
+            <span>{{ t(toolbar ? 'chat.producer.taskCost' : 'chat.producer.estimate') }}</span>
+            <span class="flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-1">
+              <span class="text-faint" aria-hidden="true">$</span>
+              <input v-model.number="estimate" type="number" min="0.01" step="0.01" inputmode="decimal"
+                class="min-w-0 bg-transparent outline-none disabled:opacity-50" :class="toolbar ? 'w-14' : 'w-20'"
+                :aria-label="t('chat.producer.estimateUsd')" :aria-invalid="!estimateValid"
+                :disabled="chat.busy || !!current?.is_running" />
+            </span>
+          </label>
+          <button v-if="estimateDirty" type="submit" class="rounded-md border border-line px-2 py-1 text-small hover:bg-hover disabled:opacity-50"
+            :disabled="chat.busy || !!current?.is_running || !estimateValid">{{ t('common.save') }}</button>
+        </form>
+        <label class="flex items-center gap-2 text-small" :title="t(`chat.producer.effortModes.${effortMode}Hint`)">
+          <span>{{ t('chat.producer.effort') }}</span>
+          <select :value="effortMode" :aria-label="t('chat.producer.effort')"
+            class="rounded-md border border-line bg-surface px-2 py-1 outline-none focus:border-accent disabled:opacity-50"
+            :disabled="chat.busy || !!current?.is_running"
+            @change="changeEffortMode(($event.target as HTMLSelectElement).value as ProducerEffortMode)">
+            <option v-for="choice in (['agent', 'auto'] as const)" :key="choice" :value="choice">{{ t(`chat.producer.effortModes.${choice}`) }}</option>
+          </select>
         </label>
-        <button v-if="estimateDirty" type="submit" class="rounded-md border border-line px-2 py-1 text-small hover:bg-hover disabled:opacity-50"
-          :disabled="chat.busy || !!current?.is_running || !estimateValid">{{ t('common.save') }}</button>
-      </form>
+      </div>
     </div>
     <p v-if="!estimateValid" class="mt-1 text-small text-danger" role="alert">{{ t('chat.producer.estimateInvalid') }}</p>
     <template v-if="!toolbar">

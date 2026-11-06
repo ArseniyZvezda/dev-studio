@@ -37,8 +37,10 @@ def test_counts_include_all_teams_and_only_requested_statuses(tmp_path: Path) ->
 
 
 def test_missing_database_is_not_created(tmp_path: Path) -> None:
-    assert read_task_counts(tmp_path) == {"in_progress": 0, "needs_review": 0}
-    assert list(tmp_path.iterdir()) == []
+    root = tmp_path / "empty-project"
+    root.mkdir()
+    assert read_task_counts(root) == {"in_progress": 0, "needs_review": 0}
+    assert list(root.iterdir()) == []
     assert read_task_counts(tmp_path / "gone") is None
 
 

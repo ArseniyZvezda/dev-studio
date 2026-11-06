@@ -74,6 +74,7 @@ function memberOf(id: string | null): TeamMember | null {
 }
 
 const activeMember = computed(() => memberOf(chat.activeChat?.member_id ?? null))
+const readOnlyHistory = computed(() => chat.view === 'chat' && activeMember.value?.kind === 'human')
 const newMember = computed(() => memberOf(chat.newMemberId))
 
 const newMemberModel = computed({
@@ -256,6 +257,7 @@ const canSend = computed(
     (draft.value.trim().length > 0 || attached.value.length > 0) &&
     !uploadingAttachments.value &&
     !chat.busy &&
+    !readOnlyHistory.value &&
     !running.value &&
     !(chat.view === 'chat' && chat.activeChat?.producer_paused) &&
     (chat.view === 'chat' ? Boolean(chat.activeChatId) : Boolean(chat.newMemberId)),
@@ -529,7 +531,10 @@ onBeforeUnmount(() => {
         <ProducerTaskStatus v-if="!producerPage" />
 
         <!-- The composer, under the list too — but only where something can be sent. -->
-        <footer v-if="chat.view !== 'list'" class="shrink-0 border-t border-line px-3 pt-2 pb-3">
+        <p v-if="readOnlyHistory" class="shrink-0 border-t border-line p-3 text-small text-faint">
+          {{ t('chat.removedAgentHistory') }}
+        </p>
+        <footer v-else-if="chat.view !== 'list'" class="shrink-0 border-t border-line px-3 pt-2 pb-3">
           <p v-if="chat.error" class="mb-2 text-small text-danger">{{ chat.error }}</p>
 
           <!-- What goes with the message: the page, what is open there, what is selected. -->

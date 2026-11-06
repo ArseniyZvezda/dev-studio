@@ -70,6 +70,29 @@ export function filterSkills(skills: readonly SkillEntry[], query: string): Skil
   })
 }
 
+export type SkillPickerScope = 'all' | 'studio' | 'global' | 'project'
+
+/** Studio folders and bundled skills live together; native project installations stay distinct. */
+export function skillPickerScope(skill: SkillEntry): Exclude<SkillPickerScope, 'all'> {
+  if (skill.scope === 'global') return 'global'
+  return skill.name.startsWith('installed:') ? 'project' : 'studio'
+}
+
+/** Search and both filter axes are intersections; a backend filter does not include shared skills. */
+export function filterSkillOptions(
+  skills: readonly SkillEntry[],
+  query: string,
+  backend = 'all',
+  scope: SkillPickerScope = 'all',
+): SkillEntry[] {
+  return filterSkills(skills, query).filter((skill) => {
+    const native = skill.backends ?? []
+    const matchesBackend = backend === 'all' ||
+      (backend === 'shared' ? !native.length : native.includes(backend))
+    return matchesBackend && (scope === 'all' || skillPickerScope(skill) === scope)
+  })
+}
+
 /**
  * Whether a change the file watcher reported (`explorer.file_changed`) happened inside the
  * skills folder. Both paths are the project's frame with forward slashes — the watcher's and

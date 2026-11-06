@@ -4,7 +4,26 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACCENTS, DEFAULT_THEME, exportTheme, fontStylesheet, parseImportedTheme } from '@/lib/appearance'
+import {
+  ACCENTS, DEFAULT_THEME, exportApplicationTheme, exportTheme, fontStylesheet,
+  parseImportedApplicationTheme, parseImportedTheme,
+} from '@/lib/appearance'
+
+describe('application appearance import/export', () => {
+  it('exports shared appearance without the project accent', () => {
+    const { accent: _accent, ...shared } = DEFAULT_THEME
+    expect(JSON.parse(exportApplicationTheme({ ...DEFAULT_THEME, accent: '#ff0000' }))).toEqual(shared)
+    expect(parseImportedApplicationTheme(exportApplicationTheme(DEFAULT_THEME))).toEqual(shared)
+  })
+
+  it('imports legacy exports without changing the project accent', () => {
+    expect(parseImportedApplicationTheme('{"mode":"light","accent":"#ff0000"}'))
+      .toEqual({ mode: 'light' })
+    expect(() => parseImportedApplicationTheme('{"accent":"#ff0000"}')).toThrow(/no theme fields/)
+    expect(() => parseImportedApplicationTheme('{"mode":"invalid","accent":"#ff0000"}'))
+      .toThrow(/"mode" must be one of/)
+  })
+})
 
 describe('exportTheme / parseImportedTheme', () => {
   it('round-trips the whole theme', () => {

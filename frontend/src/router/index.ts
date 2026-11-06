@@ -101,6 +101,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/PluginsView.vue'),
   },
   {
+    // Managed-project settings are separate from application preferences (§5.2).
+    path: '/project-settings',
+    name: 'project-settings',
+    component: () => import('@/views/ProjectSettingsView.vue'),
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

@@ -5,10 +5,9 @@ that project hangs off a single :class:`~voxarium_studio.core.context.AppContext
 projects selects another context while keeping previous contexts running (§5.1). Returning
 to a project reuses its context, including running sessions and their database connections.
 
-This module also holds the recently-opened list. It is the second piece of per-machine
-state after the global plugin registry (§9.4), and deliberately the *only* thing about a
-project that lives outside the project: it is a list of paths and nothing else, so
-deleting the file loses no project data.
+This module also holds the recently-opened list, beside application settings (§5.2)
+and the global plugin registry (§9.4). It is a list of paths and nothing else, so deleting
+the file loses no project data.
 
 That list is what a start with no path on the command line resolves against
 (:func:`resolve_startup_project`), which is why it is a feature rather than a convenience:

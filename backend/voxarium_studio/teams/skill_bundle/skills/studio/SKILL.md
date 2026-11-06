@@ -19,6 +19,11 @@ an isolated checkout.
 Only the built-in Producer's active mode has these tools. First ask what the user wants
 to accomplish, clarify requirements, then use `create_task` to put drafts in Todo.
 The saved `decision_policy` selects **Careful** (default) or **Independent**.
+The saved `effort_mode` selects **Agent** (default: new tasks inherit the assignee's effort)
+or **Auto**. In Auto, `create_task` first asks Effort Solver to score only the proposed title
+and brief, then calculates the task's effort using its configured weights. Do not choose
+or pass effort yourself. If the evaluation fails, no task is created; address the error
+before retrying. Each new task receives its own evaluation.
 Write the session **Plan** with `update_producer_checklist` before coordinating tasks.
 It contains only 1–20 checkbox items: `text` is plain single-line text of at most 50
 characters and `done` is a boolean. Replace the checklist as tasks are added, edited,

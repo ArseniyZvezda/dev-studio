@@ -8,8 +8,8 @@
  * hand-edited in the YAML meanwhile is left alone instead of being overwritten with what
  * this form last loaded.
  *
- * Saving is automatic, on a short debounce, because the panel is only reachable with the
- * chart in edit mode and everything else in that mode already commits on the gesture —
+ * Saving is automatic, on a short debounce, because the Team page is always editable
+ * and everything else already commits on the gesture —
  * drawing a line, dropping a node. A Save button here would have been the one change on the
  * page you could lose by clicking away. The debounce is what keeps a typed name from being
  * one request per keystroke; the draft is not re-seeded while it is pending, or the
@@ -19,15 +19,20 @@
  * and showing eight settings that do nothing is worse than showing none. Skills go with it.
  */
 import { Bot, GraduationCap, Trash2, User, X } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowReactive, watch } from 'vue'
 
-import type { MemberKind, MemberUpdate, TeamMember } from '@/api/types'
+import type { EffortSolverWeights, MemberKind, MemberUpdate, TeamMember } from '@/api/types'
+import SkillPicker from '@/components/skills/SkillPicker.vue'
 import MemberIconPicker from '@/components/teams/MemberIconPicker.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MemberSelect from '@/components/teams/MemberSelect.vue'
+import RequiredContextEditor from '@/components/teams/RequiredContextEditor.vue'
+import ModalDialog from '@/components/ui/ModalDialog.vue'
+import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
-import { skillChips, skillDisplayName, skillOptionLabel, skillOptions } from '@/lib/skills'
+import { DEFAULT_EFFORT_SOLVER_WEIGHTS, EFFORT_SOLVER_DIMENSIONS, validEffortSolverWeights } from '@/lib/effort-solver'
+import { skillChips, skillDisplayName } from '@/lib/skills'
 import { useSkillsStore } from '@/stores/skills'
 import { useSessionStore } from '@/stores/session'
 import { useTeamsStore } from '@/stores/teams'
@@ -58,8 +63,11 @@ interface Draft {
   agent: string
   model: string
   effort: string | null
+  effort_solver_weights: EffortSolverWeights
   allowed_tools: string[]
   skills: string[]
+  required_skills: string[]
+  required_documents: string[]
   run_settings_override: boolean
   max_turns: number
   permission_mode: string
@@ -82,8 +90,11 @@ function draftOf(member: TeamMember): Draft {
     agent: member.agent ?? '',
     model: member.model,
     effort: member.effort,
+    effort_solver_weights: { ...(member.effort_solver_weights ?? DEFAULT_EFFORT_SOLVER_WEIGHTS) },
     allowed_tools: [...(member.allowed_tools ?? [])],
     skills: [...(member.skills ?? [])],
+    required_skills: [...(member.required_skills ?? [])],
+    required_documents: [...(member.required_documents ?? [])],
     run_settings_override: member.run_settings_override ?? false,
     max_turns: member.max_turns,
     permission_mode: member.permission_mode,
@@ -96,13 +107,24 @@ function draftOf(member: TeamMember): Draft {
 
 const draft = ref<Draft>(draftOf(props.member))
 const confirmingRemoval = ref(false)
+const removing = ref(false)
 const saving = ref(false)
 /** The last save was refused (a circular reporting line, an unknown backend). Nothing is
  *  retried until the user changes something, so the footer must not claim to be saving. */
 const failed = ref(false)
+// A request already sent is the baseline for further typing, even before props refresh.
+// In particular, restoring the old value must enqueue a second save, not cancel it.
+const submittedMembers = shallowReactive(new Map<string, TeamMember>())
 
 const isAgent = computed(() => draft.value.kind === 'agent')
 const isProducer = computed(() => props.member.builtin === 'producer')
+const isEffortSolver = computed(() => props.member.builtin === 'effort_solver')
+const isDirector = computed(() => props.member.builtin === 'director')
+const assignedTaskCount = computed(() => teams.tasksFor(props.member.id).length)
+
+function kindDisabled(kind: MemberKind): boolean {
+  return ((isProducer.value || isEffortSolver.value) && kind === 'human') || (isDirector.value && kind === 'agent')
+}
 /** The draft as a thing `MemberMark` can draw, so the header previews an unsaved choice. */
 const look = computed(() => ({
   name: draft.value.name,
@@ -205,14 +227,6 @@ const modelNote = computed(
   () => modelChoices.value.find((entry) => entry.id === draft.value.model)?.note ?? '',
 )
 
-/** The installed SDK's levels, plus whatever this member already has if it is not among
- *  them — a picker that silently drops a stored value would clear it on the next save. */
-const effortLevels = computed(() => {
-  const levels = options.value?.effort_levels ?? []
-  const current = draft.value.effort
-  return current && !levels.includes(current) ? [...levels, current] : levels
-})
-
 /** Tools the member names that are not in the curated list — kept editable as free text. */
 const extraTools = ref(
   props.member.allowed_tools
@@ -238,7 +252,7 @@ function toggleAnyone(): void {
 /** Only what changed, so a concurrent hand-edit elsewhere in the file survives. */
 const patch = computed<MemberUpdate>(() => {
   const current = draft.value
-  const original = props.member
+  const original = submittedMembers.get(props.member.id) ?? props.member
   const result: MemberUpdate = {}
 
   if (current.name.trim() !== original.name) result.name = current.name.trim()
@@ -268,6 +282,9 @@ const patch = computed<MemberUpdate>(() => {
   if (current.model.trim() !== original.model) result.model = current.model.trim()
   // Null and "" both mean "the model decides"; only a real change is worth a request.
   if ((current.effort || null) !== (original.effort || null)) result.effort = current.effort || null
+  if (isEffortSolver.value && EFFORT_SOLVER_DIMENSIONS.some(key =>
+    current.effort_solver_weights[key] !== (original.effort_solver_weights ?? DEFAULT_EFFORT_SOLVER_WEIGHTS)[key],
+  )) result.effort_solver_weights = { ...current.effort_solver_weights }
   if (current.run_settings_override !== (original.run_settings_override ?? false))
     result.run_settings_override = current.run_settings_override
   if (current.run_settings_override && current.permission_mode !== original.permission_mode)
@@ -286,21 +303,19 @@ const patch = computed<MemberUpdate>(() => {
   // names being added, so a skill gone from the folder can still be taken off beside it.
   if (current.skills.join('\n') !== (original.skills ?? []).join('\n'))
     result.skills = current.skills
+  if (current.required_skills.join('\n') !== (original.required_skills ?? []).join('\n'))
+    result.required_skills = current.required_skills
+  if (current.required_documents.join('\n') !== (original.required_documents ?? []).join('\n'))
+    result.required_documents = current.required_documents
 
   return result
 })
 
 /** The member's skills against the folder — a name the folder lost is marked, not dropped. */
 const chips = computed(() => skillChips(draft.value.skills, skillsStore.skills))
-const addableSkills = computed(() => skillOptions(skillsStore.skills ?? [], draft.value.skills, draft.value.agent_backend))
 const skillsFolder = computed(() => skillsStore.overview?.path ?? 'voxarium_studio/skills')
 
-function addSkill(event: Event): void {
-  // An action rather than a field, like the dependency picker: the placeholder comes straight
-  // back, so a second skill is the same gesture as the first.
-  const select = event.target as HTMLSelectElement
-  const name = select.value
-  select.value = ''
+function addSkill(name: string): void {
   if (name && !draft.value.skills.includes(name)) draft.value.skills = [...draft.value.skills, name]
 }
 
@@ -312,7 +327,8 @@ const dirty = computed(() => Object.keys(patch.value).length > 0)
 const validTurns = computed(() => !draft.value.run_settings_override || (
   Number.isInteger(draft.value.max_turns) && draft.value.max_turns >= 1 && draft.value.max_turns <= 1000
 ))
-const valid = computed(() => draft.value.name.trim().length > 0 && validTurns.value)
+const validWeights = computed(() => !isEffortSolver.value || validEffortSolverWeights(draft.value.effort_solver_weights))
+const valid = computed(() => draft.value.name.trim().length > 0 && validTurns.value && validWeights.value)
 
 /** Long enough that typing a role title is one save, short enough to feel immediate. */
 const SAVE_DELAY = 600
@@ -320,11 +336,12 @@ const SAVE_DELAY = 600
 let timer: ReturnType<typeof setTimeout> | null = null
 /** The pending save, snapshotted with the id it belongs to: the panel can be pointed at
  *  someone else before the timer fires, and a patch must never land on whoever came next. */
-let pending: { memberId: string; patch: MemberUpdate } | null = null
+let pending: { memberId: string; patch: MemberUpdate; baseline: TeamMember } | null = null
 /** Saves run one at a time. Each ends in a `refreshTeam`, so two in flight together can
  *  land out of order and leave the store showing the older of the two. */
 let queue: Promise<unknown> = Promise.resolve()
 let running = 0
+let leaving = false
 
 function cancelPending(): void {
   if (timer) clearTimeout(timer)
@@ -333,6 +350,7 @@ function cancelPending(): void {
 }
 
 function schedule(): void {
+  if (removing.value) return
   if (!dirty.value || !valid.value) {
     // Nothing to send, or nothing sendable: an empty name is refused by the backend, so
     // hold the edit here rather than spending a round-trip to be told so mid-word.
@@ -341,7 +359,11 @@ function schedule(): void {
   }
   if (timer) clearTimeout(timer)
   failed.value = false
-  pending = { memberId: props.member.id, patch: patch.value }
+  pending = {
+    memberId: props.member.id,
+    patch: patch.value,
+    baseline: submittedMembers.get(props.member.id) ?? props.member,
+  }
   timer = setTimeout(() => void flush(), SAVE_DELAY)
 }
 
@@ -351,6 +373,8 @@ async function flush(): Promise<void> {
   const job = pending
   pending = null
   if (!job) return
+  const submitted = { ...job.baseline, ...job.patch } as TeamMember
+  submittedMembers.set(job.memberId, submitted)
   running += 1
   saving.value = true
   const attempt = queue.then(() => teams.saveMember(job.memberId, job.patch))
@@ -358,8 +382,14 @@ async function flush(): Promise<void> {
   try {
     failed.value = (await attempt) === false
   } finally {
+    if (submittedMembers.get(job.memberId) === submitted) submittedMembers.delete(job.memberId)
     running -= 1
-    if (running === 0) saving.value = false
+    if (running === 0) {
+      saving.value = false
+      // The user may have restored the old value while this request was in flight.
+      // It was clean against the old props, but now differs from the saved response.
+      if (!leaving && !failed.value && !pending && job.memberId === props.member.id && dirty.value) schedule()
+    }
   }
 }
 
@@ -392,15 +422,23 @@ watch(
 
 // A closing panel still owes whatever the debounce is holding.
 onBeforeUnmount(() => {
+  leaving = true
   void flush()
 })
 
 async function remove() {
+  if (removing.value || props.member.builtin) return
+  removing.value = true
+  const memberId = props.member.id
   // Whatever is queued is about to be a patch against a row that no longer exists.
   cancelPending()
-  const removed = await teams.removeMember(props.member.id)
-  if (removed) emit('close')
-  else confirmingRemoval.value = false
+  try {
+    await queue
+    const removed = await teams.removeMember(memberId, true)
+    if (removed) emit('close')
+  } finally {
+    removing.value = false
+  }
 }
 </script>
 
@@ -451,10 +489,12 @@ async function remove() {
             <button
               v-for="kind in (['agent', 'human'] as MemberKind[])"
               :key="kind"
-              :disabled="member.builtin === 'producer' && kind === 'human'"
+              :disabled="kindDisabled(kind)"
               class="flex flex-1 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5"
               :class="
-                draft.kind === kind
+                kindDisabled(kind)
+                  ? 'cursor-not-allowed border-line-subtle bg-inset text-faint opacity-40'
+                  : draft.kind === kind
                   ? 'border-accent bg-accent-soft'
                   : 'border-line hover:bg-hover'
               "
@@ -592,6 +632,25 @@ async function remove() {
         </p>
       </section>
 
+      <!-- §10.11: these relative weights belong only to the built-in Effort Solver. -->
+      <section v-if="isEffortSolver" class="space-y-2 border-t border-line-subtle pt-3">
+        <p class="text-small font-semibold tracking-wide text-faint uppercase">{{ t('effortSolver.weights') }}</p>
+        <div class="grid grid-cols-2 gap-2">
+          <label v-for="dimension in EFFORT_SOLVER_DIMENSIONS" :key="dimension" class="block">
+            <span class="mb-1 block text-small text-faint">{{ t(`effortSolver.dimensions.${dimension}`) }}</span>
+            <input
+              v-model.number="draft.effort_solver_weights[dimension]"
+              type="number"
+              min="0"
+              step="any"
+              :aria-label="t(`effortSolver.dimensions.${dimension}`)"
+              class="field"
+            />
+          </label>
+        </div>
+        <p class="text-small text-faint">{{ t('effortSolver.weightsHint') }}</p>
+      </section>
+
       <!-- Skills --------------------------------------------------------------- -->
       <!-- Chips from the draft, the picker from the folder (§10.10). A name the folder no longer
            has stays as a marked chip until it is taken off: the member's list still holds it,
@@ -637,18 +696,15 @@ async function remove() {
           </li>
         </ul>
 
-        <select v-if="addableSkills.length" class="field" @change="addSkill">
-          <option value="">{{ t('teams.editor.addSkill') }}</option>
-          <option
-            v-for="skill in addableSkills"
-            :key="skill.name"
-            :value="skill.name"
-            :title="skill.description"
-          >
-            {{ skillOptionLabel(skill) }}
-          </option>
-        </select>
-        <p v-else-if="skillsStore.skills && !skillsStore.skills.length" class="text-small text-faint">
+        <SkillPicker
+          :skills="skillsStore.skills"
+          :selected="draft.skills"
+          :backend="draft.agent_backend"
+          :loading="skillsStore.loading"
+          :error="skillsStore.error"
+          @select="addSkill"
+        />
+        <p v-if="skillsStore.skills && !skillsStore.skills.length" class="text-small text-faint">
           <I18nT keypath="teams.editor.noSkills">
             <template #link>
               <RouterLink to="/skills" class="text-accent hover:underline">{{
@@ -662,6 +718,15 @@ async function remove() {
           {{ t('teams.editor.skillsHint', { folder: skillsFolder }) }}
         </p>
       </section>
+
+      <RequiredContextEditor
+        v-if="isAgent"
+        v-model:skills="draft.required_skills"
+        v-model:documents="draft.required_documents"
+        :inherited-skills="session.project?.config.teams.required_skills ?? []"
+        :inherited-documents="session.project?.config.teams.required_documents ?? []"
+        :backend="draft.agent_backend"
+      />
 
       <!-- Agent settings ------------------------------------------------------- -->
       <section v-if="isAgent" class="space-y-2 border-t border-line-subtle pt-3">
@@ -777,14 +842,11 @@ async function remove() {
 
         <label class="block">
           <span class="mb-1 block text-small text-faint">{{ t('teams.editor.effort') }}</span>
-          <select
-            :value="draft.effort ?? ''"
-            class="field"
-            @change="draft.effort = ($event.target as HTMLSelectElement).value || null"
-          >
-            <option value="">{{ t('teams.editor.effortDefault') }}</option>
-            <option v-for="level in effortLevels" :key="level" :value="level">{{ level }}</option>
-          </select>
+          <ModelEffortSlider
+            v-model="draft.effort"
+            :levels="options?.effort_levels"
+            :default-title="t('teams.editor.effortDefault')"
+          />
           <span class="mt-1 block text-small text-faint">
             {{ t('teams.editor.effortHint') }}
           </span>
@@ -856,10 +918,6 @@ async function remove() {
         {{ teams.error }}
       </p>
 
-      <p v-if="confirmingRemoval" class="rounded-md bg-inset p-2 text-small">
-        {{ t('teams.editor.confirmRemove', { name: member.name }) }}
-      </p>
-
       <div class="flex items-center gap-2">
         <p
           class="flex-1 truncate text-small"
@@ -867,6 +925,7 @@ async function remove() {
         >
           <template v-if="!draft.name.trim()">{{ t('teams.editor.nameNeeded') }}</template>
           <template v-else-if="!validTurns">{{ t('teams.settings.invalidTurns') }}</template>
+          <template v-else-if="!validWeights">{{ t('effortSolver.invalidWeights') }}</template>
           <template v-else-if="failed">{{ t('teams.editor.notSaved') }}</template>
           <template v-else-if="saving || dirty">{{ t('common.saving') }}</template>
           <!-- Not naming the file: a team's id and its filename are independent (see
@@ -874,31 +933,47 @@ async function remove() {
           <template v-else>{{ t('teams.editor.savedToYaml') }}</template>
         </p>
         <button
-          v-if="!confirmingRemoval && !member.builtin"
+          v-if="!member.builtin"
           class="grid place-items-center rounded-md border border-line px-2 py-1.5 text-danger hover:bg-danger-soft"
           :title="t('teams.editor.removeTitle')"
           @click="confirmingRemoval = true"
         >
           <Trash2 class="size-3.5" />
         </button>
-        <template v-else-if="confirmingRemoval && !member.builtin">
-          <button
-            class="rounded-md bg-danger px-3 py-1.5 font-medium text-on-accent disabled:opacity-50"
-            :disabled="teams.busy"
-            @click="remove"
-          >
-            {{ t('common.remove') }}
-          </button>
-          <button
-            class="rounded-md border border-line px-3 py-1.5 hover:bg-hover"
-            @click="confirmingRemoval = false"
-          >
-            {{ t('teams.editor.keep') }}
-          </button>
-        </template>
       </div>
       <p v-if="member.builtin === 'producer'" class="text-small text-faint">{{ t('teams.editor.builtinProducer') }}</p>
+      <p v-if="isDirector" class="text-small text-faint">{{ t('teams.editor.builtinDirector') }}</p>
+      <p v-if="isEffortSolver" class="text-small text-faint">{{ t('effortSolver.builtin') }}</p>
     </footer>
+    <ModalDialog
+      v-if="confirmingRemoval && !member.builtin"
+      :label="t('teams.editor.removeTitle')"
+      panel-class="w-[30rem]"
+      @close="!removing && (confirmingRemoval = false)"
+    >
+      <div class="space-y-3 p-pane">
+        <h2 class="text-title font-medium">{{ t('teams.editor.confirmRemove', { name: member.name }) }}</h2>
+        <p>{{ t('teams.editor.removeConsequences') }}</p>
+        <p v-if="assignedTaskCount" class="text-small text-muted">
+          {{ t('teams.editor.removeTaskCount', { count: assignedTaskCount }) }}
+        </p>
+        <p v-if="teams.error" class="rounded-md bg-danger-soft p-2 text-small text-danger" role="alert">
+          {{ teams.error }}
+        </p>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="rounded-md border border-line px-3 py-1.5 hover:bg-hover disabled:opacity-50"
+            :disabled="removing"
+            @click="confirmingRemoval = false"
+          >{{ t('common.cancel') }}</button>
+          <button
+            class="rounded-md bg-danger px-3 py-1.5 font-medium text-on-accent disabled:opacity-50"
+            :disabled="teams.busy || removing"
+            @click="remove"
+          >{{ t('teams.editor.removePermanently') }}</button>
+        </div>
+      </div>
+    </ModalDialog>
   </div>
 </template>
 

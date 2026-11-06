@@ -32,6 +32,7 @@ from ..models.base import new_id, utcnow
 from ..models.teams import (
     TERMINAL_TASK_STATUSES,
     AgentChat,
+    AgentChatMessage,
     AgentMessage,
     MemberKind,
     ProjectCounter,
@@ -69,8 +70,11 @@ from .backends.base import (
 )
 from .backends.recovery import recovery_prompt
 from .docs import DocStore
+from .effort_solver import EFFORT_SOLVER_ID
+from .effort_solver_runner import solve_effort
 from .file_observer import FileObserver
 from .project_skills import MemberSkills, Skill, SkillStore
+from .required_context import load_required_context
 from .project_skills import prompt_list as skill_prompt_list
 from .slots import agent_slot, span
 from .subagents import SubagentManager, results_prompt
@@ -164,6 +168,8 @@ class TeamOrchestrator:
         ``_run_task`` is inside that coroutine; without this, the run that has just freed a
         solo-mode member would count as still holding them (``_solo_holder``).
         """
+        self.removing_members: set[str] = set()
+        """Members being removed: no new assignments or sessions during the transfer (§10.2)."""
         self._number_lock = asyncio.Lock()
         """Serialises task-number allocation (§10.2). ``MAX(number) + 1`` read in one
         session and committed in another would hand two concurrent creations the same
@@ -530,6 +536,8 @@ class TeamOrchestrator:
           what lets a QA member send a defect straight to the developer or the designer
           instead of routing every correction through the lead.
         """
+        if assignee_id in self.removing_members or created_by in self.removing_members:
+            raise ValueError("This member is being removed. Wait for the team to refresh.")
         if created_by is None:
             return
         assignee = await session.get(TeamMember, assignee_id)
@@ -639,6 +647,32 @@ class TeamOrchestrator:
         ``_number_lock``, and nothing downstream has a route to change it afterwards.
         """
         declared_writes = wt.normalize_write_paths(write_paths, root=self.paths.root)
+        producer_chat_id = producer_chat_id or (parent_task.producer_chat_id if parent_task else None)
+        solution = None
+        solver = None
+        solver_message = None
+        if producer_chat_id:
+            # §10.11: do the model call before opening the numbering transaction. One
+            # slow evaluation must not hold the database or block other task creation.
+            async with self.db.session() as session:
+                chat = await session.get(AgentChat, producer_chat_id)
+                if chat is not None and created_by == chat.member_id and chat.producer_effort_mode == "auto":
+                    await self.check_can_assign(session, assignee_id=assignee_id, created_by=created_by)
+                    assignee = await session.get(TeamMember, assignee_id)
+                    if assignee is None:
+                        raise KeyError(f"Unknown member {assignee_id!r}")
+                    creator = await session.get(TeamMember, chat.member_id)
+                    if assignee.team_id != team_id or creator is None or creator.team_id != team_id:
+                        raise ValueError("That member or Producer chat is on a different team")
+                    if parent_task and parent_task.delegation_depth + 1 > self.config.teams.max_delegation_depth:
+                        raise DelegationLimitError("Delegation depth limit reached")
+                    solver = await session.get(TeamMember, f"{team_id}__{EFFORT_SOLVER_ID}")
+                    if solver is None:
+                        raise RuntimeError("The built-in Effort Solver is missing. Reload the team and retry.")
+            if solver is not None:
+                solution = await solve_effort(
+                    solver, title, brief, max_message_bytes=self.config.teams.max_message_bytes,
+                )
         async with self._number_lock, self.db.session() as session:
             await self.check_can_assign(
                 session, assignee_id=assignee_id, created_by=created_by
@@ -660,14 +694,39 @@ class TeamOrchestrator:
                     f"Delegation depth limit reached ({self.config.teams.max_delegation_depth}). "
                     "Describe what still needs doing in your summary instead of handing it on."
                 )
-            producer_chat_id = producer_chat_id or (parent_task.producer_chat_id if parent_task else None)
+            producer_chat = await session.get(AgentChat, producer_chat_id) if producer_chat_id else None
+            if producer_chat is not None and created_by == producer_chat.member_id:
+                # §10.11: enforce the saved policy at creation, including stale toolsets.
+                # Delegation by an assignee and manual task overrides keep their normal rules.
+                if producer_chat.producer_effort_mode == "auto":
+                    if solution is None:
+                        raise RuntimeError("Producer effort mode changed. Retry task creation for Effort Solver.")
+                    effort = solution.effort_level
+                    solver_message = AgentChatMessage(
+                        chat_id=producer_chat.id, member_id=producer_chat.member_id,
+                        role="assistant", kind="effort_solver", text="",
+                        data={"scores": solution.scores.model_dump(), "effort": solution.effort,
+                              "effort_level": solution.effort_level},
+                    )
+                    session.add(solver_message)
+                    producer_chat.last_message_at = solver_message.created_at
+                    # The separate scoring call is part of the chat's cost, without
+                    # exposing its internal transcript in the result block (§10.11).
+                    producer_chat.total_cost_usd += float(solution.usage.get("total_cost_usd") or 0)
+                    for field_name in (
+                        "num_turns", "total_tokens", "total_uncached_tokens", "total_cached_tokens",
+                        "total_input_tokens", "total_output_tokens",
+                    ):
+                        setattr(producer_chat, field_name, getattr(producer_chat, field_name)
+                                + int(solution.usage.get(field_name) or 0))
+                    session.add(producer_chat)
+                else:
+                    effort = None
             locale = _summary_locale(summary_locale)
             if locale is None and parent_task is not None:
                 locale = parent_task.summary_locale
-            if locale is None and producer_chat_id:
-                producer_chat = await session.get(AgentChat, producer_chat_id)
-                if producer_chat is not None:
-                    locale = _summary_locale(producer_chat.producer_locale)
+            if locale is None and producer_chat is not None:
+                locale = _summary_locale(producer_chat.producer_locale)
             task = TeamTask(
                 producer_chat_id=producer_chat_id,
                 summary_locale=locale,
@@ -698,6 +757,21 @@ class TeamOrchestrator:
                     "Could not allocate a task number — another process is writing to this "
                     "project's database. Close the other Studio instance and try again."
                 ) from exc
+
+        if solver_message is not None:
+            await self.bus.publish(
+                EventType.TEAM_CHAT_MESSAGE,
+                {"id": solver_message.id, "chat_id": solver_message.chat_id,
+                 "member_id": solver_message.member_id, "role": solver_message.role,
+                 "kind": solver_message.kind, "text": solver_message.text,
+                 "data": solver_message.data, "created_at": solver_message.created_at.isoformat()},
+                channel=f"team.{solver_message.member_id}.chat",
+            )
+            await self.bus.publish(
+                EventType.TEAM_CHAT_UPDATED,
+                {**producer_chat.model_dump(mode="json"),
+                 "is_running": self.jobs.is_running(producer_chat.id)},
+            )
 
         # Opens the task's history with the state it was born in, so the timeline in the UI
         # starts at `todo` rather than at whatever happened to it first (§10.4).
@@ -798,6 +872,8 @@ class TeamOrchestrator:
         if task.team_id in self.paused_teams:
             raise ValueError("Producer Mode is paused. Press Resume before starting tasks.")
 
+        if member.id in self.removing_members:
+            raise ValueError("This member is being removed. Wait for the team to refresh.")
         self.jobs.submit(
             task_id,
             "agent_task",
@@ -992,6 +1068,8 @@ class TeamOrchestrator:
         nothing else. Called when one of their runs ends, and when Solo Mode is switched
         off with work parked behind it.
         """
+        if member_id in self.removing_members:
+            return
         async with self.db.session() as session:
             rows = await session.exec(
                 select(TeamTask)
@@ -1204,6 +1282,8 @@ class TeamOrchestrator:
             if task is None:
                 raise KeyError(task_id)
             await self.check_can_edit(session, task=task, actor_id=actor_id)
+            if task.assignee_id in self.removing_members:
+                raise ValueError("This task's member is being removed. Wait for the team to refresh.")
 
             if summary_locale is not None:
                 task.summary_locale = _summary_locale(summary_locale)
@@ -1451,6 +1531,8 @@ class TeamOrchestrator:
             async with self.jobs.slot("agents"):
                 await self._compress_context(get_backend(member.agent_backend), request, force=True)
 
+        if member.id in self.removing_members:
+            raise ValueError("This member is being removed. Wait for the team to refresh.")
         handle = self.jobs.submit(task_id, "task_compaction", run, member_id=member.id)
         try:
             await asyncio.shield(handle.task)
@@ -2248,7 +2330,10 @@ class TeamOrchestrator:
             # transcript beside the agent and model lines for the same reason they are — which
             # skills a run was told about is part of what it was, and the roster says only what
             # the next run will get.
-            member_skills = self.skills.for_session(member.skills)
+            required = load_required_context(self.config.teams, member, self.skills, self.docs)
+            member_skills = self.skills.for_session([
+                *(member.skills or []), *(skill.name for skill in required.skills.found),
+            ])
             if member_skills.found or member_skills.missing:
                 await self.record_message(
                     task_id,
@@ -2305,7 +2390,7 @@ class TeamOrchestrator:
             # are how the member reaches its own task board.
             project_mcp = project_mcp_servers(self.paths, self.config)
             recovered_prompt = (
-                recovery_prompt(prompt, await self._messages_of(task_id), task)
+                required.prepend(recovery_prompt(prompt, await self._messages_of(task_id), task))
                 if resume_session_id and getattr(backend, "session_recovery", False)
                 else ""
             )
@@ -2315,7 +2400,7 @@ class TeamOrchestrator:
                 task=task,
                 workdir=workdir,
                 writable_roots=[worktree_created, temp_dir] if worktree_created else [self.paths.root],
-                prompt=prompt,
+                prompt=required.prepend(prompt) if not resume_session_id else prompt,
                 images=list(images),
                 system_prompt=system_prompt,
                 agent_name=agent_name,
@@ -2487,6 +2572,18 @@ class TeamOrchestrator:
     ) -> _RunOutcome:
         """A closing parent turn joins workers and consumes their results (§10.3)."""
         while True:
+            # §10.10: compaction and a backend recovery can start a fresh session on
+            # an internal continuation too. Keep full requirements outside transcript
+            # summarisation, and never repeat them during ordinary successful resumes.
+            required = load_required_context(self.config.teams, request.member, self.skills, self.docs)
+            if not request.resume_session_id and required.text and required.text not in request.prompt:
+                request = replace(request, prompt=required.prepend(request.prompt))
+            if request.resume_session_id and getattr(backend, "session_recovery", False):
+                recovered = request.recovery_prompt or recovery_prompt(
+                    request.prompt, await self._messages_of(task_id), request.task)
+                if required.text and required.text not in recovered:
+                    recovered = required.prepend(recovered)
+                request = replace(request, recovery_prompt=recovered)
             outcome = await self._drain_events(backend, request, task_id, member_id)
             if outcome.errored:
                 return outcome

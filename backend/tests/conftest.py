@@ -1,8 +1,7 @@
 """Shared fixtures.
 
-Every test gets its own managed project under ``tmp_path``: the Studio keeps all its
-state inside the project directory (§5), so an isolated directory is a complete isolated
-world — database, config, pipelines, roster and artifacts.
+Every test gets its own managed project and application home under ``tmp_path`` (§5.2):
+database, config, user preferences, pipelines, roster and artifacts are all isolated.
 
 ``asyncio_mode = "auto"`` is set in ``pyproject.toml``, so async tests need no decorator.
 """
@@ -40,9 +39,9 @@ def agent_skills_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-@pytest.fixture(autouse=True, scope="session")
-def studio_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
-    """Redirect the machine-level Studio directory for the whole run.
+@pytest.fixture(autouse=True)
+def studio_home(tmp_path: Path) -> Iterator[Path]:
+    """Isolate user settings, the plugin registry and recent projects for each test.
 
     Without this, starting the app writes every throwaway `tmp_path` project into the
     developer's real recent-projects list, and the globally installed plugins on the
@@ -52,7 +51,8 @@ def studio_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 
     from voxarium_studio.core.paths import HOME_ENV_VAR
 
-    home = tmp_path_factory.mktemp("studio-home")
+    home = tmp_path / "studio-home"
+    home.mkdir()
     previous = os.environ.get(HOME_ENV_VAR)
     os.environ[HOME_ENV_VAR] = str(home)
     try:

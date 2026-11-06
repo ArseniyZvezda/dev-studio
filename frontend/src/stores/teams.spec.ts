@@ -25,6 +25,7 @@ const api = {
   cancelTask: vi.fn(),
   createTask: vi.fn(),
   updateTask: vi.fn(),
+  deleteMember: vi.fn(),
 }
 
 vi.mock('@/api/client', async () => {
@@ -145,6 +146,35 @@ describe('explicit write-file declarations', () => {
     }))
     expect(await store.updateTask('task_1', { write_paths: [] })).toBe(true)
     expect(api.updateTask).toHaveBeenCalledExactlyOnceWith('team_1', 'task_1', { write_paths: [], actor_id: null })
+  })
+})
+
+describe('confirmed member removal', () => {
+  it('transfers tasks only with explicit confirmation and refreshes the board', async () => {
+    const assigned = task({ status: 'done', is_running: false, archived: true })
+    const store = await storeWith([assigned])
+    store.editingMemberId = 'member_1'
+    api.team.mockResolvedValueOnce({
+      ...store.team,
+      tasks: [{ ...assigned, assignee_id: 'team_1__director' }],
+    })
+    expect(await store.removeMember('member_1', true)).toBe(true)
+    expect(api.deleteMember).toHaveBeenCalledExactlyOnceWith('team_1', 'member_1', true)
+    expect(store.tasks[0]?.assignee_id).toBe('team_1__director')
+    expect(store.tasks[0]?.archived).toBe(true)
+    expect(store.editingMemberId).toBeNull()
+  })
+
+  it('retains the member editor and tasks when deletion fails', async () => {
+    const store = await storeWith([task()])
+    store.editingMemberId = 'member_1'
+    api.deleteMember.mockRejectedValueOnce(new Error('Cannot stop the running task'))
+    expect(await store.removeMember('member_1')).toBe(false)
+    expect(api.deleteMember).toHaveBeenCalledExactlyOnceWith('team_1', 'member_1', false)
+    expect(store.editingMemberId).toBe('member_1')
+    expect(store.tasks[0]?.assignee_id).toBe('member_1')
+    expect(store.error).toBe('Cannot stop the running task')
+    expect(store.busy).toBe(false)
   })
 })
 

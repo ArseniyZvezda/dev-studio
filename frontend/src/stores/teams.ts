@@ -373,12 +373,12 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
-  async function removeMember(memberId: string): Promise<boolean> {
+  async function removeMember(memberId: string, reassignToDirector = false): Promise<boolean> {
     if (!team.value) return false
     busy.value = true
     error.value = null
     try {
-      await api.deleteMember(team.value.id, memberId)
+      await api.deleteMember(team.value.id, memberId, reassignToDirector)
       if (editingMemberId.value === memberId) editingMemberId.value = null
       await refreshTeam()
       return true

@@ -16,6 +16,7 @@ import {
   ChartLine,
   FileText,
   FolderTree,
+  FolderCog,
   GitBranch,
   GraduationCap,
   Loader2,
@@ -36,8 +37,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSPro
 import { useRoute } from 'vue-router'
 
 import ChangelogDialog from '@/components/project/ChangelogDialog.vue'
-import ProjectTaskCounts from '@/components/project/ProjectTaskCounts.vue'
 import UpdateDialog from '@/components/project/UpdateDialog.vue'
+import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import { t, type MessageKey } from '@/i18n'
 import { formatTime } from '@/lib/status'
 import { pluginNavItems } from '@/plugin-runtime/loader'
@@ -60,11 +61,6 @@ interface NavItem {
    * colour lives on its icons, and the rows themselves stay grey.
    */
   tint: string
-  /**
-   * A subsection of the row above it — indented under its parent in the full rail, and an icon
-   * like any other in the strip, where there is no width to indent with.
-   */
-  sub?: boolean
 }
 
 const session = useSessionStore()
@@ -73,13 +69,34 @@ const vcs = useVcsStore()
 const updates = useUpdatesStore()
 const search = useSearchStore()
 const showingChangelog = ref(false)
-let countsTimer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { countsTimer = setInterval(() => void session.refreshTaskCounts(), 15_000) })
-onBeforeUnmount(() => clearInterval(countsTimer))
-const taskCountsTitle = computed(() => [
-  t('project.taskCounts.inProgress', { count: session.taskCounts?.in_progress ?? '—' }),
-  t('project.taskCounts.needsReview', { count: session.taskCounts?.needs_review ?? '—' }),
-].join('\n'))
+let statusTimer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  statusTimer = setInterval(() => {
+    // The project menu still uses the current project's task counts (§5.1).
+    void session.refreshTaskCounts()
+    if (session.connection === 'open') void session.refreshStatus()
+  }, 15_000)
+})
+onBeforeUnmount(() => clearInterval(statusTimer))
+watch(() => session.connection, (connection) => {
+  if (connection === 'open') void session.refreshStatus()
+}, { immediate: true })
+
+// §6.1: the backend's monochrome mark carries readiness; the whole row explains it.
+const agentBackends = computed(() => (['claude_code', 'codex', 'qwen'] as const).map((id) => {
+  const label = t(`nav.agentBackends.${id}`)
+  const info = session.connection === 'open' ? session.status?.agent_backends[id] : undefined
+  const reason = info?.reason || t(info
+    ? info.available ? 'nav.agentBackends.ready' : 'nav.agentBackends.unavailable'
+    : 'nav.agentBackends.unknown')
+  return {
+    id,
+    label,
+    reason,
+    title: `${label}\n${reason}`,
+    color: !info ? 'var(--vxs-warning)' : info.available ? 'var(--vxs-success)' : 'var(--vxs-danger)',
+  }
+}))
 
 // The rail is where the build already is, so it is where "there is a newer one" belongs.
 onMounted(() => void updates.load())
@@ -95,19 +112,17 @@ const builtinItems: NavItem[] = [
   { to: '/explorer', labelKey: 'nav.section.explorer', icon: FolderTree, tint: 'var(--vxs-nav-explorer)' },
   { to: '/documents', labelKey: 'nav.section.documents', icon: FileText, tint: 'var(--vxs-nav-documents)' },
   // The whole corpus as a graph, on a page of its own: the same documents, read by their links
-  // rather than by their folders — hence a subsection of Documents and its tint.
-  { to: '/documents/graph', labelKey: 'nav.section.documentsGraph', icon: Waypoints, tint: 'var(--vxs-nav-documents)', sub: true },
+  // rather than by their folders. It is a peer navigation row with the Documents tint (§6.1).
+  { to: '/documents/graph', labelKey: 'nav.section.documentsGraph', icon: Waypoints, tint: 'var(--vxs-nav-documents)' },
   { to: '/chats', labelKey: 'nav.section.chats', icon: MessageCircle, tint: 'var(--vxs-nav-teams)' },
-  { to: '/pipelines', labelKey: 'nav.section.pipelines', icon: Workflow, tint: 'var(--vxs-nav-pipelines)' },
+  { to: '/pipelines', labelKey: 'nav.section.pipelines', icon: Workflow, tint: 'var(--vxs-nav-automations)' },
+  { to: '/automations', labelKey: 'nav.section.automations', icon: Zap, tint: 'var(--vxs-nav-automations)' },
   { to: '/tasks', labelKey: 'nav.section.tasks', icon: SquareKanban, tint: 'var(--vxs-nav-tasks)' },
   { to: '/producer', labelKey: 'producerPage.title', icon: Clapperboard, tint: 'var(--vxs-nav-tasks)' },
   { to: '/teams', labelKey: 'nav.section.teams', icon: Users, tint: 'var(--vxs-nav-teams)' },
   // Under Teams because it is about the team's work: what it has cost, over time and by
   // member, archived tasks included (§10.4).
   { to: '/statistics', labelKey: 'nav.section.statistics', icon: ChartLine, tint: 'var(--vxs-nav-statistics)' },
-  // Last of the work sections: it is what the three above do without being asked — a task
-  // reaching review, a pipeline finishing, a folder changing (§6.5).
-  { to: '/automations', labelKey: 'nav.section.automations', icon: Zap, tint: 'var(--vxs-nav-automations)' },
   // The project-shaped configuration pages sit together, after the sections that are about
   // the work itself: what the project is under, what its agents know, what they can reach.
   { to: '/vcs', labelKey: 'nav.section.vcs', icon: GitBranch, tint: 'var(--vxs-nav-vcs)' },
@@ -116,6 +131,7 @@ const builtinItems: NavItem[] = [
   { to: '/skills', labelKey: 'nav.section.skills', icon: GraduationCap, tint: 'var(--vxs-nav-skills)' },
   { to: '/mcp', labelKey: 'nav.section.mcp', icon: Plug, tint: 'var(--vxs-nav-mcp)' },
   { to: '/plugins', labelKey: 'nav.section.plugins', icon: Blocks, tint: 'var(--vxs-nav-plugins)' },
+  { to: '/project-settings', labelKey: 'nav.section.projectSettings', icon: FolderCog, tint: 'var(--vxs-text-muted)' },
 ]
 
 /**
@@ -317,7 +333,6 @@ const vcsLine = computed(() =>
             :key="item.to"
             :to="item.to"
             class="nav-link"
-            :class="item.sub ? 'nav-link-sub' : ''"
             active-class="nav-link-active"
             :title="t(item.labelKey)"
           >
@@ -382,10 +397,16 @@ const vcsLine = computed(() =>
           <span class="rail-label">{{ t('nav.section.settings') }}</span>
         </RouterLink>
         <div class="rail-status">
-          <RouterLink to="/tasks" class="rail-foot flex items-center gap-1.5" :title="taskCountsTitle">
-            <SquareKanban class="size-3 shrink-0" />
-            <ProjectTaskCounts class="rail-label" :counts="session.taskCounts" />
-          </RouterLink>
+          <div
+            v-for="backend in agentBackends"
+            :key="backend.id"
+            class="rail-foot flex items-center gap-1.5"
+            :title="backend.title"
+          >
+            <AgentBackendIcon :backend="backend.id" class="size-3 shrink-0" :style="{ color: backend.color }" />
+            <span class="rail-label truncate text-small">{{ backend.label }}</span>
+            <span class="sr-only">{{ backend.reason }}</span>
+          </div>
           <!-- Which version control the project is under, in the same shape as the row below
                it: a dot for the state, a word for the system. It links to the page that can
                change either, and its tooltip carries what the strip hides. -->
@@ -460,12 +481,6 @@ const vcsLine = computed(() =>
 .nav-link:hover {
   background: var(--vxs-bg-hover);
   color: var(--vxs-text-primary);
-}
-
-/* A subsection sits under its parent's words, not its icon. One class weaker than the strip's
-   rule below, which takes the side padding away again where there are no words to line up. */
-.nav-link-sub {
-  padding-left: calc(var(--vxs-row-pad-x) + 16px + var(--vxs-space-2));
 }
 
 /* The current section: a grey pill on its own edge with a mark down its leading edge. The
@@ -596,8 +611,8 @@ const vcsLine = computed(() =>
   margin-bottom: 8px;
 }
 
-/* Where the project stands — its version control, and the live connection with the build —
-   is one inset card at the foot of the rail, read at a glance rather than as two more rows. */
+/* Agent readiness, version control and the live connection with the build share one
+   inset status card at the foot of the rail (§6.1). */
 .rail-status {
   margin-top: 8px;
   padding: 8px;

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /** Independent live task transcripts share the app's socket, never its openTask (§10.11). */
-import { ArrowUpRight, MessageSquare, RotateCw, Wrench } from 'lucide-vue-next'
+import { ArrowUpRight, Cpu, MessageSquare, RotateCw, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { api, taskAttachmentUrl } from '@/api/client'
 import type { AgentMessage, TaskAttachment, TeamMember, TeamTask } from '@/api/types'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
+import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import { t } from '@/i18n'
@@ -30,6 +31,18 @@ const rows = computed(() => taskConversationRows(messages.value))
 const live = computed(() => liveLine(messages.value, 'advanced'))
 const cost = computed(() => taskCost(props.task.total_cost_usd, messages.value))
 const usage = computed(() => taskUsage({ ...props.task, messages: messages.value }))
+// §10.3, §10.11: match task execution precedence; an unset override inherits the assignee.
+const runSettings = computed(() => {
+  if (props.member?.kind === 'human') return null
+  const model = props.task.model ?? props.member?.model ?? null
+  const effort = props.task.effort ?? props.member?.effort ?? null
+  if (!model && !effort) return null
+  const overridden = Boolean(props.task.model || props.task.effort)
+  const title = overridden ? t('taskDetail.runSettings.overridden')
+    : props.member ? t('taskDetail.runSettings.inherited', { name: props.member.name })
+      : t('taskDetail.runSettings.inheritedMember')
+  return { model, effort, overridden, title }
+})
 let generation = 0
 let alive = true
 let received: AgentMessage[] = []
@@ -143,6 +156,14 @@ onBeforeUnmount(() => {
         <MemberMark :member="member" variant="badge" :corner="false" />
         <span class="truncate">{{ member.name }}</span>
       </p>
+      <div v-if="runSettings" class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-small"
+        :class="runSettings.overridden ? 'text-info' : 'text-faint'" :title="runSettings.title">
+        <span v-if="runSettings.model" class="inline-flex min-w-0 max-w-full items-center gap-1" :title="runSettings.model">
+          <Cpu class="size-3 shrink-0" />
+          <span class="truncate">{{ runSettings.model }}</span>
+        </span>
+        <ModelEffortSlider :model-value="runSettings.effort" readonly />
+      </div>
     </header>
 
     <div v-if="error" class="shrink-0 border-b border-line bg-danger-soft px-3 py-2 text-small" role="alert">

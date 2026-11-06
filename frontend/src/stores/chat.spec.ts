@@ -99,10 +99,10 @@ vi.mock('@/api/client', () => {
         return { chat_id: id, deleted: true }
       },
       cancelChat: async (id: string) => ({ chat_id: id, cancelled: true }),
-      startProducer: async (id: string, locale: string, policy?: AgentChat['producer_policy'], estimateTaskCostUsd?: number) => {
-        calls.push({ name: 'startProducer', args: estimateTaskCostUsd === undefined ? [id, locale, policy] : [id, locale, policy, estimateTaskCostUsd] })
+      startProducer: async (id: string, locale: string, policy?: AgentChat['producer_policy'], estimateTaskCostUsd?: number, effortMode?: AgentChat['producer_effort_mode']) => {
+        calls.push({ name: 'startProducer', args: effortMode !== undefined ? [id, locale, policy, estimateTaskCostUsd, effortMode] : estimateTaskCostUsd === undefined ? [id, locale, policy] : [id, locale, policy, estimateTaskCostUsd] })
         const row = listed.find(entry => entry.id === id)!
-        return { ...row, estimate_task_cost_usd: estimateTaskCostUsd ?? row.estimate_task_cost_usd ?? 150, producer_policy: policy ?? 'careful', producer_mode: true, producer_state: 'running', is_running: true }
+        return { ...row, estimate_task_cost_usd: estimateTaskCostUsd ?? row.estimate_task_cost_usd ?? 150, producer_effort_mode: effortMode ?? row.producer_effort_mode ?? 'agent', producer_policy: policy ?? 'careful', producer_mode: true, producer_state: 'running', is_running: true }
       },
       setProducerSettings: async (id: string, estimateTaskCostUsd: number) => {
         calls.push({ name: 'setProducerSettings', args: [id, estimateTaskCostUsd] })
@@ -115,6 +115,12 @@ vi.mock('@/api/client', () => {
         const row = listed.find(entry => entry.id === id)!
         if (row.is_running) throw new ApiError(409, 'Producer is answering')
         return { ...row, producer_policy: policy }
+      },
+      setProducerEffortMode: async (id: string, mode: AgentChat['producer_effort_mode']) => {
+        calls.push({ name: 'setProducerEffortMode', args: [id, mode] })
+        const row = listed.find(entry => entry.id === id)!
+        if (row.is_running) throw new ApiError(409, 'Producer is answering')
+        return { ...row, producer_effort_mode: mode }
       },
       stopProducer: async (id: string) => {
         calls.push({ name: 'stopProducer', args: [id] })
@@ -656,6 +662,35 @@ describe('the chat store', () => {
     await store.setProducerEstimateTaskCost(200)
     expect(store.error).toBe('Producer is answering')
     expect(store.activeChat?.estimate_task_cost_usd).toBe(125.5)
+    expect(store.busy).toBe(false)
+  })
+
+  it('sends the chosen effort mode when starting a new Producer chat', async () => {
+    installStorage()
+    const store = useChatStore()
+    await store.load()
+    store.startNew('team_default__producer')
+    await store.producerAction('start', 'careful', 150, 'auto')
+    expect(calls.find(call => call.name === 'startProducer')?.args).toEqual([store.activeChatId, 'en', 'careful', 150, 'auto'])
+    expect(store.activeChat?.producer_effort_mode).toBe('auto')
+  })
+
+  it('saves effort mode per conversation and keeps the old value on server refusal', async () => {
+    installStorage()
+    listed = [chatRow({ id: 'producer', producer_effort_mode: 'agent' }), chatRow({ id: 'other', producer_effort_mode: 'agent' })]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat('producer')
+    await store.setProducerEffortMode('auto')
+    expect(store.activeChat?.producer_effort_mode).toBe('auto')
+    expect(store.chats.find(chat => chat.id === 'other')?.producer_effort_mode).toBe('agent')
+    expect(calls.filter(call => call.name === 'setProducerEffortMode')).toEqual([
+      { name: 'setProducerEffortMode', args: ['producer', 'auto'] },
+    ])
+    listed[0]!.is_running = true
+    await store.setProducerEffortMode('agent')
+    expect(store.error).toBe('Producer is answering')
+    expect(store.activeChat?.producer_effort_mode).toBe('auto')
     expect(store.busy).toBe(false)
   })
 

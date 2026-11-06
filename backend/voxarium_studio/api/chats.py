@@ -56,6 +56,7 @@ class ChatMessageIn(BaseModel):
 class ProducerStart(BaseModel):
     locale: Literal["en", "ru"] = "en"
     policy: Literal["careful", "independent"] | None = None
+    effort_mode: Literal["agent", "auto"] | None = None
     estimate_task_cost_usd: float = Field(default=150.0, gt=0, allow_inf_nan=False)
 
 
@@ -65,6 +66,10 @@ class ProducerWorkspace(BaseModel):
 
 class ProducerPolicy(BaseModel):
     policy: Literal["careful", "independent"]
+
+
+class ProducerEffort(BaseModel):
+    mode: Literal["agent", "auto"]
 
 
 class ProducerSettings(BaseModel):
@@ -148,6 +153,7 @@ async def start_producer(chat_id: str, body: ProducerStart, ctx: Ctx) -> dict[st
     try:
         chat = await ctx.chats.producer.enable(
             chat_id, body.locale, body.policy,
+            effort_mode=body.effort_mode,
             estimate_task_cost_usd=(body.estimate_task_cost_usd
                                     if "estimate_task_cost_usd" in body.model_fields_set else None),
         )
@@ -186,6 +192,17 @@ async def set_producer_policy(chat_id: str, body: ProducerPolicy, ctx: Ctx) -> d
 async def set_producer_settings(chat_id: str, body: ProducerSettings, ctx: Ctx) -> dict[str, Any]:
     try:
         chat = await ctx.chats.producer.set_estimate_task_cost(chat_id, body.estimate_task_cost_usd)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, ChatBusy) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return ctx.chats.to_json(chat)
+
+
+@router.patch("/{chat_id}/producer/effort")
+async def set_producer_effort(chat_id: str, body: ProducerEffort, ctx: Ctx) -> dict[str, Any]:
+    try:
+        chat = await ctx.chats.producer.set_effort_mode(chat_id, body.mode)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     except (ValueError, ChatBusy) as exc:

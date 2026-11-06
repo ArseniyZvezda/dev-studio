@@ -329,7 +329,7 @@ class AppContext:
         save_config(self.paths, self.config)
 
     def reload_config(self) -> AppConfig:
-        self.config = load_config(self.paths)
+        self.config = load_config(self.paths, migrate_application=True)
         self.jobs.update_limits(self.config.concurrency.as_dict())
         self.explorer.config = self.config
         self.watcher.config = self.config

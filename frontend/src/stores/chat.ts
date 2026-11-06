@@ -14,7 +14,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
 import { ApiError, api } from '@/api/client'
-import type { AgentChat, AgentChatMessage, ChatContext } from '@/api/types'
+import type { AgentChat, AgentChatMessage, ChatContext, ProducerEffortMode } from '@/api/types'
 import { locale, t } from '@/i18n'
 import { parseUtc } from '@/lib/status'
 import { onEvent } from '@/ws/connection'
@@ -358,7 +358,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /** §10.11: both chat surfaces use these same actions and durable server state. */
-  async function producerAction(action: 'start' | 'stop' | 'approve' | 'pause' | 'resume', policy?: AgentChat['producer_policy'], estimateTaskCostUsd?: number): Promise<void> {
+  async function producerAction(action: 'start' | 'stop' | 'approve' | 'pause' | 'resume', policy?: AgentChat['producer_policy'], estimateTaskCostUsd?: number, effortMode?: ProducerEffortMode): Promise<void> {
     if (busy.value) return
     if (action === 'start' && estimateTaskCostUsd !== undefined && (!Number.isFinite(estimateTaskCostUsd) || estimateTaskCostUsd <= 0)) {
       error.value = t('chat.producer.estimateInvalid')
@@ -378,7 +378,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       if (!current) return
       const updated = action === 'start'
-        ? await api.startProducer(current.id, locale.value, policy, estimateTaskCostUsd)
+        ? await api.startProducer(current.id, locale.value, policy, estimateTaskCostUsd, effortMode)
         : action === 'stop'
           ? await api.stopProducer(current.id)
           : action === 'pause'
@@ -401,6 +401,20 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
     try {
       upsert(await api.setProducerPolicy(current.id, policy))
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      busy.value = false
+    }
+  }
+
+  async function setProducerEffortMode(mode: ProducerEffortMode): Promise<void> {
+    const current = activeChat.value
+    if (!current || busy.value) return
+    busy.value = true
+    error.value = null
+    try {
+      upsert(await api.setProducerEffortMode(current.id, mode))
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
@@ -532,6 +546,7 @@ export const useChatStore = defineStore('chat', () => {
     stop,
     producerAction,
     setProducerPolicy,
+    setProducerEffortMode,
     setProducerEstimateTaskCost,
     remove,
     setSelection,

@@ -54,7 +54,7 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
-import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { taskAttachmentUrl, uploadTaskAttachment, api } from '@/api/client'
 import type {
@@ -74,6 +74,7 @@ import TaskDiff from '@/components/teams/TaskDiff.vue'
 import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
+import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
@@ -126,6 +127,8 @@ const props = defineProps<{ task: TaskDetail }>()
 const emit = defineEmits<{ close: [] }>()
 
 const teams = useTeamsStore()
+// §10.3: read-only effort uses the same installed catalogue as its editor.
+onMounted(() => void teams.loadOptions())
 const apiCost = computed(() => taskCost(props.task.total_cost_usd, props.task.messages))
 const estimatedCost = computed(() =>
   props.task.messages.some((message) => message.kind === 'result' && message.data?.cost_estimated),
@@ -358,7 +361,8 @@ const runSettings = computed(() => {
         : t('taskDetail.runSettings.overriddenBy', { name, usual })
   }
   return {
-    label: describe(model, effort),
+    model,
+    effort,
     overridden,
     title,
   }
@@ -1149,11 +1153,19 @@ async function complete() {
                why this card cost something other than the member's others did (§10.3). -->
           <span
             v-if="runSettings"
-            class="inline-flex items-center gap-1 text-small"
+            class="inline-flex items-center gap-2 text-small"
             :class="runSettings.overridden ? 'text-info' : 'text-faint'"
             :title="runSettings.title"
           >
-            <Cpu class="size-3" /> {{ runSettings.label }}
+            <span v-if="runSettings.model" class="inline-flex items-center gap-1">
+              <Cpu class="size-3" /> {{ runSettings.model }}
+            </span>
+            <ModelEffortSlider
+              :model-value="runSettings.effort"
+              :levels="teams.options?.effort_levels"
+              :default-title="t('teams.editor.effortDefault')"
+              readonly
+            />
           </span>
           <!-- §10.4: context occupancy and lifetime spending share the model's status row. -->
           <span
@@ -1605,7 +1617,24 @@ async function complete() {
               </span>
               <span class="ml-auto">{{ formatTime(row.message.created_at) }}</span>
             </p>
-            <MarkdownText v-if="PROSE_KINDS.has(row.message.kind)" :text="row.message.text" />
+            <!-- §10.3: structured model frames use the same effort display as the header. -->
+            <div
+              v-if="row.message.kind === 'model' && typeof row.message.data?.effort === 'string'"
+              class="flex flex-wrap items-center gap-2"
+            >
+              <span v-if="typeof row.message.data.model === 'string'" class="font-mono text-small">
+                {{ row.message.data.model }}
+              </span>
+              <ModelEffortSlider
+                :model-value="row.message.data.effort"
+                :levels="teams.options?.effort_levels"
+                readonly
+              />
+              <span v-if="row.message.data.source === 'task'" class="text-small text-faint">
+                {{ t('taskDetail.runSettings.overridden') }}
+              </span>
+            </div>
+            <MarkdownText v-else-if="PROSE_KINDS.has(row.message.kind)" :text="row.message.text" />
             <p v-else class="whitespace-pre-wrap">{{ row.message.text }}</p>
             <!-- What a review came with (§10.4). Drawn as pictures and links, unlike the
                  remote image a model might write into its prose: these are files of this

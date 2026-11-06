@@ -73,7 +73,9 @@ async def opened(ctx):
 async def tools_for(ctx, chat):
     async with ctx.db.session() as session:
         member = await session.get(TeamMember, PRODUCER)
-    toolset = build_toolset(ctx.teams, member=member, producer=ctx.chats.producer, chat_id=chat.id)
+    current = await ctx.chats.get_chat(chat.id)
+    toolset = build_toolset(ctx.teams, member=member, producer=ctx.chats.producer, chat_id=chat.id,
+                           producer_effort_mode=current.producer_effort_mode)
     return {tool.name: tool.handler for tool in toolset.definitions}
 
 
@@ -132,6 +134,7 @@ async def test_start_is_only_for_producer_and_opens_a_localized_conversation(pro
         await producer.chats.producer.enable(other.id)
     chat = await opened(producer)
     assert chat.producer_mode and chat.producer_state == "awaiting_user"
+    assert chat.producer_started
     assert chat.producer_policy == "careful"
     request = ProducerBackend.requests[-1]
     assert "Speak Russian" in request.system_prompt
@@ -140,6 +143,70 @@ async def test_start_is_only_for_producer_and_opens_a_localized_conversation(pro
     assert "mcp__voxarium_studio__propose_producer_plan" in request.extra_allowed_tools
     await producer.chats.producer.enable(chat.id)
     assert len(ProducerBackend.requests) == 1, "double Start must not create another turn"
+
+
+@pytest.mark.parametrize("policy", ["careful", "independent"])
+async def test_workspace_policy_waits_for_first_message_then_notifies_both_switches(producer, policy):
+    chat = await producer.chats.create_chat(PRODUCER, producer_mode=True, locale="ru")
+    for selection in ("independent", "careful", policy):
+        saved = await producer.chats.producer.set_policy(chat.id, selection)
+        assert not saved.producer_started and not producer.chats.is_running(chat.id)
+    await producer.chats.producer.reconcile()
+    assert ProducerBackend.requests == []
+    assert await producer.chats.messages(chat.id) == []
+
+    await producer.chats.send(chat.id, "Build a small game", UserContext())
+    assert (await producer.chats.get_chat(chat.id)).producer_started
+    await finished(producer, chat.id)
+    assert len(ProducerBackend.requests) == 1
+    assert "Build a small game" in ProducerBackend.requests[-1].prompt
+    assert f"Decision policy: {policy.title()}" in ProducerBackend.requests[-1].system_prompt
+
+    for changed in (("independent", "careful") if policy == "careful" else ("careful", "independent")):
+        count = len(ProducerBackend.requests)
+        await producer.chats.producer.set_policy(chat.id, changed)
+        await finished(producer, chat.id)
+        assert len(ProducerBackend.requests) == count + 1
+        assert f"Decision policy: {changed.title()}" in ProducerBackend.requests[-1].system_prompt
+        await producer.chats.producer.set_policy(chat.id, changed)
+        assert len(ProducerBackend.requests) == count + 1
+
+
+async def test_empty_workspace_neither_controls_nor_wakes_with_paused_team(producer):
+    active = await opened(producer)
+    empty = await producer.chats.create_chat(PRODUCER, producer_mode=True)
+    await producer.chats.producer.pause(active.id)
+    saved = await producer.chats.get_chat(empty.id)
+    assert not saved.producer_started and not saved.producer_paused
+    for action in (producer.chats.producer.pause, producer.chats.producer.resume):
+        with pytest.raises(ValueError, match="not started"):
+            await action(empty.id)
+    selected = await producer.chats.producer.set_policy(empty.id, "independent")
+    assert selected.producer_policy == "independent" and not selected.producer_started
+    with pytest.raises(ValueError, match="already started"):
+        await producer.chats.send(empty.id, "Do not bypass the team's pause", UserContext())
+    assert await producer.chats.messages(empty.id) == []
+    assert TEAM in producer.teams.paused_teams
+    await producer.chats.producer.resume(active.id)
+    await finished(producer, active.id)
+    assert not producer.chats.is_running(empty.id)
+    assert not (await producer.chats.get_chat(empty.id)).producer_started
+    assert all(request.session_key != empty.id for request in ProducerBackend.requests)
+    await producer.chats.send(empty.id, "Start this conversation", UserContext())
+    await finished(producer, empty.id)
+    assert (await producer.chats.get_chat(empty.id)).producer_started
+
+
+async def test_failed_first_turn_is_started_even_without_backend_session(producer):
+    chat = await producer.chats.create_chat(PRODUCER, producer_mode=True)
+    ProducerBackend.fail = True
+    await producer.chats.send(chat.id, "Try starting", UserContext())
+    await finished(producer, chat.id)
+    saved = await producer.chats.get_chat(chat.id)
+    assert saved.producer_started and saved.agent_session_id is None
+    assert saved.producer_state == "error"
+    paused = await producer.chats.producer.pause(chat.id)
+    assert paused.producer_paused and paused.producer_started
 
 
 @pytest.mark.parametrize("named_agent", [False, True])
@@ -686,6 +753,33 @@ async def test_overflow_compacts_and_retries_once_but_ordinary_errors_do_not_loo
     assert (await producer.chats.get_chat(chat.id)).producer_state == "error"
 
 
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_required_context_is_restored_after_producer_compaction(producer, monkeypatch, overflow):
+    folder = producer.paths.skills / "producer-required"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("# Required\nAPPLY PRODUCER SKILL", encoding="utf-8")
+    producer.paths.docs.mkdir(parents=True, exist_ok=True)
+    (producer.paths.docs / "producer-required.md").write_text("FULL PRODUCER DOCUMENT", encoding="utf-8")
+    producer.config.teams.required_skills = ["producer-required"]
+    producer.config.teams.required_documents = ["producer-required.md"]
+    chat = await opened(producer)
+    initial = ProducerBackend.requests[-1]
+    assert initial.prompt.count("APPLY PRODUCER SKILL") == 1
+    assert initial.prompt.count("FULL PRODUCER DOCUMENT") == 1
+    if overflow:
+        ProducerBackend.overflow = True
+    else:
+        monkeypatch.setattr("voxarium_studio.teams.producer.COMPACT_CHARS", 50)
+    await producer.chats.send(chat.id, "Continue the approved scope", UserContext())
+    await finished(producer, chat.id)
+    summary, fresh = ProducerBackend.requests[-2:]
+    assert summary.session_key.endswith(":summary")
+    assert "APPLY PRODUCER SKILL" not in summary.prompt
+    assert fresh.resume_session_id is None
+    assert fresh.prompt.count("APPLY PRODUCER SKILL") == 1
+    assert fresh.prompt.count("FULL PRODUCER DOCUMENT") == 1
+
+
 async def test_new_tools_are_documented_and_do_not_leak_to_regular_chats(producer):
     chat = await opened(producer)
     toolset = await tools_for(producer, chat)
@@ -1115,7 +1209,8 @@ def test_pause_resume_api_validates_chat_and_returns_durable_state(client):
     ctx = client.app.state.ctx
 
     async def activate_without_model():
-        await ctx.chats.producer._save(chat["id"], producer_mode=True, producer_state="awaiting_user")
+        await ctx.chats.producer._save(chat["id"], producer_mode=True, producer_started=True,
+                                      producer_state="awaiting_user")
 
     client.portal.call(activate_without_model)
     paused = client.post(f"/api/chats/{chat['id']}/producer/pause")

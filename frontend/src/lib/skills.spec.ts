@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SkillEntry } from '@/api/types'
 
-import { describeFiles, filterSkills, inSkillsFolder, skillChips, skillOptions } from './skills'
+import { describeFiles, filterSkillOptions, filterSkills, inSkillsFolder, skillChips, skillOptions, skillPickerScope } from './skills'
 
 function skill(name: string, extra: Partial<SkillEntry> = {}): SkillEntry {
   return {
@@ -67,6 +67,36 @@ describe('filterSkills', () => {
     expect(filterSkills([skill('other'), installed], 'design CODEX')).toEqual([installed])
     expect(filterSkills([installed], 'missing')).toEqual([])
     expect(filterSkills([installed], '  ')).toEqual([installed])
+  })
+})
+
+describe('skill picker filters', () => {
+  const studio = skill('level-design', { scope: 'project', description: 'Design a playable level' })
+  const bundled = skill('voxarium_studio:studio', { scope: 'builtin', source: 'voxarium_studio', automatic: true })
+  const shared = skill('installed:shared', { scope: 'global', source: 'shared', display_name: 'Level Design', backends: [] })
+  const codex = skill('installed:codex', { scope: 'global', source: 'codex', display_name: 'Level Design', backends: ['codex'] })
+  const project = skill('installed:project', { scope: 'project', source: 'claude_code', backends: ['claude_code'] })
+  const catalog = [studio, bundled, shared, codex, project]
+
+  it('distinguishes Studio content from native project and global installations', () => {
+    expect(catalog.map(skillPickerScope)).toEqual(['studio', 'studio', 'global', 'global', 'project'])
+    expect(filterSkillOptions(catalog, '', 'all', 'studio')).toEqual([studio, bundled])
+    expect(filterSkillOptions(catalog, '', 'all', 'project')).toEqual([project])
+    expect(skillPickerScope(skill('legacy'))).toBe('studio')
+  })
+
+  it('intersects search, backend/shared, and scope without treating shared skills as native', () => {
+    expect(filterSkillOptions(catalog, 'LEVEL', 'shared', 'global')).toEqual([shared])
+    expect(filterSkillOptions(catalog, 'level', 'codex', 'global')).toEqual([codex])
+    expect(filterSkillOptions(catalog, 'playable', 'shared', 'studio')).toEqual([studio])
+    expect(filterSkillOptions(catalog, '', 'codex', 'studio')).toEqual([])
+    expect(filterSkillOptions(catalog, '', 'all', 'all')).toEqual(catalog)
+  })
+
+  it('keeps compatibility and existing assignments excluded before narrowing the catalog', () => {
+    const offered = skillOptions(catalog, [shared.name], 'codex')
+    expect(filterSkillOptions(offered, '', 'shared')).toEqual([studio, bundled])
+    expect(filterSkillOptions(offered, '', 'all', 'global')).toEqual([codex])
   })
 })
 

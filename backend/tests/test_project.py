@@ -179,7 +179,7 @@ def test_a_project_that_picked_a_look_loads_and_loses_the_key(project: Path) -> 
     which were always the project's own fields — and the next save writes the file without it.
     A new project starts on the Graphite design's accent and monospace face."""
     paths = ProjectPaths.for_project(project)
-    fresh = load_config(paths).theme
+    fresh = AppConfig().theme
     assert (fresh.accent, fresh.mono_font) == ("#a394e8", "jetbrains"), "the Graphite defaults"
 
     paths.config_file.write_text(

@@ -120,7 +120,7 @@ class TeamMember(SQLModel, table=True):
     role_title: str
     kind: str = MemberKind.AGENT
     builtin: str | None = None
-    """Reserved role, currently ``producer`` (§10.11); settings remain editable."""
+    """Reserved ``director`` (§10.2), ``producer`` or ``effort_solver`` (§10.11) role."""
     """``agent`` runs through an ``AgentBackend``; ``human`` gets an inbox instead (§10.2).
 
     A human member's tasks never start a session: the person claims the task, works
@@ -155,6 +155,11 @@ class TeamMember(SQLModel, table=True):
     default. Nullable on purpose: "not chosen" and "chosen as low" are different states,
     and only the first should follow the model when it changes."""
 
+    effort_solver_weights: dict[str, float] | None = Field(
+        default=None, sa_column=Column(JSON, nullable=True, info={"migration_default": "NULL"}),
+    )
+    """Effort Solver's custom component weights (§10.11); null uses built-in defaults."""
+
     allowed_tools: list[str] = Field(
         default_factory=lambda: ["Read", "Grep", "Glob"], sa_column=Column(JSON)
     )
@@ -168,6 +173,11 @@ class TeamMember(SQLModel, table=True):
     deleted skill is the user's to notice on the page, not something a sync should silently
     take off the roster — and is simply not offered to the session.
     """
+
+    required_skills: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    """Skills activated at session start, in addition to shared Teams requirements (§10.10)."""
+    required_documents: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    """Document paths whose full text accompanies the initial message (§10.10)."""
 
     run_settings_override: bool = False
     """Use this member's permission mode and turn limit instead of Team Settings (§10.3)."""
@@ -461,10 +471,14 @@ class AgentChat(SQLModel, table=True):
     producer_mode: bool = False
     producer_workspace: bool = False
     """Chats created on /producer keep the mode enabled until deletion (§10.11)."""
+    producer_started: bool = False
+    """A Producer turn has been requested; survives pauses and session compaction (§10.11)."""
     producer_paused: bool = False
     """Execution gate; the plan, wait and session remain intact while paused (§10.11)."""
     producer_policy: str = "careful"
     """Per-conversation decision policy; existing chats default to Careful (§10.11)."""
+    producer_effort_mode: str = "agent"
+    """Agent inherits the assignee's effort; Auto runs Effort Solver before creation (§10.11)."""
     estimate_task_cost_usd: float = 150.0
     """Estimated API cost ceiling per task, checked before Producer continuations (§10.11)."""
     producer_state: str = "off"

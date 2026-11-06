@@ -14,6 +14,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 
 import { attachmentUrl, type UploadedAttachment } from '@/api/client'
 import type { AgentChatMessage, ChatContext } from '@/api/types'
+import EffortSolverResult from '@/components/chat/EffortSolverResult.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
 import { t } from '@/i18n'
@@ -180,6 +181,8 @@ defineExpose({ scrollToLatest })
           <p class="mt-0.5 px-1 text-small text-faint">{{ formatTime(message.created_at) }}</p>
         </div>
       </div>
+
+      <EffortSolverResult v-else-if="message.kind === 'effort_solver'" :data="message.data" />
 
       <!-- The member thinking aloud — Advanced and above. -->
       <div

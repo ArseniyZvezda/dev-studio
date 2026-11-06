@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
-from typing import Any, Literal, get_args
+from typing import Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -15,6 +16,7 @@ from ..core.security import UNTRUSTED_FILE_HEADERS
 from ..models.subagents import TaskSubagent
 from ..models.teams import (
     TERMINAL_TASK_STATUSES,
+    AgentChat,
     AgentMessage,
     Team,
     TeamMember,
@@ -197,10 +199,14 @@ class MemberUpdate(BaseModel):
     agent: str | None = None
     model: str | None = None
     effort: str | None = None
+    effort_solver_weights: dict[str, Any] | None = None
     allowed_tools: list[str] | None = None
     skills: list[str] | None = None
     """Folder names under ``voxarium_studio/skills/`` — the whole list, as it should be (§10.10). Null
     is the same edit as an empty list: the member is given no skills."""
+
+    required_skills: list[str] | None = None
+    required_documents: list[str] | None = None
 
     run_settings_override: bool = False
     max_turns: int | None = Field(default=None, ge=1, le=1000)
@@ -248,12 +254,9 @@ def _permission_modes() -> list[str]:
 
 def _effort_levels() -> list[str]:
     """Effort levels the installed SDK accepts, read the same way as the modes above."""
-    try:
-        from claude_agent_sdk.types import EffortLevel
+    from ..teams.effort import effort_levels
 
-        return [str(value) for value in get_args(EffortLevel)]
-    except Exception:  # SDK absent, or too old to have the parameter
-        return ["low", "medium", "high", "xhigh", "max"]
+    return effort_levels()
 
 
 def _check_task_overrides(fields: dict[str, Any]) -> None:
@@ -452,8 +455,22 @@ async def _validate_member(
 ) -> None:
     """Guard the invariants the org chart depends on. Raises HTTPException(400)."""
     from ..teams.producer_identity import is_producer
+    from ..teams.director_identity import is_director
+    from ..teams.effort_solver import EffortWeights, is_effort_solver
+    if is_director(member) and fields.get("kind", member.kind) != "human":
+        raise HTTPException(400, "The built-in Director must remain a person.")
     if is_producer(member) and fields.get("kind", "agent") != "agent":
         raise HTTPException(400, "The built-in Producer must remain an agent.")
+    if is_effort_solver(member) and fields.get("kind", "agent") != "agent":
+        raise HTTPException(400, "The built-in Effort Solver must remain an agent.")
+    if "effort_solver_weights" in fields:
+        if not is_effort_solver(member):
+            raise HTTPException(400, "Component weights are only available on Effort Solver.")
+        if fields["effort_solver_weights"] is not None:
+            try:
+                fields["effort_solver_weights"] = EffortWeights.model_validate(fields["effort_solver_weights"]).model_dump()
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
     if is_producer(member) and "responsibility" in fields:
         # §10.11: the built-in role mirrors the Producer System Prompt in Team Settings.
         raise HTTPException(
@@ -573,6 +590,16 @@ async def update_member(
         await _validate_member(session, team_id=team_id, member=member, fields=fields)
         if "skills" in fields:
             fields["skills"] = _checked_skills(ctx, member, fields["skills"])
+        from ..teams.required_context import checked_documents, checked_skills
+        try:
+            if "required_skills" in fields:
+                fields["required_skills"] = checked_skills(
+                    ctx.skills, fields["required_skills"] or [], member.required_skills)
+            if "required_documents" in fields:
+                fields["required_documents"] = checked_documents(
+                    ctx.teams.docs, fields["required_documents"] or [], member.required_documents)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         for field, value in fields.items():
             if field in ("agent", "avatar_icon") and isinstance(value, str):
                 # Emptying the field in the UI means "go back to the generated agent" (or to
@@ -656,26 +683,32 @@ async def create_member(team_id: str, payload: MemberCreate, ctx: Ctx) -> dict[s
 
 
 @router.delete("/{team_id}/members/{member_id}")
-async def delete_member(team_id: str, member_id: str, ctx: Ctx) -> dict[str, Any]:
-    """Remove a member — refused while anything still depends on them.
+async def delete_member(
+    team_id: str, member_id: str, ctx: Ctx, reassign_to_director: bool = False,
+) -> dict[str, Any]:
+    """Confirmed removal transfers work and chat history to the human Director (§10.2)."""
+    from ..teams.director_identity import DIRECTOR_ID, is_director
+    from ..teams.producer_identity import is_producer
+    from ..teams.effort_solver import is_effort_solver
 
-    Their tasks are history the user can still read, and ``team_task.assignee_id`` is a real
-    foreign key; reports would be orphaned out of the org tree. Both are the user's call to
-    resolve, so this says what is in the way instead of guessing.
-    """
+    if member_id in ctx.teams.removing_members:
+        raise HTTPException(409, "This member is already being removed.")
     async with ctx.db.session() as session:
         member = await session.get(TeamMember, member_id)
         if member is None or member.team_id != team_id:
             raise HTTPException(status_code=404, detail=f"No member {member_id!r}")
 
-        from ..teams.producer_identity import is_producer
         if is_producer(member):
             raise HTTPException(409, "The built-in Producer cannot be deleted.")
+        if is_director(member):
+            raise HTTPException(409, "The built-in Director cannot be deleted.")
+        if is_effort_solver(member):
+            raise HTTPException(409, "The built-in Effort Solver cannot be deleted.")
 
         open_tasks = list(
             (await session.exec(select(TeamTask).where(TeamTask.assignee_id == member_id))).all()
         )
-        if open_tasks:
+        if open_tasks and not reassign_to_director:
             unfinished = [t for t in open_tasks if t.status not in TERMINAL_TASK_STATUSES]
             detail = (
                 f"{member.name} has {len(open_tasks)} task(s) on the board"
@@ -687,28 +720,100 @@ async def delete_member(team_id: str, member_id: str, ctx: Ctx) -> dict[str, Any
         reports = list(
             (await session.exec(select(TeamMember).where(TeamMember.manager_id == member_id))).all()
         )
-        if reports:
+        if reports and not reassign_to_director:
             who = ", ".join(report.name for report in reports)
             raise HTTPException(
                 status_code=409,
                 detail=f"{who} report(s) to {member.name}. Give them another manager first.",
             )
 
-        # A route to someone who no longer exists cannot be exercised, so dropping the
-        # reference is bookkeeping rather than a decision.
-        for other in (
-            await session.exec(select(TeamMember).where(TeamMember.team_id == team_id))
-        ).all():
-            if member_id in (other.can_assign_to or []):
-                other.can_assign_to = [e for e in other.can_assign_to if e != member_id]
+        chats = list((await session.exec(select(AgentChat).where(AgentChat.member_id == member_id))).all())
+        if chats and not reassign_to_director:
+            raise HTTPException(409, "Confirm removal to preserve this member's chat history under Director.")
+        director_id = f"{team_id}__{DIRECTOR_ID}"
+        director = await session.get(TeamMember, director_id)
+        if reassign_to_director and (director is None or director.kind != "human"):
+            raise HTTPException(409, "This team needs its human Director before removing members.")
+
+    # Block dispatch before cancelling: each finished job normally releases the next one.
+    # Keep the gate until the DB transaction and portable roster are both written.
+    if member_id in ctx.teams.removing_members:
+        raise HTTPException(409, "This member is already being removed.")
+    ctx.teams.removing_members.add(member_id)
+    try:
+        running = [handle for handle in ctx.jobs.jobs() if handle.meta.get("member_id") == member_id]
+        for handle in running:
+            await ctx.jobs.cancel(handle.id)
+        await asyncio.gather(*(h.task for h in running if h.task), return_exceptions=True)
+        for task in open_tasks:
+            ctx.teams._cancel_limit_wait(task.id)
+
+        async with ctx.db.session() as session:
+            member = await session.get(TeamMember, member_id)
+            if member is None:
+                raise HTTPException(404, f"No member {member_id!r}")
+            # Re-read after cancellation so final run writes (status, cost, history) survive.
+            tasks = list((await session.exec(select(TeamTask).where(TeamTask.assignee_id == member_id))).all())
+            chats = list((await session.exec(select(AgentChat).where(AgentChat.member_id == member_id))).all())
+            roster = list((await session.exec(select(TeamMember).where(TeamMember.team_id == team_id))).all())
+            # An assignment may have committed during the initial preflight, before the
+            # removal gate closed. It still needs explicit permission to transfer.
+            if not reassign_to_director and (
+                tasks or chats or any(other.manager_id == member_id for other in roster)
+            ):
+                raise HTTPException(409, "This member now has tasks, chats or reports. Confirm removal to transfer them to Director.")
+            for task in tasks:
+                task.assignee_id = director_id
+                task.agent_session_id = None
+                task.auto_start = False
+                task.pause_resume_pending = False
+                task.limit_resume_at = None
+                task.limit_reset_at = None
+                task.remote_control_url = None
+                if task.status == TaskStatus.IN_PROGRESS:
+                    task.status = TaskStatus.PENDING
+                session.add(task)
+            for chat in chats:
+                chat.member_id = director_id
+                chat.agent_session_id = None
+                session.add(chat)
+            by_id = {other.id: other for other in roster}
+            director = by_id.get(director_id)
+            # A hand-edited hierarchy may place Director below the removed manager.
+            # Detach that chain before moving reports to Director, avoiding a cycle.
+            cursor = director
+            seen: set[str] = set()
+            while cursor is not None and cursor.id not in seen:
+                seen.add(cursor.id)
+                if cursor.manager_id == member_id:
+                    director.manager_id = None
+                    session.add(director)
+                    break
+                cursor = by_id.get(cursor.manager_id)
+            for other in roster:
+                if other.id == member_id:
+                    continue
+                if other.manager_id == member_id:
+                    other.manager_id = director_id if other.id != director_id else None
+                if member_id in (other.can_assign_to or []):
+                    other.can_assign_to = [entry for entry in other.can_assign_to if entry != member_id]
                 session.add(other)
+            await session.flush()  # Move foreign keys before deleting their former parent.
+            await session.delete(member)
 
-        await session.delete(member)
-
-    async with ctx.db.session() as session:
-        await ctx.teams.store.save_from_db(session, team_id)
-    await ctx.teams.sync_agent_definitions()
-    return {"member_id": member_id, "removed": True}
+        async with ctx.db.session() as session:
+            await ctx.teams.store.save_from_db(session, team_id)
+        await ctx.teams.sync_agent_definitions()
+        for task in tasks:
+            await ctx.teams._record_edit(
+                task.id, {"assignee_id": (member_id, director_id)}, member_id=director_id, actor_id=None,
+            )
+            await ctx.teams._publish_task_changed(task.id)
+        for chat in chats:
+            await ctx.chats._publish_chat(chat)
+        return {"member_id": member_id, "removed": True, "reassigned_tasks": len(tasks)}
+    finally:
+        ctx.teams.removing_members.discard(member_id)
 
 
 @router.post("/{team_id}/tasks", status_code=201)

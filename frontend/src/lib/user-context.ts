@@ -33,6 +33,7 @@ export const PAGE_LABELS: Record<string, string> = {
   skills: 'Skills',
   mcp: 'MCP Servers',
   plugins: 'Plugins',
+  'project-settings': 'Project Settings',
   settings: 'Settings',
 }
 
@@ -55,6 +56,7 @@ const PAGE_LABEL_KEYS: Record<string, MessageKey> = {
   skills: 'chat.page.skills',
   mcp: 'chat.page.mcp',
   plugins: 'chat.page.plugins',
+  'project-settings': 'nav.section.projectSettings',
   settings: 'chat.page.settings',
 }
 

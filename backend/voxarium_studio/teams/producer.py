@@ -50,7 +50,7 @@ class ProducerService:
         async with self.chats.db.session() as session:
             teams = set((await session.exec(
                 select(TeamMember.team_id).join(AgentChat, AgentChat.member_id == TeamMember.id)
-                .where(AgentChat.producer_mode == True)  # noqa: E712
+                .where(AgentChat.producer_mode == True, AgentChat.producer_started == True)  # noqa: E712
             )).all())
         # Install every gate before touching rows or publishing events.
         self.orchestrator.paused_teams.update(teams)
@@ -73,10 +73,14 @@ class ProducerService:
 
     async def require_resumed(self, chat_id: str) -> None:
         if await self._team_id(chat_id) in self.orchestrator.paused_teams:
+            if not (await self._chat(chat_id)).producer_started:
+                raise ValueError("This team is paused. Press Resume in an already started Producer chat first.")
             raise ValueError("Producer Mode is paused. Press Resume to continue.")
 
     async def pause(self, chat_id: str) -> AgentChat:
         async with self._control_lock:
+            if not (await self._chat(chat_id)).producer_started:
+                raise ValueError("Producer Mode has not started. Send the first message to begin.")
             await self._pause_team(await self._team_id(chat_id))
             return await self._chat(chat_id)
 
@@ -88,7 +92,9 @@ class ProducerService:
         async with AsyncExitStack() as stack:
             for chat in chats:
                 await stack.enter_async_context(self.chats.lock(chat.id))
-                await self._save(chat.id, producer_paused=True)
+                # An empty workspace is configured, not paused or running (§10.11).
+                fresh = await self._chat(chat.id)
+                await self._save(chat.id, producer_paused=fresh.producer_started)
             async with self.chats.db.session() as session:
                 tasks = list((await session.exec(
                     select(TeamTask).join(TeamMember, TeamTask.assignee_id == TeamMember.id)
@@ -131,6 +137,8 @@ class ProducerService:
 
     async def resume(self, chat_id: str) -> AgentChat:
         async with self._control_lock:
+            if not (await self._chat(chat_id)).producer_started:
+                raise ValueError("Producer Mode has not started. Send the first message to begin.")
             team_id = await self._team_id(chat_id)
             if team_id not in self.orchestrator.paused_teams:
                 return await self._chat(chat_id)
@@ -148,7 +156,7 @@ class ProducerService:
                 await self.orchestrator._release_tasks(team_id, automatic=True)
                 for chat in chats:
                     fresh = await self._chat(chat.id)
-                    if fresh.producer_state in {"running", "waiting", "error", "discussing"}:
+                    if fresh.producer_started and fresh.producer_state in {"running", "waiting", "error", "discussing"}:
                         await self.queue(chat.id, self.chats.config.teams.prompts.text("producer_wake"))
             return await self._chat(chat_id)
 
@@ -209,10 +217,24 @@ class ProducerService:
             self._idle(chat_id)
             return await self._save(chat_id, estimate_task_cost_usd=value)
 
+    async def set_effort_mode(self, chat_id: str, mode: str) -> AgentChat:
+        """Save the task effort policy without starting a turn or changing existing tasks (§10.11)."""
+        if mode not in {"agent", "auto"}:
+            raise ValueError("Unknown Producer effort mode.")
+        async with self.chats.lock(chat_id):
+            chat = await self._chat(chat_id, active=False)
+            if chat.producer_effort_mode == mode:
+                return chat
+            self._idle(chat_id)
+            return await self._save(chat_id, producer_effort_mode=mode)
+
     async def enable(self, chat_id: str, locale: str = "en", policy: str | None = None,
-                     *, estimate_task_cost_usd: float | None = None) -> AgentChat:
+                     *, estimate_task_cost_usd: float | None = None,
+                     effort_mode: str | None = None) -> AgentChat:
         if estimate_task_cost_usd is not None:
             self._validate_estimate(estimate_task_cost_usd)
+        if effort_mode is not None and effort_mode not in {"agent", "auto"}:
+            raise ValueError("Unknown Producer effort mode.")
         async with self.chats.lock(chat_id):
             chat = await self._chat(chat_id, active=False)
             if chat.producer_mode:
@@ -228,8 +250,9 @@ class ProducerService:
             except ImportError as exc:
                 raise ValueError("Install the Studio teams extra to use Producer Mode.") from exc
             await self._save(chat_id, producer_mode=True, producer_locale=locale, producer_state="discussing",
-                             producer_paused=await self._member_paused(chat.member_id),
+                             producer_paused=chat.producer_started and await self._member_paused(chat.member_id),
                              producer_policy=policy or chat.producer_policy,
+                             producer_effort_mode=effort_mode or chat.producer_effort_mode,
                              estimate_task_cost_usd=(estimate_task_cost_usd if estimate_task_cost_usd is not None
                                                      else chat.estimate_task_cost_usd),
                              producer_plan=[], producer_plan_summary="", producer_watch=[],
@@ -245,22 +268,23 @@ class ProducerService:
             raise ValueError("Unknown Producer decision policy.")
         async with self.chats.lock(chat_id):
             chat = await self._chat(chat_id, active=False)
-            if chat.producer_mode:
-                await self.require_resumed(chat_id)
             if chat.producer_policy == policy:
                 return chat
+            if chat.producer_mode and chat.producer_started:
+                await self.require_resumed(chat_id)
             self._idle(chat_id)
             await self._save(chat_id, producer_policy=policy)
-            if chat.producer_mode and policy == "independent":
-                if chat.producer_plan:
+            # Before the first message this is only a preference; a started chat
+            # receives either changed policy in its own continuation (§10.11).
+            if chat.producer_mode and chat.producer_started:
+                if policy == "independent" and chat.producer_plan:
                     try:
                         await self._approve_plan(chat_id, chat.producer_plan_version, automatic=True)
                     except ValueError:
                         # A stale plan must leave the selected policy unchanged as well.
                         await self._save(chat_id, producer_policy=chat.producer_policy)
                         raise
-                if chat.producer_plan or chat.producer_state in {"awaiting_user", "discussing"}:
-                    await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_wake"))
+                await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_wake"))
             return await self._chat(chat_id, active=False)
 
     async def disable(self, chat_id: str, *, cancel: bool = True, deleting: bool = False) -> AgentChat:
@@ -275,7 +299,7 @@ class ProducerService:
                                 producer_questions=[])
         if cancel:
             await self.chats._cancel_turn(chat_id)
-        if team_id and not await self._team_chats(team_id):
+        if team_id and not any(c.producer_started for c in await self._team_chats(team_id)):
             self.orchestrator.paused_teams.discard(team_id)
         return chat
 
@@ -285,7 +309,7 @@ class ProducerService:
         if await self._member_paused(chat.member_id):
             return
         self._idle(chat_id)
-        await self._save(chat_id, producer_state="running", error=None)
+        await self._save(chat_id, producer_started=True, producer_state="running", error=None)
         await self._release_tasks(chat_id)
         if await self._member_paused(chat.member_id):
             return
@@ -324,7 +348,7 @@ class ProducerService:
             return
         questions = [dict(q, answer_message_id=message.id) if not q.get("answer_message_id")
                      else q for q in chat.producer_questions]
-        await self._save(chat.id, producer_state="running", producer_questions=questions)
+        await self._save(chat.id, producer_started=True, producer_state="running", producer_questions=questions)
 
     async def turn_finished(self, chat_id: str) -> None:
         if self.chats.closing:
@@ -639,6 +663,7 @@ class ProducerService:
         async with self.chats.db.session() as session:
             ids = list((await session.exec(select(AgentChat.id).where(
                 AgentChat.producer_mode == True,  # noqa: E712
+                AgentChat.producer_started == True,  # noqa: E712
                 AgentChat.producer_state.in_(["waiting", "running"]),
             ))).all())
         for chat_id in ids:
@@ -676,6 +701,14 @@ class ProducerService:
                   **{k: v[:600] if isinstance(v, str) else v for k, v in self.snapshot(t).items()}}
                  for t in [*active[-30:], *closed[-5:]]]
         return json.dumps({"state": chat.producer_state, "decision_policy": chat.producer_policy,
+                           "effort_mode": chat.producer_effort_mode,
+                           "effort_instructions": (
+                               "Before every new task is created, Effort Solver evaluates only its title "
+                               "and brief, then calculates effort from four scores and its configured weights. "
+                               "Do not choose or pass effort yourself. If evaluation fails, no task is created."
+                               if chat.producer_effort_mode == "auto" else
+                               "New tasks inherit their assignee's configured default effort. "
+                               "Do not override effort when creating tasks."),
                            "session_plan": chat.producer_checklist,
                            "session_plan_instructions": CHECKLIST_INSTRUCTIONS,
                            "mode_instructions": (

@@ -1,9 +1,8 @@
 """Filesystem layout of a managed project.
 
 Everything the Studio persists for a project lives under ``<managed-project>/voxarium_studio``
-(no leading dot — see spec §5/§14). The Studio itself keeps two things per machine and
-nothing else: the global plugin registry (§9.4) and the list of recently opened projects
-(§5). Neither holds project data, so both are safe to delete.
+(no leading dot — see spec §5/§14). The user directory holds application preferences
+(§5.2), the global plugin registry (§9.4), and recently opened project paths (§5.1).
 """
 
 from __future__ import annotations
@@ -176,7 +175,7 @@ HOME_ENV_VAR = "VOXARIUM_STUDIO_HOME"
 
 
 def user_config_dir() -> Path:
-    """Machine-level Studio state: the global plugin registry and the recent projects.
+    """User-wide Studio state: application settings, plugin registry and recent paths.
 
     ``$VOXARIUM_STUDIO_HOME`` overrides the location outright. That is what keeps a test run from
     writing its throwaway projects into the developer's real recent list, and it is the

@@ -19,9 +19,9 @@
  *   with the language's digit grouping; every other number is printed as written, because
  *   a port or a task number is not a quantity.
  *
- * The choice belongs to the reader, not to the project, so it lives in `localStorage`
- * rather than in `config.yaml`: two people opening one repository each keep their own
- * language, the way each keeps their own transcript verbosity.
+ * The choice belongs to the user, not to the project (§6.4). Settings persists it in the
+ * user's application config. `localStorage` caches it for startup and offline screens;
+ * the session store applies the authoritative preference after loading the backend.
  *
  * `t()` is a plain function over reactive state. A template, a `computed` or a store getter
  * that calls it re-runs when the language changes; a module-level constant that called it
@@ -214,7 +214,8 @@ async function catalogueFor(next: Locale): Promise<Catalogue> {
 }
 
 /**
- * Switch the interface to `next` and remember the choice in this browser.
+ * Switch the interface to `next` and cache it in this browser. Settings persists the user
+ * preference through the application-settings API before calling this function.
  *
  * The messages arrive before anything changes on screen, so the page never flashes keys; if
  * two choices race, the later one wins whichever download finishes first.

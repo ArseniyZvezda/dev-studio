@@ -185,4 +185,4 @@ def init_project(root: str | Path, *, with_samples: bool = True) -> ProjectPaths
 def ensure_project(root: str | Path) -> tuple[ProjectPaths, AppConfig]:
     """Initialise if needed, then load config. Used on server start-up."""
     paths = init_project(root)
-    return paths, load_config(paths)
+    return paths, load_config(paths, migrate_application=True)

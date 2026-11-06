@@ -258,7 +258,7 @@ describe('how a changed row is drawn', () => {
 describe('what the rail says about version control', () => {
   const plastic: VcsInfo = {
     id: 'plastic',
-    name: 'Plastic SCM (Unity Version Control)',
+    name: 'Plastic SCM (UVC)',
     root: 'D:/Games/SampleGame',
     available: true,
     reason: '',
