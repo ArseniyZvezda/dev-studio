@@ -4,6 +4,10 @@ Local workspace for AI-assisted game development. Build pipelines, manage teams 
 Claude Code and Codex agents, browse project files and extend the Studio with plugins.
 Includes an English/Russian web UI and a Windows desktop app.
 
+### [Official Website](https://voxarium.studio/studio/)
+
+<img width="1920" height="1080" alt="producer-overview" src="https://github.com/user-attachments/assets/e1b4229d-6527-4006-8d46-c54d91add968" />
+
 ## Build a Windows installer
 
 On Windows x64, install Node.js 22.12+ (x64, with npm) and
