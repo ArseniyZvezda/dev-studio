@@ -27,8 +27,8 @@ def make_ctx(project: Path, params: dict, sink: list[str] | None = None) -> Node
         inputs={},
         params=params,
         project_root=project,
-        assets_dir=project / "voxarium_studio" / "assets",
-        work_dir=project / "voxarium_studio" / "work",
+        assets_dir=project / ".voxarium_studio" / "assets",
+        work_dir=project / ".voxarium_studio" / "work",
         settings={},
         log_fn=log,
     )
@@ -80,12 +80,12 @@ def test_the_plugin_ships_the_canvas_component(registry: Registry) -> None:
 async def test_it_answers_with_the_absolute_path(project: Path, registry: Registry) -> None:
     """The explorer endpoints resolve an absolute path inside the project, so the browser
     can hand this straight back without knowing where the root is."""
-    mesh = project / "voxarium_studio" / "assets" / "golem.vox"
+    mesh = project / ".voxarium_studio" / "assets" / "golem.vox"
     mesh.parent.mkdir(parents=True, exist_ok=True)
     mesh.write_bytes(b"VOX ")
     logs: list[str] = []
 
-    outputs = await run_node(registry, project, {"file": "voxarium_studio/assets/golem.vox"}, logs)
+    outputs = await run_node(registry, project, {"file": ".voxarium_studio/assets/golem.vox"}, logs)
 
     assert Path(outputs["file"]) == mesh.resolve()
     assert Path(outputs["file"]).is_absolute()
@@ -110,7 +110,7 @@ async def test_a_missing_file_is_not_silently_previewed(
     project: Path, registry: Registry
 ) -> None:
     with pytest.raises(FileNotFoundError):
-        await run_node(registry, project, {"file": "voxarium_studio/assets/nothing.vox"})
+        await run_node(registry, project, {"file": ".voxarium_studio/assets/nothing.vox"})
 
 
 async def test_an_empty_port_is_an_error_rather_than_an_empty_viewport(

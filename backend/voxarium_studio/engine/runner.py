@@ -16,7 +16,7 @@ from sqlmodel import select
 
 from ..core.config import AppConfig
 from ..core.db import Database
-from ..core.paths import ProjectPaths
+from ..core.paths import ProjectPaths, current_data_path
 from ..models.base import utcnow
 from ..models.pipeline import NodeRun, NodeStatus, Run, RunStatus
 from ..plugins.registry import Registry
@@ -757,6 +757,9 @@ class PipelineRunner:
                 params[port.id] = node.params[port.id]
             elif port.default is not None:
                 params[port.id] = port.default
+            value = params.get(port.id)
+            if port.type in ("file", "directory", "path") and isinstance(value, str):
+                params[port.id] = current_data_path(value, self.paths.root)
         # Keep extra params the schema does not declare — plugins may read them.
         for key, value in node.params.items():
             params.setdefault(key, value)

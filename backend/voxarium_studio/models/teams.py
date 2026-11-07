@@ -164,7 +164,7 @@ class TeamMember(SQLModel, table=True):
         default_factory=lambda: ["Read", "Grep", "Glob"], sa_column=Column(JSON)
     )
     skills: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    """Skills from ``voxarium_studio/skills/`` this member may use, by folder name (§10.10).
+    """Skills from ``.voxarium_studio/skills/`` this member may use, by folder name (§10.10).
 
     Empty by default, and that is the rule rather than a starting point: a skill in the project
     reaches no one until somebody gives it to a member here. The session is told each one's

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 def test_project_describes_the_managed_project(client: TestClient) -> None:
     body = client.get("/api/project").json()
-    assert body["data_dir"].endswith("voxarium_studio")
+    assert body["data_dir"].endswith(".voxarium_studio")
     assert body["counts"]["plugins"] >= 4
     assert body["auth_required"] is False
 
@@ -64,7 +64,7 @@ def test_plugin_assets_are_behind_auth_but_reachable_by_query(token_client: Test
 
 def test_explorer_tree_and_preview(client: TestClient) -> None:
     tree = client.get("/api/explorer/tree", params={"path": "", "depth": 1}).json()
-    assert "voxarium_studio" not in {entry["name"] for entry in tree["entries"]}
+    assert ".voxarium_studio" not in {entry["name"] for entry in tree["entries"]}
 
     client.put("/api/docs/note.md", json={"content": "# Note\n"})
     assert client.get("/api/explorer/file", params={"path": "nope.txt"}).status_code == 404
@@ -316,7 +316,7 @@ def test_the_org_chart_layout_round_trips_through_the_team_file(
     team = "team_default"
     dev, qa = f"{team}__dev", f"{team}__qa"
     layout = f"/api/teams/{team}/layout"
-    roster = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    roster = project / ".voxarium_studio" / "teams" / "default-team.yaml"
 
     def members(http: TestClient) -> dict[str, dict]:
         return {m["id"]: m for m in http.get(f"/api/teams/{team}").json()["members"]}
@@ -481,7 +481,7 @@ def test_the_agent_limit_is_saved_and_applied_without_a_restart(
     saved = client.put("/api/settings", json={"concurrency": {"agents": 4}})
     assert saved.status_code == 200 and saved.json()["concurrency"]["agents"] == 4
     assert client.get("/api/project").json()["concurrency_limits"]["agent"] == 4
-    assert "agents: 4" in (project / "voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
+    assert "agents: 4" in (project / ".voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
     assert client.put("/api/settings", json={"concurrency": {"agents": 0}}).status_code == 422
 
 

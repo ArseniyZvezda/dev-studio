@@ -34,8 +34,8 @@ async def test_temp_lists_all_own_files_without_transcript_or_vcs(ctx: AppContex
     assert payload["files"] == []
     assert payload["temp_root"] == str(directory)
     assert [f["path"] for f in payload["temp_files"]] == [
-        f"voxarium_studio/temp/TASK-{task.number}/.hidden",
-        f"voxarium_studio/temp/TASK-{task.number}/nested/probe.py",
+        f".voxarium_studio/temp/TASK-{task.number}/.hidden",
+        f".voxarium_studio/temp/TASK-{task.number}/nested/probe.py",
     ]
     assert payload["temp_errors"] == []
 
@@ -83,7 +83,7 @@ async def test_temp_preview_rejects_other_task_and_traversal(ctx: AppContext) ->
     file.write_text("other task")
     for path in (
         str(file),
-        f"voxarium_studio/temp/TASK-{task.number}/../TASK-{other.number}/secret.txt",
+        f".voxarium_studio/temp/TASK-{task.number}/../TASK-{other.number}/secret.txt",
     ):
         with pytest.raises(ValueError, match="outside the task"):
             await ctx.teams.task_patch(task.id, path)
@@ -117,7 +117,7 @@ async def test_temp_paths_are_excluded_from_workspace_and_explicit_commits(ctx: 
     task = await make_task(ctx)
     worktree = ctx.paths.worktrees / "checkout"
     worktree.mkdir(parents=True)
-    temp_path = f"voxarium_studio/temp/TASK-{task.number}/old.txt"
+    temp_path = f".voxarium_studio/temp/TASK-{task.number}/old.txt"
 
     class Backend(GitBackend):
         async def workspace_changes(self, path):
@@ -138,7 +138,7 @@ async def test_temp_paths_are_excluded_from_workspace_and_explicit_commits(ctx: 
 
 async def test_temp_detection_handles_absolute_and_normalized_paths(ctx: AppContext) -> None:
     root = ctx.paths.root
-    assert is_temp_path(str(root / "voxarium_studio/temp/TASK-1/a.txt"), ctx.paths, root)
-    assert is_temp_path("./voxarium_studio/temp/TASK-1/a.txt", ctx.paths, root)
-    assert is_temp_path("voxarium_studio\\temp\\TASK-1\\a.txt", ctx.paths, root)
-    assert not is_temp_path("voxarium_studio/templates/a.txt", ctx.paths, root)
+    assert is_temp_path(str(root / ".voxarium_studio/temp/TASK-1/a.txt"), ctx.paths, root)
+    assert is_temp_path("./.voxarium_studio/temp/TASK-1/a.txt", ctx.paths, root)
+    assert is_temp_path(".voxarium_studio\\temp\\TASK-1\\a.txt", ctx.paths, root)
+    assert not is_temp_path(".voxarium_studio/templates/a.txt", ctx.paths, root)

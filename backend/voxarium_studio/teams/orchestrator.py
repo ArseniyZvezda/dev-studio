@@ -25,7 +25,7 @@ from ..core.config import AppConfig, resolve_launch_root
 from ..core.db import Database
 from ..core.mcp import allowed_tool_names as mcp_allowed_tools
 from ..core.mcp import enabled_servers as project_mcp_servers
-from ..core.paths import ProjectPaths
+from ..core.paths import ProjectPaths, current_data_path
 from ..core.prompts import AgentPromptsConfig
 from ..engine.jobs import JobEngine, JobHandle
 from ..models.base import new_id, utcnow
@@ -145,11 +145,11 @@ class TeamOrchestrator:
         self.store = TeamStore(paths, prompts=lambda: self.config.teams.prompts)
         self.docs = docs if docs is not None else DocStore(paths, bus)
         self.skills = skills if skills is not None else SkillStore(paths)
-        """``voxarium_studio/skills/`` — what a member's ``skills`` names resolve against (§10.10)."""
+        """``.voxarium_studio/skills/`` — what a member's ``skills`` names resolve against (§10.10)."""
         self.authoring: ProjectAuthoring | None = None
         """Live project authoring services, wired by AppContext for MCP (§10.7)."""
         self.attachments = AttachmentStore(paths)
-        """``voxarium_studio/attachments/`` — what a reviewer attached to a review comment (§10.4)."""
+        """``.voxarium_studio/attachments/`` — what a reviewer attached to a review comment (§10.4)."""
         self.vcs: VcsBackend | None = None
         """Set by :class:`AppContext` once detection has run — the orchestrator is built
         before that, and a task started without it simply falls back to path locks."""
@@ -2417,9 +2417,9 @@ class TeamOrchestrator:
                     *(toolset.allowed_tools if toolset else []),
                     *studio_skill.allowed_tools(),
                     # Read on each given skill's folder: an isolated checkout starts outside
-                    # `voxarium_studio/skills/`, where the files would otherwise be refused (§10.10).
+                    # `.voxarium_studio/skills/`, where the files would otherwise be refused (§10.10).
                     *member_skills.allowed_tools(),
-                    # And on the review attachments, which live under `voxarium_studio/` where an
+                    # And on the review attachments, which live under `.voxarium_studio/` where an
                     # isolated worktree cannot otherwise reach (`teams/attachments.py`).
                     *self.attachments.allowed_tools(),
                     *task_temp.allowed_tools(temp_dir),
@@ -3374,7 +3374,7 @@ class TeamOrchestrator:
             messages, self.paths.root, docs=self.paths.docs
         )
         totals = task_changes_source.edit_totals(messages, self.paths.root, docs=self.paths.docs)
-        observed = task_changes_source.observed_files(messages)
+        observed = task_changes_source.observed_files(messages, self.paths.root)
         tool_paths = set(touched)
         touched = list(dict.fromkeys([*touched, *observed]))
         workdir = self._recorded_workdir(messages)
@@ -3431,7 +3431,7 @@ class TeamOrchestrator:
             data = message.data if isinstance(message.data, dict) else {}
             path = data.get("path")
             if isinstance(path, str) and path:
-                return Path(path)
+                return Path(current_data_path(path, self.paths.root))
         return self._launch_root()[0]
 
     def _no_workspace_reason(self, task: TeamTask) -> str:
@@ -3790,7 +3790,7 @@ def _skills_note(skills: MemberSkills) -> str:
         parts.append("Skills this run may use: " + ", ".join(s.name for s in skills.found) + ".")
     if skills.missing:
         parts.append(
-            "Not in voxarium_studio/skills, so not offered: " + ", ".join(skills.missing) + "."
+            "Not in .voxarium_studio/skills, so not offered: " + ", ".join(skills.missing) + "."
         )
     return " ".join(parts)
 

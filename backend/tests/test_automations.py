@@ -1,4 +1,4 @@
-"""Automations: ``voxarium_studio/automations.yaml``, the engine that runs it off the bus, the API (§6.5).
+"""Automations: ``.voxarium_studio/automations.yaml``, the engine that runs it off the bus, the API (§6.5).
 
 The engine is driven the way the Studio drives it — a real status move through the
 orchestrator, a real pipeline run — except for file changes, which are published on the bus
@@ -210,7 +210,7 @@ def test_the_page_creates_edits_switches_and_deletes(client: TestClient, project
     (entry,) = created.json()["automations"]
     assert entry["trigger"]["path"] == "models", "normalised on the way in"
     assert entry["problem"] == "No pipeline 'no-such-pipeline'", "said on the page, not refused"
-    assert created.json()["path"] == "voxarium_studio/automations.yaml"
+    assert created.json()["path"] == ".voxarium_studio/automations.yaml"
 
     off = client.patch(f"/api/automations/{entry['id']}", json={"enabled": False}).json()
     assert off["automations"][0]["enabled"] is False

@@ -45,7 +45,7 @@ class PathTrigger(BaseModel):
 
     ``path`` is project-relative with forward slashes and no ``./`` — ``models`` for what the
     page shows as ``./models/``; empty means the whole project. What the Studio never watches
-    is never seen here either: ``explorer.ignore``, and ``voxarium_studio/runs``, ``assets`` and
+    is never seen here either: ``explorer.ignore``, and ``.voxarium_studio/runs``, ``assets`` and
     ``worktrees`` (``explorer/watcher.py``).
     """
 

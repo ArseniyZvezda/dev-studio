@@ -117,7 +117,7 @@ user's existing `gh` login at check time; credentials stay in the main process.
 Until a repository is configured, the update panel reports that the source is unavailable.
 
 The app ID is `studio.voxarium.desktop`; the profile is `%APPDATA%/Voxarium Studio`.
-The CLI and Python package are `voxarium_studio`; project data uses `voxarium_studio/`.
+The CLI and Python package are `voxarium_studio`; project data uses `.voxarium_studio/`.
 The old application's working copy is not deleted.
 
 ## Build and startup performance

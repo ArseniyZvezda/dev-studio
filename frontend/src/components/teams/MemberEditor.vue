@@ -2,7 +2,7 @@
 /**
  * Per-member settings (spec §10.2).
  *
- * The roster lives in `voxarium_studio/teams/*.yaml` and every save writes it back, so this panel
+ * The roster lives in `.voxarium_studio/teams/*.yaml` and every save writes it back, so this panel
  * is an editor for a git-tracked file rather than for hidden state — that is why it edits a
  * local draft and sends only the fields that actually changed: an unrelated field someone
  * hand-edited in the YAML meanwhile is left alone instead of being overwritten with what
@@ -313,7 +313,7 @@ const patch = computed<MemberUpdate>(() => {
 
 /** The member's skills against the folder — a name the folder lost is marked, not dropped. */
 const chips = computed(() => skillChips(draft.value.skills, skillsStore.skills))
-const skillsFolder = computed(() => skillsStore.overview?.path ?? 'voxarium_studio/skills')
+const skillsFolder = computed(() => skillsStore.overview?.path ?? '.voxarium_studio/skills')
 
 function addSkill(name: string): void {
   if (name && !draft.value.skills.includes(name)) draft.value.skills = [...draft.value.skills, name]

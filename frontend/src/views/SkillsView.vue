@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Skills for the project's agents (§10.10): `voxarium_studio/skills/`, one folder per skill.
+ * Skills for the project's agents (§10.10): `.voxarium_studio/skills/`, one folder per skill.
  *
  * A skill is a `SKILL.md` — a description in its frontmatter, instructions under it — and
  * whatever files those instructions refer to. It is called by its **folder's name**, which is
@@ -51,7 +51,7 @@ const overview = computed(() => store.overview)
 const skills = computed(() => overview.value?.skills ?? [])
 const search = ref('')
 const filteredSkills = computed(() => filterSkills(skills.value, search.value))
-const folder = computed(() => overview.value?.path ?? 'voxarium_studio/skills')
+const folder = computed(() => overview.value?.path ?? '.voxarium_studio/skills')
 
 onMounted(() => {
   store.subscribe()

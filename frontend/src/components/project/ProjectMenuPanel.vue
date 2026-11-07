@@ -10,7 +10,7 @@
  * machine with no GUI toolkit) the browser below is the whole feature, not a courtesy.
  *
  * A folder that is not a project yet is initialised on open. That is asked about rather
- * than done silently: the same click in the wrong row would otherwise scatter `voxarium_studio/`
+ * than done silently: the same click in the wrong row would otherwise scatter `.voxarium_studio/`
  * directories through someone's drive.
  */
 import {
@@ -338,7 +338,7 @@ async function openRecent(path: string) {
               <Plus class="size-3.5 shrink-0" />
               <span class="break-all">
                 <I18nT keypath="project.open.willInitialise" :params="{ name: selected?.name ?? '' }">
-                  <template #dir><code class="font-mono">voxarium_studio/</code></template>
+                  <template #dir><code class="font-mono">.voxarium_studio/</code></template>
                 </I18nT>
               </span>
             </span>

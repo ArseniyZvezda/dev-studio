@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from .paths import ProjectPaths
+from .paths import existing_data_dir
 
 
 def read_task_counts(root: Path) -> dict[str, int] | None:
@@ -15,7 +15,10 @@ def read_task_counts(root: Path) -> dict[str, int] | None:
     try:
         if not root.is_dir():
             return None
-        path = ProjectPaths.for_project(root).db_file
+        data = existing_data_dir(root)
+        if data is None:
+            return counts
+        path = data / "app.db"
         if not path.exists():
             return counts
         # mode=ro prevents a missing file from being created. Never construct AppContext:

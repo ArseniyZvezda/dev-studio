@@ -1,5 +1,5 @@
 /**
- * The project's skills (§10.10): `voxarium_studio/skills/` and who has been given what.
+ * The project's skills (§10.10): `.voxarium_studio/skills/` and who has been given what.
  *
  * One store for three surfaces — the Skills page, the member editor's picker and the org
  * chart's cards — because all three have to agree about which names are skills. A card marking

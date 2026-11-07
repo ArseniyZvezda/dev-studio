@@ -38,11 +38,11 @@ const { useSkillsStore, SKILLS_REFRESH_DEBOUNCE_MS } = await import('./skills')
 
 function page(...names: string[]): SkillsOverview {
   return {
-    path: 'voxarium_studio/skills',
-    absolute_path: 'D:/game/voxarium_studio/skills',
+    path: '.voxarium_studio/skills',
+    absolute_path: 'D:/game/.voxarium_studio/skills',
     skills: names.map((name) => ({
       name,
-      path: `voxarium_studio/skills/${name}`,
+      path: `.voxarium_studio/skills/${name}`,
       description: '',
       warning: null,
       files: [],
@@ -97,7 +97,7 @@ describe('reading the folder', () => {
     api.skills.mockResolvedValue(page('tester'))
     await store.load()
     expect(store.skills?.map((skill) => skill.name)).toEqual(['tester'])
-    expect(store.byName.get('tester')?.path).toBe('voxarium_studio/skills/tester')
+    expect(store.byName.get('tester')?.path).toBe('.voxarium_studio/skills/tester')
   })
 
   it('lets callers share a request in flight', async () => {
@@ -135,20 +135,20 @@ describe('following the file watcher', () => {
     store.subscribe()
     api.skills.mockResolvedValue(page('tester'))
 
-    changed('voxarium_studio/skills/tester/SKILL.md')
+    changed('.voxarium_studio/skills/tester/SKILL.md')
     await vi.advanceTimersByTimeAsync(SKILLS_REFRESH_DEBOUNCE_MS * 2)
     expect(api.skills).not.toHaveBeenCalled()
 
     await store.load()
     api.skills.mockClear()
 
-    changed('Assets/hero.png', 'voxarium_studio/skills-old/x/SKILL.md')
+    changed('Assets/hero.png', '.voxarium_studio/skills-old/x/SKILL.md')
     await vi.advanceTimersByTimeAsync(SKILLS_REFRESH_DEBOUNCE_MS * 2)
     expect(api.skills).not.toHaveBeenCalled()
 
-    changed('voxarium_studio/skills/tester/scripts/a.py')
+    changed('.voxarium_studio/skills/tester/scripts/a.py')
     await vi.advanceTimersByTimeAsync(SKILLS_REFRESH_DEBOUNCE_MS / 2)
-    changed('voxarium_studio/skills/tester/scripts/b.py', 'voxarium_studio/skills/tester/SKILL.md')
+    changed('.voxarium_studio/skills/tester/scripts/b.py', '.voxarium_studio/skills/tester/SKILL.md')
     await vi.advanceTimersByTimeAsync(SKILLS_REFRESH_DEBOUNCE_MS * 2)
     expect(api.skills).toHaveBeenCalledTimes(1)
   })

@@ -408,7 +408,7 @@ async function forceSave() {
           />
           <p class="mt-1 text-small text-faint">
             <I18nT keypath="docs.pane.createHint">
-              <template #dir><code class="font-mono">voxarium_studio/docs/</code></template>
+              <template #dir><code class="font-mono">.voxarium_studio/docs/</code></template>
               <template #ext><code class="font-mono">.md</code></template>
             </I18nT>
           </p>

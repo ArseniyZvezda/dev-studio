@@ -31,7 +31,7 @@ from ..ws.bus import EventBus
 from ..ws.events import EventType
 from .context import AppContext
 from .demo import ensure_demo_project
-from .paths import DATA_DIRNAME, ProjectPaths, has_project_data, user_config_dir
+from .paths import ProjectPaths, has_project_data, user_config_dir
 from .task_counts import read_task_counts
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class ProjectNotFound(ValueError):
 
 
 class ProjectNotInitialised(ValueError):
-    """The directory has no ``voxarium_studio/`` and the caller asked not to create one."""
+    """The directory has no ``.voxarium_studio/`` and the caller asked not to create one."""
 
 
 # ---------------------------------------------------------------- opening a project

@@ -120,7 +120,7 @@ def test_weights_are_solver_only_validated_atomically_and_resettable(client, pro
     cleared = client.patch(MEMBER_URL, json={"effort_solver_weights": None})
     assert cleared.status_code == 200
     assert cleared.json()["effort_solver_weights"] is None
-    roster = yaml.safe_load((project / "voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
+    roster = yaml.safe_load((project / ".voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
     assert "effort_solver_weights" not in next(m for m in roster["members"] if m["id"] == EFFORT_SOLVER_ID)
 
 

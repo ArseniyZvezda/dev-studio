@@ -1,6 +1,6 @@
 """Git backend — the one the Studio ships with.
 
-Git is what the rest of the design already assumes (`voxarium_studio/` is meant to be committed,
+Git is what the rest of the design already assumes (`.voxarium_studio/` is meant to be committed,
 pipelines and team rosters are YAML so they diff), so it stays built in rather than
 becoming a plugin. Everything here used to be inline in ``teams/worktree.py`` and
 ``core/project.py``; it moved so the same operations exist for any other system.
@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..core.paths import LEGACY_DATA_DIRNAME
 from .base import (
     CommitResult,
     FileChange,
@@ -73,6 +74,20 @@ class GitBackend(VcsBackend):
         if not branch or branch == "HEAD":
             return None
         return branch
+
+    async def repair_moved_worktrees(self, directory: Path) -> None:
+        """Refresh Git's backlinks to task checkouts moved with the data directory (§5)."""
+        if not any(directory.glob("*/.git")):
+            return
+        registered = await self.run("worktree", "list", "--porcelain", "-z", check=True)
+        previous = self.root / LEGACY_DATA_DIRNAME / "worktrees"
+        for record in registered.stdout.split("\0\0"):
+            old = Path(record.partition("\0")[0].removeprefix("worktree "))
+            if old.parent != previous:
+                continue
+            moved = directory / old.name
+            if (moved / ".git").is_file() and not moved.is_symlink() and not moved.is_junction():
+                await self.run("worktree", "repair", str(moved), check=True)
 
     async def revision(self) -> str | None:
         result = await self.run("rev-parse", "HEAD", timeout=15)

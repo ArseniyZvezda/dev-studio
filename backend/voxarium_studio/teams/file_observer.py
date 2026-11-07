@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.paths import DATA_DIRNAME
+
 
 @dataclass(frozen=True)
 class Fingerprint:
@@ -83,7 +85,7 @@ class FileObserver:
             return False
         if any(part in self.ignore for part in parts):
             return False
-        if len(parts) > 1 and parts[0] == "voxarium_studio":
+        if len(parts) > 1 and parts[0] == DATA_DIRNAME:
             # Temp has its own per-task listing; observing the shared tree would attach
             # another task's disposable files to this run's change evidence (§10.4).
             if parts[1] in {"runs", "assets", "temp", "worktrees"} or parts[1].startswith("app.db"):

@@ -29,10 +29,11 @@ from ..teams.docs import DocStore
 from ..teams.orchestrator import TeamOrchestrator
 from ..teams.project_skills import SkillStore, check_new_name
 from ..updates import UpdateService, running_work
-from ..vcs import VcsBackend, detect_backend
+from ..vcs import GitBackend, VcsBackend, VcsError, detect_backend
 from ..ws.bus import Event, EventBus, Subscription
 from ..ws.events import EventType
 from .config import AppConfig, effective_launch_root, load_config, save_config
+from .data_migration import finish_data_migration
 from .db import Database
 from .paths import ProjectPaths
 from .project import ensure_project, is_git_repo
@@ -75,7 +76,7 @@ class AppContext:
         )
         self.docs = DocStore(paths, self.bus)
         self.skills = SkillStore(paths, builtins=self._builtin_skills)
-        """``voxarium_studio/skills/`` — the Skills page's folder, and what members are given (§10.10)."""
+        """``.voxarium_studio/skills/`` — the Skills page's folder, and what members are given (§10.10)."""
         self.teams = TeamOrchestrator(
             paths=paths,
             db=self.db,
@@ -103,7 +104,7 @@ class AppContext:
             self.pipelines, self.automation_store, self.skills, lambda: self.registry, self.bus,
         )
         self.automations = AutomationEngine(self)
-        """``voxarium_studio/automations.yaml`` and what runs it off the bus (§6.5)."""
+        """``.voxarium_studio/automations.yaml`` and what runs it off the bus (§6.5)."""
         self.is_git_repo = is_git_repo(paths.root)
         self.vcs: VcsBackend | None = None
         """The version control system the project is under — resolved in :meth:`startup`,
@@ -155,7 +156,9 @@ class AppContext:
         return cls(paths, config, auth, bus=bus)
 
     async def startup(self) -> None:
+        await asyncio.to_thread(self.docs.migrate_folder_styles)
         await self.db.create_all()
+        await finish_data_migration(self)
         # The schema step is in two halves with the task-number backfill between them, and
         # the order is the whole point: a project opened by an older Studio has every task
         # at number 0 (§10.2), and the unique index that makes the number an identity
@@ -303,6 +306,11 @@ class AppContext:
                 settings_for=self.vcs_settings,
             )
         self.teams.vcs = self.vcs
+        if isinstance(self.vcs, GitBackend) and self.paths.worktrees.is_dir():
+            try:
+                await self.vcs.repair_moved_worktrees(self.paths.worktrees)
+            except VcsError as exc:
+                log.warning("Could not repair moved Git worktrees in %s: %s", self.paths.worktrees, exc)
         if self.vcs is None:
             log.info("Project %s is not under recognised version control", self.paths.root)
         else:

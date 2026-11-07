@@ -25,7 +25,7 @@ names and misplaced files:
 |---|---|
 | **the Studio** | this application, this repository |
 | **managed project** | the user's game project the Studio is pointed at (`voxarium_studio run <path>`) |
-| **`voxarium_studio/`** | the Studio's data directory *inside* the managed project — no leading dot |
+| **`.voxarium_studio/`** | the Studio's data directory *inside* the managed project |
 
 The Studio keeps the plugin registry, recently opened project paths, and global application
 settings in the user's config directory (§5.1–5.2; `$VOXARIUM_STUDIO_HOME` relocates all three).
@@ -35,7 +35,7 @@ Plugins) owns the project's accent, AI agents, Tasks, and project cache operatio
 storage split: effective runtime config combines both scopes, but project saves must never
 write global fields into the managed project's `config.yaml`.
 Runs, logs, pipelines, team definitions, the team's shared documents and the SQLite database all live in
-the managed project's `voxarium_studio/` directory, so a project is portable and its AI workflow is
+the managed project's `.voxarium_studio/` directory, so a project is portable and its AI workflow is
 diffable in git. The one file the Studio writes *outside* it is `.mcp.json` at the project
 root — Codex's own MCP server config, shared with the developer's terminal (§10.7).
 
@@ -61,7 +61,7 @@ npm test           # vitest, node environment: lib/md, lib/editor, lib/status, s
 
 `voxarium_studio info <managed-project>` is the fastest way to see what the Studio actually
 loaded — config, every plugin with its load status and error, node types, pipelines —
-without starting a server. `voxarium_studio init` creates `voxarium_studio/` alone; `voxarium_studio token`
+without starting a server. `voxarium_studio init` creates `.voxarium_studio/` alone; `voxarium_studio token`
 prints a fresh secret for `--token`.
 
 `npm run build` output lands **inside the Python package** (`backend/voxarium_studio/static`),

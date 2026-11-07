@@ -8,7 +8,7 @@ including systems whose CLI is missing on the current machine.
 ## Project configuration
 
 Every system has one card on **Version Control**, containing all its settings. Values
-live in the managed project's `voxarium_studio/config.yaml`:
+live in the managed project's `.voxarium_studio/config.yaml`:
 
 ```yaml
 vcs:

@@ -127,21 +127,21 @@ async def test_exclusions_and_more_than_one_ui_batch(tmp_path):
     tracking, found, errors = observer(tmp_path)
     await tracking.start()
     for name in [
-        "node_modules/a", ".git/index", "voxarium_studio/app.db-wal",
-        "voxarium_studio/runs/log", "voxarium_studio/temp/VS-01/nested/probe.py",
-        "voxarium_studio/temp/VS-02/result.json",
+        "node_modules/a", ".git/index", ".voxarium_studio/app.db-wal",
+        ".voxarium_studio/runs/log", ".voxarium_studio/temp/VS-01/nested/probe.py",
+        ".voxarium_studio/temp/VS-02/result.json",
     ]:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ignore")
     for index in range(250):
         (tmp_path / f"asset-{index}.bin").write_bytes(b"asset")
-    docs = tmp_path / "voxarium_studio/docs/design.md"
+    docs = tmp_path / ".voxarium_studio/docs/design.md"
     docs.parent.mkdir(parents=True)
     docs.write_text("include")
     await tracking.finish()
     assert len(set(found)) == 251
-    assert "voxarium_studio/docs/design.md" in found
+    assert ".voxarium_studio/docs/design.md" in found
     assert not errors
 
 

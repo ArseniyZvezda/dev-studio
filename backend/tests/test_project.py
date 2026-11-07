@@ -17,7 +17,8 @@ from voxarium_studio.plugins import loader as plugin_loader
 
 def test_init_creates_the_data_directory(project: Path) -> None:
     paths = ProjectPaths.for_project(project)
-    assert paths.data.name == "voxarium_studio", "no leading dot, per §5/§14"
+    assert paths.data.name == ".voxarium_studio"
+    assert not (project / "voxarium_studio").exists()
     for directory in paths.all_dirs:
         assert directory.is_dir()
     assert paths.gitignore.exists()
@@ -61,18 +62,18 @@ def test_plastic_ignore_is_scoped_and_preserves_existing_rules(project: Path) ->
     assert paths.plastic_ignore == project / "ignore.conf"
     original = paths.plastic_ignore.read_text(encoding="utf-8")
     rules = [line for line in original.splitlines() if not line.startswith("#")]
-    assert all(rule.startswith("/voxarium_studio/") for rule in rules)
-    assert "/voxarium_studio/app.db" not in rules
-    assert "/voxarium_studio/app.db-wal" in rules
-    assert "/voxarium_studio/app.db-shm" in rules
-    assert "/voxarium_studio/temp" in rules
-    assert "/voxarium_studio/plugins/*/.venv" in rules
-    paths.plastic_ignore.write_text("# My rules\n/Library\n/voxarium_studio/runs", encoding="utf-8")
+    assert all(rule.startswith("/.voxarium_studio/") for rule in rules)
+    assert "/.voxarium_studio/app.db" not in rules
+    assert "/.voxarium_studio/app.db-wal" in rules
+    assert "/.voxarium_studio/app.db-shm" in rules
+    assert "/.voxarium_studio/temp" in rules
+    assert "/.voxarium_studio/plugins/*/.venv" in rules
+    paths.plastic_ignore.write_text("# My rules\n/Library\n/.voxarium_studio/runs", encoding="utf-8")
     init_project(project)
     updated = paths.plastic_ignore.read_text(encoding="utf-8")
-    assert updated.startswith("# My rules\n/Library\n/voxarium_studio/runs\n")
+    assert updated.startswith("# My rules\n/Library\n/.voxarium_studio/runs\n")
     assert all(rule in updated.splitlines() for rule in rules)
-    assert updated.splitlines().count("/voxarium_studio/runs") == 1
+    assert updated.splitlines().count("/.voxarium_studio/runs") == 1
     init_project(project)
     assert paths.plastic_ignore.read_text(encoding="utf-8") == updated
 
@@ -107,6 +108,39 @@ def test_reinitialising_preserves_existing_database_and_documents(project: Path)
 def test_init_refuses_a_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         init_project(tmp_path / "nope")
+
+
+def test_legacy_rename_failure_does_not_initialise_a_second_project(tmp_path, monkeypatch):
+    legacy = tmp_path / "voxarium_studio"
+    legacy.mkdir()
+    (legacy / "notes").write_bytes(b"preserved")
+
+    def locked(source, destination):
+        raise PermissionError("directory is in use")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", locked)
+        with pytest.raises(PermissionError, match="in use"):
+            init_project(tmp_path)
+    assert not (tmp_path / ".voxarium_studio").exists()
+    assert (init_project(tmp_path).data / "notes").read_bytes() == b"preserved"
+    assert not legacy.exists()
+
+
+def test_python_package_and_user_config_keep_their_names(tmp_path, monkeypatch):
+    from voxarium_studio.core.paths import HOME_ENV_VAR, user_config_dir
+
+    package = tmp_path / "voxarium_studio"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    assert not has_project_data(tmp_path)
+    init_project(tmp_path)
+    assert (package / "__init__.py").is_file()
+
+    monkeypatch.delenv(HOME_ENV_VAR, raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert user_config_dir() == package
 
 
 def test_sample_pipeline_is_the_reference_graph_and_validates(project: Path) -> None:

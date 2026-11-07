@@ -29,7 +29,7 @@ def test_catalog_covers_shared_backend_project_and_nested_skills(
         skill(project / f".{backend}/skills/same-name")
     skill(home / ".codex/skills/.system/system-work")
     skill(project / ".agents/skills/project-shared")
-    skill(project / "voxarium_studio/skills/same-name")
+    skill(project / ".voxarium_studio/skills/same-name")
     store = SkillStore(ProjectPaths.for_project(project))
     catalog, invalid = store.scan()
     assert not invalid
@@ -67,7 +67,7 @@ def test_external_skill_api_assignment_roundtrip_readonly_and_missing(
     detail = client.get(f"/api/skills/{name}")
     assert detail.status_code == 200 and "Do work." in detail.json()["content"]
     assert detail.json()["used_by"][0]["id"] == "team_default__dev"
-    assert any(name in path.read_text(encoding="utf-8") for path in (project / "voxarium_studio/teams").glob("*.yaml"))
+    assert any(name in path.read_text(encoding="utf-8") for path in (project / ".voxarium_studio/teams").glob("*.yaml"))
     assert client.put(f"/api/skills/{name}", json={"content": "overwrite"}).status_code == 403
     assert client.delete(f"/api/skills/{name}").status_code == 403
     assert "Do work." in (directory / "SKILL.md").read_text(encoding="utf-8")

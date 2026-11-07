@@ -7,7 +7,7 @@
  * where only §8.2 — stable from the second save on — has to hold.
  *
  * Point `VOXARIUM_STUDIO_DOC_CORPUS` at a directory of real `.md` files to run the stability and
- * no-loss checks over them too; `.scratch/demo-project/voxarium_studio/docs` is the one to hand.
+ * no-loss checks over them too; `.scratch/demo-project/.voxarium_studio/docs` is the one to hand.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'

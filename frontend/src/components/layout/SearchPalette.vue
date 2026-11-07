@@ -30,13 +30,13 @@ const session = useSessionStore()
 const router = useRouter()
 
 /**
- * Where the team's documents sit, project-relative and with the trailing slash — `voxarium_studio/docs/`.
+ * Where the team's documents sit, project-relative and with the trailing slash — `.voxarium_studio/docs/`.
  * A hit under it opens in the Documents section rather than the Explorer, which hides the
  * data directory by default and has no editor for what is in it.
  */
 const docsPrefix = computed(() => {
   const dataDir = session.project?.data_dir ?? ''
-  const name = dataDir.split(/[\\/]/).filter(Boolean).pop() ?? 'voxarium_studio'
+  const name = dataDir.split(/[\\/]/).filter(Boolean).pop() ?? '.voxarium_studio'
   return `${name}/docs/`
 })
 

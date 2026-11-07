@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from voxarium_studio.core.paths import current_data_path
 from voxarium_studio.plugin_api import (
     BaseNode,
     ExecutionSpec,
@@ -186,7 +187,7 @@ class DelayNode(BaseNode):
 
 def _resolve_under_project(ctx: NodeContext, raw: str) -> Path:
     """Keep file nodes inside the managed project — they run with the server's rights."""
-    path = Path(raw)
+    path = Path(current_data_path(raw, ctx.project_root))
     if not path.is_absolute():
         path = ctx.project_root / path
     resolved = path.resolve()
@@ -199,7 +200,7 @@ def _resolve_under_project(ctx: NodeContext, raw: str) -> Path:
 def _destination(ctx: NodeContext, raw: str, default_name: str) -> Path:
     """Where a write node puts what it was handed: the path given, or a sensible default.
 
-    An empty path means ``voxarium_studio/assets`` — where a pipeline's own output belongs when
+    An empty path means ``.voxarium_studio/assets`` — where a pipeline's own output belongs when
     nobody chose somewhere better. A path that names a *directory* — one that exists, or one
     typed with a trailing separator — is treated as one rather than written over: "put it in
     here" is what a folder in that field means, and answering it by replacing the folder with
@@ -226,7 +227,7 @@ class WriteTextFileNode(BaseNode):
         category=CATEGORY_FILES,
         description=(
             "Writes text to a file inside the project, encoded UTF-8. Defaults to "
-            "voxarium_studio/assets when no path is given."
+            ".voxarium_studio/assets when no path is given."
         ),
         icon="file-plus",
         color="#2fbf71",
@@ -245,7 +246,7 @@ class WriteTextFileNode(BaseNode):
                 required=False,
                 default="",
                 description=(
-                    "Relative to the project root. Empty writes voxarium_studio/assets/output.txt, "
+                    "Relative to the project root. Empty writes .voxarium_studio/assets/output.txt, "
                     "and a directory takes output.txt inside it."
                 ),
                 connectable=True,
@@ -324,7 +325,7 @@ class WriteBinFileNode(BaseNode):
         category=CATEGORY_FILES,
         description=(
             "Copies any file an upstream node produced — an image, a mesh, a .vox — to a "
-            "path inside the project, byte for byte. Defaults to voxarium_studio/assets under the "
+            "path inside the project, byte for byte. Defaults to .voxarium_studio/assets under the "
             "source's own name."
         ),
         icon="file-output",
@@ -347,7 +348,7 @@ class WriteBinFileNode(BaseNode):
                 required=False,
                 default="",
                 description=(
-                    "Relative to the project root. Empty writes into voxarium_studio/assets under "
+                    "Relative to the project root. Empty writes into .voxarium_studio/assets under "
                     "the source's own name, and a directory keeps that name inside it."
                 ),
                 connectable=True,

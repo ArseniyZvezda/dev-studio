@@ -100,7 +100,7 @@ SPECS: dict[str, PromptSpec] = {
         "summary and the Studio's task board will handle it."
     ),
     # Sent only to a member given skills on the Teams page (§10.10) — nothing in
-    # `voxarium_studio/skills/` reaches anyone by default. `{skills}` is one line per skill: its name
+    # `.voxarium_studio/skills/` reaches anyone by default. `{skills}` is one line per skill: its name
     # (the folder's), its description and the absolute path of its SKILL.md, because a session
     # in an isolated checkout starts somewhere the main project's folder is not
     # (`teams/project_skills.py`).

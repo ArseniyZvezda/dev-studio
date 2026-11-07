@@ -1,7 +1,7 @@
 """Files a reviewer attaches to a review comment (§10.4).
 
 A screenshot of the wrong pixel, a reference picture, a log — what "request changes" often
-needs to say cannot be said in words. The files land under ``voxarium_studio/attachments/<task>/``,
+needs to say cannot be said in words. The files land under ``.voxarium_studio/attachments/<task>/``,
 the review entry in the transcript records them, and the session that resumes is handed the
 pictures as image blocks and every file by its absolute path, with a Read rule on the
 folder so an isolated worktree can open them.
@@ -18,7 +18,7 @@ import re
 from pathlib import Path, PurePath
 from typing import Any
 
-from ..core.paths import ProjectPaths
+from ..core.paths import ProjectPaths, current_data_path
 from .skill import rule_path
 
 #: One attachment may not exceed this. Pictures are what arrives here, and a 4K screenshot is
@@ -128,7 +128,7 @@ class AttachmentStore:
     # ------------------------------------------------------------- what the session gets
 
     def absolute(self, record: dict[str, Any]) -> Path:
-        return self.paths.root / str(record["path"])
+        return self.paths.root / current_data_path(str(record["path"]), self.paths.root)
 
     def images(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The pictures among ``records`` as the backend wants them: absolute path and type."""

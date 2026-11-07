@@ -95,7 +95,7 @@ async function remove(id: string, name: string) {
         v-else-if="!pipelines.summaries.length"
         class="vxs-enter"
         :title="t('pipelines.empty.title')"
-        :hint="t('pipelines.empty.hint', { dir: 'voxarium_studio/pipelines' })"
+        :hint="t('pipelines.empty.hint', { dir: '.voxarium_studio/pipelines' })"
       >
         <template #icon><Workflow class="mx-auto mb-3 size-8 text-faint" /></template>
       </EmptyState>

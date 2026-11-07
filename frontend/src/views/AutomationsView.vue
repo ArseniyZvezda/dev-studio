@@ -2,7 +2,7 @@
 /**
  * Automations (§6.5): what the project does by itself — one trigger, one action each.
  *
- * The page edits `voxarium_studio/automations.yaml`, which is committed with the project, so what is
+ * The page edits `.voxarium_studio/automations.yaml`, which is committed with the project, so what is
  * set up here is what a colleague's Studio does too. Two consequences shape it, both borrowed
  * from the MCP page, whose file is somebody else's as well: an entry the Studio cannot read
  * is *listed* rather than hidden — it runs nothing, and every save keeps it — and a file that
@@ -131,7 +131,7 @@ function runName(run: AutomationRun): string {
           <template v-if="overview && !overview.exists">
             {{ t('automations.notCreated', { path: overview.path }) }}
           </template>
-          <template v-else>{{ overview?.path ?? 'voxarium_studio/automations.yaml' }}</template>
+          <template v-else>{{ overview?.path ?? '.voxarium_studio/automations.yaml' }}</template>
         </p>
       </div>
     </header>

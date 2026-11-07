@@ -1,5 +1,5 @@
 /**
- * The project's automations (§6.5): `voxarium_studio/automations.yaml` and what it has done.
+ * The project's automations (§6.5): `.voxarium_studio/automations.yaml` and what it has done.
  *
  * The list is never patched client-side. Every write answers with the whole page, a write from
  * another window arrives as `automation.changed`, and a hand edit of the file arrives the way

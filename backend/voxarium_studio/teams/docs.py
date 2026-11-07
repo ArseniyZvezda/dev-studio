@@ -2,7 +2,7 @@
 
 Kanban tasks carry the *work*; documents carry the *decisions* — a game designer writes
 the feature spec, the developer implements against it, the tester checks against it. The
-files live in the managed project's ``voxarium_studio/docs`` so they are diffable and reviewable
+files live in the managed project's ``.voxarium_studio/docs`` so they are diffable and reviewable
 in git next to the pipelines and the team roster (§5).
 
 Deliberately a plain directory of Markdown, not a table: a document is worth more when a
@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -95,6 +96,8 @@ entry can go on describing a directory that is no longer called that. The suffix
 it out of the corpus — ``ALLOWED_SUFFIXES`` has no ``.json``, so the index, search and the
 agents' ``list_docs`` never see it.
 """
+
+LEGACY_FOLDER_META_NAME = "tds-folder.json"
 
 FOLDER_COLORS = (
     "red",
@@ -209,7 +212,7 @@ class _Scanned:
 
 @dataclass(frozen=True, slots=True)
 class _DocIndex:
-    """One pass over ``voxarium_studio/docs``, reused until the tree's signature moves (§10.4).
+    """One pass over ``.voxarium_studio/docs``, reused until the tree's signature moves (§10.4).
 
     Published under a lock and never mutated afterwards: a reader holds a reference to it
     while another thread may be swapping a newer one in, so every collection here is handed
@@ -316,7 +319,7 @@ class DocStore:
     # ------------------------------------------------------------------ paths
 
     def resolve(self, relative: str) -> Path:
-        """Map a caller-supplied doc path to an absolute one inside ``voxarium_studio/docs``.
+        """Map a caller-supplied doc path to an absolute one inside ``.voxarium_studio/docs``.
 
         The caller may be an agent acting on model output, so this is a trust boundary:
         traversal, absolute paths and unexpected suffixes are rejected rather than
@@ -357,7 +360,7 @@ class DocStore:
         (``ImageView.vue``), which is what keeps opening a document with pictures from
         producing a diff.
 
-        The boundary is the **managed project**, not ``voxarium_studio/docs``. A game project keeps
+        The boundary is the **managed project**, not ``.voxarium_studio/docs``. A game project keeps
         its art beside the game, so ``![](../../Assets/hero.png)`` in a design document is a
         reference to the project, not an escape from it; anything landing outside the project
         is refused. A leading ``/`` means the docs root, as it does for a document path.
@@ -454,14 +457,14 @@ class DocStore:
 
         This runs on *every* public call — it is what makes a cached index safe to serve, so
         it may never be skipped. ``mkdir`` is the side effect ``list_docs`` used to carry:
-        the first hit on any docs endpoint is what creates ``voxarium_studio/docs``.
+        the first hit on any docs endpoint is what creates ``.voxarium_studio/docs``.
         """
         self.directory.mkdir(parents=True, exist_ok=True)
         # ``relative()`` with the docs root resolved once instead of once per file. On Windows
         # ``Path.resolve`` opens a handle to ask the filesystem for the canonical name, and it
         # was two thirds of this pass's cost — 8.7 ms of 12.3 ms over 49 documents. The
         # per-file ``resolve()`` below stays: it is what makes a symlink pointing out of
-        # ``voxarium_studio/docs`` raise ``ValueError`` here, as it always has.
+        # ``.voxarium_studio/docs`` raise ``ValueError`` here, as it always has.
         root = _plain(self.directory.resolve())
         scanned: list[_Scanned] = []
         # ``sorted(rglob("*"))`` verbatim, and not a sort of the relative posix strings:
@@ -899,8 +902,35 @@ class DocStore:
 
     # ------------------------------------------------------------------ folders
 
+    def migrate_folder_styles(self) -> None:
+        """Rename legacy folder styles when opening the project (block-editor spec §5.2)."""
+        if any(p.is_symlink() or p.is_junction() for p in (self.paths.data, self.directory)):
+            return
+        for folder, dirs, files in self.directory.walk():
+            # Path.walk skips symlinks by default. On Windows a junction can still be a dir.
+            dirs[:] = [name for name in dirs if not (folder / name).is_junction()]
+            if LEGACY_FOLDER_META_NAME not in files:
+                continue
+            legacy = folder / LEGACY_FOLDER_META_NAME
+            current = folder / FOLDER_META_NAME
+            try:
+                if not S_ISREG(legacy.lstat().st_mode):
+                    continue
+                if os.name == "nt":
+                    legacy.rename(current)
+                else:
+                    # POSIX rename would overwrite a style created by another opener or editor.
+                    current.hardlink_to(legacy)
+                    legacy.unlink()
+            except FileExistsError:
+                log.warning("Keeping legacy folder style %s because %s already exists", legacy, current)
+            except FileNotFoundError:
+                continue  # The working copy changed during the scan.
+            except OSError as exc:
+                log.warning("Could not migrate folder style %s: %s", legacy, exc)
+
     def resolve_folder(self, relative: str) -> Path:
-        """Map a caller-supplied folder path to an existing directory inside ``voxarium_studio/docs``.
+        """Map a caller-supplied folder path to an existing directory inside ``.voxarium_studio/docs``.
 
         The boundary :meth:`resolve` draws for a document, drawn for a directory: traversal and
         absolute paths are refused, and so is the docs root itself — it has no row in the tree,
@@ -965,8 +995,8 @@ class DocStore:
         alone. Keys this build does not know are kept — the file is the folder's, and a newer
         Studio or a person may have put something there.
 
-        A file left with nothing in it is removed rather than written as ``{}``, so giving a
-        folder back its plain look leaves nothing behind in the working copy.
+        Clearing the last key removes the file unless a legacy style would take its place
+        on the next project open (block-editor spec §5.2).
         """
         folder = self.resolve_folder(relative)
         meta = folder / FOLDER_META_NAME
@@ -983,7 +1013,7 @@ class DocStore:
             else:
                 stored[key] = checked
 
-        if stored:
+        if stored or (folder / LEGACY_FOLDER_META_NAME).is_file():
             text = json.dumps(stored, indent=2, ensure_ascii=False) + "\n"
             _write_atomically(meta, text.encode("utf-8"))
         else:
@@ -1637,7 +1667,7 @@ def _plain(path: Path) -> Path:
     branch switch rewriting the working copy — the case §9.6 already expects — and it is far
     too common to leave to chance.
 
-    Only the spelling is normalised. A symlink genuinely pointing out of ``voxarium_studio/docs``
+    Only the spelling is normalised. A symlink genuinely pointing out of ``.voxarium_studio/docs``
     still resolves to somewhere outside it and is still refused, which is what the per-file
     ``resolve()`` in :meth:`DocStore._scan` is there for.
     """

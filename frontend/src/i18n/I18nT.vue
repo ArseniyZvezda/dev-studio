@@ -9,7 +9,7 @@
  *   "showDataDir": "Show the {dir} directory in the file tree"
  *
  *   <I18nT keypath="settings.explorer.showDataDir">
- *     <template #dir><code class="font-mono">voxarium_studio/</code></template>
+ *     <template #dir><code class="font-mono">.voxarium_studio/</code></template>
  *   </I18nT>
  *
  * Text parameters go through `params` exactly as they do for `t()`, and are filled in first.

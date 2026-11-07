@@ -2,7 +2,7 @@
  * Applies the persisted theme (spec §7) to the document.
  *
  * Appearance lives in the user config; only the accent travels in the managed project's
- * `voxarium_studio/config.yaml` (§5.1, §7). The API returns the combined theme.
+ * `.voxarium_studio/config.yaml` (§5.1, §7). The API returns the combined theme.
  * Applying one is only ever a matter of setting attributes and a few
  * custom properties on `<html>`; nothing is rebuilt and no classes are regenerated,
  * because every utility resolves through `var(--vxs-*)` at runtime.

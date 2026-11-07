@@ -554,7 +554,7 @@ def run_script(
     project: Path, params: dict, script: str = "remove_background.py"
 ) -> tuple[subprocess.CompletedProcess, dict]:
     """Drive the node the way the engine does: JSON on stdin, results in a file."""
-    assets = project / "voxarium_studio" / "assets"
+    assets = project / ".voxarium_studio" / "assets"
     assets.mkdir(parents=True, exist_ok=True)
     output = project / "node-output.json"
     payload = {
@@ -598,7 +598,7 @@ def test_the_script_writes_a_transparent_png_into_the_assets_directory(
     assert process.returncode == 0, process.stderr
 
     written = Path(results["image"])
-    assert written.parent == tmp_path / "voxarium_studio" / "assets"
+    assert written.parent == tmp_path / ".voxarium_studio" / "assets"
     assert written.suffix == ".png"
     raster = imaging.decode_png(written.read_bytes())
     assert raster.pixels[3] == 0  # the corner
@@ -645,7 +645,7 @@ def test_the_converter_writes_a_png_of_exactly_the_same_pixels(
     assert process.returncode == 0, process.stderr
 
     written = Path(results["image"])
-    assert written.parent == tmp_path / "voxarium_studio" / "assets"
+    assert written.parent == tmp_path / ".voxarium_studio" / "assets"
     assert written.suffix == ".png"
     assert imaging.decode_png(written.read_bytes()).pixels == disc_on_white(32)
     assert "32x32" in process.stdout
@@ -796,7 +796,7 @@ def test_the_trimmer_writes_four_quadrants_that_reassemble(
     }
     for quadrant, (size, colour) in expected.items():
         written = Path(results[quadrant])
-        assert written.parent == tmp_path / "voxarium_studio" / "assets"
+        assert written.parent == tmp_path / ".voxarium_studio" / "assets"
         raster = imaging.decode_png(written.read_bytes())
         assert (raster.width, raster.height) == size, quadrant
         assert {bytes(raster.pixels[i : i + 3]) for i in range(0, len(raster.pixels), 4)} == {
@@ -1147,7 +1147,7 @@ def test_the_cropper_trims_a_subject_out_of_its_transparent_margin(
     assert process.returncode == 0, process.stderr
 
     written = Path(results["image"])
-    assert written.parent == tmp_path / "voxarium_studio" / "assets"
+    assert written.parent == tmp_path / ".voxarium_studio" / "assets"
     raster = cropped(nodes, results)
     assert (raster.width, raster.height) == (5, 6)
     assert raster.alpha_bounds() == (0, 0, 5, 6)  # no margin left anywhere

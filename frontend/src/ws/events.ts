@@ -160,7 +160,7 @@ export interface EventPayloads {
     root?: string
   }
 
-  /** `voxarium_studio/automations.yaml` was written through the API (§6.5). */
+  /** `.voxarium_studio/automations.yaml` was written through the API (§6.5). */
   'automation.changed': Record<string, never>
   /** An automation's action ran, failed or was refused — or, `running`, is still at it. The log row. */
   'automation.fired': AutomationRun

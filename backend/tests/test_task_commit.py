@@ -98,7 +98,7 @@ async def test_the_column_marks_each_file_with_the_side_it_is_on(ctx: AppContext
 async def test_a_document_written_through_the_tool_is_named_where_it_lives(
     ctx: AppContext,
 ) -> None:
-    """`write_doc` takes a path under `voxarium_studio/docs`; the list names the file on disk.
+    """`write_doc` takes a path under `.voxarium_studio/docs`; the list names the file on disk.
 
     Listing the tool's own frame put `art/keycap.md` in a draft, and the Commit button then
     handed Plastic a path that is not a changed item (observed in a sample project).
@@ -118,7 +118,7 @@ async def test_a_document_written_through_the_tool_is_named_where_it_lives(
 
     payload = await ctx.teams.task_changes(task.id)
 
-    assert [entry["path"] for entry in payload["files"]] == ["voxarium_studio/docs/art/keycap.md"]
+    assert [entry["path"] for entry in payload["files"]] == [".voxarium_studio/docs/art/keycap.md"]
     assert payload["files"][0]["outside"] is False
 
 

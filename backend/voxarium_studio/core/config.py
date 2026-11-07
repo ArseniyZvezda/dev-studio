@@ -1,4 +1,4 @@
-"""Effective config and the project-owned ``voxarium_studio/config.yaml`` (§5.2)."""
+"""Effective config and the project-owned ``.voxarium_studio/config.yaml`` (§5.2)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Literal, get_args
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .paths import ProjectPaths
+from .paths import ProjectPaths, current_data_path
 from .prompts import AgentPromptsConfig
 
 log = logging.getLogger(__name__)
@@ -304,7 +304,7 @@ def resolve_launch_root(project_root: Path, value: str | None) -> Path:
         return project_root
     try:
         # `root / "/abs"` yields the absolute path, so this covers both spellings.
-        return (project_root / Path(text).expanduser()).resolve()
+        return (project_root / Path(current_data_path(text, project_root)).expanduser()).resolve()
     except (OSError, ValueError, RuntimeError):
         return project_root
 
@@ -382,7 +382,7 @@ class UpdatesConfig(BaseModel):
 
 class ExplorerConfig(BaseModel):
     show_data_dir: bool = False
-    """Application preference: show ``voxarium_studio/`` in every Explorer tree (§5.2)."""
+    """Application preference: show ``.voxarium_studio/`` in every Explorer tree (§5.2)."""
 
     ignore: list[str] = Field(
         default_factory=lambda: [
@@ -514,17 +514,17 @@ plugins/*/.venv/
 """
 
 
-# Plastic reads ignore.conf from the workspace root, so scope every rule to voxarium_studio (§5).
+# Plastic reads ignore.conf from the workspace root, so scope every rule to .voxarium_studio (§5).
 DEFAULT_PLASTIC_IGNORE = """\
-# Voxarium Studio runtime files (spec §5). Keep voxarium_studio/app.db in version control.
-/voxarium_studio/app.db-wal
-/voxarium_studio/app.db-shm
-/voxarium_studio/assets
-/voxarium_studio/attachments
-/voxarium_studio/runs
-/voxarium_studio/temp
-/voxarium_studio/worktrees
-/voxarium_studio/plugins/*/.venv
+# Voxarium Studio runtime files (spec §5). Keep .voxarium_studio/app.db in version control.
+/.voxarium_studio/app.db-wal
+/.voxarium_studio/app.db-shm
+/.voxarium_studio/assets
+/.voxarium_studio/attachments
+/.voxarium_studio/runs
+/.voxarium_studio/temp
+/.voxarium_studio/worktrees
+/.voxarium_studio/plugins/*/.venv
 """
 
 

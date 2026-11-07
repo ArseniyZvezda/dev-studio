@@ -1,4 +1,4 @@
-"""The project's automations: ``voxarium_studio/automations.yaml`` and what it has done (§6.5, §11.1).
+"""The project's automations: ``.voxarium_studio/automations.yaml`` and what it has done (§6.5, §11.1).
 
 Every write answers with the whole page, as the Skills endpoints do and for their reason: the
 file is edited by hand and by merges as often as from here, so a client patching its own list

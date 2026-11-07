@@ -517,14 +517,14 @@ export interface TeamMember {
   effort: string | null
   allowed_tools: string[]
   /**
-   * Skills from `voxarium_studio/skills/` this member may use, by folder name (§10.10). Empty unless
+   * Skills from `.voxarium_studio/skills/` this member may use, by folder name (§10.10). Empty unless
    * somebody gave them some — a skill in the project reaches nobody by default. A name the
    * folder no longer has stays here until it is taken off, and is not offered to the session.
    */
   skills: string[]
   /** Mandatory startup skills, added to the shared Team Settings requirements (§10.10). */
   required_skills?: string[]
-  /** Documents paths, relative to voxarium_studio/docs, included in full on startup. */
+  /** Documents paths, relative to .voxarium_studio/docs, included in full on startup. */
   required_documents?: string[]
   /** Use this member's permission mode and turn budget instead of Team Settings (§10.2). */
   run_settings_override: boolean
@@ -654,7 +654,7 @@ export interface TeamTask {
 
 /**
  * A file a reviewer attached to a review comment (§10.4). Stored under
- * `voxarium_studio/attachments/<task>/`; a `review` entry's `data.attachments` lists them, and the
+ * `.voxarium_studio/attachments/<task>/`; a `review` entry's `data.attachments` lists them, and the
  * session that resumes gets the pictures as image blocks and every file by its path.
  */
 export interface TaskAttachment {
@@ -1074,7 +1074,7 @@ export interface MemberOptions {
 
 // ---------------------------------------------------------------- project docs
 
-/** A document in `voxarium_studio/docs` — the team's shared specs and notes (§10.4). */
+/** A document in `.voxarium_studio/docs` — the team's shared specs and notes (§10.4). */
 export interface DocEntry {
   path: string
   title: string
@@ -1717,7 +1717,7 @@ export interface RecentProject {
 export interface DirectoryEntry {
   path: string
   name: string
-  /** Already holds a `voxarium_studio/`, so opening it resumes rather than initialises. */
+  /** Already holds a `.voxarium_studio/`, so opening it resumes rather than initialises. */
   is_project: boolean
   hidden: boolean
 }
@@ -1849,7 +1849,7 @@ export interface SkillUser {
 }
 
 /**
- * A folder of `voxarium_studio/skills/` holding a `SKILL.md`. Its name is the folder's — the frontmatter's
+ * A folder of `.voxarium_studio/skills/` holding a `SKILL.md`. Its name is the folder's — the frontmatter's
  * `name` is not read — and it is what members are given and what the prompt calls it.
  */
 export interface SkillEntry {
@@ -1890,7 +1890,7 @@ export interface SkillDetail extends SkillEntry {
 
 /** The Skills page, answered by every endpoint that changes the folder or who has what. */
 export interface SkillsOverview {
-  /** `voxarium_studio/skills`, relative to the project root. */
+  /** `.voxarium_studio/skills`, relative to the project root. */
   path: string
   absolute_path: string
   skills: SkillEntry[]
@@ -1978,9 +1978,9 @@ export interface AutomationRun {
   created_at: string
 }
 
-/** The Automations page, answered by every endpoint that writes `voxarium_studio/automations.yaml`. */
+/** The Automations page, answered by every endpoint that writes `.voxarium_studio/automations.yaml`. */
 export interface AutomationsOverview {
-  /** `voxarium_studio/automations.yaml`, relative to the project root. */
+  /** `.voxarium_studio/automations.yaml`, relative to the project root. */
   path: string
   exists: boolean
   /** Why the file could not be read at all; the page then offers no form over it. */

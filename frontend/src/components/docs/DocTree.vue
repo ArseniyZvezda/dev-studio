@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /**
- * Folder tree over `voxarium_studio/docs/`. Recursive, so a nested path like
+ * Folder tree over `.voxarium_studio/docs/`. Recursive, so a nested path like
  * `features/combat/dash.md` reads as the folders it actually is on disk.
  *
  * The rows are `TreeRow`, the same row the Explorer draws — one style for both trees, and
  * version control status on a document exactly as on any other file (§6.2, §9.6). The
- * status is keyed by paths in the *project's* frame, so `vcsRoot` (normally `voxarium_studio/docs`)
+ * status is keyed by paths in the *project's* frame, so `vcsRoot` (normally `.voxarium_studio/docs`)
  * goes in front of a document's own path before the lookup; a tree given no root draws no
  * marks at all rather than looking every document up under the wrong name.
  *

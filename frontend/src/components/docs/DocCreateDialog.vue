@@ -71,8 +71,8 @@ async function submit(): Promise<void> {
       <FilePlus2 v-else class="size-4 shrink-0 text-accent" />
       <div class="min-w-0 flex-1">
         <h2 class="truncate font-medium">{{ t('docs.newDocument') }}</h2>
-        <p class="truncate text-small text-muted" :title="`voxarium_studio/docs/${folder}`">
-          {{ t('docs.create.in', { path: `voxarium_studio/docs/${folder}` }) }}
+        <p class="truncate text-small text-muted" :title="`.voxarium_studio/docs/${folder}`">
+          {{ t('docs.create.in', { path: `.voxarium_studio/docs/${folder}` }) }}
         </p>
       </div>
       <button

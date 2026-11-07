@@ -54,7 +54,7 @@ uv run --extra teams voxarium_studio run /path/to/game-project
 ```
 
 Open <http://127.0.0.1:8765>. Project state lives in the managed project's
-`voxarium_studio/` directory. See [desktop setup](desktop/README.md) for the Windows app.
+`.voxarium_studio/` directory. Studio renames an existing project’s `voxarium_studio/` directory the first time it opens it. See [desktop setup](desktop/README.md) for the Windows app.
 
 ## Trust and configuration
 

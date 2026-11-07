@@ -14,7 +14,7 @@
  * A row is the file's name alone; the directory is in its tooltip. Two files of one name
  * in one task are rare, and a second line under every row cost the column half its rows.
  *
- * Studio data under `voxarium_studio/` has its own group (§10.4). Task scratch files are
+ * Studio data under `.voxarium_studio/` has its own group (§10.4). Task scratch files are
  * listed separately under Temp, from the directory listing rather than the change history.
  * The remaining files are split
  * on the directory the task's **session** worked
@@ -68,7 +68,7 @@ function fileRow(file: VcsFileChange, temp = false): Row {
   return {
     ...file,
     // Paths are relative to the reported root, not the session's workdir (§10.4).
-    studio: path.startsWith('voxarium_studio/'),
+    studio: path.startsWith('.voxarium_studio/'),
     temp,
     name: cut === -1 ? path : path.slice(cut + 1),
     mark: VCS_MARKS[file.kind] ?? VCS_MARKS.unknown,
@@ -309,7 +309,7 @@ const commitNote = computed(() => {
             group.key === 'outside'
               ? t('tasks.changes.group.outsideHint', { workdir: changes?.workdir ?? '' })
               : group.key === 'studio'
-                ? `${changes?.root ?? ''}/voxarium_studio/`
+                ? `${changes?.root ?? ''}/.voxarium_studio/`
                 : group.key === 'temp'
                   ? t('tasks.changes.group.tempHint', { path: changes?.temp_root ?? '' })
                   : changes?.workdir

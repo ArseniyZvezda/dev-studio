@@ -17,7 +17,7 @@
  * The vocabulary lives in `stores/vcs.ts`: a table per component is how two surfaces end
  * up disagreeing about what amber means. `vcsPath` is the entry's path in the **project's**
  * frame, which is the frame `/api/vcs/status` speaks — the Documents tree passes
- * `voxarium_studio/docs/<path>`, never the document's own path.
+ * `.voxarium_studio/docs/<path>`, never the document's own path.
  *
  * Expansion, selection and loading are the caller's state, passed in: the Explorer keeps
  * them in its store so a selection survives a re-read, the Documents tree keeps a collapsed

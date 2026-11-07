@@ -416,7 +416,7 @@ async function confirmOverwrite(): Promise<void> {
           class="border-t border-line-subtle px-3 py-1.5 text-small text-faint"
         >
           <I18nT keypath="explorer.view.dataDirHidden">
-            <template #dir><code class="font-mono">voxarium_studio/</code></template>
+            <template #dir><code class="font-mono">.voxarium_studio/</code></template>
           </I18nT>
         </p>
       </template>

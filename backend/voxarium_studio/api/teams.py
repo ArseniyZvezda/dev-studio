@@ -202,7 +202,7 @@ class MemberUpdate(BaseModel):
     effort_solver_weights: dict[str, Any] | None = None
     allowed_tools: list[str] | None = None
     skills: list[str] | None = None
-    """Folder names under ``voxarium_studio/skills/`` — the whole list, as it should be (§10.10). Null
+    """Folder names under ``.voxarium_studio/skills/`` — the whole list, as it should be (§10.10). Null
     is the same edit as an empty list: the member is given no skills."""
 
     required_skills: list[str] | None = None

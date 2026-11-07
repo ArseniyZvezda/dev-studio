@@ -41,7 +41,7 @@ describe('suffixes', () => {
     ['setup.py', 'python'],
     ['engine/Actor.cpp', 'cpp'],
     ['engine/Actor.h', 'c'],
-    ['voxarium_studio/config.yaml', 'yaml'],
+    ['.voxarium_studio/config.yaml', 'yaml'],
     ['package.json', 'json'],
     ['Content/Shaders/water.usf', 'hlsl'],
     ['shaders/blur.glsl', 'glsl'],

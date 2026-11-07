@@ -76,7 +76,7 @@ class ApplicationSettingsUpdate(BaseModel):
 class OpenProjectRequest(BaseModel):
     path: str
     create: bool = True
-    """Initialise ``voxarium_studio/`` when the folder is not a project yet. The dialog sends
+    """Initialise ``.voxarium_studio/`` when the folder is not a project yet. The dialog sends
     ``false`` first so it can show what is about to be created, then ``true``."""
 
 

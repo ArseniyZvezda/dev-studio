@@ -48,7 +48,7 @@ export interface DocTreeNode {
 }
 
 /**
- * Where the documents sit in the **project's** frame — `voxarium_studio/docs` in every ordinary
+ * Where the documents sit in the **project's** frame — `.voxarium_studio/docs` in every ordinary
  * layout — which is the frame `/api/vcs/status` speaks (§9.6). A document's own path is
  * relative to the documents folder, so a version control lookup needs this in front of it.
  *
@@ -71,7 +71,7 @@ export function docsVcsRoot(
       return `${data.slice(base.length + 1)}/docs`;
     }
   }
-  return "voxarium_studio/docs";
+  return ".voxarium_studio/docs";
 }
 
 /**

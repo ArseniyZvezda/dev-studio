@@ -41,7 +41,7 @@ def run(
     project: Path | None = typer.Argument(
         None,
         help=(
-            "The managed project directory to open (its voxarium_studio/ folder is created here). "
+            "The managed project directory to open (its .voxarium_studio/ folder is created here). "
             "Defaults to the project opened last, or the built-in demo project."
         ),
     ),
@@ -152,7 +152,7 @@ def init(
     project: Path = typer.Argument(Path.cwd(), help="Directory to initialise."),
     samples: bool = typer.Option(True, "--samples/--no-samples", help="Write example files."),
 ) -> None:
-    """Create the voxarium_studio/ data directory in a project without starting the server."""
+    """Create the .voxarium_studio/ data directory in a project without starting the server."""
     _configure_logging(False)
     project_root = project.expanduser().resolve()
     if not project_root.is_dir():
@@ -178,7 +178,7 @@ def info(project: Path = typer.Argument(Path.cwd())) -> None:
     from .core.paths import ProjectPaths
     from .engine.store import PipelineStore
 
-    paths = ProjectPaths.for_project(project)
+    paths = ProjectPaths.for_inspection(project)
     if not paths.data.exists():
         typer.secho(f"{paths.root} is not initialised. Run `voxarium_studio init` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)

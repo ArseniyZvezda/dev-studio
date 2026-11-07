@@ -27,7 +27,7 @@ def test_builtin_responsibility_uses_the_effective_settings_template(client, pro
     listed = client.get("/api/teams").json()
     assert next(member for team in listed for member in team["members"]
                 if member["id"] == PRODUCER)["responsibility"] == expected
-    roster = yaml.safe_load((project / "voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
+    roster = yaml.safe_load((project / ".voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
     assert "responsibility" not in next(m for m in roster["members"] if m["id"] == "studio-producer")
 
 
@@ -114,7 +114,7 @@ def test_settings_binding_survives_project_restart(project: Path):
         member = producer_member(client)
         assert member["responsibility"] == custom
         assert member["model"] == "custom-model"
-        roster = yaml.safe_load((project / "voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
+        roster = yaml.safe_load((project / ".voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
         assert "responsibility" not in next(m for m in roster["members"] if m["id"] == "studio-producer")
 
 
@@ -123,7 +123,7 @@ def test_reload_of_hand_edited_config_refreshes_responsibility(client, project: 
     assert client.put(
         "/api/settings", json={"teams": {"prompts": {"producer_mode": "Previous prompt"}}},
     ).status_code == 200
-    path = project / "voxarium_studio/config.yaml"
+    path = project / ".voxarium_studio/config.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     config["teams"]["prompts"]["producer_mode"] = replacement
     path.write_text(yaml.safe_dump(config), encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Team composition on disk (``voxarium_studio/teams/*.yaml``) synced into the database.
+"""Team composition on disk (``.voxarium_studio/teams/*.yaml``) synced into the database.
 
 Who is on the team and who reports to whom is a decision worth committing to git, so it
 lives in YAML alongside pipelines (§5). Task state and transcripts are runtime data and
@@ -50,7 +50,7 @@ class MemberDefinition(BaseModel):
 
     allowed_tools: list[str] = Field(default_factory=lambda: ["Read", "Grep", "Glob"])
     skills: list[str] = Field(default_factory=list)
-    """Folder names under ``voxarium_studio/skills/`` this member may use (§10.10). Omitted when empty."""
+    """Folder names under ``.voxarium_studio/skills/`` this member may use (§10.10). Omitted when empty."""
 
     required_skills: list[str] = Field(default_factory=list)
     required_documents: list[str] = Field(default_factory=list)

@@ -93,10 +93,10 @@ def test_paths_inside_the_project_resolve(explorer: ExplorerService) -> None:
 def test_listing_hides_the_data_directory_by_default(explorer: ExplorerService) -> None:
     names = {entry.name for entry in explorer.list_dir("")}
     assert "Assets" in names
-    assert "voxarium_studio" not in names, "the Studio's own directory is off by default (§6.2)"
+    assert ".voxarium_studio" not in names, "the Studio's own directory is off by default (§6.2)"
 
     explorer.config.explorer.show_data_dir = True
-    assert "voxarium_studio" in {entry.name for entry in explorer.list_dir("")}
+    assert ".voxarium_studio" in {entry.name for entry in explorer.list_dir("")}
 
 
 def test_listing_honours_the_ignore_list(explorer: ExplorerService) -> None:
@@ -568,7 +568,7 @@ def test_delete_reports_every_path_it_removed(explorer: ExplorerService) -> None
 # ------------------------------------------------------------- what is refused
 
 
-@pytest.mark.parametrize("protected", ["", ".", "voxarium_studio", "voxarium_studio/"])
+@pytest.mark.parametrize("protected", ["", ".", ".voxarium_studio", ".voxarium_studio/"])
 def test_the_root_and_the_data_directory_are_untouchable(
     explorer: ExplorerService, protected: str
 ) -> None:
@@ -588,11 +588,11 @@ def test_the_root_and_the_data_directory_are_untouchable(
 
 
 def test_the_data_directory_cannot_be_overwritten_by_a_move(explorer: ExplorerService) -> None:
-    """The target of the move is `<root>/voxarium_studio` — guarding only the *sources* would
+    """The target of the move is `<root>/.voxarium_studio` — guarding only the *sources* would
     let `overwrite: true` delete the Studio's state on the way past."""
-    (explorer.paths.root / "Assets" / "voxarium_studio").mkdir()
+    (explorer.paths.root / "Assets" / ".voxarium_studio").mkdir()
     with pytest.raises(PartialOperation) as refused:
-        explorer.move(["Assets/voxarium_studio"], "", overwrite=True)
+        explorer.move(["Assets/.voxarium_studio"], "", overwrite=True)
     assert isinstance(refused.value.cause, OperationRefused)
     assert explorer.paths.data.is_dir()
 
@@ -689,8 +689,8 @@ def test_the_five_operations_over_http(client: TestClient, project: Path) -> Non
         ("rename", {"path": "notes.md", "name": ".."}, 400),
         # The two directories nothing may touch — 409.
         ("delete", {"paths": [""]}, 409),
-        ("delete", {"paths": ["voxarium_studio"]}, 409),
-        ("rename", {"path": "voxarium_studio", "name": "elsewhere"}, 409),
+        ("delete", {"paths": [".voxarium_studio"]}, 409),
+        ("rename", {"path": ".voxarium_studio", "name": "elsewhere"}, 409),
         # Missing sources — 404.
         ("rename", {"path": "nope.md", "name": "yes.md"}, 404),
         ("delete", {"paths": ["nope.md"]}, 404),

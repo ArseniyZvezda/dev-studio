@@ -76,7 +76,7 @@ class EventType(StrEnum):
 
     # Automations (§6.5)
     AUTOMATION_CHANGED = "automation.changed"
-    """``voxarium_studio/automations.yaml`` was written through the API — a client re-reads the page.
+    """``.voxarium_studio/automations.yaml`` was written through the API — a client re-reads the page.
     A hand edit arrives as ``explorer.file_changed`` for the file instead."""
 
     AUTOMATION_FIRED = "automation.fired"

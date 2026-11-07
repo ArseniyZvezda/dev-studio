@@ -1,4 +1,4 @@
-"""Skills the project keeps for its agents: ``voxarium_studio/skills/<name>/SKILL.md`` (§10.10).
+"""Skills the project keeps for its agents: ``.voxarium_studio/skills/<name>/SKILL.md`` (§10.10).
 
 A skill is a folder: a ``SKILL.md`` — YAML frontmatter with a ``description``, then the
 instructions, the Agent Skills format Claude Code itself reads — and whatever files those
@@ -33,7 +33,7 @@ skill's name, description and ``SKILL.md`` path, and the session reads the file 
 calls for it.
 
 **One Read rule per skill given.** A session in an isolated worktree starts outside
-``voxarium_studio/skills/``, where reading the main project is not allowed by default — the same
+``.voxarium_studio/skills/``, where reading the main project is not allowed by default — the same
 refusal the Studio skill's reference files met (``teams/skill.py``). Each rule is scoped to one
 skill's folder, so being given a skill grants nothing beyond it.
 """
@@ -107,7 +107,7 @@ class SkillChangedOnDisk(Exception):
 
 
 def check_name(name: str) -> str:
-    """A skill's name as a folder of ``voxarium_studio/skills/`` may carry it; raises ``ValueError``.
+    """A skill's name as a folder of ``.voxarium_studio/skills/`` may carry it; raises ``ValueError``.
 
     Only the shape, never existence: this guards a member's ``skills`` list and the name in a
     URL, where the answer to "is it there" is the listing's, and a roster naming a skill this
@@ -239,7 +239,7 @@ class Skill:
 
 @dataclass(frozen=True, slots=True)
 class InvalidSkill:
-    """A folder in ``voxarium_studio/skills/`` that is not a skill yet, and why."""
+    """A folder in ``.voxarium_studio/skills/`` that is not a skill yet, and why."""
 
     name: str
     error: str
@@ -251,7 +251,7 @@ class MemberSkills:
 
     found: tuple[Skill, ...]
     missing: tuple[str, ...]
-    """Names on the member that ``voxarium_studio/skills/`` has no skill for — a folder renamed or
+    """Names on the member that ``.voxarium_studio/skills/`` has no skill for — a folder renamed or
     deleted after it was given. Told to nobody, and said in the task's transcript."""
 
     def allowed_tools(self) -> list[str]:

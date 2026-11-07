@@ -1,4 +1,4 @@
-"""The project's skills: ``voxarium_studio/skills/<name>/SKILL.md`` and the members given them (§10.10).
+"""The project's skills: ``.voxarium_studio/skills/<name>/SKILL.md`` and the members given them (§10.10).
 
 What is pinned here is the folder and the roster — what counts as a skill and what it is
 called, the description a session is sent, the page's writes, and a member's list surviving
@@ -39,13 +39,13 @@ DESIGNER = f"{TEAM}__designer"
 def _skill(
     project: Path, name: str, text: str | None = None, files: dict[str, str] | None = None
 ) -> Path:
-    """A folder under ``voxarium_studio/skills/``; *text* is its SKILL.md, left out when ``None``.
+    """A folder under ``.voxarium_studio/skills/``; *text* is its SKILL.md, left out when ``None``.
 
     A SKILL.md is dated an hour back, so a write made straight after it has a later timestamp
     on any clock — a conditional write is checked against the modification time, and two writes
     inside one tick of a coarse filesystem clock would otherwise look like the same version.
     """
-    folder = project / "voxarium_studio" / "skills" / name
+    folder = project / ".voxarium_studio" / "skills" / name
     folder.mkdir(parents=True, exist_ok=True)
     if text is not None:
         skill_file = folder / "SKILL.md"
@@ -89,7 +89,7 @@ def test_a_skill_is_a_folder_with_a_skill_md_and_is_named_after_the_folder(proje
     )
     _skill(project, "no-instructions-yet", files={"notes.txt": "n"})
     _skill(project, ".hidden", "---\ndescription: hidden\n---\n")
-    (project / "voxarium_studio" / "skills" / "README.md").write_text("a file, not a skill", encoding="utf-8")
+    (project / ".voxarium_studio" / "skills" / "README.md").write_text("a file, not a skill", encoding="utf-8")
 
     skills, invalid = _store(project).scan()
 
@@ -223,19 +223,19 @@ def test_a_members_names_resolve_exactly_and_once_each(project: Path) -> None:
 
 
 def test_each_skill_is_listed_with_where_to_read_it_and_gets_a_read_rule_of_its_own() -> None:
-    tester = _entry("tester", PureWindowsPath(r"D:\Game\voxarium_studio\skills\tester"), "Writes test plans.")
-    blank = _entry("blank", PurePosixPath("/srv/game/voxarium_studio/skills/blank"))
-    odd = _entry("odd", PureWindowsPath(r"C:\Program Files (x86)\Game\voxarium_studio\skills\odd"))
+    tester = _entry("tester", PureWindowsPath(r"D:\Game\.voxarium_studio\skills\tester"), "Writes test plans.")
+    blank = _entry("blank", PurePosixPath("/srv/game/.voxarium_studio/skills/blank"))
+    odd = _entry("odd", PureWindowsPath(r"C:\Program Files (x86)\Game\.voxarium_studio\skills\odd"))
 
     assert prompt_list([tester, blank]).splitlines() == [
-        r"- tester: Writes test plans. (instructions: D:\Game\voxarium_studio\skills\tester\SKILL.md)",
-        "- blank (instructions: /srv/game/voxarium_studio/skills/blank/SKILL.md)",
+        r"- tester: Writes test plans. (instructions: D:\Game\.voxarium_studio\skills\tester\SKILL.md)",
+        "- blank (instructions: /srv/game/.voxarium_studio/skills/blank/SKILL.md)",
     ]
     # A parenthesis is the rule list's own syntax, so that folder gets no rule rather than a
     # wrong one: a member with Read still opens it, one without loses only it.
     assert permission_rules([tester, blank, odd]) == [
-        "Read(//d/Game/voxarium_studio/skills/tester/**)",
-        "Read(//srv/game/voxarium_studio/skills/blank/**)",
+        "Read(//d/Game/.voxarium_studio/skills/tester/**)",
+        "Read(//srv/game/.voxarium_studio/skills/blank/**)",
     ]
 
 
@@ -243,7 +243,7 @@ def test_each_skill_is_listed_with_where_to_read_it_and_gets_a_read_rule_of_its_
 
 
 def _yaml_member(project: Path, short_id: str) -> dict:
-    team_file = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    team_file = project / ".voxarium_studio" / "teams" / "default-team.yaml"
     roster = yaml.safe_load(team_file.read_text(encoding="utf-8"))
     return next(member for member in roster["members"] if member["id"] == short_id)
 
@@ -254,7 +254,7 @@ def test_the_page_creates_a_skill_and_lists_who_has_it(client: TestClient) -> No
     )
     assert created.status_code == 201, created.text
     page = created.json()
-    assert page["path"] == "voxarium_studio/skills"
+    assert page["path"] == ".voxarium_studio/skills"
     local = [skill for skill in page["skills"] if skill["source"] is None]
     assert [skill["name"] for skill in local] == ["level-prototyping"]
     assert local[0]["description"] == "Blocks out levels."
@@ -365,7 +365,7 @@ def test_a_skill_gone_from_disk_comes_off_its_members_by_the_same_delete(
 def test_a_skill_the_yaml_names_loads_whatever_the_folder_holds(project: Path) -> None:
     """Hand-edited YAML is the roster too: a name there loads as written, even one this checkout
     has no folder for — a sync is not where a skill is taken off anybody."""
-    team_file = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    team_file = project / ".voxarium_studio" / "teams" / "default-team.yaml"
     team_file.write_text(
         team_file.read_text(encoding="utf-8").replace(
             "    allowed_tools: [Read, Write, Edit, Bash, Grep, Glob]",
@@ -382,7 +382,7 @@ def test_a_skill_the_yaml_names_loads_whatever_the_folder_holds(project: Path) -
 def test_an_empty_or_single_skills_key_does_not_cost_the_team_file(project: Path) -> None:
     """`skills:` left empty is YAML null, and a lone name is a string. Refusing either would skip
     the whole team file — every member, not just this key."""
-    team_file = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    team_file = project / ".voxarium_studio" / "teams" / "default-team.yaml"
     team_file.write_text(
         team_file.read_text(encoding="utf-8")
         .replace(
@@ -403,7 +403,7 @@ def test_an_empty_or_single_skills_key_does_not_cost_the_team_file(project: Path
 
 
 def test_a_project_initialised_before_skills_gains_the_folder_on_start(project: Path) -> None:
-    skills = project / "voxarium_studio" / "skills"
+    skills = project / ".voxarium_studio" / "skills"
     skills.rmdir()
     with TestClient(create_app(str(project)), base_url="http://127.0.0.1") as client:
         assert all(skill["source"] for skill in client.get("/api/skills").json()["skills"])

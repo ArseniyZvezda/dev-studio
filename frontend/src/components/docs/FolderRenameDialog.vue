@@ -92,7 +92,7 @@ const heading = computed(() => {
 })
 
 const subtitle = computed(() => {
-  if (phase.value === 'name') return `voxarium_studio/docs/${props.path}`
+  if (phase.value === 'name') return `.voxarium_studio/docs/${props.path}`
   if (phase.value === 'settling') return t('docs.folderRename.settling')
   if (phase.value === 'renaming') {
     if (renamedTo.value === null) return t('docs.folderRename.moving')

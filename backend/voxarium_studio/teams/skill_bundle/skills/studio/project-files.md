@@ -3,23 +3,23 @@
 The project the Studio has open is the game itself. The Studio keeps its own data inside it, so the
 team's AI workflow is versioned together with the game.
 
-## `voxarium_studio/` — the Studio's data directory
+## `.voxarium_studio/` — the Studio's data directory
 
 | Path | What it is | Yours to change? |
 | --- | --- | --- |
-| `voxarium_studio/docs/` | The team's shared documents. | Yes — through `write_doc`, or as files when the Studio's tools are off. |
-| `voxarium_studio/pipelines/*.yaml` | AI pipelines, edited and run on the Pipelines page. | When the task is about a pipeline — see below. |
-| `voxarium_studio/teams/*.yaml` | The team roster: members, roles, who reports to whom, models, tools, skills. | No. People edit it on the Teams page, and it decides who you are and where you may route work. |
-| `voxarium_studio/skills/<name>/` | The project's skills: a `SKILL.md` (a `description` in its frontmatter, then instructions) and the files it refers to. A skill reaches only the members it is given to; yours, if any, are listed in your system prompt with their paths. | Only when the task is about a skill — and a skill's name is its folder's, so renaming the folder takes it away from everyone who has it. |
-| `voxarium_studio/automations.yaml` | What the project does by itself: one trigger and one action per automation. Enabled entries listen while the project is open; changing a task or writing a watched file may start an action. | When the task calls for automations, use the MCP tools described in SKILL.md. People also edit these on the Automations page. |
-| `voxarium_studio/config.yaml` | Project settings: plugins, appearance, limits, the prompts sent to agents. | No — Settings and Teams → Team Settings own it. |
-| `voxarium_studio/app.db` | The database: tasks, transcripts, runs. | Never. |
-| `voxarium_studio/runs/`, `voxarium_studio/assets/` | Run logs and generated artifacts. | Read only. |
-| `voxarium_studio/worktrees/` | Isolated checkouts, one per task. | Only the one your system prompt names as yours. |
-| `voxarium_studio/plugins/` | Studio plugins local to this project. | Only when the task is about one. |
+| `.voxarium_studio/docs/` | The team's shared documents. | Yes — through `write_doc`, or as files when the Studio's tools are off. |
+| `.voxarium_studio/pipelines/*.yaml` | AI pipelines, edited and run on the Pipelines page. | When the task is about a pipeline — see below. |
+| `.voxarium_studio/teams/*.yaml` | The team roster: members, roles, who reports to whom, models, tools, skills. | No. People edit it on the Teams page, and it decides who you are and where you may route work. |
+| `.voxarium_studio/skills/<name>/` | The project's skills: a `SKILL.md` (a `description` in its frontmatter, then instructions) and the files it refers to. A skill reaches only the members it is given to; yours, if any, are listed in your system prompt with their paths. | Only when the task is about a skill — and a skill's name is its folder's, so renaming the folder takes it away from everyone who has it. |
+| `.voxarium_studio/automations.yaml` | What the project does by itself: one trigger and one action per automation. Enabled entries listen while the project is open; changing a task or writing a watched file may start an action. | When the task calls for automations, use the MCP tools described in SKILL.md. People also edit these on the Automations page. |
+| `.voxarium_studio/config.yaml` | Project settings: plugins, appearance, limits, the prompts sent to agents. | No — Settings and Teams → Team Settings own it. |
+| `.voxarium_studio/app.db` | The database: tasks, transcripts, runs. | Never. |
+| `.voxarium_studio/runs/`, `.voxarium_studio/assets/` | Run logs and generated artifacts. | Read only. |
+| `.voxarium_studio/worktrees/` | Isolated checkouts, one per task. | Only the one your system prompt names as yours. |
+| `.voxarium_studio/plugins/` | Studio plugins local to this project. | Only when the task is about one. |
 
 `app.db`, `assets/`, `runs/` and `worktrees/` are kept out of version control; everything else in
-`voxarium_studio/` is meant to be committed.
+`.voxarium_studio/` is meant to be committed.
 
 ## At the project root
 
@@ -34,7 +34,7 @@ team's AI workflow is versioned together with the game.
 
 ## Pipelines
 
-A pipeline is a YAML file in `voxarium_studio/pipelines/`, named after its `id`. Prefer
+A pipeline is a YAML file in `.voxarium_studio/pipelines/`, named after its `id`. Prefer
 `create_pipeline` / `write_pipeline`: they validate against the live node registry before saving.
 The Pipelines page reads these same files. Saving does not start a run; a person can run it
 from that page, or an enabled automation can start it on a matching event.

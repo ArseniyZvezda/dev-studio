@@ -64,7 +64,7 @@ def test_names_are_cleaned_and_never_overwritten(project) -> None:
     first = store.add("task_1", "../../shots/Screen Shot (1).png", PNG)
     assert first["name"] == "Screen Shot (1).png", "only the last path component survives"
     assert first["image"] is True and first["media_type"] == "image/png"
-    assert first["path"] == "voxarium_studio/attachments/task_1/Screen Shot (1).png"
+    assert first["path"] == ".voxarium_studio/attachments/task_1/Screen Shot (1).png"
     second = store.add("task_1", "Screen Shot (1).png", b"other")
     assert second["name"] == "Screen Shot (1)-2.png", "a taken name gets a suffix"
     log = store.add("task_1", "build.log", b"text")
@@ -95,8 +95,8 @@ async def test_a_review_carries_its_files_to_the_session(recorded, wait_for) -> 
     resume = requests[1]
     assert resume.prompt.startswith("The door opens the wrong way")
     assert "Attached files (open with Read):" in resume.prompt
-    assert str(ctx.paths.root / "voxarium_studio" / "attachments" / task.id / "door.png") in resume.prompt
-    assert str(ctx.paths.root / "voxarium_studio" / "attachments" / task.id / "notes.txt") in resume.prompt
+    assert str(ctx.paths.root / ".voxarium_studio" / "attachments" / task.id / "door.png") in resume.prompt
+    assert str(ctx.paths.root / ".voxarium_studio" / "attachments" / task.id / "notes.txt") in resume.prompt
     assert [image["media_type"] for image in resume.images] == ["image/png"], (
         "only the picture is an image block; the text file is reached by its path"
     )

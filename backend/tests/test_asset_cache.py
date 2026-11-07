@@ -18,7 +18,7 @@ def test_cleanup_preserves_inputs_directories_docs_and_manual_files(tmp_path):
     for name in names:
         (paths.assets / name).write_bytes(b"1234")
     (paths.pipelines / "example.yaml").write_text(json.dumps({"nodes": [
-        {"id": "a", "type": "core.path", "params": {"value": "voxarium_studio/assets/input.png"}},
+        {"id": "a", "type": "core.path", "params": {"value": ".voxarium_studio/assets/input.png"}},
         {"id": "b", "type": "core.path", "params": {"value": str(paths.assets / "batch")}}
     ]}))
     (paths.docs / "reference.md").write_text("![preview](../assets/document.png)")

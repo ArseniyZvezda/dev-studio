@@ -490,7 +490,7 @@ async function setNodeCache(value: boolean) {
               />
               <span>
                 <I18nT keypath="settings.explorer.showDataDir">
-                  <template #dir><code class="font-mono">voxarium_studio/</code></template>
+                  <template #dir><code class="font-mono">.voxarium_studio/</code></template>
                 </I18nT>
                 <span class="block text-small text-faint">
                   {{ t('settings.explorer.showDataDirHint') }}

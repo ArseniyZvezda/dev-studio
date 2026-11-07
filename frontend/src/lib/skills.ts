@@ -96,8 +96,8 @@ export function filterSkillOptions(
 /**
  * Whether a change the file watcher reported (`explorer.file_changed`) happened inside the
  * skills folder. Both paths are the project's frame with forward slashes — the watcher's and
- * `SkillsOverview.path` — so a prefix is the whole test; the separator keeps `voxarium_studio/skills-old`
- * from counting as `voxarium_studio/skills`.
+ * `SkillsOverview.path` — so a prefix is the whole test; the separator keeps `.voxarium_studio/skills-old`
+ * from counting as `.voxarium_studio/skills`.
  */
 export function inSkillsFolder(path: string, folder: string): boolean {
   const base = folder.replace(/\/+$/, '')

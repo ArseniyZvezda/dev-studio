@@ -32,7 +32,7 @@ def test_directory_uses_stable_task_number_and_rejects_unnumbered_tasks(tmp_path
 
 @pytest.mark.parametrize("override", [None, "", "Keep your work tidy.", "Use {temp_dir}."])
 def test_absolute_directory_survives_custom_prompt_templates(tmp_path: Path, override) -> None:
-    directory = str(tmp_path / "voxarium_studio" / "temp" / "TASK-1")
+    directory = str(tmp_path / ".voxarium_studio" / "temp" / "TASK-1")
     prompt = AgentPromptsConfig(task_temp=override).text("task_temp", temp_dir=directory)
     assert directory in prompt
     assert "{temp_dir}" not in prompt

@@ -27,6 +27,7 @@ backend/voxarium_studio/_build_stamp.json
 
 # Local data and agent configuration. Keep backend/voxarium_studio/ as source.
 /voxarium_studio/
+/.voxarium_studio/
 /graphify-out/
 /output/
 /docs/

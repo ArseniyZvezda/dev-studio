@@ -48,7 +48,7 @@ class FakeHost:
     def __init__(self, project_root: Path, *, launch_root: Path | None = None, settings=None):
         self.plugin_id = "graphify"
         self.project_root = project_root
-        self.data_dir = project_root / "voxarium_studio"
+        self.data_dir = project_root / ".voxarium_studio"
         self.launch_root = launch_root or project_root
         self.settings = dict(settings or {})
         self.state: dict = {}
@@ -407,7 +407,7 @@ def test_the_documents_command_scans_the_documents_folder_into_its_own_graph(tmp
     """A different scan root writing into the code's graphify-out would prune the code as
     "deleted", so the documents get an out directory of their own — named for the repo tag
     merge-graphs will stamp on their nodes."""
-    docs = tmp_path / "voxarium_studio" / "docs"
+    docs = tmp_path / ".voxarium_studio" / "docs"
     command = graphify.documents_command({}, tmp_path, docs)
     assert command[:7] == [
         "graphify",
@@ -421,7 +421,7 @@ def test_the_documents_command_scans_the_documents_folder_into_its_own_graph(tmp
     assert "--code-only" not in command and "--force" not in command
     excluded = [command[i + 1] for i, arg in enumerate(command) if arg == "--exclude"]
     assert {"*.png", "*.jpg", "*.pdf", "*.yaml", "*.html"} <= set(excluded), "pictures and structured files"
-    assert "vxs-folder.json" in excluded, "a folder's look is the Studio's, not the team's writing"
+    assert {"vxs-folder.json", "tds-folder.json"} <= set(excluded), "folder styles are Studio metadata"
     assert "*.md" not in excluded and "*.txt" not in excluded
     assert graphify.documents_graph_file(tmp_path) == tmp_path / "graphify-out" / "documents" / "graphify-out" / "graph.json"
     assert graphify.merge_command({}, tmp_path) == [
@@ -435,10 +435,10 @@ def test_the_documents_command_scans_the_documents_folder_into_its_own_graph(tmp
 
 
 def with_documents(project: Path) -> Path:
-    docs = project / "voxarium_studio" / "docs" / "features"
+    docs = project / ".voxarium_studio" / "docs" / "features"
     docs.mkdir(parents=True, exist_ok=True)
     (docs / "dash.md").write_text("# Dash ability\n", encoding="utf-8")
-    return project / "voxarium_studio" / "docs"
+    return project / ".voxarium_studio" / "docs"
 
 
 async def test_documents_follow_the_code_pass_on_one_bar(tmp_path: Path, cli, claude) -> None:
@@ -525,7 +525,7 @@ async def test_documents_can_be_switched_off(tmp_path: Path, cli, claude) -> Non
 
 
 async def test_no_documents_yet_is_a_skip_not_a_failure(tmp_path: Path, cli, claude) -> None:
-    (tmp_path / "voxarium_studio" / "docs").mkdir(parents=True)
+    (tmp_path / ".voxarium_studio" / "docs").mkdir(parents=True)
     status = await graphify.index(FakeHost(tmp_path), "test")
     assert len(cli.calls) == 1
     assert status["documents"]["skipped"].startswith("there are no documents in")
@@ -564,7 +564,7 @@ async def test_a_failing_code_pass_never_reaches_the_documents(tmp_path: Path, c
 
 def test_a_document_hit_is_relative_to_the_documents_folder(tmp_path: Path) -> None:
     host = FakeHost(tmp_path)
-    assert graphify.project_relative(host, "features/dash.md", "documents") == "voxarium_studio/docs/features/dash.md"
+    assert graphify.project_relative(host, "features/dash.md", "documents") == ".voxarium_studio/docs/features/dash.md"
     assert graphify.project_relative(host, "src/a.py", tmp_path.name) == "src/a.py", "the code's own tag"
     assert graphify.project_relative(host, "src/a.py") == "src/a.py"
 
@@ -576,7 +576,7 @@ async def test_search_answers_from_the_merged_graph_when_there_is_one(tmp_path: 
 
     write_graph(tmp_path, NODES + DOC_NODES, LINKS, path=graphify.merged_graph_file(tmp_path))
     hit = (await graphify.search_code(host, SearchQuery(text="dash"))).results[0]
-    assert (hit.title, hit.kind, hit.path, hit.line) == ("Dash ability", "document", "voxarium_studio/docs/features/dash.md", None)
+    assert (hit.title, hit.kind, hit.path, hit.line) == ("Dash ability", "document", ".voxarium_studio/docs/features/dash.md", None)
     assert hit.snippet == "Cooldown mechanic (2s, cannot be cancelled) with i-frames; uses the ability budget", (
         "the model's one line about it, whitespace folded"
     )

@@ -224,7 +224,7 @@ class CodexBackend(AgentBackend):
         if not _has_credentials():
             return False, (
                 "No Codex credentials found. Run `codex login` once, or set OPENAI_API_KEY "
-                "in the Studio's environment. Never commit the key into voxarium_studio/config.yaml."
+                "in the Studio's environment. Never commit the key into .voxarium_studio/config.yaml."
             )
         return True, "Ready"
 

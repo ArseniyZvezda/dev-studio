@@ -541,8 +541,8 @@ def make_ctx(project: Path, params: dict) -> NodeContext:
         inputs={},
         params=params,
         project_root=project,
-        assets_dir=project / "voxarium_studio" / "assets",
-        work_dir=project / "voxarium_studio" / "work",
+        assets_dir=project / ".voxarium_studio" / "assets",
+        work_dir=project / ".voxarium_studio" / "work",
         settings={},
         log_fn=log,
     )

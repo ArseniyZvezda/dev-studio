@@ -4,7 +4,7 @@ Search order, later entries winning on id collision:
 
 1. ``plugins_builtin/`` shipped with the Studio
 2. the machine-level plugin directory (installed once, available to every project)
-3. ``<managed-project>/voxarium_studio/plugins/`` for project-local plugins and overrides
+3. ``<managed-project>/.voxarium_studio/plugins/`` for project-local plugins and overrides
 
 Trust model: plugin code executes unsandboxed in the backend process. This is the
 explicit v1 assumption from §9.4 — a plugin is something the user installs knowingly,

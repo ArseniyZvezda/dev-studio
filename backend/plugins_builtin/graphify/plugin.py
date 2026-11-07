@@ -3,7 +3,7 @@ Studio (§9.7).
 
 What the plugin owns is three files under ``<launch root>/graphify-out/``: ``graph.json``,
 the code, written by ``graphify extract <path> --code-only``; ``documents/…/graph.json``,
-the Documents section, written by a second extract over ``voxarium_studio/docs`` through Claude
+the Documents section, written by a second extract over ``.voxarium_studio/docs`` through Claude
 Code; and ``merged-graph.json``, the two folded together by ``graphify merge-graphs`` —
 what agents and the search field read. Three things hang off them, and each is one of the
 extension points this plugin was the reason for:
@@ -23,7 +23,7 @@ The prompt fragment that tells agents to ask the graph before grepping is *not* 
 is ``code_graph`` in ``core/prompts.py``, sent whenever the file exists at the launch
 root, so it stays editable beside every other line the Studio says to an agent.
 
-The graph lands at the launch root and not under ``voxarium_studio/`` on purpose: that directory
+The graph lands at the launch root and not under ``.voxarium_studio/`` on purpose: that directory
 is where an agent session starts, so ``graphify query`` run from there finds the graph
 with no flag, and it is where the graphify skill's own fast path looks.
 """
@@ -128,6 +128,7 @@ DOCUMENT_EXCLUDES = (
     "*.yml",
     "*.html",
     "vxs-folder.json",
+    "tds-folder.json",
 )
 
 # The CLI warns on every run when the skill it installed for the agent is a version behind
@@ -366,7 +367,7 @@ def extract_command(
 
 
 def documents_command(settings: dict[str, Any], launch_root: Path, docs: Path) -> list[str]:
-    """The documents pass: ``voxarium_studio/docs/`` alone, through Claude Code, into its own graph.
+    """The documents pass: ``.voxarium_studio/docs/`` alone, through Claude Code, into its own graph.
 
     graphify indexes documents only semantically — a model reads them and names the
     concepts, decisions and entities inside — so this is the run that costs something.

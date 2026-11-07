@@ -23,8 +23,8 @@ def make_ctx(project: Path, params: dict, sink: list[str] | None = None) -> Node
         inputs={},
         params=params,
         project_root=project,
-        assets_dir=project / "voxarium_studio" / "assets",
-        work_dir=project / "voxarium_studio" / "work",
+        assets_dir=project / ".voxarium_studio" / "assets",
+        work_dir=project / ".voxarium_studio" / "work",
         settings={},
         log_fn=log,
     )
@@ -796,9 +796,9 @@ async def test_text_survives_a_write_and_a_read(project: Path, registry: Registr
 async def test_write_text_falls_back_to_the_assets_directory(
     project: Path, registry: Registry
 ) -> None:
-    """No path means the pipeline's own output, which belongs in voxarium_studio/assets."""
+    """No path means the pipeline's own output, which belongs in .voxarium_studio/assets."""
     outputs = await run_node(registry, "core.write_text_file", project, {"text": "hello"})
-    assert Path(outputs["file"]) == (project / "voxarium_studio" / "assets" / "output.txt").resolve()
+    assert Path(outputs["file"]) == (project / ".voxarium_studio" / "assets" / "output.txt").resolve()
     assert Path(outputs["file"]).read_text(encoding="utf-8") == "hello"
 
 
@@ -873,7 +873,7 @@ async def test_write_bin_keeps_the_source_name_when_given_a_folder(
     source.write_bytes(BINARY)
 
     into_assets = await run_node(registry, "core.write_bin_file", project, {"data": str(source)})
-    assert Path(into_assets["file"]) == (project / "voxarium_studio" / "assets" / "hero.vox").resolve()
+    assert Path(into_assets["file"]) == (project / ".voxarium_studio" / "assets" / "hero.vox").resolve()
 
     into_folder = await run_node(
         registry, "core.write_bin_file", project, {"data": str(source), "path": "Assets/Meshes/"}

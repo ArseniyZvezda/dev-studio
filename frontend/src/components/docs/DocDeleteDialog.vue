@@ -85,8 +85,8 @@ async function confirm(): Promise<void> {
         <h2 class="truncate font-medium">
           {{ folder ? t('docs.delete.folderTitle') : t('docs.delete.documentTitle') }}
         </h2>
-        <p class="truncate text-small text-muted" :title="`voxarium_studio/docs/${path}`">
-          voxarium_studio/docs/{{ path }}
+        <p class="truncate text-small text-muted" :title="`.voxarium_studio/docs/${path}`">
+          .voxarium_studio/docs/{{ path }}
         </p>
       </div>
       <button

@@ -20,7 +20,7 @@ def test_builtin_skills_are_readable_assignable_and_protected(client: TestClient
     assert listed["graphify"]["source"] == "graphify"
     assert listed["voxarium_studio:studio"]["source"] == "voxarium_studio"
     assert "documents.md" in listed["voxarium_studio:studio"]["files"]
-    assert not list((project / "voxarium_studio" / "skills").iterdir()), "no stale package copies"
+    assert not list((project / ".voxarium_studio" / "skills").iterdir()), "no stale package copies"
 
     assigned = client.patch(MEMBER, json={"skills": ["graphify", "voxarium_studio:studio"]})
     assert assigned.status_code == 200, assigned.text
@@ -76,9 +76,9 @@ async def test_sessions_resolve_builtin_paths_and_reference_permissions(ctx: App
 
 
 def test_plugin_skill_cannot_escape_its_package(project: Path) -> None:
-    root = project / "voxarium_studio" / "plugins" / "skills_test"
+    root = project / ".voxarium_studio" / "plugins" / "skills_test"
     root.mkdir(parents=True)
-    outside = project / "voxarium_studio" / "outside"
+    outside = project / ".voxarium_studio" / "outside"
     outside.mkdir()
     (outside / "SKILL.md").write_text("---\ndescription: Outside.\n---\n", encoding="utf-8")
     (root / "plugin.yaml").write_text(

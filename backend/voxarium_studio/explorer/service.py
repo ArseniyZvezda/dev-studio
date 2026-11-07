@@ -66,7 +66,7 @@ MAX_PREVIEW_BYTES = 20 * 1024 * 1024
 """How much of a file the preview pane may be handed.
 
 **The Studio's own number, not the project's.** It was an ``ExplorerConfig`` field until
-2026-09-08, which put it in ``voxarium_studio/config.yaml`` — a file that is committed and shared
+2026-09-08, which put it in ``.voxarium_studio/config.yaml`` — a file that is committed and shared
 with everyone who opens the project (§5). What a browser and this machine can comfortably
 hold down a pipe is a property of the *application*, and a game project has no opinion about
 it; a per-project value also meant a new default never reached a project that already
@@ -602,7 +602,7 @@ class ExplorerService:
     def _guard_operand(self, path: Path) -> None:
         """The two directories no operation may create, rename, overwrite or delete.
 
-        The project root is the user's project; ``voxarium_studio/`` is the Studio's own state,
+        The project root is the user's project; ``.voxarium_studio/`` is the Studio's own state,
         including the database it is at that moment writing to. Either one going missing
         is not an undoable file operation, it is the end of the session.
         """

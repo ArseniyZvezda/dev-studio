@@ -280,7 +280,7 @@ this session.
 - **A folder above the project** — the project is one folder of a wider checkout, and the rest of
   it is not yours to change unless the task says so.
 
-Before touching `voxarium_studio/`, `.claude/agents/`, `.mcp.json` or `graphify-out/`, and whenever a task
+Before touching `.voxarium_studio/`, `.claude/agents/`, `.mcp.json` or `graphify-out/`, and whenever a task
 is about a pipeline or the team roster, read [project-files.md](project-files.md). It also lists
 the Studio's sections, for when someone asks where to find something.
 

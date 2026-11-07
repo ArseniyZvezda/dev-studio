@@ -51,6 +51,76 @@ def test_open_uninitialised_folder_creates_the_data_directory(
     assert response.json()["name"] == "fresh-game"
 
 
+def test_browsing_a_legacy_project_is_read_only_and_open_renames_it(client, tmp_path):
+    from contextlib import closing
+    import json
+    import sqlite3
+
+    root = tmp_path / "old-game"
+    root.mkdir()
+    paths = init_project(root)
+    legacy = root / "voxarium_studio"
+    (paths.docs / "design.md").write_text("design")
+    (paths.assets / "mesh.bin").write_bytes(b"artifact")
+    # Seed a real old run, with an absolute output and a literal text input that
+    # happens to spell the same path. Only the file-typed output should move.
+    with TestClient(create_app(str(root)), base_url="http://127.0.0.1") as previous:
+        created = previous.post("/api/teams/team_default/tasks", json={
+            "assignee_id": "team_default__dev", "title": "Saved task",
+        })
+        assert created.status_code == 201, created.text
+        task = created.json()
+    paths.data.rename(legacy)
+    old_file = str(legacy / "assets" / "mesh.bin")
+    with closing(sqlite3.connect(legacy / "app.db")) as db:
+        db.execute("PRAGMA user_version = 0")  # A database written by the old Studio.
+        db.execute("UPDATE team_task SET status='needs_review', write_paths=?, attachments=? WHERE id=?",
+                   (json.dumps(["voxarium_studio/docs/design.md"]),
+                    json.dumps([{"name": "mesh.bin", "path": "voxarium_studio/assets/mesh.bin"}]),
+                    task["id"]))
+        db.execute("INSERT INTO run (id,pipeline_id,pipeline_name,status,trigger,use_cache,params,created_at) "
+                   "VALUES ('old','saved','Saved','success','manual',1,'{}',CURRENT_TIMESTAMP)")
+        db.execute("INSERT INTO node_run (id,run_id,node_id,node_type,status,from_cache,inputs,outputs,log_path) "
+                   "VALUES ('node','old','write','core.write_text_file','success',0,?,?,?)",
+                   (json.dumps({"text": old_file}), json.dumps({"file": old_file}), str(legacy / "runs/old/write.log")))
+        db.commit()
+
+    assert client.get("/api/fs/inspect", params={"path": str(root)}).json()["is_project"]
+    recent = next(e for e in client.get("/api/project/recent").json() if Path(e["root"]) == root)
+    assert recent["initialised"] and recent["task_counts"]["needs_review"] == 1
+    assert legacy.is_dir() and not paths.data.exists()
+
+    opened = client.post("/api/project/open", json={"path": str(root), "create": False})
+    assert opened.status_code == 200, opened.text
+    assert Path(opened.json()["data_dir"]) == paths.data
+    assert not legacy.exists()
+    assert (paths.docs / "design.md").read_text() == "design"
+    with closing(sqlite3.connect(paths.db_file)) as db:
+        writes, attachments = db.execute("SELECT write_paths, attachments FROM team_task WHERE id=?",
+                                         (task["id"],)).fetchone()
+    assert json.loads(writes) == [".voxarium_studio/docs/design.md"]
+    assert json.loads(attachments)[0]["path"] == ".voxarium_studio/assets/mesh.bin"
+    node = client.get("/api/runs/old").json()["nodes"][0]
+    assert node["inputs"]["text"] == old_file
+    assert Path(node["outputs"]["file"]).read_bytes() == b"artifact"
+    assert Path(node["log_path"]) == paths.runs / "old/write.log"
+    assert init_project(root).data == paths.data
+    assert not legacy.exists()
+
+
+def test_conflicting_data_directories_leave_both_and_the_open_project_intact(client, tmp_path):
+    current = client.get("/api/project").json()["root"]
+    for name in ("voxarium_studio", ".voxarium_studio"):
+        data = tmp_path / name
+        data.mkdir()
+        (data / "notes").write_text(name)
+    response = client.post("/api/project/open", json={"path": str(tmp_path), "create": False})
+    assert response.status_code == 400 and "both paths exist" in response.json()["detail"]
+    assert client.get("/api/project").json()["root"] == current
+    for name in ("voxarium_studio", ".voxarium_studio"):
+        assert (tmp_path / name / "notes").read_text() == name
+
+
 def test_open_refuses_to_initialise_when_the_caller_said_not_to(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -440,12 +510,15 @@ def test_with_nothing_to_reopen_the_demo_project_is_opened(own_home: Path) -> No
     assert load_config(paths).project_name == demo.DEMO_PROJECT_NAME
 
 
-def test_the_demo_project_is_never_written_over(own_home: Path) -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+def test_the_demo_project_is_never_written_over(own_home: Path, legacy: bool) -> None:
     """It is the user's project once it exists — only the seed is skipped, not their edits."""
     first = demo.ensure_demo_project()
     welcome = first.docs / "welcome.md"
     welcome.write_text("# Mine now", encoding="utf-8")
     (first.root / "README.md").unlink()
+    if legacy:
+        first.data.rename(first.root / "voxarium_studio")
 
     again = demo.ensure_demo_project()
 

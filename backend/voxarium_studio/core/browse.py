@@ -33,7 +33,7 @@ class DirectoryEntry:
     path: Path
     name: str
     is_project: bool
-    """Holds a ``voxarium_studio/`` directory, so opening it resumes rather than initialises."""
+    """Holds a ``.voxarium_studio/`` directory, so opening it resumes rather than initialises."""
 
     hidden: bool = False
 

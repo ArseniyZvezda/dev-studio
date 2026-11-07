@@ -660,7 +660,7 @@ async def test_a_picture_may_live_outside_the_docs_tree_but_not_outside_the_proj
     art.mkdir(parents=True, exist_ok=True)
     (art / "hero.png").write_bytes(PNG)
 
-    # guide -> docs -> voxarium_studio -> the project root, where the game keeps its art.
+    # guide -> docs -> .voxarium_studio -> the project root, where the game keeps its art.
     assert ctx.docs.asset("guide/spec.md", "../../../Assets/hero.png").read_bytes() == PNG
 
     outside = ctx.paths.root.parent / "elsewhere.png"
@@ -710,7 +710,7 @@ def test_the_asset_route_is_not_swallowed_by_the_catch_all(
 ) -> None:
     """`/asset` joins `/search` and `/graph` above `/{path:path}`, brackets in a name and all."""
     client.put("/api/docs/guide/spec.md", json={"content": "# Spec\n"})
-    (project / "voxarium_studio" / "docs" / "guide" / "Shot (1).png").write_bytes(PNG)
+    (project / ".voxarium_studio" / "docs" / "guide" / "Shot (1).png").write_bytes(PNG)
 
     served = client.get(
         "/api/docs/asset", params={"path": "guide/spec.md", "src": "Shot (1).png"}
@@ -727,7 +727,7 @@ def test_the_asset_route_is_not_swallowed_by_the_catch_all(
 def test_a_picture_is_answered_conditionally(client: TestClient, project: Path) -> None:
     """A document holding a dozen photographs must not re-download them on every remount."""
     client.put("/api/docs/spec.md", json={"content": "# Spec\n"})
-    picture = project / "voxarium_studio" / "docs" / "shot.png"
+    picture = project / ".voxarium_studio" / "docs" / "shot.png"
     picture.write_bytes(PNG)
 
     first = client.get("/api/docs/asset", params={"path": "spec.md", "src": "shot.png"})
@@ -837,7 +837,7 @@ def test_the_upload_route_writes_the_file_and_answers_with_the_reference(
     )
     assert added.status_code == 201
     assert added.json()["src"] == "dropped%20shot.png"
-    assert (project / "voxarium_studio" / "docs" / "guide" / "dropped shot.png").read_bytes() == PNG
+    assert (project / ".voxarium_studio" / "docs" / "guide" / "dropped shot.png").read_bytes() == PNG
 
     # And the picture is immediately servable under the reference it answered with.
     served = client.get(

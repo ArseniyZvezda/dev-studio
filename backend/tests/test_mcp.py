@@ -217,7 +217,7 @@ def test_enabling_and_disabling_persists_to_config_yaml(
 
     disabled = client.post("/api/mcp/servers/fs/disable").json()
     assert from_file(disabled)[0]["enabled"] is False
-    assert "disabled:" in (project / "voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
+    assert "disabled:" in (project / ".voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
 
     enabled = client.post("/api/mcp/servers/fs/enable").json()
     assert from_file(enabled)[0]["enabled"] is True
@@ -296,7 +296,7 @@ def test_the_built_in_server_can_be_switched_off_like_any_other(
     off = client.post("/api/mcp/servers/voxarium_studio/disable")
     assert off.status_code == 200
     assert builtin(off.json())["enabled"] is False
-    config = (project / "voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
+    config = (project / ".voxarium_studio" / "config.yaml").read_text(encoding="utf-8")
     assert "voxarium_studio" in config.split("mcp:")[1].split("vcs:")[0]
 
     on = client.post("/api/mcp/servers/voxarium_studio/enable").json()

@@ -8,7 +8,7 @@ from urllib.parse import unquote
 
 import yaml
 
-from ..core.paths import ProjectPaths
+from ..core.paths import ProjectPaths, current_data_path
 from ..schemas.pipeline import PipelineDefinition
 
 
@@ -28,7 +28,7 @@ def path_value(value: str, root: Path) -> Path | None:
         value = value.removeprefix("__voxarium_studio_file__:")
         if not value or len(value) > 4096 or "\n" in value:
             return None
-        path = Path(value)
+        path = Path(current_data_path(value, root))
         return Path(os.path.abspath(path if path.is_absolute() else root / path))
     except (OSError, ValueError):
         return None

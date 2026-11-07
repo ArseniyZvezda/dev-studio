@@ -1,4 +1,4 @@
-"""``voxarium_studio/automations.yaml`` — the project's automations, committed with it (§5, §6.5).
+"""``.voxarium_studio/automations.yaml`` — the project's automations, committed with it (§5, §6.5).
 
 A file rather than rows for the reason pipelines and rosters are files: what a project does by
 itself when a task is done is part of how the project works, so it belongs in the diff.
@@ -19,8 +19,8 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from ..core.paths import ProjectPaths
-from .schema import Automation
+from ..core.paths import ProjectPaths, current_data_path
+from .schema import Automation, PathTrigger
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +99,9 @@ class AutomationStore:
         if self._cached is not None and self._cached[0] == signature:
             return self._cached[1]
         loaded = self._parse(self._raw_entries) if signature is not None else Loaded()
+        for automation in loaded.automations:
+            if isinstance(automation.trigger, PathTrigger):
+                automation.trigger.path = current_data_path(automation.trigger.path, self.paths.root)
         self._cached = (signature, loaded)
         return loaded
 

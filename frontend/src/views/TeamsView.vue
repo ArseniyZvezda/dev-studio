@@ -11,8 +11,8 @@
  *
  * The page is always editable (§10.2): roster gestures and settings save as you go.
  *
- * The roster is saved in `voxarium_studio/teams/<team>.yaml`, comments and all; shared run
- * defaults and agent prompts live in `voxarium_studio/config.yaml` (§10.2, §10.3).
+ * The roster is saved in `.voxarium_studio/teams/<team>.yaml`, comments and all; shared run
+ * defaults and agent prompts live in `.voxarium_studio/config.yaml` (§10.2, §10.3).
  */
 import { UserPlus, Users } from 'lucide-vue-next'
 import { onMounted, ref } from 'vue'
@@ -161,7 +161,7 @@ async function addMember() {
         <EmptyState
           v-if="!teams.members.length && !teams.loading"
           :title="t('teams.page.emptyTitle')"
-          :hint="t('teams.page.emptyHintEditing', { dir: 'voxarium_studio/teams/' })"
+          :hint="t('teams.page.emptyHintEditing', { dir: '.voxarium_studio/teams/' })"
         >
           <template #icon><Users class="mx-auto mb-3 size-8 text-faint" /></template>
         </EmptyState>

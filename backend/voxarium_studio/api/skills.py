@@ -1,4 +1,4 @@
-"""Skills for the project's agents: ``voxarium_studio/skills/`` and who has been given what (§10.10, §11.1).
+"""Skills for the project's agents: ``.voxarium_studio/skills/`` and who has been given what (§10.10, §11.1).
 
 The listing is read from disk on every call and every write answers with what it changed as it
 now is: a skill arrives by a copy in the file manager or a checkout as often as by the page, so

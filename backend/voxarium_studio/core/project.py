@@ -1,4 +1,4 @@
-"""Initialisation of the ``voxarium_studio/`` data directory inside a managed project."""
+"""Initialisation of the ``.voxarium_studio/`` data directory inside a managed project."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def is_git_repo(root: Path) -> bool:
 
 
 def init_project(root: str | Path, *, with_samples: bool = True) -> ProjectPaths:
-    """Create ``<root>/voxarium_studio`` and everything the Studio expects inside it.
+    """Create ``<root>/.voxarium_studio`` and everything the Studio expects inside it.
 
     Idempotent: preserve existing content, upgrading the Studio's ignore rules (§5).
     """
@@ -134,6 +134,7 @@ def init_project(root: str | Path, *, with_samples: bool = True) -> ProjectPaths
     if not paths.root.is_dir():
         raise NotADirectoryError(f"Managed project path is not a directory: {paths.root}")
 
+    paths.migrate_data_dir()
     for directory in paths.all_dirs:
         directory.mkdir(parents=True, exist_ok=True)
 

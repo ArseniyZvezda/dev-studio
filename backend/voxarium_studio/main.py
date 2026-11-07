@@ -75,7 +75,7 @@ def create_app(
         version=build.version,
         description=(
             "Local web hub for AI game-dev pipelines, plugins and agent teams. "
-            "All project data lives in the managed project's voxarium_studio/ directory."
+            "All project data lives in the managed project's .voxarium_studio/ directory."
         ),
         lifespan=lifespan,
     )

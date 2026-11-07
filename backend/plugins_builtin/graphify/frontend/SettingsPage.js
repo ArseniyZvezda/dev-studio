@@ -46,7 +46,7 @@ const MESSAGES = {
       documents: {
         label: 'Index the documents too',
         hint:
-          'After the code, a second pass reads the Documents section (voxarium_studio/docs) through Claude Code on your own ' +
+          'After the code, a second pass reads the Documents section (.voxarium_studio/docs) through Claude Code on your own ' +
           'subscription (graphify’s claude-cli backend) into a graph of its own, merged with the code’s for agents and ' +
           'search. Pictures, PDFs, YAML and HTML are left out. Only changed documents are read; the rest come from the cache.',
       },
@@ -162,7 +162,7 @@ const MESSAGES = {
       documents: {
         label: 'Индексировать и документы',
         hint:
-          'После кода второй проход читает раздел «Документы» (voxarium_studio/docs) через Claude Code по вашей собственной ' +
+          'После кода второй проход читает раздел «Документы» (.voxarium_studio/docs) через Claude Code по вашей собственной ' +
           'подписке (бэкенд claude-cli в graphify) и строит из него отдельный граф, который объединяется с графом кода ' +
           'для агентов и поиска. Картинки, PDF, YAML и HTML пропускаются. Читаются только изменённые документы, ' +
           'остальные берутся из кэша.',

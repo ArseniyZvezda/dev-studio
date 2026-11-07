@@ -526,10 +526,10 @@ describe("which folders stay folded across a reload (§5.2)", () => {
 describe("where the documents sit for version control (§9.6)", () => {
   it("puts the data directory in front of docs, in the project's frame", () => {
     expect(
-      docsVcsRoot("D:\\Games\\SampleGame", "D:\\Games\\SampleGame\\voxarium_studio"),
-    ).toBe("voxarium_studio/docs");
-    expect(docsVcsRoot("/home/dev/game", "/home/dev/game/voxarium_studio/")).toBe(
-      "voxarium_studio/docs",
+      docsVcsRoot("D:\\Games\\SampleGame", "D:\\Games\\SampleGame\\.voxarium_studio"),
+    ).toBe(".voxarium_studio/docs");
+    expect(docsVcsRoot("/home/dev/game", "/home/dev/game/.voxarium_studio/")).toBe(
+      ".voxarium_studio/docs",
     );
   });
 
@@ -540,9 +540,9 @@ describe("where the documents sit for version control (§9.6)", () => {
   });
 
   it("falls back to the documented default when the layout cannot be read", () => {
-    expect(docsVcsRoot(undefined, undefined)).toBe("voxarium_studio/docs");
-    expect(docsVcsRoot("D:\\Games\\Mine", "E:\\elsewhere\\voxarium_studio")).toBe(
-      "voxarium_studio/docs",
+    expect(docsVcsRoot(undefined, undefined)).toBe(".voxarium_studio/docs");
+    expect(docsVcsRoot("D:\\Games\\Mine", "E:\\elsewhere\\.voxarium_studio")).toBe(
+      ".voxarium_studio/docs",
     );
   });
 });

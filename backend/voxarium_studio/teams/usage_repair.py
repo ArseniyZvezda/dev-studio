@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..core.paths import LEGACY_DATA_DIRNAME, ProjectPaths
 from .backends.codex_costs import estimate_cost
 
 VERSION = 1
@@ -402,15 +403,15 @@ def _unmatched_results(results: list[dict], sources: list[dict]) -> list[str | N
 
 def build_audit(project: Path, *, claude_home: Path | None = None, codex_home: Path | None = None) -> dict:
     project = project.resolve()
-    database = project / "voxarium_studio" / "app.db"
+    paths = ProjectPaths.for_inspection(project)
+    database = paths.db_file
     claude_home = claude_home or Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
     codex_home = codex_home or Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
         connection.execute("BEGIN")
         tasks, messages, stamps = _read_tasks(connection)
     from ..core.config import load_config
-    from ..core.paths import ProjectPaths
-    code = load_config(ProjectPaths.for_project(project)).task_code(project.name)
+    code = load_config(paths).task_code(project.name)
     labels = {f"{code}-{task['number']}": task["id"] for task in tasks}
     labels.update({f"{code}-{task['number']:02d}": task["id"] for task in tasks})
     labels.update({task["id"]: task["id"] for task in tasks})
@@ -644,10 +645,13 @@ def apply_audit(report: dict, *, backup_path: Path | None = None, database_path:
     if report.get("version") != VERSION:
         raise ValueError("Unsupported audit version")
     audited_database = Path(report["database"]).resolve()
-    project_database = Path(report["project"]).resolve() / "voxarium_studio" / "app.db"
-    if audited_database != project_database:
+    paths = ProjectPaths.for_inspection(report["project"])
+    legacy_database = paths.root / LEGACY_DATA_DIRNAME / "app.db"
+    if audited_database != paths.db_file and not (
+        audited_database == legacy_database and not legacy_database.parent.exists()
+    ):
         raise ValueError("Audit database is outside its managed project")
-    database = (database_path or audited_database).resolve()
+    database = (database_path or paths.db_file).resolve()
     if not database.is_file():
         raise ValueError("Apply target database does not exist")
     selected = [row for row in report["tasks"] if row["coverage"] == "exact"]

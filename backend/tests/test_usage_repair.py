@@ -44,7 +44,7 @@ def codex_records(project, sid="session-a", label="TT-1"):
 @pytest.fixture
 def project(tmp_path):
     project = tmp_path / "project"
-    data = project / "voxarium_studio"
+    data = project / ".voxarium_studio"
     data.mkdir(parents=True)
     (data / "config.yaml").write_text("project_code: TT\n", encoding="utf-8")
     with sqlite3.connect(data / "app.db") as c:
@@ -110,7 +110,7 @@ def test_claude_message_blocks_and_internal_cost_state_usage_are_not_counted_twi
 
 def test_missing_older_session_prevents_replacing_lifetime_with_latest(project):
     root = project[0]
-    with sqlite3.connect(root / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(root / ".voxarium_studio/app.db") as c:
         c.execute("INSERT INTO agent_message VALUES (?,?,?,?,?,?,?,?)", (
             "missing-init", "task-a", "member", "system", "system", "thread.started",
             json.dumps({"thread_id": "older-missing-session"}), "2026-11-01 10:00:01"))
@@ -139,7 +139,7 @@ def test_conflicting_codex_archive_copy_blocks_apply(project):
 
 
 def test_legacy_token_proof_can_repair_tokens_while_preserving_unverified_cost(project):
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("DELETE FROM agent_message")
         c.execute("UPDATE team_task SET total_cost_usd=.0105")
     row = audit_fixture(project)["tasks"][0]
@@ -153,7 +153,7 @@ def test_legacy_token_proof_can_repair_tokens_while_preserving_unverified_cost(p
 
 def test_apply_only_changes_counters_and_adds_provenance_with_backup(project, tmp_path):
     report = audit_fixture(project)
-    source = project[0] / "voxarium_studio/app.db"
+    source = project[0] / ".voxarium_studio/app.db"
     copy = tmp_path / "rehearsal.db"
     shutil.copyfile(source, copy)
     result = apply_audit(report, database_path=copy)
@@ -172,7 +172,7 @@ def test_apply_only_changes_counters_and_adds_provenance_with_backup(project, tm
 
 def test_changed_task_aborts_entire_apply(project):
     report = audit_fixture(project)
-    db = project[0] / "voxarium_studio/app.db"
+    db = project[0] / ".voxarium_studio/app.db"
     with sqlite3.connect(db) as c:
         c.execute("UPDATE team_task SET status='in_progress'")
     with pytest.raises(ValueError, match="Task changed"):
@@ -204,7 +204,7 @@ def test_summary_matches_unique_cost_model_and_completion_time(project):
     records[1]["payload"]["content"][0]["text"] = "Summarize this task history for continuation."
     records[4] = records[5] = count(1000, 800, 28, 1)
     write_records(project[2] / "sessions/rollout-date-summary.jsonl", records)
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("UPDATE team_task SET total_tokens=3578,total_cost_usd=.0137")
         c.execute("INSERT INTO agent_message VALUES (?,?,?,?,?,?,?,?)", (
             "summary-result", "task-a", "member", "system", "result", "",
@@ -226,7 +226,7 @@ def test_summary_cannot_reuse_result_already_explained_by_worker(project):
 
 
 def test_unaccounted_token_only_balance_blocks_repair(project):
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("UPDATE team_task SET total_tokens=5550")
     row = audit_fixture(project)["tasks"][0]
     assert row["coverage"] == "partial"
@@ -235,7 +235,7 @@ def test_unaccounted_token_only_balance_blocks_repair(project):
 
 
 def test_shared_parent_workdir_and_task_number_alone_do_not_prove_project(project):
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("UPDATE team_task SET agent_session_id=NULL")
     records = codex_records(project[0].parent)
     write_records(project[3], records)
@@ -248,14 +248,14 @@ def test_shared_parent_workdir_and_task_number_alone_do_not_prove_project(projec
 
 
 def test_non_terminal_task_is_never_an_apply_candidate(project):
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("UPDATE team_task SET status='running'")
     row = audit_fixture(project)["tasks"][0]
     assert row["coverage"] == "partial" and "after" not in row
 
 
 def test_overlapping_missing_session_is_not_covered_by_another_journals_dates(project):
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("INSERT INTO agent_message VALUES (?,?,?,?,?,?,?,?)", (
             "missing-result", "task-a", "member", "system", "result", "missing session",
             json.dumps({"total_tokens": 100, "total_cost_usd": .001}), "2026-11-01 10:01:30"))
@@ -273,7 +273,7 @@ def test_reset_excludes_disowned_journals_with_the_same_task_identity(project):
         minute = int(record["timestamp"][14:16]) + 5
         record["timestamp"] = record["timestamp"][:14] + f"{minute:02d}" + record["timestamp"][16:]
     write_records(project[3], records)
-    with sqlite3.connect(project[0] / "voxarium_studio/app.db") as c:
+    with sqlite3.connect(project[0] / ".voxarium_studio/app.db") as c:
         c.execute("UPDATE team_task SET finished_at='2026-11-01 10:08:00'")
         c.execute("UPDATE agent_message SET created_at='2026-11-01 10:06:05' WHERE id='msg-1'")
         c.execute("UPDATE agent_message SET created_at='2026-11-01 10:07:05' WHERE id='msg-2'")

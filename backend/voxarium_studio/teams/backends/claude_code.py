@@ -277,7 +277,7 @@ class ClaudeCodeBackend(AgentBackend):
             return False, (
                 "No Claude credentials found. Set ANTHROPIC_API_KEY in the Studio's "
                 "environment, or log in once with `claude` (§10.3). Never commit the key "
-                "into voxarium_studio/config.yaml."
+                "into .voxarium_studio/config.yaml."
             )
         return True, "Ready"
 

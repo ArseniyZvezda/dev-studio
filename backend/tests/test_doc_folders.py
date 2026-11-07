@@ -17,12 +17,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from voxarium_studio.core.context import AppContext
+from voxarium_studio.core.paths import ProjectPaths
 from voxarium_studio.explorer.service import PathOutsideProject
+from voxarium_studio.main import create_app
 from voxarium_studio.teams import docs as docs_module
 from voxarium_studio.teams.docs import FolderRename, FolderStyleUnreadable
 
@@ -62,6 +65,51 @@ def _content(ctx: AppContext, path: str) -> str:
 
 
 # ------------------------------------------------------------------ the look
+
+
+def test_opening_a_project_migrates_only_its_document_folder_styles(project: Path) -> None:
+    paths = ProjectPaths.for_project(project)
+    nested = paths.docs / "design" / "combat"
+    nested.mkdir(parents=True)
+    legacy = nested / "tds-folder.json"
+    original = b'\xef\xbb\xbf{ "color": "green", "icon": "swords", "extra": true }\r\n'
+    legacy.write_bytes(original)
+    outside = project / "tds-folder.json"
+    outside.write_bytes(original)
+    broken = paths.docs / "design" / "tds-folder.json"
+    broken.write_bytes(b"broken JSON")
+    conflict = paths.docs / "art"
+    conflict.mkdir()
+    (conflict / "tds-folder.json").write_bytes(original)
+    (conflict / "vxs-folder.json").write_bytes(b'{"color":"red"}')
+
+    for _ in range(2):
+        with TestClient(create_app(str(project)), base_url="http://127.0.0.1") as client:
+            assert not legacy.exists()
+            assert legacy.with_name("vxs-folder.json").read_bytes() == original
+            assert not broken.exists()
+            assert broken.with_name("vxs-folder.json").read_bytes() == b"broken JSON"
+            assert outside.read_bytes() == original
+            assert not outside.with_name("vxs-folder.json").exists()
+            assert (conflict / "tds-folder.json").read_bytes() == original
+            assert (conflict / "vxs-folder.json").read_bytes() == b'{"color":"red"}'
+            response = client.get("/api/docs/folders")
+            assert response.status_code == 200
+            assert response.json() == [
+                {"path": "art", "color": "red", "icon": None},
+                {"path": "design/combat", "color": "green", "icon": "swords"},
+            ]
+
+
+async def test_clearing_a_conflicting_style_stays_cleared_after_migration(docs: AppContext) -> None:
+    await docs.docs.set_folder_style("qa", {"color": "red"})
+    legacy = docs.paths.docs / "qa" / "tds-folder.json"
+    legacy.write_bytes(b'{"icon":"bug"}')
+    await docs.docs.set_folder_style("qa", {"color": None})
+
+    docs.docs.migrate_folder_styles()
+    assert docs.docs.folders() == []
+    assert legacy.read_bytes() == b'{"icon":"bug"}'
 
 
 async def test_a_folders_look_is_a_file_inside_the_folder(docs: AppContext) -> None:

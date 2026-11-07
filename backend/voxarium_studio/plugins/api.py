@@ -68,7 +68,7 @@ class PluginHost:
 
     @property
     def data_dir(self) -> Path:
-        """The managed project's ``voxarium_studio/`` directory."""
+        """The managed project's ``.voxarium_studio/`` directory."""
         return self._paths.data
 
     @property

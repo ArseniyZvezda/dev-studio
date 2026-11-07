@@ -88,7 +88,7 @@ def branch_name(task_id: str, member_id: str) -> str:
 async def create_isolated_workspace(
     vcs: VcsBackend | None, worktrees_dir: Path, task_id: str, member_id: str
 ) -> IsolatedWorkspace | None:
-    """Give one task its own checkout under ``voxarium_studio/worktrees/<task_id>``.
+    """Give one task its own checkout under ``.voxarium_studio/worktrees/<task_id>``.
 
     ``None`` whenever isolation is unavailable, for any reason — the caller treats that
     as "fall back to path locks", never as an error worth failing the task over.

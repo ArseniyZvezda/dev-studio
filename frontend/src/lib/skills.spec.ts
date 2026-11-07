@@ -12,7 +12,7 @@ import { describeFiles, filterSkillOptions, filterSkills, inSkillsFolder, skillC
 function skill(name: string, extra: Partial<SkillEntry> = {}): SkillEntry {
   return {
     name,
-    path: `voxarium_studio/skills/${name}`,
+    path: `.voxarium_studio/skills/${name}`,
     description: `${name} description`,
     warning: null,
     files: [],
@@ -102,14 +102,14 @@ describe('skill picker filters', () => {
 
 describe('inSkillsFolder', () => {
   it('hears the folder, a skill in it and a file deep inside one', () => {
-    expect(inSkillsFolder('voxarium_studio/skills', 'voxarium_studio/skills')).toBe(true)
-    expect(inSkillsFolder('voxarium_studio/skills/tester', 'voxarium_studio/skills')).toBe(true)
-    expect(inSkillsFolder('voxarium_studio/skills/tester/scripts/run.py', 'voxarium_studio/skills/')).toBe(true)
+    expect(inSkillsFolder('.voxarium_studio/skills', '.voxarium_studio/skills')).toBe(true)
+    expect(inSkillsFolder('.voxarium_studio/skills/tester', '.voxarium_studio/skills')).toBe(true)
+    expect(inSkillsFolder('.voxarium_studio/skills/tester/scripts/run.py', '.voxarium_studio/skills/')).toBe(true)
   })
 
   it('does not hear a sibling that only starts with the same letters', () => {
-    expect(inSkillsFolder('voxarium_studio/skills-old/tester/SKILL.md', 'voxarium_studio/skills')).toBe(false)
-    expect(inSkillsFolder('voxarium_studio/docs/skills.md', 'voxarium_studio/skills')).toBe(false)
+    expect(inSkillsFolder('.voxarium_studio/skills-old/tester/SKILL.md', '.voxarium_studio/skills')).toBe(false)
+    expect(inSkillsFolder('.voxarium_studio/docs/skills.md', '.voxarium_studio/skills')).toBe(false)
   })
 })
 

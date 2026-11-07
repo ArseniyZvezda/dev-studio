@@ -31,6 +31,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from ..core.paths import current_data_path
 from ..models.teams import AgentMessage
 from ..vcs import VcsBackend, VcsError
 
@@ -144,9 +145,9 @@ def files_touched(
     beside it (:func:`edit_totals`) are what the calls *asked for*, not a measurement of
     the files, and a list sorted by them would rank a claim.
 
-    ``docs`` is the Documents folder (``voxarium_studio/docs``): a ``write_doc`` call names its
+    ``docs`` is the Documents folder (``.voxarium_studio/docs``): a ``write_doc`` call names its
     file relative to **that**, not to the project — ``art/keycap.md`` is
-    ``voxarium_studio/docs/art/keycap.md`` on disk — and a list that repeated the tool's own frame
+    ``.voxarium_studio/docs/art/keycap.md`` on disk — and a list that repeated the tool's own frame
     named a file that does not exist, which the Commit button then handed to the version
     control tool (Plastic answered "not changed in current workspace").
     """
@@ -192,7 +193,7 @@ def edit_totals(
     return totals
 
 
-def observed_files(messages: list[AgentMessage]) -> list[str]:
+def observed_files(messages: list[AgentMessage], root: Path) -> list[str]:
     """Durable disk observations, explicitly without an authorship claim (§10.4)."""
     paths: dict[str, None] = {}
     for message in messages:
@@ -202,7 +203,7 @@ def observed_files(messages: list[AgentMessage]) -> list[str]:
         if isinstance(recorded, list):
             for path in recorded:
                 if isinstance(path, str) and path:
-                    paths.setdefault(path, None)
+                    paths.setdefault(current_data_path(path, root), None)
     return list(paths)
 
 
@@ -243,6 +244,7 @@ def _relative(path: str, root: Path) -> str:
     (§10.5) can legitimately write outside it — that path is shown as it is rather than
     turned into a `../..` chain nothing else in the UI uses.
     """
+    path = current_data_path(path, root)
     candidate = Path(path)
     try:
         return candidate.relative_to(root).as_posix()

@@ -50,6 +50,24 @@ def git_project(project: Path) -> Path:
 
 
 @requires_git
+def test_open_repairs_git_registration_for_an_existing_legacy_worktree(git_project: Path) -> None:
+    from voxarium_studio.main import create_app
+
+    data = git_project / ".voxarium_studio"
+    legacy = data.with_name("voxarium_studio")
+    data.rename(legacy)
+    checkout = legacy / "worktrees" / "task_legacy"
+    _git(git_project, "worktree", "add", "-b", "voxarium_studio/dev/task_legacy", str(checkout))
+    (checkout / "keep.txt").write_text("pending change")
+    with TestClient(create_app(str(git_project))):
+        moved = data / "worktrees" / checkout.name
+        result = subprocess.check_output(["git", "worktree", "list", "--porcelain"], cwd=git_project)
+        assert f"worktree {moved.as_posix()}".encode() in result
+        assert (moved / "keep.txt").read_text() == "pending change"
+        assert not legacy.exists()
+
+
+@requires_git
 async def test_a_workspace_reports_committed_and_uncommitted_work_alike(
     git_project: Path,
 ) -> None:
@@ -313,7 +331,7 @@ async def test_the_endpoint_answers_from_the_workspace_when_there_is_one(
 
         backend = GitBackend(git_project)
         workspace = await backend.create_workspace(
-            git_project / "voxarium_studio/worktrees" / task_id, f"voxarium_studio/dev/{task_id}"
+            git_project / ".voxarium_studio/worktrees" / task_id, f"voxarium_studio/dev/{task_id}"
         )
         assert workspace is not None
         (workspace.path / "keep.txt").write_text("one\nchanged\nthree\n", encoding="utf-8")

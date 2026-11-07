@@ -764,7 +764,7 @@ export const api = {
 
   // ------------------------------------------------------------ skills (§10.10)
   /**
-   * `voxarium_studio/skills/` with who has been given what. The folder is changed by copies and
+   * `.voxarium_studio/skills/` with who has been given what. The folder is changed by copies and
    * checkouts as often as from here, so the calls that change it answer with the whole page.
    */
   skills: () => request<SkillsOverview>('GET', '/skills'),
@@ -783,7 +783,7 @@ export const api = {
 
   // ------------------------------------------------------------ automations (§6.5)
   /**
-   * `voxarium_studio/automations.yaml` with what it has done. Every write answers with the whole page:
+   * `.voxarium_studio/automations.yaml` with what it has done. Every write answers with the whole page:
    * the file is edited by hand and by merges too, so the list is never patched client-side.
    */
   automations: () => request<AutomationsOverview>('GET', '/automations'),

@@ -200,10 +200,10 @@ describe('the clipboard decides whether a paste moves or copies', () => {
 describe('a refusal is surfaced, not swallowed', () => {
   it('reports the backend’s own detail and changes nothing', async () => {
     const store = await opened()
-    api.deleteEntries.mockRejectedValue(new ApiError(403, 'voxarium_studio/ is not yours to delete'))
+    api.deleteEntries.mockRejectedValue(new ApiError(403, '.voxarium_studio/ is not yours to delete'))
 
-    expect(await store.remove(['voxarium_studio'])).toBeNull()
-    expect(store.error).toBe('voxarium_studio/ is not yours to delete')
+    expect(await store.remove(['.voxarium_studio'])).toBeNull()
+    expect(store.error).toBe('.voxarium_studio/ is not yours to delete')
     expect(store.busy).toBe(false)
     // Nothing was applied optimistically, so the tree still holds what the backend has.
     expect(store.children['Assets']).toHaveLength(1)
@@ -258,14 +258,14 @@ describe('a refusal is surfaced, not swallowed', () => {
       new ApiError(
         403,
         JSON.stringify({
-          message: 'voxarium_studio/ is not yours to delete.',
+          message: '.voxarium_studio/ is not yours to delete.',
           paths: ['Assets/hero.png'],
         }),
       ),
     )
 
-    expect(await store.remove(['Assets/hero.png', 'voxarium_studio'])).toBeNull()
-    expect(store.error).toBe('voxarium_studio/ is not yours to delete. These did land: Assets/hero.png.')
+    expect(await store.remove(['Assets/hero.png', '.voxarium_studio'])).toBeNull()
+    expect(store.error).toBe('.voxarium_studio/ is not yours to delete. These did land: Assets/hero.png.')
     // The one that really was deleted takes its preview with it, failure or not.
     expect(store.selectedPath).toBeNull()
     expect(store.preview).toBeNull()

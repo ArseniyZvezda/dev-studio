@@ -267,7 +267,7 @@ def test_board_controls_over_rest_are_persisted_and_scope_checked(client, projec
     assert saved.json()["autostart_tasks"] is True
     assert client.get(f"/api/teams/{TEAM}/tasks/{task['id']}").json()["status"] == "pending"
     assert "autostart_tasks: true" in (
-        project / "voxarium_studio/teams/default-team.yaml"
+        project / ".voxarium_studio/teams/default-team.yaml"
     ).read_text(encoding="utf-8")
     assert client.patch(f"/api/teams/{TEAM}", json={"autostart_tasks": False}).status_code == 200
     started = client.post(f"/api/teams/{TEAM}/tasks/start-all")
@@ -794,7 +794,7 @@ async def test_solo_mode_is_on_by_default_and_round_trips_through_the_team_file(
 
 
 def test_solo_mode_is_editable_over_rest(project: Path, client) -> None:
-    roster = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    roster = project / ".voxarium_studio" / "teams" / "default-team.yaml"
     saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"solo_mode": False})
     assert saved.status_code == 200 and saved.json()["solo_mode"] is False
     assert "solo_mode: false" in roster.read_text(encoding="utf-8")
@@ -2370,7 +2370,7 @@ async def test_a_member_removed_from_yaml_but_owning_tasks_is_kept(teams: AppCon
 def test_the_icon_round_trips_through_the_team_file(project: Path, client) -> None:
     """Written only once chosen and removed again when cleared — `effort`'s rule, and for the
     same reason: an `avatar_icon: null` on every row of a file meant to be read is noise."""
-    roster = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    roster = project / ".voxarium_studio" / "teams" / "default-team.yaml"
 
     saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"avatar_icon": "pen-tool"})
     assert saved.status_code == 200 and saved.json()["avatar_icon"] == "pen-tool"
@@ -2438,7 +2438,7 @@ def test_the_member_editor_is_offered_models_and_effort_levels(client) -> None:
 def test_effort_round_trips_through_the_team_file(project: Path, client) -> None:
     """Written only once chosen, and removed again when cleared — the `pos_*` rule, and for
     the same reason: a null on every row of a file meant to be read is noise."""
-    roster = project / "voxarium_studio" / "teams" / "default-team.yaml"
+    roster = project / ".voxarium_studio" / "teams" / "default-team.yaml"
     assert all("effort" not in member for member in yaml.safe_load(roster.read_text("utf-8"))["members"])
 
     saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"effort": "xhigh"})
@@ -3067,7 +3067,7 @@ async def test_a_run_is_told_its_members_skills_and_may_read_them(
 ) -> None:
     """A skill reaches exactly the member given it (§10.10). The prompt names each one with its
     description and the SKILL.md to read; the request carries a Read rule scoped to each folder,
-    because an isolated checkout starts outside `voxarium_studio/skills/`; and the transcript says which
+    because an isolated checkout starts outside `.voxarium_studio/skills/`; and the transcript says which
     skills the run was told about. A name the folder no longer has is told to nobody."""
     seen = await _record_requests(teams, "recording_member_skills")
     folder = teams.paths.skills / "level-prototyping"

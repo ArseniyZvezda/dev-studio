@@ -1,7 +1,7 @@
 """``.mcp.json`` — the project's MCP servers (§10.7).
 
 The file is Claude Code's own project-scoped MCP config, and it lives at the root of the
-managed project rather than inside ``voxarium_studio/``: the `claude` CLI reads it from there, so
+managed project rather than inside ``.voxarium_studio/``: the `claude` CLI reads it from there, so
 a developer's terminal and the Studio see the same servers. That also means this module
 is a **guest** in someone else's file. Two rules follow from it:
 

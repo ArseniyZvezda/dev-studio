@@ -504,7 +504,7 @@ def test_status_is_answered_in_the_projects_frame(tmp_path: Path) -> None:
     paths = {
         change["path"]
         for change in status["changes"]
-        if not change["path"].startswith(("voxarium_studio/", ".claude/"))
+        if not change["path"].startswith((".voxarium_studio/", ".claude/"))
     }
     assert paths == {"README.md", "new.png"}
 
@@ -559,7 +559,7 @@ def test_settings_merge_key_by_key(git_client: TestClient, git_project: Path) ->
     )
 
     stored = git_client.get("/api/settings").json()["vcs"]["settings"]
-    on_disk = yaml.safe_load((git_project / "voxarium_studio" / "config.yaml").read_text(encoding="utf-8"))
+    on_disk = yaml.safe_load((git_project / ".voxarium_studio" / "config.yaml").read_text(encoding="utf-8"))
 
     assert stored["plastic"]["workspace"] == "/elsewhere"  # the unrelated key survived
     assert stored["git"]["executable"] == shutil.which("git")

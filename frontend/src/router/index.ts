@@ -70,7 +70,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DocsGraphView.vue'),
   },
   {
-    // `voxarium_studio/automations.yaml` — what the project does by itself: a trigger and an action
+    // `.voxarium_studio/automations.yaml` — what the project does by itself: a trigger and an action
     // each, run by the backend off its own event bus (§6.5).
     path: '/automations',
     name: 'automations',
@@ -84,7 +84,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/VcsView.vue'),
   },
   {
-    // `voxarium_studio/skills/` — folders of instructions the team's agents can be given (§10.10).
+    // `.voxarium_studio/skills/` — folders of instructions the team's agents can be given (§10.10).
     path: '/skills',
     name: 'skills',
     component: () => import('@/views/SkillsView.vue'),
