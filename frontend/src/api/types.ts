@@ -2003,3 +2003,32 @@ export interface AutomationNotification {
   /** Where in the Studio a click leads, when the trigger names a place. */
   route: string | null
 }
+
+/** Saved Studio input and retained session text (§10.4); per-source counts are estimates. */
+export type ContextCategory = 'system' | 'developer' | 'skills' | 'documents' | 'task' | 'history' | 'tools' | 'thinking' | 'summary' | 'memory' | 'environment' | 'tool_definitions' | 'agents' | 'runtime' | 'unattributed'
+export interface ContextSource {
+  id: string
+  category: ContextCategory
+  label: string
+  text: string
+  tokens: number
+  truncated: boolean
+  text_key?: string
+  /** The journal/snapshot field supplying this fragment (§10.4). */
+  origin?: string
+  representation?: 'text' | 'json' | 'metadata'
+}
+export type ContextTarget = { chatId: string } | { teamId: string; taskId: string }
+export type ContextView = 'auto' | 'studio'
+export interface ContextInventory {
+  sources: ContextSource[]
+  reported_tokens: number | null
+  context_window: number | null
+  estimated_tokens: number
+  captured_at: string | null
+  partial: boolean
+  origin: 'studio' | 'codex_journal' | 'claude_code_journal' | 'qwen_journal' | 'claude_code_runtime'
+  basis: 'estimated' | 'runtime'
+  can_inspect: boolean
+  has_studio_view?: boolean
+}

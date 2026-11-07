@@ -295,6 +295,7 @@ class SubagentManager:
                 request = replace(
                     run.request, member=member, prompt=prompt, system_prompt=instructions,
                     session_key=row.id, resume_session_id=row.session_id, agent_name=None, images=[],
+                    proactive_subagents=False,
                     recovery_prompt=(f"Delegated assignment: {row.description}\nPrevious result: {row.summary}\n\n{prompt}"),
                     model=row.model, effort=row.effort, mcp_servers=servers, extra_allowed_tools=allowed,
                 )

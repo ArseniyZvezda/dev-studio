@@ -26,7 +26,7 @@ export interface CodeRow {
  */
 import type { HighlightToken } from '@/lib/highlight/highlighter'
 
-withDefaults(defineProps<{ rows: CodeRow[]; columns?: number; markers?: boolean }>(), {
+withDefaults(defineProps<{ rows: CodeRow[]; columns?: number; markers?: boolean; wrap?: boolean }>(), {
   columns: 1,
   markers: false,
 })
@@ -62,7 +62,7 @@ const MARKER_TONE: Partial<Record<CodeTone, string>> = {
 </script>
 
 <template>
-  <div class="w-max min-w-full py-pane font-mono text-[12px] leading-relaxed">
+  <div class="font-mono text-[12px] leading-relaxed" :class="wrap ? 'w-full' : 'w-max min-w-full py-pane'">
     <div v-for="row in rows" :key="row.key" class="flex">
       <span
         v-if="columns || markers"
@@ -84,7 +84,7 @@ const MARKER_TONE: Partial<Record<CodeTone, string>> = {
           >
         </span>
       </span>
-      <span class="grow px-3 whitespace-pre" :class="row.tone ? TONE[row.tone] : ''">
+      <span class="grow" :class="[wrap ? 'min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]' : 'px-3 whitespace-pre', row.tone && TONE[row.tone]]">
         <template v-if="row.tokens">
           <span v-for="(token, position) in row.tokens" :key="position" :style="tokenStyle(token)">{{
             token.text

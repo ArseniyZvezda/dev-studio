@@ -32,7 +32,6 @@ import {
   Copy,
   Minimize2,
   LoaderCircle,
-  Cpu,
   ExternalLink,
   FilePen,
   FileText,
@@ -78,16 +77,16 @@ import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
+import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
+import ContextUsageBar from '@/components/ui/ContextUsageBar.vue'
 import { t, type MessageKey } from '@/i18n'
 import { toolName, toolSubject } from '@/lib/activity'
 import { dialogEscape } from '@/lib/dialog'
 import {
   formatBytes,
   formatCountdown,
-  formatCost,
   formatDuration,
   formatTime,
-  formatTokens,
   parseUtc,
   statusColor,
   statusLabel,
@@ -102,7 +101,6 @@ import {
   resultTypeLabel,
   resultTypeOf,
 } from '@/lib/task-result'
-import { taskCost } from '@/lib/task-telemetry'
 import { taskUsage } from '@/lib/task-usage'
 import { writePathsFromText } from '@/lib/task-write-paths'
 import type { Verbosity } from '@/lib/transcript'
@@ -129,10 +127,6 @@ const emit = defineEmits<{ close: [] }>()
 const teams = useTeamsStore()
 // §10.3: read-only effort uses the same installed catalogue as its editor.
 onMounted(() => void teams.loadOptions())
-const apiCost = computed(() => taskCost(props.task.total_cost_usd, props.task.messages))
-const estimatedCost = computed(() =>
-  props.task.messages.some((message) => message.kind === 'result' && message.data?.cost_estimated),
-)
 const comment = ref('')
 const transcript = ref<HTMLElement | null>(null)
 
@@ -363,6 +357,7 @@ const runSettings = computed(() => {
   return {
     model,
     effort,
+    backend: member?.agent_backend ?? 'claude_code',
     overridden,
     title,
   }
@@ -645,9 +640,6 @@ function subagentNote(entry: Subagent): string {
     parts.push(t(SUBAGENT_ENDINGS[entry.status]))
   }
   if (entry.toolUses) parts.push(t('taskDetail.delegated.calls', { count: entry.toolUses }))
-  parts.push(t('taskDetail.delegated.apiCost', {
-    cost: entry.costUsd === null ? t('taskDetail.delegated.usageUnavailable') : formatCost(entry.costUsd),
-  }))
   return parts.join(' · ')
 }
 
@@ -1130,17 +1122,7 @@ async function complete() {
           >
             <Archive class="size-3" /> {{ t('taskDetail.header.archived') }}
           </span>
-          <span
-            class="text-small text-faint"
-            :title="estimatedCost ? t('taskDetail.header.costEstimateHint') : undefined"
-          >
-            {{
-              t('taskDetail.header.telemetry', {
-                duration: formatDuration(task.started_at, task.finished_at, now),
-                cost: apiCost,
-              })
-            }}
-          </span>
+          <span class="text-small text-faint">{{ formatDuration(task.started_at, task.finished_at, now) }}</span>
           <span
             v-if="task.worktree_path"
             class="inline-flex items-center gap-1 text-small text-info"
@@ -1158,7 +1140,7 @@ async function complete() {
             :title="runSettings.title"
           >
             <span v-if="runSettings.model" class="inline-flex items-center gap-1">
-              <Cpu class="size-3" /> {{ runSettings.model }}
+              <AgentBackendIcon :backend="runSettings.backend" class="size-3" /> {{ runSettings.model }}
             </span>
             <ModelEffortSlider
               :model-value="runSettings.effort"
@@ -1168,22 +1150,15 @@ async function complete() {
             />
           </span>
           <!-- §10.4: context occupancy and lifetime spending share the model's status row. -->
-          <span
-            v-if="runSettings && usage.contextTokens !== null"
-            class="inline-flex items-center gap-1 text-small text-faint"
-            :title="t('taskDetail.header.contextHint')"
-          >
-            · {{ usage.contextWindow !== null
-              ? t('taskDetail.header.contextWindow', {
-                  tokens: formatTokens(usage.contextTokens), window: formatTokens(usage.contextWindow),
-                })
-              : t('taskDetail.header.context', { tokens: formatTokens(usage.contextTokens) }) }}
-          </span>
+          <ContextUsageBar v-if="!isHuman && usage.contextTokens !== null"
+            :tokens="usage.contextTokens" :window="usage.contextWindow" :target="{ teamId: task.team_id, taskId: task.id }" />
           <TokenUsageChip
-            v-if="runSettings"
+            v-if="!isHuman"
             :input-tokens="usage.inputTokens"
             :output-tokens="usage.outputTokens"
             :cached-tokens="usage.cacheReadTokens"
+            :cost-usd="task.total_cost_usd"
+            :cost-messages="task.messages"
           />
           <!-- Beside the telemetry rather than next to its own checkbox: how long this task
                has been stopped for is a property of the run, and it is the first thing
@@ -1267,6 +1242,7 @@ async function complete() {
                   :input-tokens="entry.inputTokens"
                   :output-tokens="entry.outputTokens"
                   :cached-tokens="entry.cacheReadTokens"
+                  :cost-usd="entry.costUsd"
                 />
               </p>
             </div>
@@ -1692,6 +1668,8 @@ async function complete() {
             :input-tokens="usage.inputTokens"
             :output-tokens="usage.outputTokens"
             :cached-tokens="usage.cacheReadTokens"
+            :cost-usd="task.total_cost_usd"
+            :cost-messages="task.messages"
           />
         </p>
 

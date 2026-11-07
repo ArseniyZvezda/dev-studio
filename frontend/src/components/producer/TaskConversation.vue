@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** Independent live task transcripts share the app's socket, never its openTask (§10.11). */
-import { ArrowUpRight, Cpu, MessageSquare, RotateCw, Wrench } from 'lucide-vue-next'
+import { ArrowUpRight, MessageSquare, RotateCw, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import { api, taskAttachmentUrl } from '@/api/client'
@@ -10,12 +10,13 @@ import MarkdownText from '@/components/ui/MarkdownText.vue'
 import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
+import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
+import ContextUsageBar from '@/components/ui/ContextUsageBar.vue'
 import { t } from '@/i18n'
 import { toolName, toolSubject } from '@/lib/activity'
 import { formatTime, statusColor, statusLabel } from '@/lib/status'
 import { mergeTaskConversation, taskConversationRows } from '@/lib/task-conversation'
 import { resultTypeColor, resultTypeHint, resultTypeLabel, resultTypeOf } from '@/lib/task-result'
-import { taskCost } from '@/lib/task-telemetry'
 import { taskUsage } from '@/lib/task-usage'
 import { liveLine, PROSE_KINDS } from '@/lib/transcript'
 import { onEvent } from '@/ws/connection'
@@ -29,7 +30,6 @@ const atBottom = ref(true)
 const running = computed(() => props.task.is_running === true)
 const rows = computed(() => taskConversationRows(messages.value))
 const live = computed(() => liveLine(messages.value, 'advanced'))
-const cost = computed(() => taskCost(props.task.total_cost_usd, messages.value))
 const usage = computed(() => taskUsage({ ...props.task, messages: messages.value }))
 // §10.3, §10.11: match task execution precedence; an unset override inherits the assignee.
 const runSettings = computed(() => {
@@ -152,17 +152,27 @@ onBeforeUnmount(() => {
         </RouterLink>
       </div>
       <h3 class="line-clamp-2 font-medium leading-5" :title="task.title">{{ task.title }}</h3>
-      <p v-if="member" class="mt-2 flex items-center gap-1.5 text-small text-muted">
-        <MemberMark :member="member" variant="badge" :corner="false" />
-        <span class="truncate">{{ member.name }}</span>
-      </p>
+      <!-- §10.11: lifetime statistics stay on the assignee's row, to the right. -->
+      <div class="mt-2 flex items-center gap-1.5 text-small text-muted">
+        <MemberMark v-if="member" :member="member" variant="badge" :corner="false" />
+        <span class="min-w-0 flex-1 truncate" :title="member?.name ?? task.assignee_id">{{ member?.name ?? task.assignee_id }}</span>
+        <TokenUsageChip
+          :input-tokens="usage.inputTokens"
+          :output-tokens="usage.outputTokens"
+          :cached-tokens="usage.cacheReadTokens"
+          :cost-usd="task.total_cost_usd"
+          :cost-messages="messages"
+        />
+      </div>
       <div v-if="runSettings" class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-small"
         :class="runSettings.overridden ? 'text-info' : 'text-faint'" :title="runSettings.title">
         <span v-if="runSettings.model" class="inline-flex min-w-0 max-w-full items-center gap-1" :title="runSettings.model">
-          <Cpu class="size-3 shrink-0" />
+          <AgentBackendIcon :backend="member?.agent_backend ?? 'claude_code'" class="size-3 shrink-0" />
           <span class="truncate">{{ runSettings.model }}</span>
         </span>
         <ModelEffortSlider :model-value="runSettings.effort" readonly />
+        <ContextUsageBar v-if="usage.contextTokens !== null" :tokens="usage.contextTokens" :window="usage.contextWindow"
+          :target="{ teamId: task.team_id, taskId: task.id }" />
       </div>
     </header>
 
@@ -222,23 +232,11 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <footer class="shrink-0 border-t border-line bg-inset/40 px-3 py-2">
-      <p v-if="running" class="mb-2 flex min-w-0 items-center gap-2 text-small text-faint" role="status">
+    <footer v-if="running" class="shrink-0 border-t border-line bg-inset/40 px-3 py-2">
+      <p class="flex min-w-0 items-center gap-2 text-small text-faint" role="status">
         <span class="vxs-chat-typing shrink-0" :aria-label="t('chat.answering')"><i /><i /><i /></span>
         <span class="truncate" :title="live.activity ?? undefined">{{ live.activity || t('chat.answeringNow') }}</span>
       </p>
-      <!-- §10.11: lifetime spend follows the same live usage snapshots as TaskDetail. -->
-      <div class="mb-2 flex justify-end">
-        <TokenUsageChip
-          :input-tokens="usage.inputTokens"
-          :output-tokens="usage.outputTokens"
-          :cached-tokens="usage.cacheReadTokens"
-        />
-      </div>
-      <div class="flex items-center justify-between gap-2 text-small">
-        <span class="text-faint">{{ t('producerPage.taskCost') }}</span>
-        <span class="font-mono tabular-nums">{{ cost }}</span>
-      </div>
     </footer>
   </article>
 </template>

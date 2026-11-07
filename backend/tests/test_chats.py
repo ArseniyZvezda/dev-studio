@@ -131,6 +131,48 @@ def test_a_chat_is_titled_by_the_first_line_of_the_first_message() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 
+@pytest.mark.parametrize("ending", ["result", "cancel", "continued"])
+async def test_chat_live_usage_is_durable_and_results_do_not_double_count(chats: AppContext, ending: str) -> None:
+    chat = await chats.chats.create_chat(DEV)
+    async with chats.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+    request = AgentRunRequest(member=member, task=None, workdir=chats.paths.root, prompt="",
+                              system_prompt="", session_key=chat.id)
+
+    class UsageBackend:
+        async def run(self, request):
+            frame = AgentEvent(kind="text", text="working", data={"provider_response_id": "response-1",
+                "usage": {"input_tokens": 20, "cache_creation_input_tokens": 5,
+                          "cache_read_input_tokens": 70, "output_tokens": 5}})
+            yield frame
+            yield frame  # Repeated content frames describe the same API response.
+            stored = await chats.chats.get_chat(chat.id)
+            assert stored.total_tokens == 100
+            assert (stored.total_input_tokens, stored.total_output_tokens, stored.total_cached_tokens) == (25, 5, 70)
+            if ending == "cancel":
+                raise asyncio.CancelledError
+            yield AgentEvent(kind="result", data={"total_tokens": 110, "total_input_tokens": 25,
+                "total_output_tokens": 15, "total_uncached_tokens": 40, "total_cached_tokens": 70,
+                "total_cost_usd": 0.1, "num_turns": 1, "continued": ending == "continued"})
+            if ending == "continued":
+                yield AgentEvent(kind="system", text="usage_update", data={"subtype": "usage_update",
+                    "total_tokens": 50, "total_input_tokens": 30, "total_output_tokens": 20,
+                    "total_uncached_tokens": 50, "total_cached_tokens": 0})
+                yield AgentEvent(kind="result", data={"total_tokens": 50, "total_input_tokens": 30,
+                    "total_output_tokens": 20, "total_uncached_tokens": 50, "total_cached_tokens": 0,
+                    "total_cost_usd": 0.2, "num_turns": 1})
+
+    if ending == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await chats.chats._consume(UsageBackend(), request, chat.id, DEV)
+    else:
+        await chats.chats._consume(UsageBackend(), request, chat.id, DEV)
+    stored = await chats.chats.get_chat(chat.id)
+    assert stored.total_tokens == {"cancel": 100, "result": 110, "continued": 160}[ending]
+    assert stored.total_input_tokens + stored.total_output_tokens + stored.total_cached_tokens == stored.total_tokens
+    assert stored.total_cost_usd == pytest.approx({"cancel": 0, "result": 0.1, "continued": 0.3}[ending])
+
+
 async def test_a_chat_is_opened_with_an_agent_and_never_with_a_person(chats: AppContext) -> None:
     chat = await chats.chats.create_chat(DEV)
     assert chat.member_id == DEV and chat.title == "" and chat.agent_session_id is None
@@ -149,6 +191,7 @@ async def test_a_message_reaches_the_member_with_the_context_in_front(chats: App
 
     request = RecordingBackend.requests[-1]
     assert request.task is None and request.session_key == chat.id
+    assert request.proactive_subagents
     assert request.resume_session_id is None
     assert request.prompt.endswith("\n\nWhy is the dash slow?")
     assert request.prompt.startswith("Where the user is in the Studio right now:\n- Page: Documents")
@@ -287,6 +330,26 @@ async def test_deleting_a_chat_takes_its_transcript(chats: AppContext) -> None:
             await session.exec(select(AgentChatMessage).where(AgentChatMessage.chat_id == chat.id))
         ).all()
     assert left == []
+
+
+async def test_first_captured_resume_keeps_legacy_messages_without_counting_new_input_twice(chats: AppContext):
+    from voxarium_studio.models.task_context import ChatSessionContext
+    from voxarium_studio.teams.context_viewer import inventory
+
+    chat = await chats.chats.create_chat(DEV)
+    await chats.chats.record(chat.id, DEV, role="user", kind="text", text="old question")
+    await chats.chats._store_session_id(chat.id, "old-session")
+    await chats.chats.send(chat.id, "current question", UserContext())
+    await turn_done(chats, chat.id)
+
+    async with chats.db.session() as session:
+        snapshot = await session.get(ChatSessionContext, chat.id)
+    view = inventory(snapshot, await chats.chats.messages(chat.id))
+    assert view["partial"]
+    assert [part["text"] for part in view["sources"] if part["category"] == "task"] == [
+        RecordingBackend.requests[-1].prompt]
+    history = [part["text"] for part in view["sources"] if part["category"] == "history"]
+    assert "old question" in history and "current question" not in history
 
 
 async def test_the_list_is_newest_activity_first(chats: AppContext) -> None:

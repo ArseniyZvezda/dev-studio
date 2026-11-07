@@ -17,15 +17,27 @@ import { useRoute, useRouter } from 'vue-router'
 
 import EmptyState from '@/components/ui/EmptyState.vue'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
+import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import TaskBoard from '@/components/teams/TaskBoard.vue'
 import TaskComposerDialog from '@/components/teams/TaskComposerDialog.vue'
 import TaskDetail from '@/components/teams/TaskDetail.vue'
 import { t } from '@/i18n'
-import { formatCost, statusLabel } from '@/lib/status'
+import { statusLabel } from '@/lib/status'
+import { tokenDirections, type TokenDirections } from '@/lib/token-directions'
 import { useSessionStore } from '@/stores/session'
 import { useTeamsStore } from '@/stores/teams'
 
 const teams = useTeamsStore()
+const doneUsage = computed(() => {
+  const sums: TokenDirections = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 }
+  for (const task of teams.tasks.filter(task => task.status === 'done')) {
+    const usage = tokenDirections({ ...task }, task.total_tokens)
+    for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens'] as const) {
+      sums[key] = sums[key] === null || usage[key] === null ? null : sums[key]! + usage[key]!
+    }
+  }
+  return sums
+})
 const session = useSessionStore()
 const route = useRoute()
 const router = useRouter()
@@ -113,13 +125,12 @@ async function setAutostartTasks(event: Event) {
              about results rather than about work in flight — and archived tasks are in it,
              because archiving takes a card off the board and nothing off the books (§10.4). -->
         <span
-          class="shrink-0 rounded-pill border border-card px-2.5 py-0.5 text-small text-faint"
+          class="inline-flex shrink-0 items-center gap-1.5 text-small text-faint"
           :title="t('tasks.header.doneCostHint')"
         >
           {{ statusLabel('done') }}
-          <span class="ml-1 font-medium tabular-nums text-primary">
-            {{ formatCost(teams.doneCost) }}
-          </span>
+          <TokenUsageChip :input-tokens="doneUsage.inputTokens" :output-tokens="doneUsage.outputTokens"
+            :cached-tokens="doneUsage.cacheReadTokens" :cost-usd="teams.doneCost" />
         </span>
         <!-- The archive is hidden on purpose; this is the one way to see it. Rendered only
              once something is in it, so a board nobody has tidied carries no control for a

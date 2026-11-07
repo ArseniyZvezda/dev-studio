@@ -10,6 +10,9 @@
 import { locale, t } from '@/i18n'
 import { authHeaders, withTokenParam } from './auth'
 import type {
+  ContextInventory,
+  ContextTarget,
+  ContextView,
   TaskResultType,
   AutomationInput,
   AutomationRun,
@@ -117,6 +120,12 @@ export function recoverRuntime(frontendVersion: string, backendVersion: string) 
 }
 
 type Query = Record<string, string | number | boolean | null | undefined>
+
+export function sessionContextPath(target: ContextTarget): string {
+  return 'chatId' in target
+    ? `/chats/${encodeURIComponent(target.chatId)}/context`
+    : `/teams/${encodeURIComponent(target.teamId)}/tasks/${encodeURIComponent(target.taskId)}/context`
+}
 
 /** Doc paths are nested (`features/dash.md`), so slashes must survive but nothing else. */
 function encodePath(path: string): string {
@@ -589,6 +598,12 @@ export const api = {
     request<TeamTask[]>('GET', `/teams/${teamId}/tasks`, { query: { status } }),
   task: (teamId: string, taskId: string) =>
     request<TaskDetail>('GET', `/teams/${teamId}/tasks/${taskId}`),
+  sessionContext: (target: ContextTarget, view: ContextView = 'auto') =>
+    request<ContextInventory>('GET', sessionContextPath(target), { query: { view } }),
+  sessionContextFragment: (target: ContextTarget, sourceId: string, key: string, view: ContextView = 'auto') =>
+    request<{ text: string }>('GET', `${sessionContextPath(target)}/fragments/${sourceId}`, { query: { key, view } }),
+  inspectSessionContext: (target: ContextTarget) =>
+    request<ContextInventory>('POST', `${sessionContextPath(target)}/inspect`),
   updateTask: (teamId: string, taskId: string, body: TaskUpdate) =>
     request<TeamTask>('PATCH', `/teams/${teamId}/tasks/${taskId}`, {
       // Release captures the reader's language for the deferred run (§10.4).

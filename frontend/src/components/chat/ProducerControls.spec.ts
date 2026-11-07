@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   chat: {
     view: 'chat', busy: false, newMemberId: null,
     activeChat: null as Partial<AgentChat> | null,
+    activeMessages: [],
     producerAction: vi.fn(), setProducerPolicy: vi.fn(), setProducerEstimateTaskCost: vi.fn(),
     setProducerEffortMode: vi.fn(),
   },

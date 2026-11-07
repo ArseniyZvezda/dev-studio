@@ -118,7 +118,9 @@ def test_a_grammar_must_declare_a_scope_name(tmp_path: Path) -> None:
 
 def test_the_builtin_plugins_load(registry: Registry) -> None:
     loaded = {plugin.id for plugin in registry.plugins() if plugin.status == "loaded"}
-    assert {"core", "hunyuan3d", "vox_preview", "fbx_preview", "angelscript"} <= loaded
+    assert {"core", "vox_preview", "fbx_preview", "angelscript"} <= loaded
+    assert registry.plugin("hunyuan3d").status == "disabled"
+    assert registry.node_type("hunyuan3d.voxelize") is None
 
     broken = [(p.id, p.error) for p in registry.plugins() if p.status == "error"]
     assert broken == []
@@ -508,7 +510,9 @@ def test_plugin_settings_shape_what_a_plugin_registers(project: Path) -> None:
     assert resolution.default == 96
 
 
-def test_removing_a_plugin_drops_everything_it_contributed(registry: Registry) -> None:
+def test_removing_a_plugin_drops_everything_it_contributed(project: Path) -> None:
+    config = AppConfig(plugins={"hunyuan3d": PluginConfig(enabled=True)})
+    registry = plugin_loader.load_all(ProjectPaths.for_project(project), config)
     assert registry.node_type("hunyuan3d.voxelize") is not None
     registry.remove_plugin("hunyuan3d")
     assert registry.node_type("hunyuan3d.voxelize") is None

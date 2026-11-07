@@ -750,6 +750,7 @@ class ProducerService:
             request, member=request.member.model_copy(update={"max_turns": 2, "allowed_tools": []}),
             max_turns=2,
             session_key=f"{chat_id}:summary", resume_session_id=None, recovery_prompt="",
+            proactive_subagents=False,
             prompt=(f"{summary_prompt}\n\nPrevious summary:\n{chat.producer_summary}\n\nTranscript:\n" +
                     (history if len(history) <= 96_000 else history[:24_000] +
                      "\n[Middle omitted.]\n" + history[-72_000:])),
@@ -776,6 +777,8 @@ class ProducerService:
         )
         # §10.11: commit the replacement and continuation context together. Delete only
         # the captured rows, leaving anything recorded during summarization after it.
+        from ..models.task_context import ChatSessionContext
+
         async with self.chats.db.session() as session:
             stored = await session.get(AgentChat, chat_id)
             if stored is None:
@@ -786,6 +789,9 @@ class ProducerService:
                     AgentChatMessage.id.in_([m.id for m in messages]),
                 ))
             session.add(message)
+            snapshot = await session.get(ChatSessionContext, chat_id)
+            if snapshot is not None:
+                await session.delete(snapshot)
             stored.producer_summary = message.text
             stored.producer_compacted_through = message.id
             stored.agent_session_id = None

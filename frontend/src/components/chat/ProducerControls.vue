@@ -3,7 +3,9 @@
 import { Clapperboard, Pause, Play, Square } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ProducerEffortMode, ProducerPolicy } from '@/api/types'
+import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import { t } from '@/i18n'
+import { producerSessionUsage } from '@/lib/producer-usage'
 import { useChatStore } from '@/stores/chat'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -11,6 +13,11 @@ withDefaults(defineProps<{ toolbar?: boolean }>(), { toolbar: false })
 const chat = useChatStore()
 const teams = useTeamsStore()
 const current = computed(() => chat.view === 'chat' ? chat.activeChat : null)
+const usage = computed(() => {
+  if (!current.value) return null
+  const team = teams.teams.find(team => team.members.some(member => member.id === current.value!.member_id))
+  return producerSessionUsage(current.value, chat.activeMessages, team?.tasks ?? [])
+})
 const member = computed(() => teams.teams.flatMap(team => team.members).find(member => member.id ===
   (chat.view === 'new' ? chat.newMemberId : current.value?.member_id)))
 const active = computed(() => current.value?.producer_mode === true)
@@ -112,6 +119,11 @@ function saveEstimate() {
       </div>
     </div>
     <p v-if="!estimateValid" class="mt-1 text-small text-danger" role="alert">{{ t('chat.producer.estimateInvalid') }}</p>
+    <div v-if="active && usage" class="mt-2 flex flex-wrap items-center gap-2" data-producer-session-usage>
+      <span class="text-small text-faint">{{ t('chat.producer.sessionUsage') }}</span>
+      <TokenUsageChip :input-tokens="usage.inputTokens" :output-tokens="usage.outputTokens"
+        :cached-tokens="usage.cacheReadTokens" :cost-usd="usage.costUsd" :cost-messages="usage.costMessages" />
+    </div>
     <template v-if="!toolbar">
       <p class="mt-1 text-small text-faint">{{ t(`chat.producer.policies.${policy}Hint`) }}</p>
       <p v-if="active" class="mt-1 text-small text-faint" role="status">{{ paused ? t('chat.producer.paused') : t(`chat.producer.states.${state}`) }}</p>

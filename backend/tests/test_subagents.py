@@ -137,6 +137,8 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert len(parent_requests) == 2 and len(child_requests) == 1
     assert parent_requests[1].resume_session_id == "parent-session"
     worker, parent_request = child_requests[0], parent_requests[0]
+    assert all(req.proactive_subagents for req in parent_requests)
+    assert not worker.proactive_subagents
     assert worker.session_key == rows[0].id and worker.session_key != task.id
     assert worker.model == "child-model" and worker.member.agent_backend == "test_other_backend"
     assert worker.member.permission_mode == parent_request.member.permission_mode

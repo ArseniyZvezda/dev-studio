@@ -1,15 +1,19 @@
 <script setup lang="ts">
-/** §10.4: a shared horizontal chip for input, output and cache-read usage. */
-import { ArrowDown, ArrowUp, Cpu } from 'lucide-vue-next'
+/** §10.4: one chip for input, output, cache reads and cost across task surfaces. */
+import { ArrowDown, ArrowUp, Cpu, DollarSign } from 'lucide-vue-next'
 import { computed } from 'vue'
 
+import type { AgentMessage } from '@/api/types'
 import { t } from '@/i18n'
 import { formatTokens } from '@/lib/status'
+import { taskCost } from '@/lib/task-telemetry'
 
 const props = defineProps<{
   inputTokens: number | null
   outputTokens: number | null
   cachedTokens: number | null
+  costUsd: number | null
+  costMessages?: AgentMessage[]
 }>()
 
 const metrics = computed(() => ([
@@ -28,7 +32,17 @@ const metrics = computed(() => ([
     title: `${label}. ${known ? t(metric.hint) : t('tokenUsage.unavailable')}`,
   }
 }))
-const label = computed(() => metrics.value.map(metric => metric.label).join(' · '))
+const cost = computed(() => {
+  const known = props.costUsd !== null && Number.isFinite(props.costUsd) && props.costUsd >= 0
+  const precise = known ? taskCost(props.costUsd!, props.costMessages ?? []) : '—'
+  return {
+    value: precise === '—' ? '—' : props.costUsd!.toFixed(1),
+    // Keep exact amounts and estimate/partial markers available without widening the chip.
+    label: t('tokenUsage.costValue', { cost: precise }),
+    title: `${t('tokenUsage.costValue', { cost: precise })}. ${t(precise === '—' ? 'tokenUsage.costUnavailable' : 'tokenUsage.costHint')}`,
+  }
+})
+const label = computed(() => [...metrics.value.map(metric => metric.label), cost.value.label].join(' · '))
 </script>
 
 <template>
@@ -46,6 +60,10 @@ const label = computed(() => metrics.value.map(metric => metric.label).join(' ·
     >
       <component :is="metric.icon" class="size-3 shrink-0 text-faint" aria-hidden="true" />
       <span class="font-mono tabular-nums">{{ metric.value }}</span>
+    </span>
+    <span class="inline-flex items-center gap-0.5" :title="cost.title" :aria-label="cost.label">
+      <DollarSign class="size-3 shrink-0 text-faint" aria-hidden="true" />
+      <span class="font-mono tabular-nums">{{ cost.value }}</span>
     </span>
   </span>
 </template>

@@ -311,6 +311,19 @@ describe('doneCost', () => {
 })
 
 describe('the activity line', () => {
+  it('updates lifetime token totals for a closed task without adding repeated snapshots', async () => {
+    const store = await storeWith([task()])
+    const message = messageEvent({ role: 'system', kind: 'system', text: 'usage_update', data: {
+      task_total_tokens: 100, task_total_uncached_tokens: 30, task_total_cached_tokens: 70,
+      task_total_input_tokens: 20, task_total_output_tokens: 10,
+    } })
+    handlers.get('team.member.message')?.(message as never)
+    handlers.get('team.member.message')?.(message as never)
+    expect(store.openTask).toBeNull()
+    expect(store.tasks[0]).toMatchObject({ total_tokens: 100, total_uncached_tokens: 30,
+      total_cached_tokens: 70, total_input_tokens: 20, total_output_tokens: 10 })
+  })
+
   it('counts Studio-managed subagents without an open transcript and closes only the finished child', async () => {
     const store = await storeWith([task()])
     const emit = (text: string, data: Record<string, unknown>, kind = 'system') =>

@@ -37,7 +37,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlmodel import col, delete, select
@@ -54,6 +55,7 @@ from .backends.base import AgentEvent, AgentRunRequest, get_backend, member_run_
 from .backends.recovery import recovery_prompt
 from .slots import agent_slot
 from .tools import build_toolset
+from .usage import RunUsage
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
     from .orchestrator import TeamOrchestrator
@@ -400,7 +402,8 @@ class ChatService:
         self.jobs.submit(
             chat_id,
             JOB_KIND,
-            lambda handle: self._run_turn(chat_id, member_id, prompt, self.orchestrator.attachments.images(records)),
+            lambda handle: self._run_turn(chat_id, member_id, prompt, self.orchestrator.attachments.images(records),
+                                          input_at=message.created_at),
             member_id=member_id,
             chat_id=chat_id,
         )
@@ -408,7 +411,8 @@ class ChatService:
 
     # ---- the turn ----
 
-    async def _run_turn(self, chat_id: str, member_id: str, prompt: str, images: list[dict[str, Any]] | None = None) -> None:
+    async def _run_turn(self, chat_id: str, member_id: str, prompt: str, images: list[dict[str, Any]] | None = None,
+                        *, input_at: datetime | None = None) -> None:
         orchestrator = self.orchestrator
         async with self.db.session() as session:
             chat = await session.get(AgentChat, chat_id)
@@ -507,6 +511,7 @@ class ChatService:
                 **member_run_settings(member, self.config.teams),
                 task=None,
                 session_key=chat_id,
+                proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[self.paths.root],
                 prompt=required.prepend(prompt) if not resume_session_id else prompt,
@@ -548,7 +553,7 @@ class ChatService:
                     if not request.resume_session_id:
                         request.prompt = required.prepend(request.prompt)
                 try:
-                    await self._consume(backend, request, chat_id, member_id)
+                    await self._consume(backend, request, chat_id, member_id, input_at=input_at)
                 except Exception as exc:
                     from .producer import context_overflow
                     if not chat.producer_mode or not context_overflow(str(exc)):
@@ -588,16 +593,41 @@ class ChatService:
                 self._ending.discard(chat_id)
 
     async def _consume(
-        self, backend: Any, request: AgentRunRequest, chat_id: str, member_id: str
+        self, backend: Any, request: AgentRunRequest, chat_id: str, member_id: str, *, input_at: datetime | None = None,
     ) -> None:
+        from .context_viewer import capture_request
+
+        await capture_request(self.db, chat_id, request, input_at=input_at if request.resume_session_id else None)
+        # §10.11: publish durable live chat usage; results add only the uncredited balance.
+        usage = RunUsage()
+        credited = usage.counters()
         async for event in backend.run(request):
+            if event.data.get("subtype") == "session_recovered":
+                await capture_request(self.db, chat_id, replace(
+                    request, resume_session_id=None,
+                    prompt=request.recovery_prompt or recovery_prompt(request.prompt, []),
+                ))
+            changed = usage.observe(event)
+            if event.kind == "result":
+                usage.finish(event.data)
+                event = replace(event, data={**event.data, **usage.counters()})
             await self._publish_event(chat_id, member_id, event)
+            if changed or event.kind == "result":
+                counters = usage.counters()
+                await self._store_result_stats(chat_id, {
+                    **(event.data if event.kind == "result" else {}),
+                    **{key: value - credited[key] for key, value in counters.items()
+                       if key != "accounting_version"},
+                })
+                credited = counters
+            if event.kind == "result":
+                usage.next_segment()
+                credited = usage.counters()
             if event.session_id:
                 await self._store_session_id(chat_id, event.session_id)
             if event.kind == "error":
                 await self._set_error(chat_id, event.text)
             if event.kind == "result":
-                await self._store_result_stats(chat_id, event.data)
                 if event.data.get("is_error") and not event.data.get("continued"):
                     await self._set_error(chat_id, event.text or "The session ended with an error.")
 
@@ -686,6 +716,7 @@ class ChatService:
             chat.total_input_tokens += sent
             chat.total_output_tokens += received
             session.add(chat)
+        await self._publish_chat_by_id(chat_id)
 
     async def _set_error(self, chat_id: str, error: str | None) -> None:
         async with self.db.session() as session:

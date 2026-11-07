@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Plugin registry: enable/disable per project, provision isolated venvs (spec §9.4). */
 import { Blocks, Boxes, HardDriveDownload, Power } from 'lucide-vue-next'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { LoadedPlugin } from '@/api/types'
@@ -16,6 +16,13 @@ import { usePipelinesStore } from '@/stores/pipelines'
 const pipelines = usePipelinesStore()
 
 const plugins = ref<LoadedPlugin[]>([])
+const enabledFilter = ref<'all' | 'enabled' | 'disabled'>('all')
+const filters = ['all', 'enabled', 'disabled'] as const
+const filteredPlugins = computed(() => plugins.value.filter(plugin => enabledFilter.value === 'all'
+  || plugin.enabled === (enabledFilter.value === 'enabled')))
+function filterCount(filter: typeof filters[number]): number {
+  return plugins.value.filter(plugin => filter === 'all' || plugin.enabled === (filter === 'enabled')).length
+}
 const loading = ref(true)
 const error = ref<string | null>(null)
 const busyId = ref<string | null>(null)
@@ -89,6 +96,15 @@ async function installEnv(plugin: LoadedPlugin) {
     <p v-if="error" class="shrink-0 bg-danger-soft px-pane py-1 text-danger">{{ error }}</p>
 
     <div class="min-h-0 flex-1 overflow-auto p-pane">
+      <div v-if="plugins.length" role="group" :aria-label="t('plugins.filters.label')" class="mb-3 flex flex-wrap gap-1.5">
+        <button v-for="filter in filters" :key="filter" type="button"
+          class="inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-small hover:bg-hover"
+          :class="enabledFilter === filter ? 'border-accent-border bg-accent-soft text-accent' : 'border-line text-muted'"
+          :aria-pressed="enabledFilter === filter" @click="enabledFilter = filter">
+          {{ t(`plugins.filters.${filter}`) }}
+          <span class="font-mono tabular-nums">{{ filterCount(filter) }}</span>
+        </button>
+      </div>
       <!-- Bars only for a first read: enabling a plugin re-reads the list, and swapping it for a
            placeholder there would take every card off screen and bring them back in (§7). Each
            card is one of the page's bands (`vxs-enter`). -->
@@ -100,9 +116,10 @@ async function installEnv(plugin: LoadedPlugin) {
 
       <!-- Held to a reading width: a card is mostly its description, and across a wide window
            that ran to lines of two hundred characters. -->
+      <EmptyState v-else-if="!filteredPlugins.length" :title="t('plugins.filters.empty')" />
       <ul v-else class="max-w-4xl space-y-2">
         <li
-          v-for="plugin in plugins"
+          v-for="plugin in filteredPlugins"
           :key="plugin.id"
           class="vxs-enter rounded-lg border border-line bg-surface p-3"
           :class="{ 'opacity-60': !plugin.enabled }"

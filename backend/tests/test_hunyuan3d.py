@@ -42,6 +42,12 @@ NODE_MODULES = ("hunyuan3d", "imaging", "meshio", "_voxarium_studio")
 
 
 @pytest.fixture
+def registry(project: Path):
+    """These node-contract tests explicitly opt into the optional 3D plugin."""
+    return load_registry(project, {})
+
+
+@pytest.fixture
 def hunyuan(monkeypatch: pytest.MonkeyPatch):
     """Import `hunyuan3d` as a node script does, and leave `sys.modules` as it was."""
     monkeypatch.syspath_prepend(str(NODES))

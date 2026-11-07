@@ -176,7 +176,7 @@ async def summarize(backend: Any, request: AgentRunRequest, messages: list[Agent
         session_key=f"{request.session_key}:summary", resume_session_id=None,
         recovery_prompt="", system_prompt=instruction, agent_name=None,
         mcp_servers={}, extra_allowed_tools=[], plugin_dirs=[], images=[],
-        max_continuations=0, writable_roots=[], text_only=True,
+        max_continuations=0, writable_roots=[], text_only=True, proactive_subagents=False,
     )
     # Each call has a deadline; no writes to the task until every chunk succeeds.
     for _round in range(8):

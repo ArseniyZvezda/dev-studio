@@ -79,6 +79,13 @@ _CLAUDE_MODEL = re.compile(r"^(claude-|opus|sonnet|haiku|fable|opusplan)", re.I)
 #: characters; the margin covers the launcher and the quoting Python adds around arguments.
 _MAX_COMMAND_LINE = 30_000
 
+# §10.6: replace Codex's effort-dependent delegation rule for Studio task and chat turns.
+_SUBAGENT_HINT = (
+    "At any reasoning effort, use sub-agents on your own initiative when independent work "
+    "would benefit from delegation. For a Studio board task, use the Studio spawn_subagent "
+    "tool and respect the task's delegation limits. Follow user and role instructions."
+)
+
 #: How much of stderr is kept for the failure message — the tail, where the reason is.
 _STDERR_TAIL = 4_000
 
@@ -527,6 +534,10 @@ def _build_command(
     effort = (request.effort or "").strip()
     if effort:
         argv += ["-c", f"model_reasoning_effort={_toml_string(effort)}"]
+
+    if request.proactive_subagents:
+        argv += ["-c", "features.multi_agent=true"]
+        argv += ["-c", f"features.multi_agent_v2.multi_agent_mode_hint_text={_toml_string(_SUBAGENT_HINT)}"]
 
     argv += ["-c", 'approval_policy="never"']
     sandbox = _SANDBOX_FOR_MODE.get(request.permission_mode, "workspace-write")

@@ -33,13 +33,14 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ApiError, api } from '@/api/client'
 import type { SkillDetail, SkillEntry, SkillUser } from '@/api/types'
 import ConfirmDialog from '@/components/explorer/ConfirmDialog.vue'
+import SkillFilters from '@/components/skills/SkillFilters.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import ClampText from '@/components/ui/ClampText.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
-import { describeFiles, filterSkills, skillDisplayName } from '@/lib/skills'
+import { describeFiles, filterSkillOptions, skillDisplayName, type SkillPickerScope } from '@/lib/skills'
 import { useSkillsStore } from '@/stores/skills'
 
 const store = useSkillsStore()
@@ -50,7 +51,16 @@ const busy = ref<string | null>(null)
 const overview = computed(() => store.overview)
 const skills = computed(() => overview.value?.skills ?? [])
 const search = ref('')
-const filteredSkills = computed(() => filterSkills(skills.value, search.value))
+const backendFilter = ref('all')
+const scopeFilter = ref<SkillPickerScope>('all')
+const filteredSkills = computed(() => filterSkillOptions(skills.value, search.value, backendFilter.value, scopeFilter.value))
+const hasFilters = computed(() => !!search.value || backendFilter.value !== 'all' || scopeFilter.value !== 'all')
+
+function clearFilters(): void {
+  search.value = ''
+  backendFilter.value = 'all'
+  scopeFilter.value = 'all'
+}
 const folder = computed(() => overview.value?.path ?? '.voxarium_studio/skills')
 
 onMounted(() => {
@@ -422,6 +432,12 @@ async function reveal(path: string): Promise<void> {
             :aria-label="t('skills.search')"
             class="mb-3 w-full rounded-md border border-line bg-inset px-3 py-1.5 outline-none focus:border-accent"
           />
+          <SkillFilters v-if="skills.length" v-model:backend="backendFilter" v-model:scope="scopeFilter"
+            :skills="skills" class="mb-3 rounded-lg border border-line bg-inset/50 p-3" />
+          <div v-if="skills.length" class="mb-3 flex items-center justify-between text-small text-faint">
+            <span role="status" aria-live="polite">{{ t('skills.picker.results', { count: filteredSkills.length }) }}</span>
+            <button v-if="hasFilters" type="button" class="text-accent hover:underline" @click="clearFilters">{{ t('skills.picker.reset') }}</button>
+          </div>
           <p v-if="skills.length && !filteredSkills.length" class="py-3 text-muted">{{ t('skills.noMatches') }}</p>
           <ul class="space-y-2">
             <li

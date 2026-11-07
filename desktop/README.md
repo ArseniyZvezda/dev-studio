@@ -103,10 +103,10 @@ before stopping tasks and shuts down only the owned backend.
 
 ## Publish updates
 
-The renamed application has no assumed release repository. Set
-`VOXARIUM_STUDIO_UPDATE_REPO=owner/repository` on the build machine and at runtime
-when a release feed is available. The value must be exactly `owner/repository`, not a
-URL. Then upload the installer, blockmap and latest.yml to a GitHub release. Public
+The default release repository is [voxarium-studio/dev-studio](https://github.com/voxarium-studio/dev-studio).
+To override it, set `VOXARIUM_STUDIO_UPDATE_REPO=owner/repository` on the build machine
+and at runtime. The value must be exactly `owner/repository`, not a URL.
+Upload the installer, blockmap and latest.yml to a GitHub release. Public
 feeds are the default: checking and downloading updates requires no GitHub login and
 does not read personal tokens or invoke `gh`. Publication credentials belong only on
 the build machine and are never embedded in the application.
@@ -114,7 +114,6 @@ the build machine and are never embedded in the application.
 For a private repository, explicitly set `VOXARIUM_STUDIO_UPDATE_PRIVATE=1` both when
 building and at runtime. Only that mode reads `GH_TOKEN` / `GITHUB_TOKEN` or the
 user's existing `gh` login at check time; credentials stay in the main process.
-Until a repository is configured, the update panel reports that the source is unavailable.
 
 The app ID is `studio.voxarium.desktop`; the profile is `%APPDATA%/Voxarium Studio`.
 The CLI and Python package are `voxarium_studio`; project data uses `.voxarium_studio/`.

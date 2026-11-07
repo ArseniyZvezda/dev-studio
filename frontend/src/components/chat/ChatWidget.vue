@@ -48,6 +48,7 @@ import { useTeamsStore } from '@/stores/teams'
 
 import ChatTranscript from './ChatTranscript.vue'
 import ChatList from './ChatList.vue'
+import ChatHeaderChips from './ChatHeaderChips.vue'
 import ProducerControls from './ProducerControls.vue'
 import ProducerTaskStatus from './ProducerTaskStatus.vue'
 
@@ -70,7 +71,7 @@ const composer = ref<HTMLTextAreaElement | null>(null)
 const agents = computed(() => teams.members.filter((member) => member.kind === 'agent'))
 
 function memberOf(id: string | null): TeamMember | null {
-  return id ? (teams.memberById.get(id) ?? null) : null
+  return id ? (teams.memberById.get(id) ?? teams.teams.flatMap(team => team.members).find(member => member.id === id) ?? null) : null
 }
 
 const activeMember = computed(() => memberOf(chat.activeChat?.member_id ?? null))
@@ -412,67 +413,71 @@ onBeforeUnmount(() => {
         </aside>
         <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[inherit]" :class="fullscreen && chat.view === 'list' ? 'max-sm:hidden' : ''">
         <!-- Header: where we are in the popup, and the way out. -->
-        <header v-if="!producerPage" class="flex h-12 shrink-0 items-center gap-2 border-b border-line px-2">
-          <button
-            v-if="chat.view !== 'list'"
-            :class="fullscreen ? 'sm:hidden' : ''"
-            class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover"
-            :title="t('chat.allChats')"
-            @click="chat.showList()"
-          >
-            <ArrowLeft class="size-4" />
-          </button>
-
-          <template v-if="chat.view === 'chat' && activeMember">
-            <MemberMark :member="activeMember" variant="badge" :corner="false" class="shrink-0" />
-            <div class="min-w-0 flex-1 leading-tight">
-              <p class="truncate font-medium">{{ activeMember.name }}</p>
-              <p class="truncate text-small text-muted">
-                {{ running ? t('chat.answeringNow') : activeMember.role_title }}
-              </p>
-            </div>
+        <header v-if="!producerPage" class="shrink-0 border-b border-line">
+          <div class="flex h-12 items-center gap-2 px-2">
             <button
+              v-if="chat.view !== 'list'"
+              :class="fullscreen ? 'sm:hidden' : ''"
               class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover"
-              :title="t('chat.delete.action')"
-              @click="confirmingDelete = !confirmingDelete"
+              :title="t('chat.allChats')"
+              @click="chat.showList()"
             >
-              <Trash2 class="size-4" />
+              <ArrowLeft class="size-4" />
             </button>
-          </template>
 
-          <template v-else-if="chat.view === 'chat'">
-            <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.title') }}</p>
-          </template>
+            <template v-if="chat.view === 'chat' && activeMember">
+              <MemberMark :member="activeMember" variant="badge" :corner="false" class="shrink-0" />
+              <div class="min-w-0 flex-1 leading-tight">
+                <p class="truncate font-medium">{{ activeMember.name }}</p>
+                <p class="truncate text-small text-muted">
+                  {{ running ? t('chat.answeringNow') : activeMember.role_title }}
+                </p>
+              </div>
+              <button
+                class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover"
+                :title="t('chat.delete.action')"
+                @click="confirmingDelete = !confirmingDelete"
+              >
+                <Trash2 class="size-4" />
+              </button>
+            </template>
 
-          <template v-else-if="chat.view === 'new'">
-            <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.newChat') }}</p>
-          </template>
+            <template v-else-if="chat.view === 'chat'">
+              <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.title') }}</p>
+            </template>
 
-          <template v-else>
-            <MessageCircle class="ml-1 size-4 shrink-0 text-faint" />
-            <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.chats') }}</p>
+            <template v-else-if="chat.view === 'new'">
+              <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.newChat') }}</p>
+            </template>
+
+            <template v-else>
+              <MessageCircle class="ml-1 size-4 shrink-0 text-faint" />
+              <p class="min-w-0 flex-1 truncate font-medium">{{ t('chat.chats') }}</p>
+              <button
+                v-if="!docked && agents.length"
+                class="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-small hover:bg-hover"
+                :title="t('chat.startChat')"
+                @click="chat.startNew()"
+              >
+                <Plus class="size-4" />
+                <span>{{ t('chat.newChat') }}</span>
+              </button>
+            </template>
+
+            <RouterLink v-if="!docked" to="/chats" class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover" :title="t('chat.openPage')" :aria-label="t('chat.openPage')">
+              <Maximize2 class="size-4" />
+            </RouterLink>
             <button
-              v-if="!docked && agents.length"
-              class="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-small hover:bg-hover"
-              :title="t('chat.startChat')"
-              @click="chat.startNew()"
+              v-if="!docked"
+              class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover"
+              :title="t('chat.minimise')"
+              @click="chat.hide()"
             >
-              <Plus class="size-4" />
-              <span>{{ t('chat.newChat') }}</span>
+              <ChevronDown class="size-4" />
             </button>
-          </template>
-
-          <RouterLink v-if="!docked" to="/chats" class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover" :title="t('chat.openPage')" :aria-label="t('chat.openPage')">
-            <Maximize2 class="size-4" />
-          </RouterLink>
-          <button
-            v-if="!docked"
-            class="grid size-8 shrink-0 place-items-center rounded-md hover:bg-hover"
-            :title="t('chat.minimise')"
-            @click="chat.hide()"
-          >
-            <ChevronDown class="size-4" />
-          </button>
+          </div>
+          <ChatHeaderChips v-if="chat.view === 'chat' && chat.activeChat && activeMember?.kind === 'agent'"
+            :chat="chat.activeChat" :member="activeMember" :messages="chat.activeMessages" :levels="teams.options?.effort_levels" />
         </header>
 
         <!-- Deleting is two clicks, in place: the popup is too small for a dialog over it. -->

@@ -4,6 +4,7 @@ from .automation import AutomationRun
 from .base import new_id, utcnow
 from .pipeline import NodeCacheEntry, NodeRun, NodeStatus, Run, RunStatus
 from .subagents import SubagentMessage, TaskSubagent
+from .task_context import ChatSessionContext, TaskContext
 from .teams import (
     AgentChat,
     AgentChatMessage,
@@ -19,12 +20,14 @@ __all__ = [
     "AgentChatMessage",
     "AgentMessage",
     "AutomationRun",
+    "ChatSessionContext",
     "NodeCacheEntry",
     "NodeRun",
     "NodeStatus",
     "Run",
     "RunStatus",
     "TaskStatus",
+    "TaskContext",
     "TaskSubagent",
     "SubagentMessage",
     "Team",

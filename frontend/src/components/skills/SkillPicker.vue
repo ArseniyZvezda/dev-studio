@@ -4,8 +4,9 @@ import { computed, nextTick, ref, useId, watch } from 'vue'
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
 import { ArrowDownUp, ChevronDown, GraduationCap, Plus, Search, X } from 'lucide-vue-next'
 import type { SkillEntry } from '@/api/types'
+import SkillFilters from './SkillFilters.vue'
 import { t } from '@/i18n'
-import { filterSkillOptions, skillDisplayName, skillOptions, skillPickerScope, type SkillPickerScope } from '@/lib/skills'
+import { filterSkillOptions, skillBackendLabel, skillDisplayName, skillOptions, skillPickerScope, type SkillPickerScope } from '@/lib/skills'
 
 const props = withDefaults(defineProps<{
   skills: readonly SkillEntry[] | null
@@ -27,23 +28,11 @@ const list = ref<HTMLElement | null>(null)
 const activeIndex = ref(-1)
 const id = useId()
 const available = computed(() => skillOptions(props.skills ?? [], props.selected, props.backend))
-const backendFilters = computed(() => [
-  'all', 'shared', ...new Set(available.value.flatMap((skill) => skill.backends ?? [])),
-])
-const scopeFilters = computed<SkillPickerScope[]>(() => [
-  'all', 'studio', 'global',
-  ...(available.value.some((skill) => skillPickerScope(skill) === 'project') ? ['project' as const] : []),
-])
 const filtered = computed(() => filterSkillOptions(available.value, query.value, backendFilter.value, scopeFilter.value))
 const hasFilters = computed(() => !!query.value || backendFilter.value !== 'all' || scopeFilter.value !== 'all')
 const pending = computed(() => props.loading || (props.skills === null && !props.error))
 const activeId = computed(() => !pending.value && !props.error && filtered.value[activeIndex.value]
   ? `${id}-option-${activeIndex.value}` : undefined)
-
-function backendLabel(backend: string): string {
-  if (backend === 'all' || backend === 'shared') return t(`skills.picker.${backend}`)
-  return ({ claude_code: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code' } as Record<string, string>)[backend] ?? backend
-}
 
 function clearFilters(): void {
   query.value = ''
@@ -58,8 +47,6 @@ watch(open, (value) => {
   }
 })
 watch(() => props.disabled, (disabled) => { if (disabled) open.value = false })
-watch(backendFilters, (values) => { if (!values.includes(backendFilter.value)) backendFilter.value = 'all' })
-watch(scopeFilters, (values) => { if (!values.includes(scopeFilter.value)) scopeFilter.value = 'all' })
 watch(filtered, () => { activeIndex.value = -1 })
 
 function focusSearch(event: Event): void {
@@ -135,20 +122,8 @@ function onSearchKeydown(event: KeyboardEvent): void {
           </button>
         </div>
 
-        <div class="shrink-0 space-y-2 border-b border-line-subtle bg-inset/50 px-3.5 py-3">
-          <div class="flex items-start gap-2.5">
-            <span class="w-14 shrink-0 pt-1 text-[11px] font-medium text-faint">{{ t('skills.picker.backend') }}</span>
-            <div role="group" :aria-label="t('skills.picker.backend')" class="flex flex-wrap gap-1">
-              <button v-for="backend in backendFilters" :key="backend" type="button" class="skill-filter" :aria-pressed="backendFilter === backend" @click="backendFilter = backend">{{ backendLabel(backend) }}</button>
-            </div>
-          </div>
-          <div class="flex items-start gap-2.5">
-            <span class="w-14 shrink-0 pt-1 text-[11px] font-medium text-faint">{{ t('skills.picker.scope') }}</span>
-            <div role="group" :aria-label="t('skills.picker.scope')" class="flex flex-wrap gap-1">
-              <button v-for="scope in scopeFilters" :key="scope" type="button" class="skill-filter" :aria-pressed="scopeFilter === scope" @click="scopeFilter = scope">{{ t(`skills.picker.${scope}`) }}</button>
-            </div>
-          </div>
-        </div>
+        <SkillFilters v-model:backend="backendFilter" v-model:scope="scopeFilter" :skills="available"
+          class="shrink-0 border-b border-line-subtle bg-inset/50 px-3.5 py-3" />
 
         <div :id="`${id}-list`" ref="list" role="listbox" :aria-label="t('skills.title')" :aria-busy="pending" class="skill-picker-results min-h-0 overflow-y-auto overscroll-contain p-1.5">
           <p v-if="pending" role="status" class="px-3 py-8 text-center text-small text-faint">{{ t('common.loading') }}</p>
@@ -178,7 +153,7 @@ function onSearchKeydown(event: KeyboardEvent): void {
                 <span class="shrink-0 rounded border border-line px-1 py-px text-[10px] text-muted">{{ t(`skills.picker.${skillPickerScope(skill)}`) }}</span>
               </div>
               <p v-if="skill.description" class="mt-0.5 line-clamp-2 text-[12px] leading-relaxed text-muted">{{ skill.description }}</p>
-              <p class="mt-1 truncate text-[11px] text-faint">{{ skill.backends?.length ? skill.backends.map(backendLabel).join(' · ') : t('skills.picker.shared') }}<template v-if="skill.source"> · {{ skill.source }}</template></p>
+              <p class="mt-1 truncate text-[11px] text-faint">{{ skill.backends?.length ? skill.backends.map(skillBackendLabel).join(' · ') : t('skills.picker.shared') }}<template v-if="skill.source"> · {{ skill.source }}</template></p>
             </div>
             <Plus class="mt-1 size-3.5 shrink-0 text-faint" aria-hidden="true" />
           </div>
@@ -202,22 +177,8 @@ function onSearchKeydown(event: KeyboardEvent): void {
   animation: none;
 }
 .skill-picker-results { max-height: 21rem; }
-.skill-filter {
-  border: 1px solid transparent;
-  border-radius: 5px;
-  padding: 3px 7px;
-  color: var(--vxs-text-muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.skill-filter:hover { background: var(--vxs-bg-hover); color: var(--vxs-text-primary); }
-.skill-filter[aria-pressed='true'] {
-  background: var(--vxs-bg-active);
-  border-color: var(--vxs-border-strong);
-  color: var(--vxs-text-primary);
-}
-:global(.skill-picker-trigger:active:not(:disabled)), .skill-filter:active { transform: scale(0.99); }
+:global(.skill-picker-trigger:active:not(:disabled)) { transform: scale(0.99); }
 @media (prefers-reduced-motion: reduce) {
-  :global(.skill-picker-trigger:active:not(:disabled)), .skill-filter:active { transform: none; }
+  :global(.skill-picker-trigger:active:not(:disabled)) { transform: none; }
 }
 </style>

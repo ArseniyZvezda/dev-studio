@@ -15,7 +15,7 @@ description: >
   reached either over a running Hunyuan3D API server — the default, which needs nothing
   installed here and may sit on another machine — or imported into this plugin's own venv.
   See README.md and the Hunyuan3D Settings page.
-enabled_by_default: true
+enabled_by_default: false
 
 backend:
   entry: plugin.py:register

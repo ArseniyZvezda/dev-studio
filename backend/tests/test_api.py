@@ -108,6 +108,7 @@ def test_a_claimed_file_type_carries_its_previewer(client: TestClient) -> None:
 
 
 def test_node_types_expose_categories_and_resolved_component_urls(client: TestClient) -> None:
+    assert client.post("/api/plugins/hunyuan3d/enable").status_code == 200
     body = client.get("/api/node-types").json()
     by_id = {schema["id"]: schema for schema in body["node_types"]}
 
@@ -123,6 +124,11 @@ def test_node_types_expose_categories_and_resolved_component_urls(client: TestCl
 def test_plugin_listing_reports_what_each_one_contributes(client: TestClient) -> None:
     plugins = {plugin["id"]: plugin for plugin in client.get("/api/plugins").json()}
     assert plugins["vox_preview"]["previewers"] == ["vox-model"]
+    assert plugins["hunyuan3d"]["enabled"] is False
+    assert plugins["hunyuan3d"]["pages"] == []
+    assert client.post("/api/plugins/hunyuan3d/enable").status_code == 200
+    plugins = {plugin["id"]: plugin for plugin in client.get("/api/plugins").json()}
+    assert plugins["hunyuan3d"]["enabled"] is True
     assert plugins["hunyuan3d"]["pages"] == ["hunyuan3d-settings"]
     assert all(plugin["status"] != "error" for plugin in plugins.values())
 
@@ -187,6 +193,7 @@ def test_pipeline_crud(client: TestClient) -> None:
 
 
 def test_edges_serialise_with_from_and_to_on_the_wire(client: TestClient) -> None:
+    assert client.post("/api/plugins/hunyuan3d/enable").status_code == 200
     body = client.get("/api/pipelines/prompt-to-voxel-asset").json()
     assert set(body["pipeline"]["edges"][0]) == {"id", "from", "to"}
     assert [issue for issue in body["issues"] if issue["level"] == "error"] == []

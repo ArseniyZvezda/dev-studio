@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from voxarium_studio.core.config import AppConfig, load_config, save_config
+from voxarium_studio.core.config import AppConfig, PluginConfig, load_config, save_config
 from voxarium_studio.core.paths import ProjectPaths, has_project_data
 from voxarium_studio.core.project import init_project
 from voxarium_studio.engine import dag
@@ -146,12 +146,14 @@ def test_python_package_and_user_config_keep_their_names(tmp_path, monkeypatch):
 def test_sample_pipeline_is_the_reference_graph_and_validates(project: Path) -> None:
     """The sample is described as the spec's reference pipeline, so it must be one.
 
-    It no longer *runs* untouched — Hunyuan3D needs a real image and a server — but every
+    Hunyuan3D is opt-in and needs a real image and a server, but once enabled every
     node type it names must exist and every required input must be satisfied, or the
     template a new project opens on is already broken.
     """
     paths = ProjectPaths.for_project(project)
-    registry = plugin_loader.load_all(paths, load_config(paths))
+    config = load_config(paths)
+    config.plugins["hunyuan3d"] = PluginConfig(enabled=True)
+    registry = plugin_loader.load_all(paths, config)
     pipelines = PipelineStore(paths).list()
 
     assert len(pipelines) == 1

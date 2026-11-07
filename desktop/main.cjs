@@ -148,10 +148,9 @@ async function boot() {
   registerWindowControls(ipcMain, window, tray, producerAttention);
   require('./startup.cjs').registerStartup({ app, ipcMain, window });
   if (app.isPackaged) {
-    const updateRepo = process.env.VOXARIUM_STUDIO_UPDATE_REPO;
     require('./updates.cjs').registerUpdates({ ipcMain, window,
       updater: require('electron-updater').autoUpdater, version: app.getVersion(),
-      supported: !!updateRepo, reason: updateRepo ? null : messages.updateNotConfigured,
+      supported: true,
       configureFeed: () => configureUpdateFeed({ updater: require('electron-updater').autoUpdater,
         accessError: currentMessages().updateAccess }),
       prepareInstall: async () => {

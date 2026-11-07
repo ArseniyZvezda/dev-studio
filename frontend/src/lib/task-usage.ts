@@ -53,7 +53,7 @@ export function taskUsage(task: {
   let latestSnapshot: Record<string, unknown> | null = null
   for (let index = task.messages.length - 1; index >= 0; index -= 1) {
     const message = task.messages[index]!
-    if (['compressed summary', 'context_summary'].includes(message.kind)) break
+    if (['compressed summary', 'context_summary', 'producer_compacted'].includes(message.kind)) break
     if (message.kind === 'system' && message.text === 'usage_update') {
       // Only the newest snapshot can be ahead of the task row. Legacy snapshots predate
       // repaired accounting and must never resurrect a total that the repair reduced.

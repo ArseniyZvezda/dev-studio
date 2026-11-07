@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import ProducerControls from '@/components/chat/ProducerControls.vue'
+import ChatHeaderChips from '@/components/chat/ChatHeaderChips.vue'
 import ProducerPlan from '@/components/producer/ProducerPlan.vue'
 import TaskConversation from '@/components/producer/TaskConversation.vue'
 import { t } from '@/i18n'
@@ -135,21 +136,25 @@ watch(() => route.query.chat, id => {
     <div class="producer-workspace min-h-0 flex-1">
       <section class="producer-pinned flex min-h-0 flex-col border-r border-line bg-surface" :aria-label="t('producerPage.chat')">
         <ProducerControls v-if="!loading && producer && chat.view === 'chat'" toolbar />
-        <header class="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3">
-          <select :value="selection" :disabled="loading || chat.busy || changingChat" :aria-label="t('producerPage.selectChat')"
-            class="min-w-0 flex-1 rounded-md border border-line bg-inset px-2 py-1.5 outline-none focus:border-accent"
-            @change="selectChat(($event.target as HTMLSelectElement).value)">
-            <option value="" disabled>{{ t('producerPage.newChat') }}</option>
-            <option v-for="item in conversations" :key="item.id" :value="item.id">{{ item.title || t('producerPage.chat') }}</option>
-          </select>
-          <button class="grid size-8 shrink-0 place-items-center rounded-md border border-line hover:bg-hover disabled:opacity-40"
-            :disabled="loading || !producer || chat.busy || changingChat" :title="t('producerPage.newChat')" :aria-label="t('producerPage.newChat')" @click="newChat">
-            <Plus class="size-4" />
-          </button>
-          <button class="grid size-8 shrink-0 place-items-center rounded-md border border-danger/30 bg-danger-soft text-danger hover:bg-danger/20 disabled:opacity-40"
-            :disabled="loading || !selection || chat.busy || changingChat" :title="t('producerPage.deleteChat')" :aria-label="t('producerPage.deleteChat')" @click="deleteChat">
-            <Trash2 class="size-4 text-danger" />
-          </button>
+        <header class="shrink-0 border-b border-line">
+          <div class="flex h-14 items-center gap-2 px-3">
+            <select :value="selection" :disabled="loading || chat.busy || changingChat" :aria-label="t('producerPage.selectChat')"
+              class="min-w-0 flex-1 rounded-md border border-line bg-inset px-2 py-1.5 outline-none focus:border-accent"
+              @change="selectChat(($event.target as HTMLSelectElement).value)">
+              <option value="" disabled>{{ t('producerPage.newChat') }}</option>
+              <option v-for="item in conversations" :key="item.id" :value="item.id">{{ item.title || t('producerPage.chat') }}</option>
+            </select>
+            <button class="grid size-8 shrink-0 place-items-center rounded-md border border-line hover:bg-hover disabled:opacity-40"
+              :disabled="loading || !producer || chat.busy || changingChat" :title="t('producerPage.newChat')" :aria-label="t('producerPage.newChat')" @click="newChat">
+              <Plus class="size-4" />
+            </button>
+            <button class="grid size-8 shrink-0 place-items-center rounded-md border border-danger/30 bg-danger-soft text-danger hover:bg-danger/20 disabled:opacity-40"
+              :disabled="loading || !selection || chat.busy || changingChat" :title="t('producerPage.deleteChat')" :aria-label="t('producerPage.deleteChat')" @click="deleteChat">
+              <Trash2 class="size-4 text-danger" />
+            </button>
+          </div>
+          <ChatHeaderChips v-if="!loading && chat.view === 'chat' && producer && chat.activeChat?.member_id === producer.id"
+            :chat="chat.activeChat" :member="producer" :messages="chat.activeMessages" :levels="teams.options?.effort_levels" />
         </header>
         <p v-if="loading" class="p-4 text-muted">{{ t('producerPage.loading') }}</p>
         <p v-else-if="!producer" class="p-4 text-muted">{{ t('producerPage.noProducer') }}</p>
@@ -191,8 +196,8 @@ watch(() => route.query.chat, id => {
 .producer-conversation { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr); }
 .producer-conversation.hidden { display: none; }
 .producer-strip { display: flex; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; padding: 0 0 12px 12px; }
-/* §10.11: +200px for Producer; each card is 100px narrower than the previous layout. */
-.producer-task { flex: 0 0 calc((100% + 200px - 24px) / 2.5 - 100px); min-width: 180px; }
+/* §10.11: keep the card proportions, with room for the assignee and usage on one row. */
+.producer-task { flex: 0 0 calc((100% + 200px - 24px) / 2.5 - 100px); min-width: 360px; }
 @media (max-width: 900px) {
   .producer-workspace { grid-template-columns: minmax(280px, 1fr) minmax(0, 1fr); }
   .producer-task { flex-basis: calc(100% - 24px); }

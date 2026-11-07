@@ -1669,6 +1669,8 @@ class TeamOrchestrator:
             task.finished_at = None
             session.add(task)
             await self.subagents.delete_for_task(session, task_id)
+            from ..models.task_context import TaskContext
+            await session.exec(delete(TaskContext).where(TaskContext.task_id == task_id))
             for message in (
                 await session.exec(select(AgentMessage).where(AgentMessage.task_id == task_id))
             ).all():
@@ -2398,6 +2400,7 @@ class TeamOrchestrator:
                 member=member,
                 **member_run_settings(member, self.config.teams),
                 task=task,
+                proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[worktree_created, temp_dir] if worktree_created else [self.paths.root],
                 prompt=required.prepend(prompt) if not resume_session_id else prompt,
@@ -2678,6 +2681,9 @@ class TeamOrchestrator:
         self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str
     ) -> _RunOutcome:
         """Read one ``backend.run`` to its end, recording every event on the task."""
+        from .context_viewer import capture_request
+
+        await capture_request(self.db, task_id, request)
         # Two candidates for the summary, tracked apart on purpose. The backend's final
         # `result` event is the authoritative one, but it comes back empty when a run stops
         # on `max_turns` or ends on a tool call, and an empty summary on a task waiting for
@@ -2695,6 +2701,11 @@ class TeamOrchestrator:
         credited_input = credited_output = 0
 
         async for event in backend.run(request):
+            if event.data.get("subtype") == "session_recovered":
+                await capture_request(self.db, task_id, replace(
+                    request, resume_session_id=None,
+                    prompt=request.recovery_prompt or recovery_prompt(request.prompt, [], request.task),
+                ))
             # §10.4: persist reported spend while work is running, including a run
             # cancelled before its result. The result only adds the uncredited balance.
             live_usage = usage.observe(event)

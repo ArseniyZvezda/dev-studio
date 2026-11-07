@@ -505,6 +505,19 @@ async def test_explicit_roots_do_not_change_read_only_or_bypass_modes(
 async def test_no_effort_sends_no_effort(fake: Fake, tmp_path: Path) -> None:
     await run(make_request(tmp_path, effort=None, member={"effort": None}))
     assert fake.config("model_reasoning_effort") is None
+    assert fake.config("features.multi_agent_v2.multi_agent_mode_hint_text") is None
+
+
+@pytest.mark.parametrize(("resume", "effort"), [(None, "low"), ("thr_9", None)])
+async def test_proactive_delegation_is_independent_of_effort(
+    fake: Fake, tmp_path: Path, resume: str | None, effort: str | None,
+) -> None:
+    await run(make_request(tmp_path, resume_session_id=resume, effort=effort,
+                           member={"effort": None}, proactive_subagents=True))
+    assert fake.config("features.multi_agent") == "true"
+    hint = json.loads(fake.config("features.multi_agent_v2.multi_agent_mode_hint_text"))
+    assert "on your own initiative" in hint and "spawn_subagent" in hint
+    assert fake.config("model_reasoning_effort") == (json.dumps(effort) if effort else None)
 
 
 async def test_project_mcp_servers_become_overrides_and_unknown_configs_are_reported(

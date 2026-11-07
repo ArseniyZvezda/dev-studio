@@ -627,6 +627,17 @@ class _SessionControl:
 
     def __init__(self, client: Any) -> None:
         self._client = client
+        self._context_lock = asyncio.Lock()
+
+    async def get_context_usage(self) -> dict[str, Any]:
+        """Explicit inspection only: the runtime may ask the provider to count tokens."""
+        get_usage = getattr(self._client, "get_context_usage", None)
+        if get_usage is None:
+            raise RuntimeError("The installed Claude Agent SDK does not support context inspection")
+        if self._context_lock.locked():
+            raise RuntimeError("Context inspection is already running")
+        async with self._context_lock:
+            return await get_usage()
 
     async def enable_remote_control(self, name: str | None = None) -> RemoteControl:
         request: dict[str, Any] = {"subtype": "remote_control", "enabled": True}

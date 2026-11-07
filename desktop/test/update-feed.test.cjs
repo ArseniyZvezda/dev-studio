@@ -83,11 +83,14 @@ test('build and runtime share exact owner/repository validation and never embed 
   }
 });
 
-test('an unconfigured feed stays disabled without reading credentials', async () => {
+test('build and runtime default to the public Studio repository without reading credentials', async () => {
   const env = noCredentials({});
-  assert.equal(buildFeed(env), null);
+  const expected = { provider: 'github', owner: 'voxarium-studio', repo: 'dev-studio', private: false };
+  assert.deepEqual(Array.from(buildFeed(env)), [expected]);
+  const calls = [];
   await configureUpdateFeed({ env,
-    updater: { setFeedURL() { assert.fail('Missing repository must not configure a feed'); } },
-    readCliToken() { assert.fail('Missing repository must not invoke gh'); },
+    updater: { setFeedURL(feed) { calls.push(feed); } },
+    readCliToken() { assert.fail('The default public feed must not invoke gh'); },
   });
+  assert.deepEqual(calls, [expected]);
 });

@@ -22,6 +22,7 @@ import { isActive } from '@/lib/status'
 import type { LifecycleMessage } from '@/lib/subagents'
 import { trackDelegated } from '@/lib/subagents'
 import { tailLine } from '@/lib/transcript'
+import { taskUsage } from '@/lib/task-usage'
 import type {
   AgentMessage,
   TaskResultType,
@@ -656,6 +657,17 @@ export const useTeamsStore = defineStore('teams', () => {
         activity.value[payload.task_id] = { text: line, seq: (previous?.seq ?? 0) + 1 }
       }
       trackSubagents(payload)
+
+      // §10.11: session totals must follow tasks even when their transcript is closed.
+      if (message.kind === 'system' && message.text === 'usage_update') {
+        teams.value = teams.value.map(team => ({ ...team, tasks: team.tasks.map(task => {
+          if (task.id !== message.task_id) return task
+          const usage = taskUsage({ ...task, messages: [message] })
+          return { ...task, total_tokens: usage.totalTokens, total_uncached_tokens: usage.uncachedTokens,
+            total_cached_tokens: usage.cachedTokens, total_input_tokens: usage.inputTokens ?? undefined,
+            total_output_tokens: usage.outputTokens ?? undefined }
+        }) }))
+      }
 
       if (openTask.value?.id !== payload.task_id) return
       openTask.value = {

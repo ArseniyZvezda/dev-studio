@@ -1,7 +1,6 @@
 // Build and runtime use one release-feed policy (dev spec §12.1).
 function updateFeedOptions(env = process.env) {
-  const repository = env.VOXARIUM_STUDIO_UPDATE_REPO;
-  if (!repository) return null;
+  const repository = env.VOXARIUM_STUDIO_UPDATE_REPO || 'voxarium-studio/dev-studio';
   const match = /^([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\/([a-z0-9_.-]{1,100})$/i.exec(repository);
   if (!match || match[0] !== repository || ['.', '..'].includes(match[2])) {
     throw new Error('Expected owner/repository for update feed');

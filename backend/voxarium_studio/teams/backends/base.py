@@ -187,6 +187,12 @@ class AgentRunRequest:
     Other backends retain the caller's read-only policy when no tool-free mode exists.
     """
 
+    proactive_subagents: bool = False
+    """Allow an interactive team member to initiate delegation at any effort (§10.6).
+
+    Task and chat turns opt in. Studio workers and internal one-shot requests work alone.
+    """
+
     def __post_init__(self) -> None:
         # The member is the fallback for both, so a request built without them runs exactly
         # as it did before either existed — which is what the tests and any backend written

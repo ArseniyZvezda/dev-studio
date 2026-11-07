@@ -43,8 +43,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { TaskStatus, TaskUpdate, TeamTask } from '@/api/types'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
+import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import { t } from '@/i18n'
-import { formatCost, isSuccessful, statusColor, statusLabel } from '@/lib/status'
+import { isSuccessful, statusColor, statusLabel } from '@/lib/status'
+import { tokenDirections } from '@/lib/token-directions'
 import { resultTypeColor, resultTypeLabel } from '@/lib/task-result'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -58,6 +60,7 @@ const props = defineProps<{
 const emit = defineEmits<{ select: [string] }>()
 
 const teams = useTeamsStore()
+const usageById = computed(() => new Map(props.tasks.map(task => [task.id, tokenDirections({ ...task }, task.total_tokens)])))
 
 /** Puts the caret in the rename box exactly once, when it appears. A template ref inside
  *  `v-for` would arrive as an array, and a function ref would re-select on every keystroke. */
@@ -641,14 +644,12 @@ onBeforeUnmount(() => {
                 <Bot class="size-3" />
                 {{ subagentCount(task) }}
               </span>
-              <span
-                v-if="task.total_cost_usd"
-                class="ml-auto shrink-0 tabular-nums"
-                :title="t('tasks.board.card.cost', { cost: formatCost(task.total_cost_usd) })"
-              >
-                {{ formatCost(task.total_cost_usd) }}
-              </span>
             </p>
+            <TokenUsageChip v-if="task.total_tokens > 0 || task.total_cost_usd > 0" class="mt-1"
+              :input-tokens="usageById.get(task.id)?.inputTokens ?? null"
+              :output-tokens="usageById.get(task.id)?.outputTokens ?? null"
+              :cached-tokens="usageById.get(task.id)?.cacheReadTokens ?? null"
+              :cost-usd="task.total_cost_usd" />
 
             <!-- The transcript's last line, drawn the way the task dialog draws it under its
                  feed: a row of its own under the assignee, like the Archive button below,

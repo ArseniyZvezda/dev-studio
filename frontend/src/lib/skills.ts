@@ -72,6 +72,11 @@ export function filterSkills(skills: readonly SkillEntry[], query: string): Skil
 
 export type SkillPickerScope = 'all' | 'studio' | 'global' | 'project'
 
+export function skillBackendLabel(backend: string): string {
+  if (backend === 'all' || backend === 'shared') return t(`skills.picker.${backend}`)
+  return ({ claude_code: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code' } as Record<string, string>)[backend] ?? backend
+}
+
 /** Studio folders and bundled skills live together; native project installations stay distinct. */
 export function skillPickerScope(skill: SkillEntry): Exclude<SkillPickerScope, 'all'> {
   if (skill.scope === 'global') return 'global'
