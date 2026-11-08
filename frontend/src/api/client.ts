@@ -57,6 +57,9 @@ import type {
   PluginPage,
   PreviewResult,
   ProjectInfo,
+  MemoryEntryDetail,
+  MemoryOverview,
+  MemoryWrite,
   PromptSpec,
   RenameRequest,
   RevealResult,
@@ -780,6 +783,17 @@ export const api = {
   /** The folder with everything in it, and the name off every member who had it. */
   deleteSkill: (name: string) =>
     request<SkillsOverview>('DELETE', `/skills/${encodeURIComponent(name)}`),
+
+  // ------------------------------------------------------------ project memory (§10.12)
+  /** `voxarium_studio/memory/` with the index agents are sent; the switch and cap are team settings. */
+  memory: () => request<MemoryOverview>('GET', '/memory'),
+  memoryEntry: (name: string) =>
+    request<MemoryEntryDetail>('GET', `/memory/${encodeURIComponent(name)}`),
+  /** 409 when `create` finds the name taken, or the entry changed since `expected_updated_at`. */
+  saveMemoryEntry: (name: string, body: MemoryWrite) =>
+    request<MemoryEntryDetail>('PUT', `/memory/${encodeURIComponent(name)}`, { body }),
+  deleteMemoryEntry: (name: string) =>
+    request<MemoryOverview>('DELETE', `/memory/${encodeURIComponent(name)}`),
 
   // ------------------------------------------------------------ automations (§6.5)
   /**

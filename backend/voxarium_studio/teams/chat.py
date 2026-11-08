@@ -458,6 +458,7 @@ class ChatService:
                                     chat_id=chat_id, producer_effort_mode=chat.producer_effort_mode)
             if chat.producer_mode and toolset is None:
                 raise ValueError("Producer Mode needs the built-in Studio MCP tools enabled.")
+            from .memory import memory_prompt
             from .orchestrator import _build_system_prompt, code_graph_file
 
             # The member's skills reach a chat as they reach a task (§10.10) — the same folders,
@@ -480,6 +481,9 @@ class ChatService:
                 isolated=False,
                 docs_dir=orchestrator.docs.directory,
                 has_studio_tools=toolset is not None,
+                # §10.12: a chat, the Producer's included, is told the project memory too.
+                memory=memory_prompt(orchestrator.memory, self.config.teams,
+                                     has_tools=toolset is not None),
                 prompts=self.config.teams.prompts,
                 code_graph=code_graph_file(workdir),
                 include_identity=agent_name is None,

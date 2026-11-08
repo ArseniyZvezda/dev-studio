@@ -85,8 +85,9 @@ class FileObserver:
             return False
         if len(parts) > 1 and parts[0] == "voxarium_studio":
             # Temp has its own per-task listing; observing the shared tree would attach
-            # another task's disposable files to this run's change evidence (§10.4).
-            if parts[1] in {"runs", "assets", "temp", "worktrees"} or parts[1].startswith("app.db"):
+            # another task's disposable files to this run's change evidence (§10.4). Project
+            # memory is shared the same way, and is not a task's output at all (§10.12).
+            if parts[1] in {"runs", "assets", "temp", "memory", "worktrees"} or parts[1].startswith("app.db"):
                 return False
         return True
 

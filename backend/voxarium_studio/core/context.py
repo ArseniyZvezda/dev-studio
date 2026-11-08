@@ -26,6 +26,7 @@ from ..teams import skill as studio_skill
 from ..teams.authoring import ProjectAuthoring
 from ..teams.chat import ChatService
 from ..teams.docs import DocStore
+from ..teams.memory import MemoryStore
 from ..teams.orchestrator import TeamOrchestrator
 from ..teams.project_skills import SkillStore, check_new_name
 from ..updates import UpdateService, running_work
@@ -76,6 +77,8 @@ class AppContext:
         self.docs = DocStore(paths, self.bus)
         self.skills = SkillStore(paths, builtins=self._builtin_skills)
         """``voxarium_studio/skills/`` — the Skills page's folder, and what members are given (§10.10)."""
+        self.memory = MemoryStore(paths, self.bus)
+        """``voxarium_studio/memory/`` — what every agent is told the project has learned (§10.12)."""
         self.teams = TeamOrchestrator(
             paths=paths,
             db=self.db,
@@ -84,6 +87,7 @@ class AppContext:
             config=config,
             docs=self.docs,
             skills=self.skills,
+            memory=self.memory,
         )
         self.chats = ChatService(self.teams)
         self._teams_ready = False

@@ -142,6 +142,11 @@ export interface EventPayloads {
   /** A document was written — or deleted, when `deleted` is set, with no title left to send. */
   'team.doc.changed': { path: string; title: string | null; author: string | null; deleted?: boolean }
   /**
+   * A project memory entry was written or, with `deleted`, removed — by an agent's `remember` /
+   * `forget` or from the Memory page (§10.12). A hand edit arrives as `explorer.file_changed`.
+   */
+  'team.memory.changed': { name: string; author: string | null; deleted?: boolean }
+  /**
    * A folder of the Documents tree changed its look, its name when `previous_path` is set, or went
    * with everything in it when `deleted` is (block-editor spec §5.2). The documents a rename
    * rewrote arrive as `team.doc.changed`; the documents a delete took do not arrive one by one.

@@ -3144,6 +3144,38 @@ async def test_the_run_prompts_follow_the_settings(teams: AppContext, wait_for) 
     assert seen[0].continue_prompt == "Keep going."
 
 
+async def test_every_run_opens_with_the_current_project_memory(teams: AppContext, wait_for) -> None:
+    """§10.12: the index is read per run, so an entry written between two runs reaches the
+    second; switched off, the run is told nothing about memory."""
+    pytest.importorskip("claude_agent_sdk")
+    seen = await _record_requests(teams, "recording_memory")
+
+    first = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t", brief="b", auto_start=True
+    )
+    await release(teams, first.id)
+    await wait_for(first.id, timeout=20)
+    assert "Project memory holds lasting facts" in seen[0].system_prompt
+    assert "(no entries yet)" in seen[0].system_prompt
+
+    await teams.memory.write("build-uses-ue-5-4", description="Unreal 5.4 only", content="")
+    second = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t2", brief="b", auto_start=True
+    )
+    await release(teams, second.id)
+    await wait_for(second.id, timeout=20)
+    assert "- build-uses-ue-5-4 — Unreal 5.4 only" in seen[1].system_prompt
+
+    teams.config.teams.memory_enabled = False
+    third = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t3", brief="b", auto_start=True
+    )
+    await release(teams, third.id)
+    await wait_for(third.id, timeout=20)
+    assert "Project memory" not in seen[2].system_prompt
+    assert "build-uses-ue-5-4" not in seen[2].system_prompt
+
+
 async def test_a_code_graph_at_the_launch_root_reaches_the_prompt(
     teams: AppContext, wait_for
 ) -> None:

@@ -70,6 +70,7 @@ const GROUPS: { title: MessageKey; note: MessageKey; keys: string[] }[] = [
       'no_studio_tools',
       'member_skills',
       'docs_location',
+      'project_memory',
       'code_graph',
       'isolated_checkout',
       'outside_project',

@@ -129,7 +129,7 @@ async def test_exclusions_and_more_than_one_ui_batch(tmp_path):
     for name in [
         "node_modules/a", ".git/index", "voxarium_studio/app.db-wal",
         "voxarium_studio/runs/log", "voxarium_studio/temp/VS-01/nested/probe.py",
-        "voxarium_studio/temp/VS-02/result.json",
+        "voxarium_studio/temp/VS-02/result.json", "voxarium_studio/memory/some-fact.md",
     ]:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
