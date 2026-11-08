@@ -1,7 +1,8 @@
 """Studio tools handed to an agent team member (§10.4).
 
-A member can work the task board, delegate, write shared documents, and author project
-pipelines, automations and skills (§10.7, ``authoring.py``). All of them are
+A member can work the task board, delegate, write shared documents, keep the project
+memory (§10.12, ``memory_tools.py``), and author project pipelines, automations and skills
+(§10.7, ``authoring.py``). All of them are
 exposed as an in-process MCP server, so the tools run inside the Studio — same event bus,
 same database, same routing rules as a click in the UI — rather than as a subprocess the
 agent could reach around.
@@ -43,6 +44,7 @@ from ..models.teams import (
     TeamTask,
 )
 from .docs import DocStore
+from .memory_tools import build_memory_tools
 from .subagent_tools import build_subagent_tools
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
@@ -800,6 +802,8 @@ def build_toolset(
             "user. End the turn now without any additional text or closing reply."
         )
 
+    # §10.12: switched off, project memory is neither in the prompt nor within reach.
+    memory_on = orchestrator.config.teams.memory_enabled
     tools = [
         list_team,
         list_tasks,
@@ -811,11 +815,16 @@ def build_toolset(
         list_docs,
         read_doc,
         write_doc,
+        *(build_memory_tools(orchestrator, member_id=member.id) if memory_on else []),
     ]
     if subagent_id is not None:
         # §10.3: children work files in the parent's scope; only the parent owns the
-        # task lifecycle, delegation and project-authoring mutations.
-        tools = [list_team, list_tasks, get_task, list_docs, read_doc]
+        # task lifecycle, delegation and project-authoring mutations — and memory's.
+        tools = [
+            list_team, list_tasks, get_task, list_docs, read_doc,
+            *(build_memory_tools(orchestrator, member_id=member.id, read_only=True)
+              if memory_on else []),
+        ]
     else:
         tools.extend(build_subagent_tools(
             orchestrator, member_id=member.id, task_id=task.id if task else None, run_id=run_id,

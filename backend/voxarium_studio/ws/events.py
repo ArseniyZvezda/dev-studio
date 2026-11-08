@@ -52,6 +52,11 @@ class EventType(StrEnum):
     go and read. The documents a rename rewrote arrive as ``team.doc.changed``; the documents a
     delete took do not arrive one by one."""
 
+    TEAM_MEMORY_CHANGED = "team.memory.changed"
+    """A project memory entry was written or, with ``deleted`` set, deleted — by an agent's
+    ``remember``/``forget`` or from the Memory page (§10.12). Carries ``name`` and ``author``.
+    A hand edit of the file arrives as ``explorer.file_changed`` instead."""
+
     TEAM_CHAT_UPDATED = "team.chat.updated"
     """A chat with a team member was created or changed — its title, its running state, its
     totals (``teams/chat.py``). Carries the whole chat as ``GET /api/chats/{id}`` returns it

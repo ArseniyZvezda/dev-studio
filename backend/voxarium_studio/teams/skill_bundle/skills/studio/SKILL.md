@@ -223,6 +223,27 @@ A document's title is its first `#` heading. The Studio shows documents in a blo
 own Markdown dialect — callouts, toggles, coloured text, sized pictures, wiki links. Before writing
 anything beyond paragraphs, headings, lists, tables and code, read [documents.md](documents.md).
 
+## Project memory
+
+Project memory is the team's short list of lasting facts about the project, shared by every agent
+whatever runtime it uses. Your system prompt carries its index — one `- name — description` line
+per entry — when it is switched on; the entries' text is not sent.
+
+- **`recall`** — with `name`, one entry whole; with `query`, the entries matching every word; with
+  neither, the full index, including entries the prompt's index had no room for.
+- **`remember`** — saves one entry: a `name` of lowercase letters, digits and dashes, a one-line
+  `description` (the line every agent sees, so make it say the fact and when it matters) and the
+  `content` — what, why and how to apply it. A taken name is refused unless you pass
+  `replace: true`; read the entry first and send the corrected whole entry.
+- **`forget`** — deletes an entry that turned out wrong or no longer holds.
+
+Read the entries that bear on your task before relying on them. Remember what future work will need
+and the code and documents do not already say: a decision and its reason, a convention, a pitfall
+you hit, where something lives. Do not remember task progress, what only this task needs, or
+anything a document already holds — link the document instead. When an entry you read is wrong,
+fix it rather than working around it. Entries are written straight to the project, not to your
+checkout, so colleagues see them at once.
+
 ## Pipelines, automations and project skills
 
 These tools edit the **managed project** open in Studio, including from an isolated checkout.

@@ -116,6 +116,21 @@ SPECS: dict[str, PromptSpec] = {
         "The team's shared documents live in {docs_dir}.",
         placeholders=("docs_dir",),
     ),
+    # §10.12: sent whenever project memory is on and the Studio's tools reach the run — also
+    # when it is empty, because it is what asks the run to record what it learns. `{entries}`
+    # is the index, one `- name — description` line per entry, capped by
+    # `teams.memory_index_chars`.
+    "project_memory": PromptSpec(
+        "Project memory holds lasting facts about this project that the team recorded for "
+        "every agent: decisions, conventions, pitfalls, where things live. Each line below is "
+        "an entry's name and what it is about; read an entry with recall before relying on "
+        "it. When you learn something that future work on this project will need and that "
+        "the code and the documents do not already say, save it with remember: one fact per "
+        "entry, with a description that says when it matters. If an entry turns out to be "
+        "wrong or outdated, correct it with remember (replace) or remove it with forget. Do "
+        "not record task progress or anything only the current task needs.\n{entries}",
+        placeholders=("entries",),
+    ),
     # Sent only when a graphify knowledge graph exists at the agent launch root — the
     # artifact, not the plugin, is the condition, so a graph somebody built by hand counts
     # and a plugin that has not indexed yet does not. The built-in `graphify` plugin is what
@@ -394,6 +409,7 @@ class AgentPromptsConfig(BaseModel):
     no_studio_tools: str | None = None
     member_skills: str | None = None
     docs_location: str | None = None
+    project_memory: str | None = None
     code_graph: str | None = None
     isolated_checkout: str | None = None
     outside_project: str | None = None

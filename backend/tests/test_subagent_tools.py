@@ -33,7 +33,7 @@ def bound_tools():
         send=AsyncMock(return_value={**child, "status": "queued"}),
     )
     orchestrator = SimpleNamespace(
-        config=AppConfig(), db=object(), docs=object(), authoring=None,
+        config=AppConfig(), db=object(), docs=object(), memory=object(), authoring=None,
         subagents=manager, report_result=AsyncMock(),
     )
 
@@ -129,7 +129,10 @@ def test_child_toolset_exposes_only_read_context_and_never_parent_mutations(boun
     orchestrator, _, build = bound_tools
     orchestrator.authoring = SimpleNamespace(tools=Mock(return_value=[]))
     child_tools = build(subagent_id="child_1")
-    assert set(definitions(child_tools)) == {"list_team", "list_tasks", "get_task", "list_docs", "read_doc"}
+    # §10.12: project memory is read-only for a child, like the board.
+    assert set(definitions(child_tools)) == {
+        "list_team", "list_tasks", "get_task", "list_docs", "read_doc", "recall",
+    }
     assert all("subagent" not in name for name in child_tools.allowed_tools)
     orchestrator.authoring.tools.assert_not_called()
 
