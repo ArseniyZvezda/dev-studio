@@ -24,16 +24,10 @@ async def test_workspace_creation_enables_and_persists_idle_producer(ctx):
     assert ctx.chats.to_json(stored)["producer_workspace"] is True
 
 
-async def test_workspace_creation_does_not_inherit_team_pause_before_start(ctx):
-    ctx.teams.paused_teams.add(TEAM)
-    chat = await ctx.chats.create_chat(PRODUCER, producer_mode=True)
-    assert chat.producer_mode and not chat.producer_started and not chat.producer_paused
-
-
-async def test_empty_workspace_does_not_pause_team_on_project_reopen(ctx):
+async def test_empty_workspace_stays_unstarted_on_project_reopen(ctx):
     chat = await ctx.chats.create_chat(PRODUCER, producer_mode=True)
     await ctx.chats.producer.restore_paused()
-    assert TEAM not in ctx.teams.paused_teams
+    assert chat.id not in ctx.teams.paused_producer_chats
     stored = await ctx.chats.get_chat(chat.id)
     assert not stored.producer_started and not stored.producer_paused
 

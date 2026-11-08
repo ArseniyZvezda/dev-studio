@@ -233,6 +233,30 @@ describe('the chat store', () => {
     expect(store.activeChat?.producer_workspace).toBe(true)
   })
 
+  it.each(['running', 'paused'])('works in a second Producer chat while the first is %s', async state => {
+    installStorage()
+    const first = chatRow({ member_id: 'team_default__studio-producer', producer_mode: true,
+      producer_workspace: true, producer_started: true, producer_paused: state === 'paused',
+      is_running: state === 'running', producer_plan_summary: 'First plan' })
+    listed = [first]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(first.id)
+    const second = await store.createProducerChat(first.member_id)
+    expect(second).not.toBe(first.id)
+    expect(await store.send('Second goal', CONTEXT, [], true)).toBe(true)
+
+    handlers.get('team.chat.message')!(messageRow(first.id, { text: 'First reply' }))
+    handlers.get('team.chat.updated')!({ ...first, is_running: false })
+    expect(store.activeChat).toMatchObject({ id: second, is_running: true })
+    expect(store.activeMessages.map(message => message.text)).toEqual(['Second goal'])
+    expect(store.messages[first.id]?.at(-1)?.text).toBe('First reply')
+    expect(store.chats.find(chat => chat.id === first.id)).toMatchObject({
+      producer_paused: state === 'paused', producer_plan_summary: 'First plan',
+    })
+    expect(calls.map(call => call.name)).toEqual(['chats', 'chat', 'createChat', 'sendChatMessage'])
+  })
+
   it('adopts an existing off chat before its next Producer page message', async () => {
     installStorage()
     listed = [chatRow({ id: 'old-producer', producer_mode: false })]
@@ -242,6 +266,95 @@ describe('the chat store', () => {
     expect(await store.send('Continue', CONTEXT, [], true)).toBe(true)
     expect(calls.slice(-2).map(call => call.name)).toEqual(['useProducerWorkspace', 'sendChatMessage'])
     expect(store.activeChat).toMatchObject({ producer_workspace: true, producer_mode: true })
+  })
+
+  it('sends the first message to its new chat even if another chat is opened during creation', async () => {
+    installStorage()
+    const other = chatRow()
+    const created = chatRow({ member_id: 'producer', producer_mode: true, producer_workspace: true })
+    listed = [other]
+    const store = useChatStore()
+    await store.load()
+    store.startNew(created.member_id)
+    let finish!: (row: AgentChat) => void
+    const create = vi.spyOn(api, 'createChat').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    try {
+      const first = store.send('Original goal', CONTEXT, [], true)
+      await store.openChat(other.id)
+      store.setSelection('Selected in the other chat')
+      listed.push(created)
+      finish(created)
+      expect(await first).toBe(true)
+      expect(store.activeChatId).toBe(other.id)
+      expect(store.selection).toBe('Selected in the other chat')
+      expect(store.messages[created.id]?.map(row => row.text)).toEqual(['Original goal'])
+      expect(store.activeMessages.some(row => row.text === 'Original goal')).toBe(false)
+    } finally { create.mockRestore() }
+  })
+
+  it('lets a second chat send while Pause is pending and keeps a late error out of that chat', async () => {
+    installStorage()
+    const first = chatRow({ producer_mode: true, producer_started: true })
+    listed = [first]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(first.id)
+    let fail!: (error: Error) => void
+    const pause = vi.spyOn(api, 'pauseProducer').mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    try {
+      const pausing = store.producerAction('pause')
+      expect(store.busy).toBe(true)
+      const second = await store.createProducerChat(first.member_id)
+      expect(store.busy).toBe(false)
+      expect(await store.send('Second goal', CONTEXT, [], true)).toBe(true)
+      fail(new Error('Pause failed in first chat'))
+      await pausing
+      expect(store.error).toBeNull()
+      expect(store.activeChat).toMatchObject({ id: second, is_running: true })
+      expect(pause).toHaveBeenCalledWith(first.id)
+      await store.openChat(first.id)
+      expect(store.error).toBe('Pause failed in first chat')
+    } finally { pause.mockRestore() }
+  })
+
+  it('does not resurrect a deleted chat when its pending pause completes', async () => {
+    installStorage()
+    const first = chatRow({ producer_mode: true, producer_started: true })
+    const second = chatRow()
+    listed = [first, second]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(first.id)
+    let finish!: (row: AgentChat) => void
+    const pause = vi.spyOn(api, 'pauseProducer').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    try {
+      const pausing = store.producerAction('pause')
+      await store.openChat(second.id)
+      handlers.get('team.chat.deleted')!({ chat_id: first.id })
+      finish({ ...first, producer_paused: true })
+      await pausing
+      expect(store.chats.map(row => row.id)).toEqual([second.id])
+      expect(store.activeChatId).toBe(second.id)
+    } finally { pause.mockRestore() }
+  })
+
+  it('keeps the live status and reply received while the selected chat is opening', async () => {
+    installStorage()
+    const row = chatRow({ producer_mode: true, is_running: true })
+    listed = [row]
+    const store = useChatStore()
+    await store.load()
+    let finish!: (detail: AgentChat & { messages: AgentChatMessage[] }) => void
+    const fetch = vi.spyOn(api, 'chat').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    try {
+      const opening = store.openChat(row.id)
+      handlers.get('team.chat.message')!(messageRow(row.id, { text: 'Latest reply' }))
+      handlers.get('team.chat.updated')!({ ...row, producer_paused: true, is_running: false })
+      finish({ ...row, messages: [] })
+      await opening
+      expect(store.activeChat).toMatchObject({ producer_paused: true, is_running: false })
+      expect(store.activeMessages.map(message => message.text)).toEqual(['Latest reply'])
+    } finally { fetch.mockRestore() }
   })
 
   it('does not resurrect a deleted chat when its earlier transcript fetch completes', async () => {

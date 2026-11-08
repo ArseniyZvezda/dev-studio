@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentMessage } from '@/api/types'
-import { mergeTaskConversation, taskConversationRows } from '@/lib/task-conversation'
+import { mergeTaskConversation } from '@/lib/task-conversation'
+import { transcriptRows } from '@/lib/transcript'
 import { resultTypeOf } from '@/lib/task-result'
 
 const message = (id: string, at: number, extra: Partial<AgentMessage> = {}): AgentMessage => ({
@@ -31,16 +32,16 @@ describe('Producer task conversation reconciliation', () => {
   })
 })
 
-describe('Producer task conversation summaries', () => {
+describe('Shared task conversation summaries', () => {
   it.each(['done', 'question', 'error'] as const)('preserves the closing reply projection for %s', resultType => {
     const report = message('report', 1, { kind: 'summary', text: 'Detailed report', data: { result_type: resultType } })
     const closing = message('closing', 3, { text: 'Closing reply' })
-    const rows = taskConversationRows([
+    const rows = transcriptRows([
       report,
       message('tool-result', 2, { kind: 'tool_result', role: 'system' }),
       closing,
       message('result', 4, { kind: 'result', role: 'system' }),
-    ])
+    ], 'advanced')
     expect(rows.map(row => row.key)).toEqual(['report', 'closing'])
     expect(rows.map(row => resultTypeOf(row.message))).toEqual([null, resultType])
     expect(report.kind).toBe('summary')
@@ -53,17 +54,17 @@ describe('Producer task conversation summaries', () => {
     const continued = message('continued', 3, { kind: 'continued', role: 'system' })
     const next = message('next', 4)
     const error = message('error', 5, { kind: 'error', role: 'system' })
-    const rows = taskConversationRows([report, cancelled, continued, next, error])
+    const rows = transcriptRows([report, cancelled, continued, next, error], 'compact')
     expect(rows.map(row => row.key)).toEqual(['report', 'cancelled', 'continued', 'next', 'error'])
     expect(resultTypeOf(rows[0]!.message)).toBe('done')
     expect(resultTypeOf(rows[3]!.message)).toBeNull()
   })
 
   it('deduplicates identical reports while retaining the closing summary type', () => {
-    const rows = taskConversationRows([
+    const rows = transcriptRows([
       message('report', 1, { kind: 'summary', text: 'Done', data: { result_type: 'done' } }),
       message('closing', 2, { text: 'Done' }),
-    ])
+    ], 'compact')
     expect(rows.map(row => row.key)).toEqual(['closing'])
     expect(resultTypeOf(rows[0]!.message)).toBe('done')
   })

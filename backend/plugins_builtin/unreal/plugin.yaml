@@ -3,17 +3,18 @@ name: Unreal Engine
 version: 0.1.0
 author: Voxarium Studio
 description: >
-  Drives an Unreal Engine project from a pipeline through the editor's Python API —
-  the concrete form of the spec's "engine import" step (§8.3, node 4).
+  Builds and packages Unreal games with their cooked content using AutomationTool.
+  Build can also compile a target such as MyGameEditor with UnrealBuildTool (§9.5).
 
   The `unreal` module only exists inside the editor process, so nothing here imports it.
-  The nodes generate a Python script and deliver it to the editor one of two ways:
+  The import and scripting nodes deliver Python to the editor one of two ways:
   Remote Execution into a running editor (fast, keeps your session), or a headless
   `UnrealEditor-Cmd` run (works with nothing open, suits CI). `auto` tries the first and
   falls back to the second.
 
-  Set the project path and, for the headless route, the editor executable on the Unreal
-  Engine settings page. Remote Execution must be switched on in the UE project
+  Set the project path, engine installation for Build, and editor executable for headless
+  runs on the Unreal Engine settings page. Build can also locate the engine from the editor
+  executable. Remote Execution must be switched on in the UE project
   (Project Settings -> Plugins -> Python -> Enable Remote Execution) — it is off by default.
 enabled_by_default: true
 

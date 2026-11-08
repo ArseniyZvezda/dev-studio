@@ -13,6 +13,43 @@ def header(base):
     return {"type": "session_meta", "payload": {"base_instructions": {"text": base}}}
 
 
+def test_only_model_sourced_base_is_tagged_even_when_other_fields_quote_it():
+    base = "Same text passed through three different roles."
+    recorded = header(base)
+    recorded["payload"]["base_instructions"]["provenance"] = {"type": "model", "model": "test-model"}
+    fields = message("developer", base, base, "Memory without a heading.")
+    fields["payload"]["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": ["model.base_instructions", "generic.developer_instructions", "memories.instructions"],
+        "content_item_metadata": [
+            {"provenance": {"type": "harness", "hook": False}},
+            {"provenance": {"type": "developer_instructions"}},
+            {"provenance": {"type": "harness", "hook": False}}]}
+    rows = [recorded, fields, message("user", base), message("assistant", base)]
+    parts = codex_context(rows).sources
+    assert [(p["category"], p.get("provided_by")) for p in parts] == [
+        ("system", "codex"), ("developer", None), ("memory", None), ("task", None), ("history", None)]
+    assert [p["text"] for p in parts] == [base, base, "Memory without a heading.", base, base]
+    assert all("provided_by" not in p for p in parts[1:])
+    assert [(p["source_kind"], p.get("source_detail")) for p in parts] == [
+        ("base_instructions", "test-model"),
+        ("developer_message", "generic.developer_instructions · developer_instructions"),
+        ("memory", "memories.instructions · harness"), ("user_message", None), ("assistant_message", None),
+    ]
+
+    # Header-only and compacted journals carry the explicit model attribution too.
+    compacted = {"type": "compacted", "payload": {"replacement_history": [fields["payload"]]}}
+    assert codex_context([recorded]).sources[0]["provided_by"] == "codex"
+    assert [p.get("provided_by") for p in codex_context([recorded, compacted]).sources] == ["codex", None, None]
+
+    # A user override may use precisely the same wording, and a hook may supply a replacement.
+    fields["payload"]["internal_chat_message_metadata_passthrough"]["content_item_metadata"][0][
+        "provenance"]["hook"] = True
+    assert not any("provided_by" in p for p in codex_context(rows).sources)
+    for provenance in (None, {"type": "custom"}, {"type": "model"}):
+        recorded["payload"]["base_instructions"]["provenance"] = provenance
+        assert "provided_by" not in codex_context([recorded]).sources[0]
+
+
 def test_inventory_preserves_independent_instruction_fields_and_mirrors():
     base = "  You are Codex.\r\n"
     memory = "## Memory\r\nLocal memory.\r\n"
@@ -48,8 +85,10 @@ def test_output_blocks_structured_tools_and_agent_messages_keep_their_own_source
               {"type": "input_text", "text": "next"}]
     def item(kind, **extra):
         return {"type": "response_item", "payload": {"type": kind, **extra}}
-    output = item("custom_tool_call_output", id="same", output=fields)
-    result = codex_context([item("additional_tools", tools=[schema]), item("function_call", arguments=raw),
+    output = item("function_call_output", id="same", call_id="call-1", output=fields)
+    result = codex_context([item("additional_tools", tools=[schema]),
+                            item("function_call", namespace="functions", name="example", arguments=raw,
+                                 call_id="call-1"),
                             output, output, item("agent_message", id="same", content=[
                                 {"type": "encrypted_content", "encrypted_content": "opaque"},
                                 {"type": "input_text", "text": "agent message"}]),
@@ -60,6 +99,13 @@ def test_output_blocks_structured_tools_and_agent_messages_keep_their_own_source
         ("tools", raw), ("tools", "first\r\n"), ("tools", "next"), ("agents", "agent message"),
         ("thinking", "summary"), ("thinking", "reasoning")]
     assert all(p["representation"] == "text" for p in rest)
+    assert [(p["source_kind"], p["source_detail"]) for p in rest[:3]] == [
+        ("tool_call", "functions.example"), ("tool_result", "functions.example"), ("tool_result", "functions.example"),
+    ]
+    # Compaction removed the call: its former name cannot be attributed to a retained result.
+    retained = {"type": "compacted", "payload": {"replacement_history": [output["payload"]]}}
+    before = item("function_call", name="stale", call_id="call-1", arguments=raw)
+    assert codex_context([before, retained]).sources[0]["source_detail"] == "call-1"
 
 
 def test_compaction_does_not_inherit_parent_base_or_earlier_partial_state():

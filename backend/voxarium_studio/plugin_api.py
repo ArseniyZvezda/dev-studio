@@ -6,6 +6,7 @@ Everything re-exported here is considered public and versioned; anything else un
 ``voxarium_studio.*`` is internal and may change between releases.
 """
 
+from .core.processes import kill_process_tree
 from .plugins.api import (
     ActionHandler,
     AutomationActionHandler,
@@ -46,4 +47,5 @@ __all__ = [
     "SearchQuery",
     "SearchResponse",
     "SearchResult",
+    "kill_process_tree",
 ]

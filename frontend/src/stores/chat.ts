@@ -126,8 +126,12 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<Record<string, AgentChatMessage[]>>({})
   const loaded = ref(false)
   const loading = ref(false)
-  const busy = ref(false)
+  const pendingActions = ref(new Set<string>())
+  const actionKey = computed(() => view.value === 'chat' && activeChatId.value ? activeChatId.value : view.value)
+  const busy = computed(() => pendingActions.value.has(actionKey.value))
   const error = ref<string | null>(null)
+  const actionErrors = ref(new Map<string, string>())
+  const visibleError = computed(() => error.value ?? actionErrors.value.get(actionKey.value) ?? null)
   /** Chats a member answered in while the popup was not showing them. */
   const unread = ref(new Set<string>())
 
@@ -163,6 +167,8 @@ export const useChatStore = defineStore('chat', () => {
 
   // ---- navigation
 
+  let openRequest = 0
+
   function show(): void {
     open.value = true
     if (view.value === 'chat' && activeChatId.value) unread.value.delete(activeChatId.value)
@@ -178,15 +184,17 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function showList(): void {
+    openRequest++
     view.value = 'list'
+    error.value = null
   }
 
   function startNew(memberId: string | null = null): void {
+    openRequest++
     if (memberId) newMemberId.value = memberId
     view.value = 'new'
+    error.value = null
   }
-
-  let openRequest = 0
 
   async function openChat(chatId: string): Promise<void> {
     const request = ++openRequest
@@ -194,11 +202,14 @@ export const useChatStore = defineStore('chat', () => {
     activeChatId.value = chatId
     unread.value.delete(chatId)
     error.value = null
+    messages.value[chatId] ??= []
+    const previous = chats.value.find(chat => chat.id === chatId)
     try {
       const detail = await api.chat(chatId)
       if (request !== openRequest || activeChatId.value !== chatId || view.value !== 'chat') return
       const { messages: fetched, ...chat } = detail
-      upsert(chat)
+      // The fetch may predate a live update or an action in this same chat.
+      if (previous === chats.value.find(entry => entry.id === chatId)) upsert(chat)
       // Events may have appended while the fetch was in flight; keep what they brought.
       const known = messages.value[chatId] ?? []
       const seen = new Set(fetched.map((message) => message.id))
@@ -210,9 +221,7 @@ export const useChatStore = defineStore('chat', () => {
       if (request !== openRequest || activeChatId.value !== chatId || view.value !== 'chat') return
       if (cause instanceof ApiError && cause.status === 404) {
         // Deleted from another tab, or the project changed under us.
-        chats.value = chats.value.filter((chat) => chat.id !== chatId)
-        activeChatId.value = null
-        view.value = 'list'
+        forget(chatId)
         return
       }
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -262,43 +271,70 @@ export const useChatStore = defineStore('chat', () => {
 
   // ---- actions
 
+  // §10.11: an HTTP action belongs to the chat that initiated it. A different
+  // conversation can send or pause while the first is still waiting on the server.
+  async function runAction<T>(fallback: T, work: (action: {
+    created: (chat: AgentChat) => void
+    selected: () => boolean
+  }) => Promise<T>, key = actionKey.value): Promise<T> {
+    const origin = actionKey.value
+    if (pendingActions.value.has(key)) return fallback
+    pendingActions.value.add(key)
+    actionErrors.value.delete(origin)
+    let request = openRequest
+    const member = newMemberId.value
+    const selected = () => request === openRequest && (view.value !== 'new' || member === newMemberId.value)
+    let createdId: string | null = null
+    error.value = null
+    function created(chat: AgentChat): void {
+      upsert(chat)
+      messages.value[chat.id] ??= []
+      createdId = chat.id
+      pendingActions.value.add(chat.id)
+      if (!selected()) return
+      request = ++openRequest
+      newMemberId.value = chat.member_id
+      activeChatId.value = chat.id
+      view.value = 'chat'
+    }
+    try {
+      return await work({ selected, created })
+    } catch (cause) {
+      const target = createdId ?? origin
+      if (target === actionKey.value || chats.value.some(row => row.id === target)) {
+        actionErrors.value.set(target, cause instanceof Error ? cause.message : String(cause))
+      }
+      return fallback
+    } finally {
+      pendingActions.value.delete(key)
+      if (createdId) pendingActions.value.delete(createdId)
+    }
+  }
+
+  // A socket deletion can arrive before a pending action's HTTP response.
+  function updateExisting(chat: AgentChat): void {
+    if (chats.value.some(entry => entry.id === chat.id)) upsert(chat)
+  }
+
   /** Adopt an existing Producer chat on the workspace without resetting its plan. */
   async function ensureProducerChat(chatId: string): Promise<boolean> {
     const known = chats.value.find(chat => chat.id === chatId)
     if (known?.producer_workspace && known.producer_mode) return true
-    if (busy.value) return false
-    busy.value = true
-    error.value = null
-    try {
-      upsert(await api.useProducerWorkspace(chatId, locale.value))
+    return runAction(false, async () => {
+      updateExisting(await api.useProducerWorkspace(chatId, locale.value))
       return true
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      busy.value = false
-    }
+    })
   }
 
   /** Create an idle, permanently enabled Producer conversation (§10.11). */
   async function createProducerChat(memberId: string): Promise<string | null> {
-    if (busy.value) return null
-    busy.value = true
-    error.value = null
-    try {
+    if (pendingActions.value.has('create-producer')) return null
+    openRequest++
+    return runAction(null, async action => {
       const created = await api.createChat({ member_id: memberId, producer_mode: true, locale: locale.value })
-      upsert(created)
-      messages.value = { ...messages.value, [created.id]: [] }
-      newMemberId.value = memberId
-      activeChatId.value = created.id
-      view.value = 'chat'
+      action.created(created)
       return created.id
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return null
-    } finally {
-      busy.value = false
-    }
+    }, 'create-producer')
   }
 
   /**
@@ -307,10 +343,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function send(text: string, context: ChatContext, attachments: string[] = [], producerMode = false): Promise<boolean> {
     const body = text.trim()
-    if ((!body && !attachments.length) || busy.value) return false
-    busy.value = true
-    error.value = null
-    try {
+    if (!body && !attachments.length) return false
+    return runAction(false, async action => {
       let chatId = activeChatId.value
       if (view.value === 'new' || !chatId) {
         if (!newMemberId.value) {
@@ -319,41 +353,33 @@ export const useChatStore = defineStore('chat', () => {
         }
         const created = await api.createChat({ member_id: newMemberId.value,
           ...(producerMode ? { producer_mode: true, locale: locale.value } : {}) })
-        upsert(created)
-        messages.value = { ...messages.value, [created.id]: [] }
+        action.created(created)
         chatId = created.id
-        activeChatId.value = chatId
-        view.value = 'chat'
       }
       // An older ordinary turn may have prevented adoption when the page opened.
       // Retry before its next message so this page never sends outside Producer Mode.
       const current = chats.value.find(chat => chat.id === chatId)
       if (producerMode && (!current?.producer_workspace || !current.producer_mode)) {
-        upsert(await api.useProducerWorkspace(chatId, locale.value))
+        updateExisting(await api.useProducerWorkspace(chatId, locale.value))
       }
-      const result = await api.sendChatMessage(chatId, body, context, attachments)
-      upsert(result.chat)
-      appendMessage(result.message)
-      selection.value = ''
+      try {
+        const result = await api.sendChatMessage(chatId, body, context, attachments)
+        updateExisting(result.chat)
+        appendMessage(result.message)
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 409) throw new Error(t('chat.errors.stillAnswering'))
+        throw cause
+      }
+      if (action.selected()) selection.value = ''
       return true
-    } catch (cause) {
-      error.value =
-        cause instanceof ApiError && cause.status === 409
-          ? t('chat.errors.stillAnswering')
-          : cause instanceof Error
-            ? cause.message
-            : String(cause)
-      return false
-    } finally {
-      busy.value = false
-    }
+    })
   }
 
   async function stop(chatId: string): Promise<void> {
     try {
       await api.cancelChat(chatId)
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
+      if (view.value === 'chat' && activeChatId.value === chatId) error.value = cause instanceof Error ? cause.message : String(cause)
     }
   }
 
@@ -364,17 +390,12 @@ export const useChatStore = defineStore('chat', () => {
       error.value = t('chat.producer.estimateInvalid')
       return
     }
-    busy.value = true
-    error.value = null
-    try {
+    return runAction(undefined, async request => {
       let current = activeChat.value
       if (action === 'start' && (view.value === 'new' || !current)) {
         if (!newMemberId.value) return
         current = await api.createChat({ member_id: newMemberId.value })
-        upsert(current)
-        messages.value = { ...messages.value, [current.id]: [] }
-        activeChatId.value = current.id
-        view.value = 'chat'
+        request.created(current)
       }
       if (!current) return
       const updated = action === 'start'
@@ -386,40 +407,20 @@ export const useChatStore = defineStore('chat', () => {
             : action === 'resume'
               ? await api.resumeProducer(current.id)
               : await api.approveProducerPlan(current.id, current.producer_plan_version ?? 0)
-      upsert(updated)
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      busy.value = false
-    }
+      updateExisting(updated)
+    })
   }
 
   async function setProducerPolicy(policy: NonNullable<AgentChat['producer_policy']>): Promise<void> {
     const current = activeChat.value
-    if (!current || busy.value) return
-    busy.value = true
-    error.value = null
-    try {
-      upsert(await api.setProducerPolicy(current.id, policy))
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      busy.value = false
-    }
+    if (!current) return
+    return runAction(undefined, async () => updateExisting(await api.setProducerPolicy(current.id, policy)))
   }
 
   async function setProducerEffortMode(mode: ProducerEffortMode): Promise<void> {
     const current = activeChat.value
-    if (!current || busy.value) return
-    busy.value = true
-    error.value = null
-    try {
-      upsert(await api.setProducerEffortMode(current.id, mode))
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      busy.value = false
-    }
+    if (!current) return
+    return runAction(undefined, async () => updateExisting(await api.setProducerEffortMode(current.id, mode)))
   }
 
   async function setProducerEstimateTaskCost(estimateTaskCostUsd: number): Promise<void> {
@@ -429,37 +430,20 @@ export const useChatStore = defineStore('chat', () => {
       error.value = t('chat.producer.estimateInvalid')
       return
     }
-    busy.value = true
-    error.value = null
-    try {
-      upsert(await api.setProducerSettings(current.id, estimateTaskCostUsd))
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    } finally {
-      busy.value = false
-    }
+    return runAction(undefined, async () => updateExisting(await api.setProducerSettings(current.id, estimateTaskCostUsd)))
   }
 
   async function remove(chatId: string): Promise<boolean> {
-    if (busy.value) return false
-    busy.value = true
-    error.value = null
-    try {
-      await api.deleteChat(chatId)
+    return runAction(false, async () => {
+      try {
+        await api.deleteChat(chatId)
+      } catch (cause) {
+        if (!(cause instanceof ApiError && cause.status === 404)) throw cause
+      }
       forget(chatId)
       writeDraft(`${DRAFT_PREFIX}${chatId}`, '')
       return true
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) {
-        forget(chatId)
-        writeDraft(`${DRAFT_PREFIX}${chatId}`, '')
-        return true
-      }
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return false
-    } finally {
-      busy.value = false
-    }
+    })
   }
 
   function forget(chatId: string): void {
@@ -468,6 +452,7 @@ export const useChatStore = defineStore('chat', () => {
     delete rest[chatId]
     messages.value = rest
     unread.value.delete(chatId)
+    actionErrors.value.delete(chatId)
     if (activeChatId.value === chatId) {
       openRequest++
       activeChatId.value = null
@@ -528,7 +513,7 @@ export const useChatStore = defineStore('chat', () => {
     loaded,
     loading,
     busy,
-    error,
+    error: visibleError,
     unread,
     activeChat,
     activeMessages,

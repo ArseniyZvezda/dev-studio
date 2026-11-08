@@ -21,7 +21,7 @@ export function producerChatTasks(chat: AgentChat, tasks: TeamTask[], teamId: st
 
 /** Global attention is independent of the visible conversation or unread messages. */
 export function producerNeedsReply(chats: AgentChat[]): boolean {
-  return chats.some(chat => chat.producer_mode && !chat.producer_paused && !chat.is_running &&
+  return chats.some(chat => chat.producer_mode && chat.producer_started !== false && !chat.producer_paused && !chat.is_running &&
     (chat.producer_state === 'awaiting_user' || chat.producer_state === 'awaiting_approval' ||
       chat.producer_state === 'discussing')) // Legacy saved conversations already awaiting input.
 }

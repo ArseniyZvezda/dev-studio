@@ -830,6 +830,7 @@ def build_toolset(
             async def handle(args):
                 try:
                     async with producer.chats.lock(chat_id):
+                        producer.require_resumed(chat_id)
                         await producer._chat(chat_id)
                         changes_tasks = definition.name in {"create_task", "update_task", "review_producer_task"}
                         if changes_tasks:

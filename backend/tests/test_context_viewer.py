@@ -46,6 +46,7 @@ def test_compaction_invalidates_old_snapshot_and_usage():
     assert result["partial"]
     assert result["reported_tokens"] is None
     assert [s["text"] for s in result["sources"]] == ["new summary"]
+    assert result["sources"][0]["source_kind"] == "compaction"
 
 
 def test_worker_messages_and_pre_session_history_are_excluded():
@@ -126,6 +127,22 @@ def test_partial_snapshot_keeps_available_legacy_history():
     result = inventory(snapshot, [message(text="legacy response", created_at=now-timedelta(seconds=1))])
     assert result["partial"]
     assert [s["text"] for s in result["sources"]] == ["new request", "legacy response"]
+    captured, transcript = result["sources"]
+    assert captured["source_kind"] == "snapshot"
+    assert (transcript["source_kind"], transcript["source_detail"]) == ("assistant_message", DEV)
+
+
+def test_studio_identifies_required_materials_in_old_snapshots_and_tools_in_the_transcript():
+    snapshot = TaskContext(task_id="task", sources=[
+        source("skills", "body", "map-design"), source("documents", "body", "docs/terrain.md"),
+        source("skills", "legacy field without a name"),
+    ])
+    view = inventory(snapshot, [message("tool_use", "Read", data={"input": {"file_path": "terrain.md"}}),
+                                message("tool_result", "contents", data={"tool_use_id": "call-45"})])
+    assert [(s["source_kind"], s["source_detail"]) for s in view["sources"]] == [
+        ("required_skill", "map-design"), ("required_document", "docs/terrain.md"),
+        ("snapshot", "skills"), ("tool_call", "Read"), ("tool_result", "call-45"),
+    ]
 
 
 async def test_backend_recovery_replaces_snapshot_with_recovery_input(ctx):
@@ -182,6 +199,8 @@ def test_chat_viewer_reads_only_this_conversation_and_its_captured_input(client)
     assert not view["partial"] and not view["can_inspect"]
     inputs = [part for part in view["sources"] if part["category"] == "task"]
     first_input, second_input = inputs
+    assert first_input["source_kind"] == second_input["source_kind"] == "request_input"
+    assert next(part["source_kind"] for part in view["sources"] if part["category"] == "system") == "request_system"
     assert first_input["truncated"] and second_input["text"] == "second question"
     fragment = f"/fragments/{first_input['id']}?key={first_input['text_key']}"
     assert client.get(url + fragment).json() == {"text": long_prompt}

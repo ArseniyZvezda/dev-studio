@@ -34,12 +34,12 @@ const selection = computed(() => chat.view === 'chat' ? chat.activeChatId ?? '' 
 const changingChat = ref(false)
 
 async function newChat(): Promise<void> {
-  if (!producer.value || chat.busy || changingChat.value) return
+  if (!producer.value || changingChat.value) return
   const request = ++selectionRequest
   changingChat.value = true
   try {
     const id = await chat.createProducerChat(producer.value.id)
-    if (alive && request === selectionRequest && id) {
+    if (alive && request === selectionRequest && id && chat.activeChatId === id) {
       void router.replace({ path: '/producer', query: { chat: id } })
     }
   } finally {
@@ -50,11 +50,11 @@ async function newChat(): Promise<void> {
 async function deleteChat(): Promise<void> {
   const id = selection.value
   if (!id || chat.busy || changingChat.value) return
-  ++selectionRequest
+  const request = ++selectionRequest
   changingChat.value = true
   try {
     const removed = await chat.remove(id)
-    if (!alive || !removed) return
+    if (!alive || request !== selectionRequest || !removed || chat.view !== 'list') return
     const next = conversations.value[0]
     if (next) await selectChat(next.id)
     else {
@@ -72,6 +72,7 @@ async function selectChat(id: string): Promise<void> {
   if (!conversation) return
   const request = ++selectionRequest
   const owner = teams.teams.find(entry => entry.members.some(member => member.id === conversation.member_id))
+  const opening = chat.openChat(id)
   if (owner && teams.activeTeamId !== owner.id) {
     teams.activeTeamId = owner.id
     try {
@@ -81,8 +82,7 @@ async function selectChat(id: string): Promise<void> {
       return
     }
   }
-  if (!alive || request !== selectionRequest) return
-  await chat.openChat(id)
+  await opening
   if (!alive || request !== selectionRequest || chat.activeChatId !== id) return
   if (!await chat.ensureProducerChat(id)) return
   if (!alive || request !== selectionRequest || chat.activeChatId !== id) return
@@ -138,14 +138,14 @@ watch(() => route.query.chat, id => {
         <ProducerControls v-if="!loading && producer && chat.view === 'chat'" toolbar />
         <header class="shrink-0 border-b border-line">
           <div class="flex h-14 items-center gap-2 px-3">
-            <select :value="selection" :disabled="loading || chat.busy || changingChat" :aria-label="t('producerPage.selectChat')"
+            <select :value="selection" :disabled="loading" :aria-label="t('producerPage.selectChat')"
               class="min-w-0 flex-1 rounded-md border border-line bg-inset px-2 py-1.5 outline-none focus:border-accent"
               @change="selectChat(($event.target as HTMLSelectElement).value)">
               <option value="" disabled>{{ t('producerPage.newChat') }}</option>
               <option v-for="item in conversations" :key="item.id" :value="item.id">{{ item.title || t('producerPage.chat') }}</option>
             </select>
             <button class="grid size-8 shrink-0 place-items-center rounded-md border border-line hover:bg-hover disabled:opacity-40"
-              :disabled="loading || !producer || chat.busy || changingChat" :title="t('producerPage.newChat')" :aria-label="t('producerPage.newChat')" @click="newChat">
+              :disabled="loading || !producer || changingChat" :title="t('producerPage.newChatHint')" :aria-label="t('producerPage.newChat')" @click="newChat">
               <Plus class="size-4" />
             </button>
             <button class="grid size-8 shrink-0 place-items-center rounded-md border border-danger/30 bg-danger-soft text-danger hover:bg-danger/20 disabled:opacity-40"
@@ -183,7 +183,6 @@ watch(() => route.query.chat, id => {
         </div>
         <div v-else ref="strip" class="producer-strip min-h-0 flex-1" tabindex="0" :aria-label="t('producerPage.tasks')">
           <TaskConversation v-for="task in tasks" :key="task.id" :task="task"
-            :member="team?.members.find(member => member.id === task.assignee_id) ?? null"
             class="producer-task rounded-lg border border-line bg-surface" />
         </div>
       </section>
@@ -196,7 +195,7 @@ watch(() => route.query.chat, id => {
 .producer-conversation { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr); }
 .producer-conversation.hidden { display: none; }
 .producer-strip { display: flex; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; padding: 0 0 12px 12px; }
-/* §10.11: keep the card proportions, with room for the assignee and usage on one row. */
+/* §10.11: the strip owns the card width independently of the Tasks dialog. */
 .producer-task { flex: 0 0 calc((100% + 200px - 24px) / 2.5 - 100px); min-width: 360px; }
 @media (max-width: 900px) {
   .producer-workspace { grid-template-columns: minmax(280px, 1fr) minmax(0, 1fr); }

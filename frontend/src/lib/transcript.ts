@@ -75,7 +75,7 @@ export function isVerbosity(value: unknown): value is Verbosity {
  * `role: "system"` like the noise does (§10.4).
  */
 const HISTORY_KINDS = new Set([
-  'status', 'edited', 'commit', 'file_observation_status', 'file_observation_error',
+  'status', 'edited', 'commit', 'file_observation_status', 'file_observation_error', 'cancelled', 'error',
 ])
 
 /**
@@ -86,7 +86,8 @@ const HISTORY_KINDS = new Set([
  * `continued` is here for a sharper reason — it is the line that explains the empty
  * `result` beside it when a session stopped mid-work and the Studio resumed it (§10.3).
  */
-const ALWAYS_KINDS = new Set([...HISTORY_KINDS, 'tool_use', 'continued', 'effort_solver'])
+const PRODUCER_EVENTS = new Set(['effort_solver', 'producer_compacted', 'producer_plan'])
+const ALWAYS_KINDS = new Set([...HISTORY_KINDS, 'tool_use', 'continued', ...PRODUCER_EVENTS])
 
 /** Rows drawn as a timeline line rather than a card: nobody is speaking in them. */
 export const TIMELINE_KINDS = new Set([...HISTORY_KINDS, 'continued'])
@@ -282,7 +283,7 @@ function shows(message: TranscriptMessage, verbosity: Verbosity): boolean {
 function opensBlock(message: TranscriptMessage): boolean {
   return (
     LEAD_KINDS.has(message.kind) ||
-    message.kind === 'effort_solver' ||
+    PRODUCER_EVENTS.has(message.kind) ||
     isSkillCall(message) ||
     (isMcpCall(message) && !isFileEdit(message))
   )
@@ -384,6 +385,7 @@ const TAIL_LIMIT = 160
  * `truncate` ever saw a line to truncate.
  */
 export function tailLine(message: TranscriptMessage): string {
+  if (message.kind === 'effort_solver') return t('effortSolver.name')
   if (message.kind === 'system' && message.text === 'usage_update') return ''
   // History is worded from its data, as its row is — the stored text is the backend's English.
   if (message.kind === 'status') return oneLine(statusText(message), TAIL_LIMIT)

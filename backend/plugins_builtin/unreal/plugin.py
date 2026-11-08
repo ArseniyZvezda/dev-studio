@@ -1,10 +1,7 @@
 """unreal — drive an Unreal Engine project from a pipeline (§8.3).
 
-The two nodes that reach the editor are ``python_script``: they run out of process, and
-the work they do is mostly waiting on a socket or a subprocess, so they take the ``io``
-resource class rather than ``cpu``. ``unreal.string_ue_case`` is the exception and never
-touches an editor at all — it is string work, so it is ``python_function`` and runs
-in-process like the ``core.*`` nodes.
+The two editor nodes are I/O-bound scripts. Build packages games through AutomationTool
+or compiles a target through UnrealBuildTool (§9.5). To UE Case formats names in-process.
 
 No isolated venv is declared — the transport is stdlib only (sockets, subprocess), and
 the code that needs Unreal's ``unreal`` module runs *inside the editor*, never here.
@@ -15,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from unreal_build import BUILD_CONFIGURATIONS, run_build
+from unreal_output import DEFAULT_FOLDER_TEMPLATE
 from voxarium_studio.plugin_api import (
     BaseNode,
     ExecutionSpec,
@@ -52,6 +51,65 @@ def _transport_port() -> PortSchema:
             "remote: require a running editor. commandlet: always headless."
         ),
     )
+
+
+class BuildNode(BaseNode):
+    schema = NodeTypeSchema(
+        id="unreal.build",
+        name="Build",
+        category=CATEGORY,
+        color=ACCENT,
+        icon="cog",
+        description="Builds and packages an Unreal project with its cooked content, or exports a target's compiled files.",
+        inputs=[
+            PortSchema(
+                id="mode", label="Build mode", type="enum", default="Package", connectable=False,
+                options=["Package", "Compile"],
+                description="Package creates a playable build. Use Compile for editor targets or binaries only.",
+            ),
+            PortSchema(
+                id="target", label="Target", required=False, connectable=False,
+                description="Unreal target name. Leave blank for the project's Game target.",
+            ),
+            PortSchema(
+                id="configuration", label="Configuration", type="enum", default="Development",
+                options=BUILD_CONFIGURATIONS, connectable=False,
+            ),
+            PortSchema(
+                id="platform", label="Platform", type="enum", default="Host", connectable=False,
+                options=["Host", "Win64", "Linux", "LinuxArm64", "Mac", "Android", "IOS", "TVOS", "VisionOS"],
+                description="Host builds for the machine running Studio.",
+            ),
+            PortSchema(
+                id="architecture", label="Architecture", required=False, connectable=False,
+                description="Optional UBT architecture, e.g. arm64. Defaults to the platform's architecture.",
+            ),
+            PortSchema(
+                id="project", label="Project file", type="file", accept=[".uproject"], required=False,
+                description="Overrides the Unreal Engine plugin's project for this build.",
+            ),
+            PortSchema(
+                id="output_dir", label="Builds parent directory", type="directory", default="Builds",
+                connectable=False, description="Absolute path or directory relative to the managed project.",
+            ),
+            PortSchema(
+                id="folder_template", label="Build folder name", default=DEFAULT_FOLDER_TEMPLATE,
+                connectable=False,
+                description="One folder name. Use {game}, {platform}, {target}, {configuration}, {architecture} or {mode}.",
+            ),
+        ],
+        outputs=[
+            PortSchema(id="build_dir", label="Build folder", type="directory"),
+            PortSchema(id="project", label="Built project", type="file"),
+            PortSchema(id="target", label="Target", description="Requested target name or Game."),
+            PortSchema(id="platform", label="Platform"),
+            PortSchema(id="configuration", label="Configuration"),
+        ],
+        execution=ExecutionSpec(kind="python_function", entry="", resource_class="cpu", cacheable=False),
+    )
+
+    async def run(self, ctx: NodeContext) -> dict[str, Any]:
+        return await run_build(ctx)
 
 
 class ImportAssetNode(BaseNode):
@@ -326,6 +384,7 @@ class StringUeCaseNode(BaseNode):
 
 
 def register(registry: PluginRegistry) -> None:
+    registry.add_node_type(BuildNode)
     registry.add_node_type(ImportAssetNode)
     registry.add_node_type(RunPythonNode)
     registry.add_node_type(StringUeCaseNode)

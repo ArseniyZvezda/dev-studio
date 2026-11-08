@@ -153,7 +153,10 @@ def test_journal_lookup_is_bounded_and_never_accepts_traversal(tmp_path, monkeyp
     folder.mkdir(parents=True)
     path = folder / "rollout-test-session.jsonl"
     path.write_text(json.dumps(codex_item("message", role="user", content="brief")) + '\n{"inflight"', encoding="utf8")
-    assert journals.read_session("codex", "session").sources[0]["text"] == "brief"
+    journal = journals.read_session("codex", "session")
+    assert journal.sources[0]["text"] == "brief"
+    assert inventory(None, [], journal, backend="codex")["journal_path"] == str(path.resolve())
+    assert "journal_path" not in inventory(None, [])
     assert journals.read_session("codex", "../session") is None
     monkeypatch.setattr(journals, "MAX_JOURNAL_BYTES", 1)
     journals._read.cache_clear()
@@ -191,15 +194,19 @@ def test_native_breakdown_excludes_capacity_and_never_adds_text_estimates():
 def test_native_fragments_preserve_parent_size_and_exclude_deferred_tools():
     report = native_report()
     report["mcpTools"] = [
-        {"name": "read", "tokens": 14}, {"name": "list", "tokens": 6},
+        {"name": "read", "serverName": "project-files", "tokens": 14}, {"name": "list", "tokens": 6},
         {"name": "deferred", "tokens": 80, "isLoaded": False},
     ]
     def tool_fragments():
         return [(part["label"], part["tokens"]) for part in native_inventory(report)["sources"]
                 if part["category"] == "tool_definitions"]
     assert tool_fragments() == [("read", 14), ("list", 6)]
+    tool = next(p for p in native_inventory(report)["sources"] if p["label"] == "read")
+    assert (tool["source_kind"], tool["source_detail"]) == ("sdk_entry", "MCP tools · project-files · read")
     report["mcpTools"][0]["tokens"] = 99
     assert tool_fragments() == [("MCP tools", 20)]
+    aggregate = next(p for p in native_inventory(report)["sources"] if p["label"] == "MCP tools")
+    assert (aggregate["source_kind"], aggregate["source_detail"]) == ("sdk_category", "MCP tools")
 
 
 def test_api_only_requests_runtime_on_explicit_post(client, monkeypatch):

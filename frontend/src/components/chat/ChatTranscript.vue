@@ -1,19 +1,14 @@
 <script setup lang="ts">
 /**
- * One chat's transcript, as a conversation (§10.9).
- *
- * The rows come from the same fold a task's transcript uses (`lib/transcript.ts`), always at
- * Advanced: what the member said, and every tool call it made on the way there as a row of
- * its own. A chat has no level switch — the calls are how the user sees that the member
- * actually looked at the thing they asked about. Two things a task hides below Verbose are
- * drawn here regardless — an error and a stop — because in a chat they are the answer to
- * "why did the reply end".
+ * Ordinary agent chats show replies and tool calls at Advanced (§10.9).
+ * A conversation in Producer Mode uses the shared task transcript panel (§10.11).
  */
 import { AlertTriangle, FilePen, Square, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, ref, watch } from 'vue'
 
-import { attachmentUrl, type UploadedAttachment } from '@/api/client'
-import type { AgentChatMessage, ChatContext } from '@/api/types'
+import ProducerCompaction from './ProducerCompaction.vue'
+import ChatUserMessage from './ChatUserMessage.vue'
+import type { AgentChatMessage } from '@/api/types'
 import EffortSolverResult from '@/components/chat/EffortSolverResult.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
@@ -22,7 +17,6 @@ import { toolName, toolSubject } from '@/lib/activity'
 import type { MemberLook } from '@/lib/member-icons'
 import { formatTime } from '@/lib/status'
 import { editStat, isFileEdit, liveLine, transcriptRows, type Verbosity } from '@/lib/transcript'
-import { basename, pageLabelOnScreen } from '@/lib/user-context'
 
 const props = defineProps<{
   messages: AgentChatMessage[]
@@ -35,14 +29,11 @@ const props = defineProps<{
 /** Tool calls are always shown in a chat; tool results and system frames are not. */
 const VERBOSITY: Verbosity = 'advanced'
 
-/** Lines a chat always shows, whatever the level: the reasons a reply ended early. */
-const NOTE_KINDS = new Set(['error', 'cancelled', 'producer_plan', 'producer_compacted'])
-
 const rows = computed(() => {
   const folded = new Set(transcriptRows(props.messages, VERBOSITY).map((row) => row.key))
   return props.messages.filter(
     (message) =>
-      (folded.has(message.id) || NOTE_KINDS.has(message.kind)) &&
+      folded.has(message.id) &&
       // The runtime redacts most thinking to an empty block; an empty box says nothing.
       !(message.kind === 'thinking' && !message.text.trim()),
   )
@@ -59,39 +50,6 @@ const live = computed(() => {
   })
   return liveLine(props.messages.slice(start), VERBOSITY)
 })
-
-/** What the user's message was sent with, read defensively — `data` is an open bag. */
-function attachmentsOf(message: AgentChatMessage): UploadedAttachment[] {
-  const records = message.data?.attachments
-  return Array.isArray(records) ? records.filter((item): item is UploadedAttachment => !!item && typeof item.reference === 'string') : []
-}
-
-function contextOf(message: AgentChatMessage): Partial<ChatContext> | null {
-  const context = message.data?.context
-  return context && typeof context === 'object' ? (context as Partial<ChatContext>) : null
-}
-
-function contextChips(message: AgentChatMessage): { label: string; title: string }[] {
-  const context = contextOf(message)
-  if (!context) return []
-  const chips: { label: string; title: string }[] = []
-  // The page was sent in English (`user-context.ts`); the chip reads it in the language on screen.
-  if (context.page) {
-    chips.push({ label: pageLabelOnScreen(context.page), title: context.route || context.page })
-  }
-  if (context.document) {
-    chips.push({ label: basename(context.document), title: context.document })
-  } else if (context.file) {
-    chips.push({ label: basename(context.file), title: context.file })
-  }
-  if (context.selection) {
-    chips.push({
-      label: t('chat.context.selection', { count: context.selection.length }),
-      title: context.selection.slice(0, 400),
-    })
-  }
-  return chips
-}
 
 // ---- following the conversation
 
@@ -144,29 +102,7 @@ defineExpose({ scrollToLatest })
     <template v-for="message in rows" :key="message.id">
       <!-- The user, on the right: their words as typed, and what they were sent with. -->
       <div v-if="message.role === 'user'" class="ml-8 flex flex-col items-end gap-1">
-        <div
-          class="max-w-full rounded-xl rounded-br-sm border border-accent-border bg-accent-soft px-3 py-2"
-        >
-          <p v-if="message.kind === 'producer_plan'" class="mb-1 text-small font-medium">{{ t('chat.producer.approved') }}</p>
-          <p class="whitespace-pre-wrap break-words">{{ message.text }}</p>
-          <a v-for="entry in attachmentsOf(message)" :key="entry.reference" :href="attachmentUrl(entry.reference)" target="_blank" rel="noopener" class="mt-2 block underline">
-            <img v-if="entry.image" :src="attachmentUrl(entry.reference)" :alt="entry.name" class="max-h-48 max-w-full rounded" />
-            {{ entry.name }}
-          </a>
-        </div>
-        <p
-          v-if="contextChips(message).length"
-          class="flex max-w-full flex-wrap justify-end gap-1 text-small text-faint"
-        >
-          <span
-            v-for="chip in contextChips(message)"
-            :key="chip.label"
-            class="max-w-[12rem] truncate rounded-pill bg-inset px-2 leading-5"
-            :title="chip.title"
-          >
-            {{ chip.label }}
-          </span>
-        </p>
+        <ChatUserMessage :message="message" bubble />
       </div>
 
       <!-- A reply, on the left, in the member's mark. -->
@@ -226,17 +162,7 @@ defineExpose({ scrollToLatest })
         <span>· {{ formatTime(message.created_at) }}</span>
       </p>
 
-      <details
-        v-else-if="message.kind === 'producer_compacted' && message.data?.replaces_history === true"
-        class="rounded-md border border-line-subtle bg-inset px-3 py-2 text-small text-muted"
-      >
-        <summary class="cursor-pointer font-medium">{{ t('chat.producer.compacted') }}</summary>
-        <MarkdownText :text="message.text" class="mt-2" />
-      </details>
-
-      <p v-else-if="message.kind === 'producer_compacted'" class="px-3 text-center text-small text-faint">
-        {{ t('chat.producer.compacted') }}
-      </p>
+      <ProducerCompaction v-else-if="message.kind === 'producer_compacted'" :message="message" />
 
       <!-- Everything else the level lets through: a note from the Studio, a system frame. -->
       <p v-else class="ml-9 px-1 text-small text-faint">

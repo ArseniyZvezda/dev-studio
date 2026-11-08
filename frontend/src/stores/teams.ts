@@ -306,13 +306,15 @@ export const useTeamsStore = defineStore('teams', () => {
     return members.value.filter((candidate) => !descendants.has(candidate.id))
   }
 
+  // §10.11: all task panels mounting in the strip share one catalogue request.
+  let pendingOptions: Promise<void> | null = null
   async function loadOptions(): Promise<void> {
     if (options.value) return
-    try {
-      options.value = await api.memberOptions()
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause)
-    }
+    pendingOptions ??= api.memberOptions()
+      .then(loaded => { options.value = loaded })
+      .catch(cause => { error.value = cause instanceof Error ? cause.message : String(cause) })
+      .finally(() => { pendingOptions = null })
+    return pendingOptions
   }
 
   function editMember(memberId: string | null): void {

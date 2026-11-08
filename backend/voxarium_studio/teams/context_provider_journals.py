@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
-from .context_sources import JournalContext, count, prompt_sources, source, user_sources
+from .context_sources import JournalContext, count, message_source_kind, prompt_sources, source, user_sources
 
 
 def _items(value: Any, origin: str) -> Iterator[tuple[Any, str]]:
@@ -41,12 +41,15 @@ def _branch(rows: list[dict]) -> list[tuple[int, dict]]:
     return chain[::-1]
 
 
-def _field(parts: list, category: str, value: Any, origin: str, label: str = "") -> None:
+def _field(parts: list, category: str, value: Any, origin: str, source_kind: str,
+           label: str = "", *, detail: str | None = None) -> None:
+    label = label if isinstance(label, str) else ""
+    detail = label if detail is None else detail
     if isinstance(value, str):
-        parts.append(source(category, value, label, origin=origin))
+        parts.append(source(category, value, label, origin=origin, source_kind=source_kind, source_detail=detail))
     elif value is not None:
         parts.append(source(category, json.dumps(value, ensure_ascii=False), label, origin=origin,
-                            representation="json"))
+                            representation="json", source_kind=source_kind, source_detail=detail))
 
 
 def _category(message: dict) -> str:
@@ -55,62 +58,72 @@ def _category(message: dict) -> str:
     return "task" if message.get("role") == "user" else "history"
 
 
-def _claude_tool_result(parts: list, block: dict, origin: str) -> None:
+def _claude_tool_result(parts: list, block: dict, origin: str, calls: dict[str, str]) -> None:
     content = block.get("content")
-    label = block.get("tool_use_id") or ""
+    label = block.get("tool_use_id") if isinstance(block.get("tool_use_id"), str) else ""
+    tool = calls.get(label, label)
     if isinstance(content, str):
-        _field(parts, "tools", content, origin, label)
+        _field(parts, "tools", content, origin, "tool_result", label, detail=tool)
     for item, path in _items(content, origin):
         if isinstance(item, dict) and item.get("type") == "text":
-            _field(parts, "tools", item.get("text"), path + ".text", label)
+            _field(parts, "tools", item.get("text"), path + ".text", "tool_result", label, detail=tool)
         elif isinstance(item, dict) and item.get("type") == "tool_reference":
-            _field(parts, "tools", item.get("tool_name"), path + ".tool_name", label)
+            _field(parts, "tools", item.get("tool_name"), path + ".tool_name", "tool_result", label, detail=tool)
 
 
-def _claude_message(parts: list, message: dict, origin: str, category: str) -> None:
+def _claude_message(parts: list, message: dict, origin: str, category: str, calls: dict[str, str]) -> None:
     content = message.get("content")
     origin += ".content"
+    source_kind = "compaction" if category == "summary" else message_source_kind(message.get("role"))
     if isinstance(content, str):
-        parts.extend(prompt_sources(content, category, origin=origin, instructions=category in ("system", "developer")))
+        parts.extend(prompt_sources(content, category, origin=origin, instructions=category in ("system", "developer"),
+                                    source_kind=source_kind))
         return
     for block, path in _items(content, origin):
         if not isinstance(block, dict):
             continue
         kind = block.get("type")
         if kind in ("tool_use", "server_tool_use"):
-            _field(parts, "tools", block.get("input"), path + ".input", block.get("name") or "")
+            name, call_id = block.get("name"), block.get("id")
+            if isinstance(call_id, str) and call_id and isinstance(name, str) and name:
+                calls[call_id] = name
+            _field(parts, "tools", block.get("input"), path + ".input", "tool_call", name)
         elif kind == "tool_result":
-            _claude_tool_result(parts, block, path + ".content")
+            _claude_tool_result(parts, block, path + ".content", calls)
         elif kind == "thinking":
-            _field(parts, "thinking", block.get("thinking"), path + ".thinking")
+            _field(parts, "thinking", block.get("thinking"), path + ".thinking", "thinking")
         elif kind == "text" and isinstance(block.get("text"), str):
             parts.extend(prompt_sources(block["text"], category, origin=path + ".text",
-                                        instructions=category in ("system", "developer")))
+                                        instructions=category in ("system", "developer"), source_kind=source_kind))
 
 
 def _claude_attachment(parts: list, attachment: dict, origin: str) -> None:
     kind = attachment.get("type")
     if kind == "prompt_snapshot":
         if isinstance(attachment.get("cliPrefix"), str):
-            _field(parts, "system", attachment["cliPrefix"], origin + ".cliPrefix")
+            # Claude records its selected stock CLI prefix separately from the
+            # systemPrompt array, which can contain --append-system-prompt or overrides.
+            parts.append(source("system", attachment["cliPrefix"], origin=origin + ".cliPrefix",
+                                provided_by="claude_code", source_kind="cli_prefix"))
         for text, path in _items(attachment.get("systemPrompt"), origin + ".systemPrompt"):
             if isinstance(text, str):
-                parts.extend(prompt_sources(text, "system", origin=path, instructions=True))
+                parts.extend(prompt_sources(text, "system", origin=path, instructions=True,
+                                            source_kind="prompt_snapshot"))
         for tool, path in _items(attachment.get("tools"), origin + ".tools"):
             if isinstance(tool, dict):
-                _field(parts, "tool_definitions", tool, path, tool.get("name") or "")
+                _field(parts, "tool_definitions", tool, path, "tool_definition", tool.get("name"))
     elif kind == "instructions":
         for item, path in _items(attachment.get("files"), origin + ".files"):
             if isinstance(item, dict) and isinstance(item.get("content"), str):
-                _field(parts, "memory", item["content"], path + ".content", item.get("path") or "")
+                _field(parts, "memory", item["content"], path + ".content", "memory_file", item.get("path"))
     elif kind == "nested_memory":
         item = attachment.get("content")
         if isinstance(item, dict) and isinstance(item.get("content"), str):
             # rawContent and displayPath describe the disk version. content is what
             # Claude retained when the attachment was made.
-            _field(parts, "memory", item["content"], origin + ".content.content", attachment.get("path") or "")
+            _field(parts, "memory", item["content"], origin + ".content.content", "memory_file", attachment.get("path"))
     elif kind == "skill_listing" and isinstance(attachment.get("content"), str):
-        _field(parts, "skills", attachment["content"], origin + ".content")
+        _field(parts, "skills", attachment["content"], origin + ".content", "skill_listing")
 
 
 def claude_context(rows: list[dict]) -> JournalContext:
@@ -126,6 +139,7 @@ def claude_context(rows: list[dict]) -> JournalContext:
     snapshots = [(i, row) for i, row in chain if isinstance(row.get("attachment"), dict)
                  and row["attachment"].get("type") == "prompt_snapshot"]
     latest_snapshot = snapshots[-1][0] if snapshots else None
+    calls: dict[str, str] = {}
     for i, row in chain:
         path = f"journal[{i}]"
         attachment = row.get("attachment")
@@ -138,7 +152,7 @@ def claude_context(rows: list[dict]) -> JournalContext:
         if not isinstance(message, dict):
             continue
         category = "summary" if row.get("isCompactSummary") else _category(message)
-        _claude_message(result.sources, message, path + ".message", category)
+        _claude_message(result.sources, message, path + ".message", category, calls)
         usage = message.get("usage")
         if isinstance(usage, dict):
             counts = [count(usage.get(k)) for k in
@@ -163,23 +177,27 @@ def _qwen_message(parts: list, message: dict, origin: str, category: str,
             continue
         if isinstance(block.get("functionCall"), dict):
             call = block["functionCall"]
-            _field(parts, "tools", call.get("args"), path + ".functionCall.args", call.get("name") or "")
+            _field(parts, "tools", call.get("args"), path + ".functionCall.args", "tool_call", call.get("name"))
         elif isinstance(block.get("functionResponse"), dict):
             reply = block["functionResponse"]
-            _field(parts, "tools", reply.get("response"), path + ".functionResponse.response", reply.get("name") or "")
+            _field(parts, "tools", reply.get("response"), path + ".functionResponse.response", "tool_result",
+                   reply.get("name"))
         elif isinstance(block.get("text"), str):
             group = category
+            source_kind = message_source_kind(message.get("role"))
             if _qwen_catalog(block):
                 group = "memory"
+                source_kind = "memory_catalog"
                 last_catalog = block["text"]
             if block.get("thought"):
                 group = "thinking"
+                source_kind = "thinking"
             if group == "task":
                 parts.extend(user_sources(block["text"], origin=path + ".text", backend="qwen",
                                           studio_system=studio_system))
             else:
                 parts.extend(prompt_sources(block["text"], group, origin=path + ".text",
-                                            instructions=group in ("system", "developer")))
+                                            instructions=group in ("system", "developer"), source_kind=source_kind))
     return last_catalog
 
 
@@ -209,7 +227,7 @@ def qwen_context(rows: list[dict], *, studio_system: str = "") -> JournalContext
                 block = blocks[0] if isinstance(blocks, list) and blocks else None
                 if isinstance(block, dict) and _qwen_catalog(block) and block["text"] != last_catalog:
                     last_catalog = block["text"]
-                    _field(result.sources, "memory", last_catalog, path + ".message.parts[0].text")
+                    _field(result.sources, "memory", last_catalog, path + ".message.parts[0].text", "memory_catalog")
             elif isinstance(message, dict) and row.get("type") != "system":
                 last_catalog = _qwen_message(result.sources, message, path + ".message", _category(message),
                                              last_catalog, studio_system)

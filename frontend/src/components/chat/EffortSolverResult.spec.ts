@@ -1,3 +1,4 @@
+import { createPinia } from 'pinia'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import { describe, expect, it } from 'vitest'
@@ -7,6 +8,7 @@ import { setLocale } from '@/i18n'
 import { transcriptRows, VERBOSITY_LEVELS } from '@/lib/transcript'
 import EffortSolverResult from './EffortSolverResult.vue'
 import ChatTranscript from './ChatTranscript.vue'
+import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 
 const data = { scores: { complexity: 9, creativity: 6, depth: 8, coverage: 8 }, effort: 4, effort_level: 'xhigh' }
 const message: AgentChatMessage = {
@@ -20,11 +22,14 @@ describe('Effort Solver result in Producer dialogue', () => {
     expect(transcriptRows([message], level).map(row => row.key)).toEqual([message.id])
   })
 
-  it('renders only the four scores and final effort in a violet block', async () => {
+  it.each(['ordinary chat', 'Producer Mode'])('renders only the scores and effort in %s', async surface => {
     await setLocale('en')
-    const html = await renderToString(createSSRApp(ChatTranscript, {
-      messages: [message], member: null, memberName: 'Producer', running: false,
-    }))
+    const app = surface === 'Producer Mode'
+      ? createSSRApp(ConversationPanel, {
+        messages: [message], conversationId: 'producer', emptyText: '', producer: { name: 'Producer', running: true },
+      })
+      : createSSRApp(ChatTranscript, { messages: [message], member: null, memberName: 'Producer', running: false })
+    const html = await renderToString(app.use(createPinia()))
     expect(html).toContain('border-violet-500/40')
     expect(html).toContain('aria-label="Effort Solver"')
     for (const label of ['Complexity', 'Creativity', 'Depth', 'Coverage', 'XHigh']) expect(html).toContain(label)

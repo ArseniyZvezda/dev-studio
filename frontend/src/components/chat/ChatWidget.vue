@@ -46,6 +46,7 @@ import { draftKey, readDraft, useChatStore, writeDraft } from '@/stores/chat'
 import { useDocsStore } from '@/stores/docs'
 import { useTeamsStore } from '@/stores/teams'
 
+import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 import ChatTranscript from './ChatTranscript.vue'
 import ChatList from './ChatList.vue'
 import ChatHeaderChips from './ChatHeaderChips.vue'
@@ -77,6 +78,8 @@ function memberOf(id: string | null): TeamMember | null {
 const activeMember = computed(() => memberOf(chat.activeChat?.member_id ?? null))
 const readOnlyHistory = computed(() => chat.view === 'chat' && activeMember.value?.kind === 'human')
 const newMember = computed(() => memberOf(chat.newMemberId))
+
+const producerName = computed(() => (chat.view === 'new' ? newMember.value : activeMember.value)?.name ?? t('chat.theMember'))
 
 const newMemberModel = computed({
   get: () => chat.newMemberId,
@@ -186,17 +189,18 @@ const attached = computed({
   set: (value: UploadedAttachment[]) => { attachmentDrafts.value[attachmentDraftKey.value] = value },
 })
 const currentDraftKey = computed(() => draftKey(chat.view, chat.activeChatId))
+let pendingSave: ReturnType<typeof setTimeout> | undefined
 
 watch(
   currentDraftKey,
   (key, previous) => {
+    clearTimeout(pendingSave)
     if (previous && previous !== key) writeDraft(previous, draft.value)
     draft.value = key ? readDraft(key) : ''
   },
   { immediate: true },
 )
 
-let pendingSave: ReturnType<typeof setTimeout> | undefined
 watch(draft, (text) => {
   const key = currentDraftKey.value
   if (!key) return
@@ -271,12 +275,16 @@ async function submit(): Promise<void> {
   const attachmentKey = attachmentDraftKey.value
   if (await chat.send(text, context(), attached.value.map(entry => entry.reference), producerPage.value)) {
     attachmentDrafts.value[attachmentKey] = []
-    draft.value = ''
-    if (key) writeDraft(key, '')
-    // Sending from the new-chat screen moved the view to the chat; its own draft key is now
-    // current and starts empty.
-    await nextTick()
-    composer.value?.focus()
+    if (key === currentDraftKey.value) {
+      if (draft.value === text) {
+        draft.value = ''
+        if (key) writeDraft(key, '')
+      }
+      await nextTick()
+      if (key === currentDraftKey.value) composer.value?.focus()
+    } else if (key && readDraft(key) === text) {
+      writeDraft(key, '')
+    }
   }
 }
 
@@ -294,7 +302,7 @@ async function deleteActive(): Promise<void> {
   const id = chat.activeChatId
   if (!id) return
   await chat.remove(id)
-  confirmingDelete.value = false
+  if (chat.activeChatId === id) confirmingDelete.value = false
 }
 
 watch(() => chat.activeChatId, () => (confirmingDelete.value = false))
@@ -509,9 +517,17 @@ onBeforeUnmount(() => {
           <p>{{ t('chat.chooseConversation') }}</p>
         </div>
 
+        <ConversationPanel
+          v-else-if="producerPage || (chat.view === 'chat' && chat.activeChat?.producer_mode)"
+          :conversation-id="chat.view === 'chat' ? chat.activeChatId : null"
+          :messages="chat.view === 'chat' ? chat.activeMessages : []"
+          :producer="{ name: producerName, running }"
+          :empty-text="t(chat.view === 'new' ? 'chat.new.hint' : 'chat.transcript.empty', { name: producerName })"
+        />
+
         <!-- A chat that does not exist yet: who, then the first message. -->
         <div v-else-if="chat.view === 'new'" class="flex min-h-0 flex-1 flex-col">
-          <div v-if="!producerPage" class="border-b border-line px-3 py-3">
+          <div class="border-b border-line px-3 py-3">
             <MemberSelect
               v-model="newMemberModel"
               :members="agents"

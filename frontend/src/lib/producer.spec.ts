@@ -84,6 +84,9 @@ describe('Producer chat footer and desktop attention', () => {
     expect(producerNeedsReply([{ ...waiting, producer_mode: false }])).toBe(false)
     expect(producerNeedsReply([{ ...waiting, producer_paused: true }])).toBe(false)
     expect(producerNeedsReply([{ ...waiting, producer_state: 'discussing' }])).toBe(true)
+    const empty = { ...waiting, producer_state: 'discussing', producer_started: false } as AgentChat
+    expect(producerNeedsReply([empty, { ...waiting, producer_paused: true }])).toBe(false)
+    expect(producerNeedsReply([empty, waiting])).toBe(true)
     for (const state of ['waiting', 'running', 'off', 'error'] as const) {
       expect(producerNeedsReply([{ ...waiting, producer_state: state }])).toBe(false)
     }

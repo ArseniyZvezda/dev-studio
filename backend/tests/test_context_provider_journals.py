@@ -12,8 +12,9 @@ def test_claude_distinct_records_and_nested_result_fields_are_lossless():
     args = {"script": "x\r\ny", "amount": 4}
     rows = [
         row("a", None, same), row("b", "a", same),
-        row("c", "b", {"role": "assistant", "content": [{"type": "tool_use", "input": args}]}),
-        row("d", "c", {"role": "user", "content": [{"type": "tool_result", "content": [
+        row("c", "b", {"role": "assistant", "content": [{"type": "tool_use", "id": "use-1",
+                                                          "name": "Run", "input": args}]}),
+        row("d", "c", {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "use-1", "content": [
             {"type": "text", "text": "first\r\n"}, {"type": "image", "data": "wire bytes"},
             {"type": "text", "text": "  "}, {"type": "text", "text": "last\n"},
         ]}]}),
@@ -24,6 +25,8 @@ def test_claude_distinct_records_and_nested_result_fields_are_lossless():
     assert rows == original
     assert [part["text"] for part in parts[:2]] == [" repeat\n"] * 2
     assert parts[2]["representation"] == "json"
+    assert [(p["source_kind"], p["source_detail"]) for p in parts[2:]] == [
+        ("tool_call", "Run"), ("tool_result", "Run"), ("tool_result", "Run"), ("tool_result", "Run")]
     assert json.loads(parts[2]["text"]) == args
     assert [(part["text"], part["origin"]) for part in parts[3:]] == [
         ("first\r\n", "journal[3].message.content[0].content[0].text"),
@@ -52,6 +55,8 @@ def test_claude_updates_active_snapshot_and_separates_labeled_memory():
     assert parts[-1]["text"] == "retained version"
     assert json.loads(parts[3]["text"]) == tools[0]
     assert parts[-1]["origin"] == "journal[4].attachment.content.content"
+    assert (parts[0]["source_kind"], parts[0]["source_detail"]) == ("memory_file", "CLAUDE.md")
+    assert (parts[-1]["source_kind"], parts[-1]["source_detail"]) == ("memory_file", "MEMORY.md")
 
 
 def test_qwen_reads_memory_and_tool_structure_and_ignores_display_events():
@@ -83,6 +88,11 @@ def test_qwen_reads_memory_and_tool_structure_and_ignores_display_events():
     assert parts[3]["origin"] == "journal[1].message.parts[0].functionCall.args"
     assert parts[4]["text"] == "thinking\n"
     assert parts[5]["origin"] != parts[6]["origin"]
+    assert [p["source_kind"] for p in parts] == [
+        "user_message", "user_message", "memory_catalog", "tool_call", "thinking", "assistant_message",
+        "assistant_message", "memory_catalog",
+    ]
+    assert parts[3]["source_detail"] == "Shell"
 
 
 def test_qwen_managed_record_does_not_replace_active_conversation_leaf():

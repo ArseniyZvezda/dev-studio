@@ -41,9 +41,12 @@ def _read(path: str, backend: str, mtime: int, size: int, studio_system: str = "
                 return None
             rows.append(row if isinstance(row, dict) else {})  # Keep addresses aligned with JSONL line indexes.
     if backend == "claude_code":
-        return claude_context(rows)
-    reader = codex_context if backend == "codex" else qwen_context
-    return reader(rows, studio_system=studio_system)
+        result = claude_context(rows)
+    else:
+        reader = codex_context if backend == "codex" else qwen_context
+        result = reader(rows, studio_system=studio_system)
+    result.journal_path = path
+    return result
 
 
 def read_session(backend: str, session_id: str | None, *, studio_system: str = "") -> JournalContext | None:
@@ -63,10 +66,11 @@ def read_session(backend: str, session_id: str | None, *, studio_system: str = "
     try:
         for pattern in patterns:
             for path in root.glob(pattern):
-                if not path.resolve().is_relative_to(root.resolve()):
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root.resolve()):
                     continue
-                stat = path.stat()
-                result = _read(str(path), backend, stat.st_mtime_ns, stat.st_size, studio_system)
+                stat = resolved.stat()
+                result = _read(str(resolved), backend, stat.st_mtime_ns, stat.st_size, studio_system)
                 if result and (result.sources or result.compacted):
                     return result
     except (OSError, ValueError, TypeError, KeyError):

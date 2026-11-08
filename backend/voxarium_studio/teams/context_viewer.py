@@ -18,7 +18,7 @@ from typing import Any
 from ..models.base import utcnow
 from ..models.task_context import ChatSessionContext, SessionContext, TaskContext
 from .backends.base import AgentRunRequest
-from .context_sources import JournalContext, count, prompt_sources, source
+from .context_sources import JournalContext, bounded_detail, count, prompt_sources, source
 
 
 async def capture_request(db, owner_id: str, request: AgentRunRequest, *, input_at: datetime | None = None) -> None:
@@ -68,9 +68,17 @@ def _snapshot_sources(snapshot: SessionContext) -> list[dict]:
         # Previous snapshots stored required materials as separate entries. Keep
         # those boundaries; reconstructing the earlier request would be guesswork.
         if category in {"system", "task"}:
-            parts.extend(prompt_sources(item["text"], category, origin=origin, instructions=category == "system"))
+            kind = "snapshot"
+            if origin.startswith("studio.request["):
+                kind = "request_system" if category == "system" else "request_input"
+            parts.extend(prompt_sources(item["text"], category, origin=origin,
+                                        instructions=category == "system", source_kind=kind))
         else:
-            parts.append({**item, "origin": origin})
+            label = item.get("label")
+            required = {"skills": "required_skill", "documents": "required_document"}
+            kind = required.get(category, "snapshot") if label else "snapshot"
+            parts.append({**item, "origin": origin, "source_kind": kind,
+                          "source_detail": bounded_detail(label or category)})
     return parts
 
 
@@ -85,7 +93,7 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
     captured_at = snapshot.captured_at.isoformat() if snapshot else None
     if journal is not None:
         return journal.sources, {"reported": journal.reported_tokens, "window": journal.context_window,
-                                 "origin": f"{backend}_journal", "partial": journal.partial,
+                                 "origin": f"{backend}_journal", "journal_path": journal.journal_path, "partial": journal.partial,
                                  "has_studio_view": snapshot is not None}
 
     cutoff = snapshot.started_at if snapshot and not snapshot.partial else summary.created_at if summary else None
@@ -114,35 +122,47 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
         if (cutoff and message.created_at < cutoff) or message.data.get("parent_tool_use_id"):
             continue
         category = None
+        detail = name = ""
         if message.kind in summary_kinds:
             # On a fresh dispatch this summary is already embedded in request.prompt.
             if not snapshot:
-                category = "summary"
+                category, kind, detail = "summary", "compaction", message.kind
         elif message.kind in {"tool_use", "tool_result"}:
             category = "tools"
+            kind = "tool_call" if message.kind == "tool_use" else "tool_result"
+            name = message.data.get("name") or ""
+            identifier = name or (message.text if message.kind == "tool_use" else message.data.get("tool_use_id"))
+            identifier = identifier or message.data.get("id")
+            if isinstance(identifier, str):
+                detail = identifier
         elif message.kind == "thinking":
-            category = "thinking"
+            category = kind = "thinking"
         elif message.kind == "text" and message.role == "assistant":
-            category = "history"
+            category, kind, detail = "history", "assistant_message", message.member_id
         elif (message.kind == "text" and message.role in {"user", "human"}
               and (not snapshot or snapshot.partial and message.created_at < snapshot.started_at)):
             # Messages before the first captured resume are historical evidence,
             # not additional fields of the captured dispatch.
             category = "task" if message.role == "user" and snapshot is None else "history"
+            kind = "user_message"
+            if message.role == "human":
+                detail = message.member_id
         elif not snapshot and message.kind in {"note", "review", "summary"}:
-            category = "history"
+            category, kind = "history", "transcript"
+            detail = f"{message.role} · {message.kind}"
         if category:
             locator = f"studio.messages[{message.id}]"
-            name = message.data.get("name", "") if category == "tools" else ""
             if message.kind == "tool_use" and "input" in message.data:
                 # The label is metadata, not a prefix of the tool's arguments.
                 value = message.data["input"]
                 is_text = isinstance(value, str)
                 parts.append(source(category, value if is_text else json.dumps(value, ensure_ascii=False),
                                     name or message.text, origin=locator + ".data.input",
-                                    representation="text" if is_text else "json"))
+                                    representation="text" if is_text else "json",
+                                    source_kind=kind, source_detail=detail))
             else:
-                parts.append(source(category, message.text, name, origin=locator + ".text"))
+                parts.append(source(category, message.text, name, origin=locator + ".text",
+                                    source_kind=kind, source_detail=detail))
     return parts, {"reported": reported, "window": window, "origin": "studio",
                    "partial": snapshot is None or snapshot.partial,
                    "captured_at": captured_at, "has_studio_view": snapshot is not None}
@@ -156,7 +176,8 @@ def inventory(snapshot: SessionContext | None, messages: list, journal=None, *, 
 def fragment_key(part: dict) -> str:
     """Guard a deferred read against a different record occupying the same position."""
     digest = hashlib.sha256()
-    for key in ("origin", "category", "label", "representation", "text"):
+    for key in ("origin", "category", "label", "representation", "provided_by",
+                "source_kind", "source_detail", "text"):
         value = part.get(key, "").encode("utf-8", errors="surrogatepass")
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
@@ -165,7 +186,7 @@ def fragment_key(part: dict) -> str:
 
 def present(parts: list[dict], reported: int | None, window: int | None, *,
             origin: str, partial: bool, captured_at: str | None = None, basis: str = "estimated",
-            has_studio_view: bool = False) -> dict[str, Any]:
+            has_studio_view: bool = False, journal_path: str | None = None) -> dict[str, Any]:
     estimated = sum(part["tokens"] for part in parts)
     # Size the blocks from the complete text, but keep opening a long-running session
     # cheap for the browser. The preview budget never changes its token estimate.
@@ -189,6 +210,7 @@ def present(parts: list[dict], reported: int | None, window: int | None, *,
                          "id": "unattributed", "truncated": False})
     return {
         "sources": previews, "has_studio_view": has_studio_view,
+        **({"journal_path": journal_path} if journal_path is not None else {}),
         "reported_tokens": reported, "context_window": window or None,
         "estimated_tokens": estimated,
         "captured_at": captured_at, "partial": partial, "origin": origin, "basis": basis,
@@ -197,25 +219,37 @@ def present(parts: list[dict], reported: int | None, window: int | None, *,
 
 def _native_fragments(category: str, item: dict, index: int, details: dict) -> list[dict]:
     """Only break down a runtime count if its loaded records account for it exactly."""
-    def metadata(row, label, tokens, path):
+    def metadata(row, label, tokens, path, kind, detail, *, builtin=False):
         return {**source(category, json.dumps(row, ensure_ascii=False, indent=2), label,
-                         origin="runtime." + path, representation="metadata"), "tokens": tokens}
+                         origin="runtime." + path, representation="metadata",
+                         source_kind=kind, source_detail=detail,
+                         provided_by="claude_code" if builtin else None), "tokens": tokens}
 
     tokens = item["tokens"]
     if len(details) == 1:
         key, records = next(iter(details.items()))
         if isinstance(records, dict):
-            return [metadata(records, item["name"], tokens, key)]
+            return [metadata(records, item["name"], tokens, key, "sdk_entry", item["name"])]
         if isinstance(records, list) and all(isinstance(row, dict) for row in records):
             loaded = [(i, row) for i, row in enumerate(records)
                       if row.get("isLoaded") is not False and not row.get("isDeferred")]
             counts = [count(row.get("tokens")) for _, row in loaded]
             if None not in counts and sum(counts) == tokens:
-                return [metadata(row, row.get("name") or row.get("path") or row.get("agentType") or "",
-                                 row["tokens"], f"{key}[{i}]") for i, row in loaded]
+                fragments = []
+                for i, row in loaded:
+                    label = row.get("name") or row.get("path") or row.get("agentType") or ""
+                    builtin = key == "systemTools" or (key == "agents" and row.get("source") == "built-in")
+                    # /context exposes different identifiers for a tool, agent and file (§10.4).
+                    values = [item["name"], row.get("serverName"), row.get("source"), row.get("type"),
+                              row.get("path"), row.get("agentType"), row.get("name")]
+                    detail = " · ".join(dict.fromkeys(v for v in values if isinstance(v, str) and v))
+                    fragments.append(metadata(row, label, row["tokens"], f"{key}[{i}]", "sdk_entry", detail,
+                                              builtin=builtin))
+                return fragments
     # No defensible per-record counts. The category itself is one original SDK
     # record: don't manufacture a new document out of several detail collections.
-    return [metadata(item, item["name"], tokens, f"categories[{index}]")]
+    return [metadata(item, item["name"], tokens, f"categories[{index}]", "sdk_category", item["name"],
+                     builtin=category == "tool_definitions" and item.get("id") == "system_tools")]
 
 
 def native_inventory(report: dict) -> dict[str, Any]:
@@ -238,7 +272,10 @@ def native_inventory(report: dict) -> dict[str, Any]:
             category, detail_keys = "system", ("systemPromptSections",)
         elif "tool" in key:
             category = "tool_definitions"
-            detail_keys = ("mcpTools",) if "mcp" in key else ("systemTools",)
+            if "mcp" in key:
+                detail_keys = ("mcpTools",)
+            elif item.get("id", "system_tools") == "system_tools" and key == "systemtools":
+                detail_keys = ("systemTools",)
         elif "memor" in key:
             category, detail_keys = "memory", ("memoryFiles",)
         elif "skill" in key or "command" in key:

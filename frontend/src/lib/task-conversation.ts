@@ -1,18 +1,8 @@
 /** A task's REST snapshot plus messages received while it was loading (§10.11). */
 import type { AgentMessage } from '@/api/types'
-import { transcriptRows, upsertTranscript, type TranscriptRow } from '@/lib/transcript'
+import { upsertTranscript } from '@/lib/transcript'
 
 const timestamp = (message: AgentMessage) => message.created_at.replace(/(?:Z|\+00:00)$/, '')
-
-/** Keep closing-summary projections and expose interrupted runs in the task strip (§10.11). */
-export function taskConversationRows(messages: AgentMessage[]): TranscriptRow<AgentMessage>[] {
-  const shown = new Map(transcriptRows(messages, 'advanced').map(row => [row.key, row]))
-  return messages.flatMap(message => {
-    const row = shown.get(message.id)
-    if (row) return [row]
-    return ['error', 'cancelled'].includes(message.kind) ? [{ key: message.id, message }] : []
-  })
-}
 
 export function mergeTaskConversation(snapshot: AgentMessage[], incoming: AgentMessage[]): AgentMessage[] {
   const merged = incoming.reduce((messages, message) => upsertTranscript(messages, message), snapshot)

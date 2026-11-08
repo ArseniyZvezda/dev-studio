@@ -1,6 +1,6 @@
 """The Unreal plugin, without Unreal.
 
-Two things are being checked, and it is worth being precise about which:
+The editor and build tools are exercised through local substitutes:
 
 * **The transport.** A fake editor speaks Unreal's remote-execution protocol — multicast
   ping/pong, connect-back, command, command_result — and a stub executable stands in for
@@ -8,6 +8,8 @@ Two things are being checked, and it is worth being precise about which:
 * **The generated script.** The fake editor *runs* it against a stub ``unreal`` module,
   so the calls it makes to ``AssetImportTask`` and ``AssetToolsHelpers`` are real calls
   with real arguments, and the result marker round-trips.
+* **The build.** Stand-ins for UnrealBuildTool and AutomationTool receive the tool
+  arguments, archive a game and its content, and exercise error reporting and cancellation.
 
 What is *not* covered is Unreal's own behaviour: whether a given engine version accepts
 these properties, and whether the import factory does what the name suggests. That needs
@@ -16,19 +18,23 @@ an engine.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
+import platform
 import socket
 import struct
 import sys
 import textwrap
 import threading
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+from voxarium_studio.engine.executors import ExecutionRequest, execute
 from voxarium_studio.plugins.api import NodeContext
 from voxarium_studio.plugins.registry import Registry
 
@@ -603,8 +609,290 @@ async def test_ue_case_refuses_a_string_with_no_name_in_it(
 
 
 def test_ue_case_runs_in_process_and_never_asks_for_an_editor(registry: Registry) -> None:
-    """It is the one node here with no transport: a string is not something the editor holds."""
+    """String formatting has no editor dependency."""
     schema = registry.node_type("unreal.string_ue_case")
     assert schema is not None
     assert schema.execution.kind == "python_function"
     assert [port.id for port in schema.inputs] == ["text", "prefix", "remove_extension"]
+
+
+# --------------------------------------------------------------------------- unreal.build
+
+
+STUB_UAT = """
+import json
+import sys
+from pathlib import Path
+
+args = {arg.split("=", 1)[0].lower(): arg.partition("=")[2] for arg in sys.argv[1:]}
+Path(__file__).with_suffix(".json").write_text(json.dumps(sys.argv[1:]))
+project = Path(args["-project"]).stem
+platform = args.get("-platform") or args["-targetplatform"]
+cook_platform = {"Win64": "Windows"}.get(platform, platform)
+archive = Path(args["-archivedirectory"])
+if not any(part.lower().startswith((cook_platform.lower(), platform.lower())) for part in archive.parts):
+    archive = archive / cook_platform
+paks = archive / project / "Content" / "Paks"
+paks.mkdir(parents=True, exist_ok=True)
+(paks / (project + ".pak")).write_bytes(b"cooked content")
+(archive / project).with_suffix(".exe" if platform == "Win64" else ".sh").touch()
+"""
+
+
+@pytest.fixture
+def build_request(project: Path, registry: Registry, monkeypatch: pytest.MonkeyPatch) -> ExecutionRequest:
+    monkeypatch.delenv("VOXARIUM_STUDIO_UNREAL_PROJECT", raising=False)
+    monkeypatch.delenv("UE_USE_SYSTEM_DOTNET", raising=False)
+    schema = registry.node_type("unreal.build")
+    assert schema is not None, "Build must be available in the Unreal Engine palette"
+    assert not schema.execution.cacheable
+    assert {"Debug", "DebugGame", "Development", "Shipping", "Test"} <= set(schema.input("configuration").options)
+    assert schema.input("mode").default == "Package"
+    assert schema.input("output_dir").type == schema.output("build_dir").type == "directory"
+    assert schema.input("folder_template").default == "{game}-{platform}-{configuration}"
+
+    install = project.parent / "Unreal Engine"
+    engine = install / "Engine"
+    ubt = project / "fake_ubt.py"
+    uat = project / "fake_uat.py"
+    uat.write_text(STUB_UAT, encoding="utf-8")
+    if sys.platform == "win32":
+        arch = "win-arm64" if platform.machine().upper() == "ARM64" else "win-x64"
+        dotnet = engine / "Binaries" / "ThirdParty" / "DotNet" / "8.0.300" / arch / "dotnet.exe"
+        dotnet.parent.mkdir(parents=True)
+        dotnet.touch()
+        tools_dir = engine / "Binaries" / "DotNET"
+        stubs = {
+            tools_dir / "UnrealBuildTool" / "UnrealBuildTool.dll": ubt,
+            tools_dir / "AutomationTool" / "AutomationTool.dll": uat,
+        }
+        for dll in stubs:
+            dll.parent.mkdir(parents=True)
+            dll.touch()
+        spawn = asyncio.create_subprocess_exec
+
+        async def run_dotnet(program, *args, **kwargs):
+            if Path(program) == dotnet:
+                stub = stubs[Path(args[0])]
+                return await spawn(sys.executable, str(stub), *args[1:], **kwargs)
+            return await spawn(program, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", run_dotnet)
+    else:
+        host = "Mac" if sys.platform == "darwin" else "Linux"
+        batch = engine / "Build" / "BatchFiles"
+        for launcher, stub in ((batch / host / "Build.sh", ubt), (batch / "RunUAT.sh", uat)):
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{stub}" "$@"\n', encoding="utf-8")
+            launcher.chmod(0o755)
+
+    async def log(message: str, stream: str) -> None:
+        with (project / "build.log").open("a", encoding="utf-8") as target:
+            print(message, file=target)
+
+    return ExecutionRequest(
+        node_id="build", run_id="test", schema=schema, params={}, inputs={},
+        manifest=registry.manifest_for_node_type(schema.id), node_class=registry.node_class(schema.id),
+        project_root=project, assets_dir=project / "assets", work_dir=project / "work", log=log,
+        settings={"engine_root": str(install)},
+    )
+
+
+def uat_params(root: Path) -> dict[str, str]:
+    args = json.loads((root / "fake_uat.json").read_text())
+    return {arg.split("=", 1)[0].lower(): arg.partition("=")[2] for arg in args}
+
+
+async def test_build_packages_the_game_and_content_by_default(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    project = root / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    host = {"win32": "Win64", "darwin": "Mac", "linux": "Linux"}[sys.platform]
+
+    result = await execute(build_request)
+    args = uat_params(root)
+    assert {"buildcookrun", "-build", "-cook", "-stage", "-package", "-archive"} <= args.keys()
+    assert args["-project"] == str(project)
+    assert (args.get("-platform") or args.get("-targetplatform")) == host
+    assert args["-clientconfig"] == "Development"
+    build_dir = Path(result.outputs["build_dir"])
+    assert build_dir == root / "Builds" / f"MyGame-{host}-Development"
+    assert (build_dir / ("MyGame.exe" if host == "Win64" else "MyGame.sh")).is_file()
+    assert (build_dir / "MyGame" / "Content" / "Paks" / "MyGame.pak").read_bytes() == b"cooked content"
+    assert result.outputs["project"] == str(project)
+
+
+async def test_build_uses_custom_package_location_and_target(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    engine = Path(build_request.settings.pop("engine_root")) / "Engine"
+    host = {"win32": "Win64", "darwin": "Mac", "linux": "Linux"}[sys.platform]
+    editor = engine / "Binaries" / host / ("UnrealEditor-Cmd.exe" if sys.platform == "win32" else "UnrealEditor-Cmd")
+    editor.parent.mkdir(parents=True, exist_ok=True)
+    editor.touch()
+    build_request.settings.update({"editor_cmd": str(editor), "project": str(root / "Other.uproject")})
+    project = root / "Project With Spaces" / "MyGame.uproject"
+    project.parent.mkdir()
+    project.write_text("{}", encoding="utf-8")
+    parent = root.parent / "Build Outputs"
+    build_request.params = {
+        "project": str(project), "target": "MyGame", "configuration": "Shipping",
+        "platform": "Linux", "architecture": "arm64",
+        "output_dir": str(parent), "folder_template": "{target}_{architecture}_{configuration}",
+    }
+
+    result = await execute(build_request)
+    args = uat_params(root)
+    assert args["-project"] == str(project)
+    assert args["-target"] == "MyGame"
+    assert args["-clientconfig"] == args["-serverconfig"] == "Shipping"
+    assert (args.get("-platform") or args.get("-targetplatform")) == "Linux"
+    assert args["-clientarchitecture"] == args["-serverarchitecture"] == "arm64"
+    build_dir = Path(result.outputs["build_dir"])
+    assert build_dir == parent / "MyGame_arm64_Shipping"
+    assert next(build_dir.rglob("MyGame.pak")).is_file()
+
+
+async def test_build_publishes_the_contents_of_a_legacy_platform_archive(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    (root / "Game.uproject").write_text("{}", encoding="utf-8")
+    build_request.params = {"platform": "Win64"}
+    (root / "fake_uat.py").write_text(
+        STUB_UAT.replace(
+            'archive = Path(args["-archivedirectory"])',
+            'archive = Path(args["-archivedirectory"]) / "WindowsNoEditor"',
+        ),
+        encoding="utf-8",
+    )
+    result = await execute(build_request)
+    assert (Path(result.outputs["build_dir"]) / "Game.exe").is_file()
+
+
+async def test_build_reports_packaging_failure(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    (root / "Game.uproject").write_text("{}", encoding="utf-8")
+    first = await execute(build_request)
+    package_file = Path(first.outputs["build_dir"]) / "Game" / "Content" / "Paks" / "Game.pak"
+    # An incomplete archive on the second run must not replace the last good package.
+    (root / "fake_uat.py").write_text(
+        STUB_UAT.replace('b"cooked content"', 'b"partial archive"') + "print('Cooking failed')\nraise SystemExit(6)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="6"):
+        await execute(build_request)
+    assert "Cooking failed" in (root / "build.log").read_text(encoding="utf-8")
+    assert package_file.read_bytes() == b"cooked content"
+
+    # A successful retry publishes fresh content to the same configured directory.
+    (root / "fake_uat.py").write_text(STUB_UAT.replace('b"cooked content"', 'b"new content"'), encoding="utf-8")
+    retried = await execute(build_request)
+    assert retried.outputs["build_dir"] == first.outputs["build_dir"]
+    assert package_file.read_bytes() == b"new content"
+
+
+async def test_build_preserves_existing_unrelated_directory(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    (root / "Game.uproject").write_text("{}", encoding="utf-8")
+    build_request.params = {"output_dir": ".", "folder_template": "Content"}
+    content = root / "Content"
+    content.mkdir()
+    existing_asset = content / "Level.umap"
+    existing_asset.write_bytes(b"original level")
+
+    with pytest.raises((ValueError, RuntimeError)):
+        await execute(build_request)
+    assert list(content.iterdir()) == [existing_asset]
+    assert existing_asset.read_bytes() == b"original level"
+
+
+async def test_compile_exports_the_project_products_from_ubt_manifest(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    project = root / "MyGame.uproject"
+    project.write_text("{}", encoding="utf-8")
+    engine_product = Path(build_request.settings["engine_root"]).absolute() / "Engine" / "Binaries" / "Core.dll"
+    engine_product.parent.mkdir(parents=True, exist_ok=True)
+    engine_product.touch()
+    (root / "fake_ubt.py").write_text(textwrap.dedent(f"""\
+        import json, sys
+        from pathlib import Path
+        from xml.etree import ElementTree as ET
+
+        args = sys.argv[1:]
+        Path(__file__).with_suffix('.json').write_text(json.dumps(args))
+        manifest = next(arg.partition('=')[2] for arg in args if arg.lower().startswith('-manifest='))
+        project = Path(next(arg.partition('=')[2] for arg in args if arg.lower().startswith('-project=')))
+        module = project.parent / 'Binaries' / 'Win64' / 'UnrealEditor-MyGame.dll'
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_bytes(b'compiled project module')
+        document = ET.Element('BuildManifest')
+        products = ET.SubElement(document, 'BuildProducts')
+        for path in (module, Path({str(engine_product)!r})):
+            ET.SubElement(products, 'string').text = str(path)
+        ET.ElementTree(document).write(manifest, encoding='utf-16', xml_declaration=True)
+    """), encoding="utf-8")
+    build_request.params = {
+        "mode": "Compile", "target": "MyGameEditor", "platform": "Win64",
+        "output_dir": "Editor Outputs", "folder_template": "{game}-{target}-{architecture}",
+    }
+
+    result = await execute(build_request)
+    args = json.loads((root / "fake_ubt.json").read_text())
+    assert {"MyGameEditor", "Win64", "Development", f"-Project={project}", "-WaitMutex"} <= set(args)
+    build_dir = Path(result.outputs["build_dir"])
+    assert build_dir == root / "Editor Outputs" / "MyGame-MyGameEditor-Default"
+    assert (build_dir / "Binaries" / "Win64" / "UnrealEditor-MyGame.dll").read_bytes() == b"compiled project module"
+    assert not list(build_dir.rglob("Core.dll"))
+    assert not (root / "fake_uat.json").exists()
+
+
+@pytest.mark.parametrize("template", ["../AnotherProject", "nested/folder", "{version}", "{game"])
+async def test_build_rejects_invalid_folder_templates(build_request: ExecutionRequest, template: str) -> None:
+    root = build_request.project_root
+    (root / "Game.uproject").write_text("{}", encoding="utf-8")
+    build_request.params["folder_template"] = template
+    with pytest.raises(ValueError):
+        await execute(build_request)
+    assert not (root / "fake_uat.json").exists()
+
+
+async def test_build_requires_a_choice_between_project_files(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    for name in ("First", "Second"):
+        (root / f"{name}.uproject").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"2 \.uproject files"):
+        await execute(build_request)
+    assert not (root / "fake_uat.json").exists()
+
+
+async def test_cancelling_build_stops_the_compiler_child(build_request: ExecutionRequest) -> None:
+    root = build_request.project_root
+    (root / "Game.uproject").write_text("{}", encoding="utf-8")
+    loop = asyncio.get_running_loop()
+    # The child holds the connection open until it exits. Windows reports a reset
+    # and POSIX reports EOF when the process is killed.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.setblocking(False)
+        child = (
+            "import socket\n"
+            f"with socket.create_connection({listener.getsockname()!r}, timeout=15) as sock:\n"
+            "    sock.recv(1)\n"
+        )
+        (root / "fake_uat.py").write_text(
+            "import subprocess, sys\n"
+            f"subprocess.run([sys.executable, '-c', {child!r}], check=True, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n",
+            encoding="utf-8",
+        )
+        task = asyncio.create_task(execute(build_request))
+        try:
+            connection, _peer = await asyncio.wait_for(loop.sock_accept(listener), 5)
+            with connection:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 5)
+                with suppress(ConnectionResetError):
+                    assert await asyncio.wait_for(loop.sock_recv(connection, 1), 3) == b""
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

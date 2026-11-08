@@ -172,10 +172,10 @@ async def test_workspace_policy_waits_for_first_message_then_notifies_both_switc
         assert len(ProducerBackend.requests) == count + 1
 
 
-async def test_empty_workspace_neither_controls_nor_wakes_with_paused_team(producer):
+async def test_new_workspace_can_work_while_another_producer_is_paused(producer):
     active = await opened(producer)
-    empty = await producer.chats.create_chat(PRODUCER, producer_mode=True)
     await producer.chats.producer.pause(active.id)
+    empty = await producer.chats.create_chat(PRODUCER, producer_mode=True)
     saved = await producer.chats.get_chat(empty.id)
     assert not saved.producer_started and not saved.producer_paused
     for action in (producer.chats.producer.pause, producer.chats.producer.resume):
@@ -183,18 +183,47 @@ async def test_empty_workspace_neither_controls_nor_wakes_with_paused_team(produ
             await action(empty.id)
     selected = await producer.chats.producer.set_policy(empty.id, "independent")
     assert selected.producer_policy == "independent" and not selected.producer_started
-    with pytest.raises(ValueError, match="already started"):
-        await producer.chats.send(empty.id, "Do not bypass the team's pause", UserContext())
-    assert await producer.chats.messages(empty.id) == []
-    assert TEAM in producer.teams.paused_teams
-    await producer.chats.producer.resume(active.id)
-    await finished(producer, active.id)
-    assert not producer.chats.is_running(empty.id)
-    assert not (await producer.chats.get_chat(empty.id)).producer_started
-    assert all(request.session_key != empty.id for request in ProducerBackend.requests)
     await producer.chats.send(empty.id, "Start this conversation", UserContext())
     await finished(producer, empty.id)
     assert (await producer.chats.get_chat(empty.id)).producer_started
+    assert (await producer.chats.get_chat(active.id)).producer_paused
+    await producer.chats.producer.pause(empty.id)
+    await producer.chats.delete_chat(active.id)
+    with pytest.raises(ValueError, match="Resume"):
+        await producer.chats.send(empty.id, "Still paused", UserContext())
+    await producer.chats.producer.resume(empty.id)
+    await producer.chats.send(empty.id, "Continue this conversation", UserContext())
+    await finished(producer, empty.id)
+    assert [r.session_key for r in ProducerBackend.requests] == [active.id, empty.id, empty.id]
+
+
+async def test_pause_during_overlapping_producer_turns_only_cancels_selected_chat(producer, monkeypatch):
+    first = await producer.chats.create_chat(PRODUCER, producer_mode=True)
+    started = {}
+    finish = asyncio.Event()
+
+    async def hold(self, request):
+        yield AgentEvent(kind="text", text="Working", session_id=f"session-{request.session_key}")
+        started.setdefault(request.session_key, asyncio.Event()).set()
+        await finish.wait()
+        yield AgentEvent(kind="result", text="Done", is_final=True)
+
+    monkeypatch.setattr(ProducerBackend, "run", hold)
+    await producer.chats.send(first.id, "First goal", UserContext())
+    await asyncio.wait_for(started.setdefault(first.id, asyncio.Event()).wait(), timeout=5)
+    second = await producer.chats.create_chat(PRODUCER, producer_mode=True)
+    await producer.chats.send(second.id, "Second goal", UserContext())
+    await asyncio.wait_for(started.setdefault(second.id, asyncio.Event()).wait(), timeout=5)
+    await producer.chats.producer.pause(first.id)
+    assert not producer.jobs.is_running(first.id)
+    assert producer.jobs.is_running(second.id)
+    finish.set()
+    await finished(producer, second.id)
+    saved = await producer.chats.get_chat(second.id)
+    assert not saved.producer_paused and saved.producer_state == "awaiting_user"
+    assert saved.agent_session_id == f"session-{second.id}"
+    saved = await producer.chats.get_chat(first.id)
+    assert saved.producer_paused and saved.agent_session_id == f"session-{first.id}"
 
 
 async def test_failed_first_turn_is_started_even_without_backend_session(producer):
@@ -552,6 +581,20 @@ async def test_stopped_mode_revokes_tools_and_never_wakes(producer):
     assert not (await producer.chats.get_chat(chat.id)).producer_mode
 
 
+async def test_only_paused_producers_bound_tools_lose_access(producer):
+    first = await opened(producer)
+    second = await opened(producer)
+    first_tools = await tools_for(producer, first)
+    second_tools = await tools_for(producer, second)
+    await producer.chats.producer.pause(first.id)
+    args = {"assignee_id": DEV, "title": "Work on the shared board", "brief": "x"}
+    denied = await first_tools["create_task"](args)
+    assert denied["is_error"] and "paused" in denied["content"][0]["text"]
+    assert not (await second_tools["create_task"](args)).get("is_error")
+    board = await producer.chats.producer.tasks(second.id)
+    assert [t.producer_chat_id for t in board] == [second.id]
+
+
 async def test_other_chats_drafts_can_be_edited_planned_started_and_reviewed(producer):
     chat = await opened(producer)
     other = await opened(producer)
@@ -570,6 +613,22 @@ async def test_other_chats_drafts_can_be_edited_planned_started_and_reviewed(pro
     saved = await producer.teams._reload(task.id)
     assert saved.status == "done"
     assert saved.producer_chat_id == other.id, "coordination must not rewrite task origin"
+
+
+@pytest.mark.parametrize(("action", "status"), [("start", "todo"), ("request_changes", "needs_review")])
+async def test_cross_chat_review_preserves_work_held_by_paused_producer(producer, action, status):
+    owner = await opened(producer)
+    other = await opened(producer)
+    task = await draft(producer, owner)
+    await allow(producer, task, status)
+    await producer.chats.producer.pause(owner.id)
+    board = json.loads(await producer.chats.producer.context(other.id))
+    assert board["tasks"][0]["automatic_dispatch_paused"]
+    with pytest.raises(ValueError, match="Resume that chat"):
+        await producer.chats.producer.review(other.id, task.id, action, "Change this next")
+    stored = await producer.teams._reload(task.id)
+    assert stored.status == status and not stored.review_comment
+    assert not producer.jobs.is_running(task.id)
 
 
 @pytest.mark.parametrize("created_by", [None, f"{TEAM}__designer"])
@@ -1076,14 +1135,15 @@ async def test_existing_database_gains_careful_policy_without_changing_waits(pro
         await reopened.close()
 
 
-async def test_pause_stops_team_sessions_preserves_state_and_resume_is_idempotent(producer, monkeypatch):
+async def test_pause_preserves_owned_sessions_while_manual_work_uses_the_same_solo_queue(producer, monkeypatch):
     chat = await opened(producer)
     other = await opened(producer)
     task = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
-                                           title="Manual task", brief="Keep working", auto_start=False)
-    await producer.teams.update_task(task.id, {"status": "pending"})
-    queued = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
-                                             title="Next solo task", brief="Wait", auto_start=False)
+                                           title="Planned task", brief="Keep working", auto_start=False,
+                                           producer_chat_id=chat.id)
+    await allow(producer, task)
+    queued = await draft(producer, chat, "Next planned task")
+    await allow(producer, queued, "todo")
     started: dict[str, asyncio.Event] = {}
     requests = []
 
@@ -1104,29 +1164,38 @@ async def test_pause_stops_team_sessions_preserves_state_and_resume_is_idempoten
     saved = await producer.chats.producer.pause(chat.id)
     assert saved.producer_mode and saved.producer_paused and saved.producer_state == "running"
     assert saved.agent_session_id == f"session-{chat.id}"
-    assert (await producer.chats.get_chat(other.id)).producer_paused
+    assert not (await producer.chats.get_chat(other.id)).producer_paused
     parked = await producer.teams._reload(task.id)
     assert parked.status == "pending" and parked.pause_resume_pending and not parked.auto_start
     assert parked.agent_session_id == f"session-{task.id}"
     assert not any(producer.jobs.is_running(key) for key in (chat.id, task.id, queued.id))
-    with pytest.raises(ValueError, match="Resume"):
+    with pytest.raises(ValueError, match="paused"):
         await producer.teams.start_task(task.id)
     with pytest.raises(ValueError, match="Resume"):
         await producer.chats.send(chat.id, "Do not bypass Pause", UserContext())
     with pytest.raises(ValueError, match="Resume"):
-        await producer.chats.producer.set_policy(other.id, "independent")
+        await producer.chats.producer.set_policy(chat.id, "independent")
     await producer.chats.producer.reconcile()
     await producer.teams._start_if_ready([task.id, queued.id])
     assert len(requests) == 2
 
-    # Any active Producer chat controls the same team's pause.
-    await producer.chats.producer.resume(other.id)
+    manual = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
+                                             title="Manual task", brief="Run now", auto_start=False)
+    await producer.teams.update_task(manual.id, {"status": "pending"}, from_board=True)
+    await producer.teams.start_task(manual.id, from_board=True)
+    await producer.chats.producer.resume(chat.id)
     async with asyncio.timeout(5):
         while len(requests) < 4:
             await asyncio.sleep(.01)
     await producer.chats.producer.resume(chat.id)
     assert len(requests) == 4
-    assert not producer.jobs.is_running(queued.id), "Resume still respects Solo Mode"
+    assert producer.jobs.is_running(manual.id)
+    assert not any(producer.jobs.is_running(k) for k in (task.id, queued.id))
+    await producer.jobs.cancel(manual.id)
+    async with asyncio.timeout(5):
+        while len(requests) < 5:
+            await asyncio.sleep(.01)
+    assert not producer.jobs.is_running(queued.id), "Resume still respects Solo Mode order"
     resumed = {request.session_key: request for request in requests[2:]}
     assert resumed[task.id].resume_session_id == f"session-{task.id}"
     assert resumed[chat.id].resume_session_id == f"session-{chat.id}"
@@ -1140,6 +1209,9 @@ async def test_project_startup_holds_producer_tasks_timers_and_approved_dispatch
     from voxarium_studio.models.base import utcnow
 
     chat = await opened(producer)
+    other = await opened(producer)
+    other_task = await draft(producer, other, "Keep the second chat paused")
+    await allow(producer, other_task, "todo")
     interrupted = await draft(producer, chat, "Interrupted before restart")
     await allow(producer, interrupted, "in_progress")
     queued = await draft(producer, chat, "Approved but not dispatched")
@@ -1173,6 +1245,7 @@ async def test_project_startup_holds_producer_tasks_timers_and_approved_dispatch
         assert len(ProducerBackend.requests) == before
         saved = await restored.chats.get_chat(chat.id)
         assert saved.producer_paused and saved.producer_release_pending
+        assert (await restored.chats.get_chat(other.id)).producer_paused
         assert (await restored.teams._reload(interrupted.id)).status == "pending"
         assert (await restored.teams._reload(limited.id)).status == "blocked"
         assert (await restored.teams._reload(queued.id)).status == "todo"
@@ -1183,6 +1256,8 @@ async def test_project_startup_holds_producer_tasks_timers_and_approved_dispatch
         assert any(r.session_key == interrupted.id and r.resume_session_id == "task-before-restart"
                    for r in ProducerBackend.requests[before:])
         assert not any(r.session_key == completed.id for r in ProducerBackend.requests[before:])
+        assert (await restored.chats.get_chat(other.id)).producer_paused
+        assert (await restored.teams._reload(other_task.id)).status == "todo"
     finally:
         await restored.shutdown()
 
@@ -1221,11 +1296,41 @@ def test_pause_resume_api_validates_chat_and_returns_durable_state(client):
     assert not resumed.json()["is_running"]
 
 
+def test_board_start_and_second_chat_work_while_first_chat_stays_paused(client, monkeypatch):
+    class Backend(ProducerBackend):
+        requests = []
+        fail = overflow = False
+
+    monkeypatch.setattr("voxarium_studio.teams.chat.get_backend", lambda _: Backend())
+    monkeypatch.setattr("voxarium_studio.teams.orchestrator.get_backend", lambda _: Backend())
+    ctx = client.app.state.ctx
+    workspace = {"member_id": PRODUCER, "producer_mode": True}
+    first = client.post("/api/chats", json=workspace).json()["id"]
+    assert client.post(f"/api/chats/{first}/messages", json={"text": "First goal"}).status_code == 202
+    client.portal.call(finished, ctx, first)
+    assert client.post(f"/api/chats/{first}/producer/pause").json()["producer_paused"]
+
+    board = f"/api/teams/{TEAM}/tasks"
+    task = client.post(board, json={"assignee_id": DEV, "title": "Manual work", "auto_start": False})
+    assert task.status_code == 201
+    task_id = task.json()["id"]
+    assert client.patch(f"{board}/{task_id}", json={"status": "pending"}).status_code == 200
+    assert client.post(f"{board}/{task_id}/start").status_code == 202
+    client.portal.call(finished, ctx, task_id)
+    assert client.get(f"{board}/{task_id}").json()["status"] == "needs_review"
+
+    second = client.post("/api/chats", json=workspace).json()["id"]
+    assert client.post(f"/api/chats/{second}/messages", json={"text": "Second goal"}).status_code == 202
+    client.portal.call(finished, ctx, second)
+    assert client.get(f"/api/chats/{second}").json()["producer_state"] == "awaiting_user"
+    assert client.get(f"/api/chats/{first}").json()["producer_paused"]
+    assert [request.session_key for request in Backend.requests] == [first, task_id, second]
+
+
 async def test_pause_during_final_cleanup_does_not_requeue_saved_result(producer, monkeypatch):
     chat = await opened(producer)
-    task = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
-                                           title="Finishing", brief="Save a result")
-    await producer.teams.update_task(task.id, {"status": "pending"})
+    task = await draft(producer, chat, "Finishing")
+    await allow(producer, task)
     saved = asyncio.Event()
 
     async def hold_after_result(self, request):
@@ -1246,11 +1351,12 @@ async def test_pause_during_final_cleanup_does_not_requeue_saved_result(producer
 async def test_pause_before_submitted_job_enters_keeps_manual_start_intent(producer):
     chat = await opened(producer)
     task = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
-                                           title="Just submitted", brief="Resume this", auto_start=False)
-    await producer.teams.update_task(task.id, {"status": "pending"})
-    await producer.teams.start_task(task.id)
+                                           title="Just submitted", brief="Resume this", auto_start=False,
+                                           producer_chat_id=chat.id)
+    await allow(producer, task)
+    await producer.teams.start_task(task.id, from_board=True)
     # Exactly the first operation of Pause, before its asynchronous database scan.
-    producer.teams.paused_teams.add(TEAM)
+    producer.teams.paused_producer_chats[chat.id] = set()
     await finished(producer, task.id)
     stored = await producer.teams._reload(task.id)
     assert stored.status == "pending" and stored.pause_resume_pending
@@ -1259,6 +1365,91 @@ async def test_pause_before_submitted_job_enters_keeps_manual_start_intent(produ
     await producer.chats.producer.resume(chat.id)
     await finished(producer, task.id)
     assert any(r.session_key == task.id for r in ProducerBackend.requests)
+
+
+async def test_start_all_releases_approved_paused_work_after_its_dependency(producer):
+    chat = await opened(producer)
+    await producer.chats.producer.pause(chat.id)
+    dependency = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV, title="Prerequisite",
+                                                  brief="Wait for review")
+    await producer.teams.update_task(dependency.id, {"status": "needs_review"})
+    queued = await draft(producer, chat, "Wait for review", dependencies=[dependency.id])
+    await allow(producer, queued, "todo")
+    unapproved = await draft(producer, chat, "Still a draft")
+
+    await producer.teams.set_autostart_tasks(TEAM, True)
+    assert (await producer.teams._reload(queued.id)).status == "todo"
+    assert await producer.teams.start_all_tasks(TEAM) == [queued.id]
+    assert (await producer.teams._reload(queued.id)).status == "pending"
+    assert (await producer.teams._reload(unapproved.id)).status == "todo"
+    assert not producer.jobs.is_running(queued.id)
+    await producer.teams.approve(dependency.id)
+    await finished(producer, queued.id)
+    assert any(r.session_key == queued.id for r in ProducerBackend.requests)
+    assert (await producer.chats.get_chat(chat.id)).producer_paused
+
+
+async def test_board_cancel_withdraws_release_during_pause_and_allows_explicit_retry(producer, monkeypatch):
+    chat = await opened(producer)
+    task = await draft(producer, chat)
+    await allow(producer, task, "todo")
+    await producer.chats.producer.pause(chat.id)
+    started = asyncio.Event()
+    calls = []
+
+    async def hold(self, request):
+        calls.append(request.session_key)
+        yield AgentEvent(kind="text", text="Started")
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ProducerBackend, "run", hold)
+    await producer.teams.update_task(task.id, {"status": "pending", "auto_start": True}, from_board=True)
+    await asyncio.wait_for(started.wait(), 5)
+    handle = producer.jobs.get(task.id)
+    assert await producer.teams.cancel_task(task.id)
+    await asyncio.gather(handle.task, return_exceptions=True)
+    await producer.teams.dispatch_member_queue(DEV)
+    assert not producer.jobs.is_running(task.id)
+
+    started.clear()
+    await producer.teams.start_task(task.id, from_board=True)
+    await asyncio.wait_for(started.wait(), 5)
+    assert calls == [task.id, task.id]
+    assert (await producer.chats.get_chat(chat.id)).producer_paused
+    await producer.teams.cancel_task(task.id)
+
+
+async def test_concurrent_board_starts_keep_solo_and_a_refused_task_stays_paused(producer, monkeypatch):
+    chat = await opened(producer)
+    await producer.chats.producer.pause(chat.id)
+    tasks = [await draft(producer, chat, title) for title in ("First", "Second")]
+    for task in tasks:
+        await allow(producer, task)
+        await producer.teams.update_task(task.id, {"auto_start": True})
+
+    # Both starts enter the database checks before either has registered its job.
+    both = asyncio.Barrier(2)
+    opening_turn = producer.teams._opening_turn
+
+    async def prepare(session, task):
+        prompt = await opening_turn(session, task)
+        await both.wait()
+        return prompt
+
+    monkeypatch.setattr(producer.teams, "_opening_turn", prepare)
+    results = await asyncio.wait_for(asyncio.gather(
+        *(producer.teams.start_task(t.id, from_board=True) for t in tasks), return_exceptions=True,
+    ), 5)
+    winner, = [r for r in results if isinstance(r, TeamTask)]
+    refusal, = [r for r in results if isinstance(r, ValueError)]
+    assert "Solo Mode" in str(refusal)
+    monkeypatch.setattr(producer.teams, "_opening_turn", opening_turn)
+    await finished(producer, winner.id)
+    await producer.teams.dispatch_member_queue(DEV)
+    loser, = [task for task in tasks if task.id != winner.id]
+    assert not producer.jobs.is_running(loser.id)
+    assert not any(r.session_key == loser.id for r in ProducerBackend.requests)
 
 
 def test_estimate_task_cost_api_persists_validates_and_does_not_start_agents(client):

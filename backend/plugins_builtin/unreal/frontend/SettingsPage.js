@@ -1,6 +1,5 @@
 /**
- * Unreal Engine settings — where the project and the editor executable live, and how the
- * nodes should reach the editor.
+ * Unreal Engine settings for local game builds and editor connections (§9.5).
  *
  * Plain ES module loaded at runtime: `vue` and the API client come through the factory,
  * and it is one file because the host appends `?token=` to this URL (a relative import
@@ -18,11 +17,18 @@ const PLUGIN_ID = 'unreal'
  */
 const MESSAGES = {
   en: {
-    intro: 'Where the project lives and how pipeline nodes reach the editor.',
+    intro: 'Choose the Unreal project, engine installation and editor connection for pipeline nodes.',
     loading: 'Loading…',
     fields: {
-      project: { label: 'Project file', hint: 'Absolute path to your .uproject' },
-      editorCmd: { label: 'Editor executable', hint: 'UnrealEditor-Cmd — only needed for headless runs' },
+      project: {
+        label: 'Project file',
+        hint: 'Default .uproject for pipeline nodes. You can choose a different project on each Build node.',
+      },
+      engineRoot: {
+        label: 'Engine installation',
+        hint: 'Build uses this installation to compile and package the game. Leave blank to use the installation containing the editor executable.',
+      },
+      editorCmd: { label: 'Editor executable', hint: 'Path to UnrealEditor-Cmd for headless editor runs' },
       commandHost: { label: 'Callback address', hint: 'Address the editor dials back on for remote execution' },
     },
     connection: {
@@ -35,10 +41,10 @@ const MESSAGES = {
       save: 'Save',
       saving: 'Saving…',
       savedAt: 'Saved at {time}',
-      noProject: 'No project set — the nodes will fail until one is',
+      noProject: 'No default project file selected',
     },
     firstRun: {
-      title: 'Before the first run',
+      title: 'Running scripts and importing assets',
       enablePlugin: 'Enable the {plugin} in your Unreal project.',
       remoteExecution:
         'For the {transport} transport, also tick {setting} under Project Settings → Plugins → Python. It is off by default.',
@@ -49,13 +55,20 @@ const MESSAGES = {
     nodes: 'Nodes',
   },
   ru: {
-    intro: 'Где находится проект и как узлы пайплайнов связываются с редактором.',
+    intro: 'Выберите проект Unreal, установку движка и способ подключения узлов к редактору.',
     loading: 'Загрузка…',
     fields: {
-      project: { label: 'Файл проекта', hint: 'Абсолютный путь к файлу .uproject' },
+      project: {
+        label: 'Файл проекта',
+        hint: 'Файл .uproject по умолчанию для узлов пайплайна. В каждом узле Build можно выбрать другой проект.',
+      },
+      engineRoot: {
+        label: 'Каталог движка',
+        hint: 'Из этого каталога Build запускает компиляцию и упаковку игры. Если поле пустое, каталог определяется по пути к редактору.',
+      },
       editorCmd: {
         label: 'Исполняемый файл редактора',
-        hint: 'UnrealEditor-Cmd — нужен только для запусков без интерфейса',
+        hint: 'Путь к UnrealEditor-Cmd для запуска редактора без интерфейса',
       },
       commandHost: {
         label: 'Адрес обратного подключения',
@@ -72,10 +85,10 @@ const MESSAGES = {
       save: 'Сохранить',
       saving: 'Сохранение…',
       savedAt: 'Сохранено в {time}',
-      noProject: 'Проект не задан — пока его нет, узлы будут завершаться с ошибкой',
+      noProject: 'Файл проекта по умолчанию не выбран',
     },
     firstRun: {
-      title: 'Перед первым запуском',
+      title: 'Запуск скриптов и импорт ассетов',
       enablePlugin: 'Включите {plugin} в своём проекте Unreal.',
       remoteExecution:
         'Для транспорта {transport} также отметьте {setting} в Project Settings → Plugins → Python. По умолчанию эта ' +
@@ -109,6 +122,12 @@ const FIELDS = [
     placeholder: 'D:/Projects/MyGame/MyGame.uproject',
   },
   {
+    key: 'engine_root',
+    label: 'fields.engineRoot.label',
+    hint: 'fields.engineRoot.hint',
+    placeholder: 'C:/Program Files/Epic Games/UE_5.7',
+  },
+  {
     key: 'editor_cmd',
     label: 'fields.editorCmd.label',
     hint: 'fields.editorCmd.hint',
@@ -129,7 +148,7 @@ export default function ({ vue, api, settings, i18n }) {
   return defineComponent({
     name: 'UnrealSettingsPage',
     setup() {
-      const values = ref({ project: '', editor_cmd: '', command_host: '', transport: 'auto' })
+      const values = ref({ project: '', engine_root: '', editor_cmd: '', command_host: '', transport: 'auto' })
       const loading = ref(true)
       const saving = ref(false)
       /** When the last save landed — formatted while rendering, in the language on screen. */

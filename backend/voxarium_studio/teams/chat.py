@@ -290,8 +290,7 @@ class ChatService:
             self.producer._idle(chat_id)
             return await self.producer._save(
                 chat_id, producer_workspace=True, producer_mode=True, producer_locale=locale,
-                producer_state="discussing", error=None,
-                producer_paused=chat.producer_started and member.team_id in self.orchestrator.paused_teams,
+                producer_state="discussing", error=None, producer_paused=False,
             )
 
     async def delete_chat(self, chat_id: str) -> bool:
@@ -365,7 +364,7 @@ class ChatService:
             if member.id in self.orchestrator.removing_members:
                 raise ValueError("This member is being removed. Wait for the team to refresh.")
             if chat.producer_mode:
-                await self.producer.require_resumed(chat_id)
+                self.producer.require_resumed(chat_id)
             if not chat.title:
                 chat.title = title_from(body or records[0]["name"])
             chat.error = None
@@ -396,7 +395,7 @@ class ChatService:
         prompt = with_trailer(prompt, self.orchestrator.attachments.trailer(records))
 
         if chat.producer_mode:
-            await self.producer.require_resumed(chat_id)
+            self.producer.require_resumed(chat_id)
         if member_id in self.orchestrator.removing_members:
             raise ValueError("This member is being removed. Wait for the team to refresh.")
         self.jobs.submit(

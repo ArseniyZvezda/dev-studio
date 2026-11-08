@@ -16,15 +16,18 @@ def test_classification_is_a_lossless_partition_of_one_field():
               "## Prior decisions\r\n  точный текст\t\r\n========= MEMORY_SUMMARY ENDS =========\r\n")
     tail = "\r\nOther instructions  "
     text = prefix + memory + tail
-    blocks = prompt_sources(text, "developer", instructions=True, origin="journal[7].text")
+    blocks = prompt_sources(text, "developer", instructions=True, origin="journal[7].text",
+                            source_kind="developer_message", source_detail="custom.instructions")
     assert [(b["category"], b["text"]) for b in blocks] == [
         ("developer", prefix), ("memory", memory), ("developer", tail)]
     assert len({b["origin"] for b in blocks}) == 3
+    assert [(b["source_kind"], b.get("source_detail")) for b in blocks] == [
+        ("developer_message", "custom.instructions"), ("memory", None), ("developer_message", "custom.instructions")]
     assert [b["text"] for b in prompt_sources(text, "history")] == [text]
     quoted = "```markdown\n" + text + "\n```"
     assert prompt_sources(quoted, "system", instructions=True) == [source("system", quoted)]
     clipped = memory.partition("========= MEMORY_SUMMARY ENDS")[0]
-    assert prompt_sources(clipped, "developer", instructions=True) == [source("memory", clipped)]
+    assert prompt_sources(clipped, "developer", instructions=True) == [source("memory", clipped, source_kind="memory")]
 
 
 def test_files_and_environment_share_a_scalar_but_do_not_become_one_instruction():
@@ -32,6 +35,19 @@ def test_files_and_environment_share_a_scalar_but_do_not_become_one_instruction(
     env = "<environment_context>\n  cwd\n</environment_context>"
     result = prompt_sources(agents + env, "task", instructions=True)
     assert [(p["category"], p["text"]) for p in result] == [("memory", agents), ("environment", env)]
+    assert [(p["source_kind"], p.get("source_detail")) for p in result] == [("agents_md", "a"), ("environment", None)]
+
+
+def test_required_materials_identify_the_dispatched_file_without_parsing_its_body():
+    skill = ("--- BEGIN REQUIRED SKILL: design ---\nSkill directory: /saved/design\n"
+             "Instructions: /saved/design/SKILL.md\n\nInstructions: quoted path\n--- END REQUIRED SKILL: design ---\n")
+    doc = "--- BEGIN REQUIRED DOCUMENT: notes/spec.md ---\nbody\n--- END REQUIRED DOCUMENT: notes/spec.md ---"
+    parts = prompt_sources(skill + doc, origin="capture.prompt", source_kind="request_input")
+    assert [(p["source_kind"], p["source_detail"], p["text"]) for p in parts] == [
+        ("required_skill", "/saved/design/SKILL.md", skill), ("required_document", "notes/spec.md", doc)]
+    incomplete = "--- BEGIN REQUIRED SKILL: design ---\nInstructions: quoted path"
+    assert prompt_sources(incomplete, source_kind="request_input") == [
+        source("task", incomplete, source_kind="request_input")]
 
 
 def test_presentation_is_idempotent_and_empty_and_repeated_records_remain_addressable():
@@ -86,9 +102,11 @@ async def test_recorded_transport_boundary_uses_only_journal_characters(backend,
     notice = AgentMessage(task_id="task", member_id="dev", role="system", kind="system", data={"subtype": marker})
     parts, _ = await session_context.read_context(snapshot, [notice], None, "session")
     assert [(p["category"], p["text"]) for p in parts] == [(category, wire), ("task", "user\t ")]
+    assert [p["source_kind"] for p in parts] == ["studio_system", "user_message"]
     # The same string without the adapter's notice remains an ordinary user field.
     parts, _ = await session_context.read_context(snapshot, [], None, "session")
     assert [(p["category"], p["text"]) for p in parts] == [("task", wire + "user\t ")]
+    assert parts[0]["source_kind"] == "user_message"
 
 
 def test_native_category_metadata_is_not_presented_as_prompt_content():

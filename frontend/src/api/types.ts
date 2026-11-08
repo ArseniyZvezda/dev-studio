@@ -2016,7 +2016,11 @@ export interface ContextSource {
   text_key?: string
   /** The journal/snapshot field supplying this fragment (§10.4). */
   origin?: string
+  /** Kind of record and its recorded name, path or other identifying metadata (§10.4). */
+  source_kind?: string
+  source_detail?: string
   representation?: 'text' | 'json' | 'metadata'
+  provided_by?: 'codex' | 'claude_code' | 'qwen'
 }
 export type ContextTarget = { chatId: string } | { teamId: string; taskId: string }
 export type ContextView = 'auto' | 'studio'
@@ -2028,6 +2032,8 @@ export interface ContextInventory {
   captured_at: string | null
   partial: boolean
   origin: 'studio' | 'codex_journal' | 'claude_code_journal' | 'qwen_journal' | 'claude_code_runtime'
+  /** Local JSONL file supplying the journal view (§10.4). */
+  journal_path?: string
   basis: 'estimated' | 'runtime'
   can_inspect: boolean
   has_studio_view?: boolean

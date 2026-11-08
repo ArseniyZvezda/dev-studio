@@ -12,7 +12,7 @@ import json
 import logging
 import math
 import re
-from contextlib import AsyncExitStack, suppress
+from contextlib import suppress
 from typing import Any
 
 from sqlmodel import delete, select
@@ -43,121 +43,104 @@ class ProducerService:
         self._worker: asyncio.Task | None = None
         self._subscription = None
         self._approval_lock = asyncio.Lock()
-        self._control_lock = asyncio.Lock()
 
     async def restore_paused(self) -> None:
-        """Opening a project never resumes an active Producer's team (§10.11)."""
+        """Hold each started Producer and its tasks before queues are restored (§10.11)."""
         async with self.chats.db.session() as session:
-            teams = set((await session.exec(
-                select(TeamMember.team_id).join(AgentChat, AgentChat.member_id == TeamMember.id)
+            chat_ids = (await session.exec(
+                select(AgentChat.id).join(TeamMember, AgentChat.member_id == TeamMember.id)
                 .where(AgentChat.producer_mode == True, AgentChat.producer_started == True)  # noqa: E712
-            )).all())
+            )).all()
         # Install every gate before touching rows or publishing events.
-        self.orchestrator.paused_teams.update(teams)
-        async with self._control_lock:
-            for team_id in teams:
-                await self._pause_team(team_id)
+        self.orchestrator.paused_producer_chats.update({chat_id: set() for chat_id in chat_ids})
+        for chat_id in chat_ids:
+            async with self.chats.lock(chat_id):
+                chat = await self.chats.get_chat(chat_id)
+                if chat and chat.producer_mode and chat.producer_started:
+                    await self._pause_chat(chat_id)
+                else:
+                    self.orchestrator.paused_producer_chats.pop(chat_id, None)
 
-    async def _team_id(self, chat_id: str) -> str:
-        chat = await self._chat(chat_id)
-        async with self.chats.db.session() as session:
-            member = await session.get(TeamMember, chat.member_id)
-            return member.team_id
-
-    async def _team_chats(self, team_id: str) -> list[AgentChat]:
+    async def _owned_agent_tasks(self, chat_id: str) -> list[TeamTask]:
         async with self.chats.db.session() as session:
             return list((await session.exec(
-                select(AgentChat).join(TeamMember, AgentChat.member_id == TeamMember.id)
-                .where(TeamMember.team_id == team_id, AgentChat.producer_mode == True)  # noqa: E712
+                select(TeamTask).join(TeamMember, TeamTask.assignee_id == TeamMember.id)
+                .where(TeamTask.producer_chat_id == chat_id, TeamMember.kind == "agent")
+                .order_by(TeamTask.number)
             )).all())
 
-    async def require_resumed(self, chat_id: str) -> None:
-        if await self._team_id(chat_id) in self.orchestrator.paused_teams:
-            if not (await self._chat(chat_id)).producer_started:
-                raise ValueError("This team is paused. Press Resume in an already started Producer chat first.")
+    def require_resumed(self, chat_id: str) -> None:
+        if chat_id in self.orchestrator.paused_producer_chats:
             raise ValueError("Producer Mode is paused. Press Resume to continue.")
 
     async def pause(self, chat_id: str) -> AgentChat:
-        async with self._control_lock:
-            if not (await self._chat(chat_id)).producer_started:
+        async with self.chats.lock(chat_id):
+            chat = await self._chat(chat_id)
+            if not chat.producer_started:
                 raise ValueError("Producer Mode has not started. Send the first message to begin.")
-            await self._pause_team(await self._team_id(chat_id))
+            if not chat.producer_paused:
+                self.orchestrator.paused_producer_chats.setdefault(chat_id, set())
+                await self._pause_chat(chat_id)
             return await self._chat(chat_id)
 
-    async def _pause_team(self, team_id: str) -> None:
-        # Block all dispatch paths before cancelling anything: a closing Solo job must
-        # not start its successor. Session ids, transcript and worktrees stay in place.
-        self.orchestrator.paused_teams.add(team_id)
-        chats = await self._team_chats(team_id)
-        async with AsyncExitStack() as stack:
-            for chat in chats:
-                await stack.enter_async_context(self.chats.lock(chat.id))
-                # An empty workspace is configured, not paused or running (§10.11).
-                fresh = await self._chat(chat.id)
-                await self._save(chat.id, producer_paused=fresh.producer_started)
-            async with self.chats.db.session() as session:
-                tasks = list((await session.exec(
-                    select(TeamTask).join(TeamMember, TeamTask.assignee_id == TeamMember.id)
-                    .where(TeamTask.team_id == team_id, TeamMember.kind == "agent")
-                )).all())
-            interrupted = [t for t in tasks if t.status == "in_progress"
-                           or self.chats.jobs.is_running(t.id)]
-            # Persist continuation intent before cancellation, so even a process exit
-            # during cleanup cannot lose manually started (auto_start=False) work.
-            async with self.chats.db.session() as session:
-                for task in interrupted:
-                    stored = await session.get(TeamTask, task.id)
-                    if stored and stored.status in {"pending", "in_progress"}:
-                        stored.pause_resume_pending = True
-                        session.add(stored)
-            for task in tasks:
-                self.orchestrator._cancel_limit_wait(task.id)
-            handles = [h for key in [*(c.id for c in chats), *(t.id for t in interrupted)]
-                       if (h := self.chats.jobs.get(key)) is not None]
-            for handle in handles:
-                await self.chats.jobs.cancel(handle.id)
-            # Await subprocess cleanup and final durable event writes, including jobs
-            # that had only been queued for a slot when Pause arrived.
-            await asyncio.gather(*(h.task for h in handles if h.task), return_exceptions=True)
+    async def _pause_chat(self, chat_id: str) -> None:
+        await self._save(chat_id, producer_paused=True)
+        tasks = await self._owned_agent_tasks(chat_id)
+        interrupted = [t for t in tasks if self.orchestrator.producer_holds(t)
+                       and (t.status == "in_progress" or self.chats.jobs.is_running(t.id))]
+        # Persist continuation intent before cancellation, so even a process exit
+        # during cleanup cannot lose an interrupted run with auto_start=False.
+        async with self.chats.db.session() as session:
             for task in interrupted:
-                async with self.chats.db.session() as session:
-                    stored = await session.get(TeamTask, task.id)
-                    if stored is None or stored.status not in {"pending", "in_progress"}:
-                        continue
-                    stored.status = TaskStatus.PENDING
+                stored = await session.get(TeamTask, task.id)
+                if stored and self.orchestrator.producer_holds(stored) and stored.status in {"pending", "in_progress"}:
                     stored.pause_resume_pending = True
                     session.add(stored)
-                await self.orchestrator.record_message(
-                    task.id, task.assignee_id, role="system", kind="state",
-                    text="Producer paused. Work and session state preserved; waiting for Resume.",
-                    data={"producer_paused": True, "agent_session_id": stored.agent_session_id})
-                await self.orchestrator._publish_task_changed(task.id)
-            for chat in chats:
-                await self.chats._publish_chat_by_id(chat.id)
+        for task in tasks:
+            if self.orchestrator.producer_holds(task):
+                self.orchestrator._cancel_limit_wait(task.id)
+        keys = [chat_id, *(t.id for t in interrupted if self.orchestrator.producer_holds(t))]
+        handles = [h for key in keys if (h := self.chats.jobs.get(key)) is not None]
+        for handle in handles:
+            handle.meta["producer_pause"] = True
+            await self.chats.jobs.cancel(handle.id)
+        # Await subprocess cleanup and final events, including jobs queued for a slot.
+        await asyncio.gather(*(h.task for h in handles if h.task), return_exceptions=True)
+        for task in interrupted:
+            async with self.chats.db.session() as session:
+                stored = await session.get(TeamTask, task.id)
+                if (not stored or not self.orchestrator.producer_holds(stored)
+                        or stored.status not in {"pending", "in_progress"}):
+                    continue
+                stored.status = TaskStatus.PENDING
+                stored.pause_resume_pending = True
+                session.add(stored)
+            await self.orchestrator.record_message(
+                task.id, task.assignee_id, role="system", kind="state",
+                text="Producer paused. Work and session state preserved; waiting for Resume.",
+                data={"producer_paused": True, "agent_session_id": stored.agent_session_id})
+            await self.orchestrator._publish_task_changed(task.id)
+        await self.chats._publish_chat_by_id(chat_id)
 
     async def resume(self, chat_id: str) -> AgentChat:
-        async with self._control_lock:
-            if not (await self._chat(chat_id)).producer_started:
+        async with self.chats.lock(chat_id):
+            chat = await self._chat(chat_id)
+            if not chat.producer_started:
                 raise ValueError("Producer Mode has not started. Send the first message to begin.")
-            team_id = await self._team_id(chat_id)
-            if team_id not in self.orchestrator.paused_teams:
-                return await self._chat(chat_id)
-            chats = await self._team_chats(team_id)
-            async with AsyncExitStack() as stack:
-                for chat in chats:
-                    await stack.enter_async_context(self.chats.lock(chat.id))
-                    await self._save(chat.id, producer_paused=False)
-                self.orchestrator.paused_teams.discard(team_id)
-                tasks = await self.tasks(chat_id)
-                for task in tasks:
-                    if task.status == "blocked" and task.resume_on_limit and task.limit_resume_at:
-                        self.orchestrator._schedule_limit_wait(task.id, task.limit_resume_at)
-                await self.orchestrator._start_if_ready([t.id for t in tasks])
-                await self.orchestrator._release_tasks(team_id, automatic=True)
-                for chat in chats:
-                    fresh = await self._chat(chat.id)
-                    if fresh.producer_started and fresh.producer_state in {"running", "waiting", "error", "discussing"}:
-                        await self.queue(chat.id, self.chats.config.teams.prompts.text("producer_wake"))
+            if chat_id not in self.orchestrator.paused_producer_chats:
+                return chat
+            await self._save(chat_id, producer_paused=False)
+            self.orchestrator.paused_producer_chats.pop(chat_id)
+            tasks = await self._owned_agent_tasks(chat_id)
+            for task in tasks:
+                if task.status == "blocked" and task.resume_on_limit and task.limit_resume_at:
+                    self.orchestrator._schedule_limit_wait(task.id, task.limit_resume_at)
+            await self.orchestrator._start_if_ready([t.id for t in tasks if t.status == TaskStatus.PENDING])
+            for task in tasks:
+                if task.producer_approved and task.status == TaskStatus.TODO:
+                    await self.orchestrator._autostart_todo(task)
+            if chat.producer_state in {"running", "waiting", "error", "discussing"}:
+                await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_wake"))
             return await self._chat(chat_id)
 
     async def start(self) -> None:
@@ -250,7 +233,7 @@ class ProducerService:
             except ImportError as exc:
                 raise ValueError("Install the Studio teams extra to use Producer Mode.") from exc
             await self._save(chat_id, producer_mode=True, producer_locale=locale, producer_state="discussing",
-                             producer_paused=chat.producer_started and await self._member_paused(chat.member_id),
+                             producer_paused=False,
                              producer_policy=policy or chat.producer_policy,
                              producer_effort_mode=effort_mode or chat.producer_effort_mode,
                              estimate_task_cost_usd=(estimate_task_cost_usd if estimate_task_cost_usd is not None
@@ -271,7 +254,7 @@ class ProducerService:
             if chat.producer_policy == policy:
                 return chat
             if chat.producer_mode and chat.producer_started:
-                await self.require_resumed(chat_id)
+                self.require_resumed(chat_id)
             self._idle(chat_id)
             await self._save(chat_id, producer_policy=policy)
             # Before the first message this is only a preference; a started chat
@@ -293,25 +276,23 @@ class ProducerService:
         previous = await self._chat(chat_id, active=False)
         if previous.producer_workspace and not deleting:
             raise ValueError("Producer workspace chats stay enabled until deleted.")
-        team_id = await self._team_id(chat_id) if previous.producer_mode else None
         chat = await self._save(chat_id, producer_mode=False, producer_state="off", producer_paused=False,
                                 producer_watch=[], producer_plan=[], producer_plan_summary="",
                                 producer_questions=[])
         if cancel:
             await self.chats._cancel_turn(chat_id)
-        if team_id and not any(c.producer_started for c in await self._team_chats(team_id)):
-            self.orchestrator.paused_teams.discard(team_id)
+        self.orchestrator.paused_producer_chats.pop(chat_id, None)
         return chat
 
     async def queue(self, chat_id: str, prompt: str) -> None:
         from .chat import JOB_KIND
         chat = await self._chat(chat_id)
-        if await self._member_paused(chat.member_id):
+        if chat_id in self.orchestrator.paused_producer_chats:
             return
         self._idle(chat_id)
         await self._save(chat_id, producer_started=True, producer_state="running", error=None)
         await self._release_tasks(chat_id)
-        if await self._member_paused(chat.member_id):
+        if chat_id in self.orchestrator.paused_producer_chats:
             return
         self.chats.jobs.submit(
             chat_id, JOB_KIND,
@@ -319,11 +300,6 @@ class ProducerService:
             member_id=chat.member_id, chat_id=chat_id,
         )
         await self.chats._publish_chat_by_id(chat_id)
-
-    async def _member_paused(self, member_id: str) -> bool:
-        async with self.chats.db.session() as session:
-            member = await session.get(TeamMember, member_id)
-        return bool(member and member.team_id in self.orchestrator.paused_teams)
 
     async def _release_tasks(self, chat_id: str) -> None:
         chat = await self._chat(chat_id)
@@ -459,7 +435,7 @@ class ProducerService:
 
     async def _approve_plan(self, chat_id: str, version: int, *, automatic: bool) -> None:
         async with self._approval_lock:
-            await self.require_resumed(chat_id)
+            self.require_resumed(chat_id)
             chat = await self._chat(chat_id)
             if automatic and chat.producer_policy != "independent":
                 raise ValueError("Automatic plan approval requires Independent mode.")
@@ -578,6 +554,13 @@ class ProducerService:
         if self.chats.jobs.is_running(task.id):
             raise ValueError("The task's session is still finishing. Wait for its status update.")
         if action in {"request_changes", "start"}:
+            if self.orchestrator.producer_holds(task):
+                async with self.chats.db.session() as session:
+                    assignee = await session.get(TeamMember, task.assignee_id)
+                if assignee and assignee.kind == "agent":
+                    raise ValueError(
+                        "This task's Producer chat is paused. Resume that chat or run the task manually from the board."
+                    )
             self.check_task_cost(chat, task, estimated_additional_cost_usd)
         # §10.11: a Done result closes this unit of work; fixes need a new task.
         if (task.result_type == "done" and task.status in {TaskStatus.NEEDS_REVIEW, TaskStatus.DONE}
@@ -667,13 +650,14 @@ class ProducerService:
                 AgentChat.producer_state.in_(["waiting", "running"]),
             ))).all())
         for chat_id in ids:
-            async with self.chats.lock(chat_id):
-                if self.chats.jobs.is_running(chat_id):
+            lock = self.chats.lock(chat_id)
+            if lock.locked():  # This chat can wait for the next pass without delaying others.
+                continue
+            async with lock:
+                if self.chats.jobs.is_running(chat_id) or chat_id in self.orchestrator.paused_producer_chats:
                     continue
-                chat = await self._chat(chat_id)
-                if chat.producer_paused or await self._member_paused(chat.member_id):
-                    continue
-                if chat.producer_state not in {"waiting", "running"}:
+                chat = await self.chats.get_chat(chat_id)
+                if not chat or not chat.producer_mode or chat.producer_state not in {"waiting", "running"}:
                     continue
                 current = {t.id: {**self.snapshot(t), "is_running": self.chats.jobs.is_running(t.id)}
                            for t in await self.tasks(chat_id)}
@@ -695,6 +679,7 @@ class ProducerService:
         closed = [t for t in tasks if t.status in {"done", "cancelled"}]
         board = [{"display_id": self.orchestrator.display_id(t), "title": t.title[:200],
                   "approved": not t.producer_chat_id or t.producer_approved,
+                  "automatic_dispatch_paused": self.orchestrator.producer_holds(t),
                   "is_running": self.chats.jobs.is_running(t.id),
                   "total_cost_usd": t.total_cost_usd,
                   "remaining_task_cost_usd": max(0.0, chat.estimate_task_cost_usd - t.total_cost_usd),

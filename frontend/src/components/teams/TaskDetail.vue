@@ -23,7 +23,6 @@
  */
 import {
   Archive,
-  ArrowDown,
   ArrowRight,
   Ban,
   Bot,
@@ -33,31 +32,25 @@ import {
   Minimize2,
   LoaderCircle,
   ExternalLink,
-  FilePen,
   FileText,
   GitBranch,
-  GitCommitHorizontal,
-  GraduationCap,
   Hand,
   Hourglass,
   ListRestart,
   Paperclip,
   Pencil,
   Play,
-  RefreshCw,
   RotateCcw,
   Send,
   Smartphone,
   Trash2,
   Unplug,
-  Wrench,
   X,
 } from 'lucide-vue-next'
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { taskAttachmentUrl, uploadTaskAttachment, api } from '@/api/client'
 import type {
-  AgentMessage,
   TaskAttachment,
   TaskDetail,
   TaskResultType,
@@ -72,7 +65,7 @@ import TaskChanges from '@/components/teams/TaskChanges.vue'
 import TaskDiff from '@/components/teams/TaskDiff.vue'
 import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
-import MarkdownText from '@/components/ui/MarkdownText.vue'
+import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
@@ -80,7 +73,6 @@ import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import ContextUsageBar from '@/components/ui/ContextUsageBar.vue'
 import { t, type MessageKey } from '@/i18n'
-import { toolName, toolSubject } from '@/lib/activity'
 import { dialogEscape } from '@/lib/dialog'
 import {
   formatBytes,
@@ -99,36 +91,19 @@ import {
   resultTypeColor,
   resultTypeHint,
   resultTypeLabel,
-  resultTypeOf,
 } from '@/lib/task-result'
 import { taskUsage } from '@/lib/task-usage'
 import { writePathsFromText } from '@/lib/task-write-paths'
-import type { Verbosity } from '@/lib/transcript'
-import {
-  PROSE_KINDS,
-  VERBOSITY_HINTS,
-  VERBOSITY_LABELS,
-  VERBOSITY_LEVELS,
-  commitText,
-  editStat,
-  editedText,
-  historyReason,
-  isFileEdit,
-  isSkillCall,
-  isVerbosity,
-  liveLine,
-  transcriptRows,
-} from '@/lib/transcript'
+import type { TranscriptMessage } from '@/lib/transcript'
 import { useTeamsStore } from '@/stores/teams'
 
-const props = defineProps<{ task: TaskDetail }>()
+const props = defineProps<{ task: TaskDetail; embedded?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 const teams = useTeamsStore()
 // §10.3: read-only effort uses the same installed catalogue as its editor.
 onMounted(() => void teams.loadOptions())
 const comment = ref('')
-const transcript = ref<HTMLElement | null>(null)
 
 /**
  * The review box keeps what was typed into it and never sent.
@@ -217,7 +192,7 @@ function isAttachment(value: unknown): value is TaskAttachment {
 }
 
 /** The attachments a review entry carries, for the transcript. */
-function attachmentsOf(message: AgentMessage): TaskAttachment[] {
+function attachmentsOf(message: TranscriptMessage): TaskAttachment[] {
   const raw = message.data?.attachments
   return Array.isArray(raw) ? raw.filter(isAttachment) : []
 }
@@ -520,32 +495,6 @@ const limitWait = computed(() => {
 })
 
 /**
- * How much of the run is on screen (`lib/transcript.ts`), remembered across dialogs.
- *
- * The preference is the reader's rather than the task's — someone who wants to see tool
- * results wants them on the next task too — and it is worth nothing to the project, so it
- * lives in `localStorage` beside the token rather than in the project's settings. An
- * unreadable or retired value falls back to Compact, which is also where a first read
- * starts.
- */
-const VERBOSITY_KEY = 'voxarium_studio.transcript.verbosity'
-const remembered = window.localStorage.getItem(VERBOSITY_KEY)
-const verbosity = ref<Verbosity>(isVerbosity(remembered) ? remembered : 'compact')
-
-const rows = computed(() => transcriptRows(props.task.messages, verbosity.value))
-
-/**
- * The transcript's last activity (`lib/transcript.ts`).
- *
- * The activity half is the tail of the *whole* feed — the newest thing Verbose would log,
- * shown below Verbose whether or not this level draws a row for it, and kept nowhere.
- *
- * Its adjacent token chip uses the same confirmed lifetime usage as the header (§10.4).
- * The live line's output estimate remains available to other transcript consumers.
- */
-const live = computed(() => liveLine(props.task.messages, verbosity.value))
-
-/**
  * The sub-agents and workflows this session started (§10.3).
  *
  * Folded out of the messages rather than shown as transcript rows: the lifecycle frames are
@@ -654,89 +603,9 @@ const writtenDocs = computed(() => {
   return [...seen].map(([path, title]) => ({ path, title }))
 })
 
-function actorName(message: AgentMessage): string {
-  const actor = message.data?.actor_id
-  if (typeof actor === 'string') return teams.memberById.get(actor)?.name ?? actor
-  return t('taskDetail.you')
-}
-
-/** What a status entry records: the transition, and why it happened when there is a why. */
-function transition(message: AgentMessage): {
-  from: string | null
-  to: string
-  reason: string
-} {
-  return {
-    from: typeof message.data?.from === 'string' ? message.data.from : null,
-    to: typeof message.data?.to === 'string' ? message.data.to : props.task.status,
-    reason: typeof message.data?.reason === 'string' ? message.data.reason : '',
-  }
-}
-
-// ---------------------------------------------------------------- following the transcript
-
-/**
- * The transcript follows new messages, and stops following while the user is reading back.
- *
- * Both halves are the feature. A live session appends every few seconds, so a panel that
- * always jumped to the end made reading anything older impossible — which is what the
- * checkbox turns off — while one that never jumped would leave a running task scrolling
- * away unwatched. Scrolling up therefore pauses following without touching the switch, and
- * returning to the bottom resumes it; the Jump button is the way back for anyone who
- * scrolled a long way.
- */
-const follow = ref(true)
-const atBottom = ref(true)
-
-/** Within a line of the end counts as the end — a scroll position rarely lands exactly. */
-function measureBottom(): void {
-  const element = transcript.value
-  if (!element) return
-  atBottom.value = element.scrollHeight - element.scrollTop - element.clientHeight < 32
-}
-
-async function scrollToLatest(): Promise<void> {
-  await nextTick()
-  const element = transcript.value
-  if (!element) return
-  element.scrollTop = element.scrollHeight
-  atBottom.value = true
-}
-
-watch(
-  () => props.task.messages.length,
-  () => {
-    if (follow.value && atBottom.value) void scrollToLatest()
-  },
-)
-
-// Switching it back on is an instruction to catch up, not just to follow from here.
-watch(follow, (enabled) => {
-  if (enabled) void scrollToLatest()
-})
-
-/**
- * Turning the dial is a re-read of the same feed, and every row above the reader changes
- * height when it does — so someone who was at the end is put back there rather than left
- * wherever that many pixels now lands. Someone who had scrolled up keeps their place.
- */
-watch(verbosity, (level) => {
-  window.localStorage.setItem(VERBOSITY_KEY, level)
-  if (atBottom.value) void scrollToLatest()
-})
-
-// Folding the delegated list changes how much room the transcript has, exactly as turning
-// the dial does, so it gets the same rule: someone who was at the end is put back there,
-// someone who had scrolled up keeps their place. The write is here rather than beside the
-// ref so both halves of what this toggle costs the reader stay in one place.
 watch(delegatedOpen, (open) => {
   window.localStorage.setItem(DELEGATED_KEY, open ? 'open' : 'closed')
-  if (atBottom.value) void scrollToLatest()
 })
-
-// Another task's transcript opens at its end whatever the switch says: it is a fresh read,
-// not the one the user had scrolled back through.
-watch(() => props.task.id, () => void scrollToLatest(), { immediate: true })
 
 // ---------------------------------------------------------------- what the task changed
 
@@ -750,12 +619,6 @@ watch(() => props.task.id, () => void scrollToLatest(), { immediate: true })
 const selectedFile = ref<string | null>(null)
 
 watch(() => props.task.id, () => (selectedFile.value = null))
-
-// Coming back to the transcript is a fresh read of it: the element was unmounted while the
-// diff was up, so it returns at the top with `atBottom` still claiming otherwise.
-watch(selectedFile, (path) => {
-  if (!path) void scrollToLatest()
-})
 
 /**
  * Bumped when the list is worth reading again — and deliberately not on every message.
@@ -1033,7 +896,7 @@ async function complete() {
        three — two hairlines side by side is a double border, and a surface painted over
        the panel's own would hide the card fill it is drawn on. -->
   <div class="flex min-h-0 flex-1">
-    <div class="flex min-w-0 flex-1 flex-col">
+    <div class="flex min-w-0 flex-1 flex-col" :class="{ 'overflow-y-auto': embedded }">
       <header class="border-b border-line px-pane py-2">
         <div class="flex items-start gap-2">
           <div class="min-w-0 flex-1">
@@ -1064,13 +927,15 @@ async function complete() {
           >
             <Pencil class="size-3.5" />
           </button>
-          <button
-            class="grid size-6 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"
-            :title="t('common.close')"
-            @click="emit('close')"
-          >
-            <X class="size-3.5" />
-          </button>
+          <slot name="header-action">
+            <button
+              class="grid size-6 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"
+              :title="t('common.close')"
+              @click="emit('close')"
+            >
+              <X class="size-3.5" />
+            </button>
+          </slot>
         </div>
 
         <div class="mt-2 flex flex-wrap items-center gap-2">
@@ -1302,7 +1167,7 @@ async function complete() {
             :disabled="draftAssigneeIsHuman"
           />
 
-          <div class="flex items-center gap-3">
+          <div class="flex flex-wrap items-center gap-3">
             <label
               class="flex items-center gap-2"
               :class="draftAssigneeIsHuman ? 'cursor-not-allowed text-faint' : 'cursor-pointer'"
@@ -1360,310 +1225,120 @@ async function complete() {
       <!-- Picking a file in the column beside this swaps the pane rather than opening a
            second one: a patch wants the width the transcript has, and the two are read one
            at a time. The switch back is the same control that got here. -->
-      <div v-if="selectedFile" class="flex min-h-0 flex-1 flex-col">
-        <div class="shrink-0 border-b border-line-subtle px-pane py-1">
-          <div class="flex items-center gap-1">
-            <button
-              class="rounded-sm px-2 py-0.5 text-small text-faint hover:bg-hover hover:text-primary"
-              @click="selectedFile = null"
-            >
-              {{ t('taskDetail.view.transcript') }}
-            </button>
-            <span class="rounded-sm bg-hover px-2 py-0.5 text-small font-medium">
-              {{ t('taskDetail.view.diff') }}
-            </span>
-          </div>
-        </div>
-        <div class="min-h-0 flex-1">
-          <TaskDiff :team-id="task.team_id" :task-id="task.id" :path="selectedFile" />
-        </div>
-      </div>
-
-      <div
-        v-else
-        ref="transcript"
-        class="min-h-0 flex-1 space-y-2 overflow-auto p-pane"
-        @scroll.passive="measureBottom"
-      >
-        <section class="rounded-md bg-inset p-2">
-          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
-            {{ t('taskDetail.sections.brief') }}
-          </p>
-          <p class="whitespace-pre-wrap">{{ task.brief || '—' }}</p>
-          <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
-        </section>
-
-        <section class="rounded-md bg-inset p-2">
-          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
-            {{ t('tasks.writePaths.label') }}
-          </p>
-          <p v-if="task.write_paths?.length" class="font-mono text-small break-all whitespace-pre-wrap">{{ task.write_paths.join('\n') }}</p>
-          <p v-else class="text-small text-faint">{{ t('tasks.writePaths.empty') }}</p>
-        </section>
-
-        <section v-if="dependencies.length" class="rounded-md bg-inset p-2">
-          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
-            {{ t('taskDetail.sections.waitsFor') }}
-          </p>
-          <p v-for="entry in dependencies" :key="entry.id" class="flex items-baseline gap-2">
-            <span v-if="entry.displayId" class="shrink-0 font-mono text-small text-faint">
-              {{ entry.displayId }}
-            </span>
-            <span class="truncate" :class="entry.met ? 'text-faint line-through' : ''">
-              {{ entry.title }}
-            </span>
-            <span class="ml-auto shrink-0 text-small text-faint">
-              {{ statusLabel(entry.status) }}
-            </span>
-          </p>
-          <p v-if="blockedBy.length && task.auto_start" class="mt-1 text-small text-faint">
-            {{
-              task.status === 'todo'
-                ? t('taskDetail.sections.startsAfterRelease')
-                : t('taskDetail.sections.startsOnItsOwn')
-            }}
-          </p>
-        </section>
-
-        <section v-if="writtenDocs.length" class="rounded-md bg-inset p-2">
-          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
-            {{ t('taskDetail.sections.documentsWritten') }}
-          </p>
-          <RouterLink
-            v-for="doc in writtenDocs"
-            :key="doc.path"
-            :to="{ name: 'docs', query: { path: doc.path } }"
-            class="flex items-center gap-1.5 text-info hover:underline"
-          >
-            <FileText class="size-3 shrink-0" />
-            <span class="truncate">{{ doc.title }}</span>
-          </RouterLink>
-        </section>
-
-        <p v-if="task.error" class="rounded-md bg-danger-soft p-2 font-mono text-small text-danger">
-          {{ task.error }}
-        </p>
-
-        <!-- One loop for all three levels: what a level changes is which rows exist, never
-             how a row is drawn. Compact draws a row only where somebody spoke, an MCP
-             server was called, a skill was loaded, or the task history moved; the work
-             between those — file
-             edits included, which the column on the right lists — is the one line under
-             the loop. -->
-        <template v-for="row in rows" :key="row.key">
-          <!-- History reads as a timeline rather than as a message: it has no author
-               speaking, and giving it the same card as one would bury the transcript in
-               bookkeeping. -->
-          <p
-            v-if="row.message.kind === 'status'"
-            class="flex items-center gap-2 px-1 text-small text-faint"
-          >
-            <span
-              class="size-1.5 shrink-0 rounded-full"
-              :style="{ background: statusColor(transition(row.message).to) }"
-            />
-            <span v-if="transition(row.message).from">
-              {{ statusLabel(transition(row.message).from!) }} →
-            </span>
-            <span class="font-medium text-primary">
-              {{ statusLabel(transition(row.message).to) }}
-            </span>
-            <span v-if="!transition(row.message).from">
-              · {{ t('taskDetail.history.created') }}
-            </span>
-            <span v-else-if="transition(row.message).reason">
-              · {{ historyReason(transition(row.message).reason) }}
-            </span>
-            <span class="truncate">· {{ actorName(row.message) }}</span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <p
-            v-else-if="row.message.kind === 'edited'"
-            class="flex items-center gap-2 px-1 text-small text-faint"
-          >
-            <Pencil class="size-3 shrink-0" />
-            <span class="truncate">
-              {{ editedText(row.message) }} · {{ actorName(row.message) }}
-            </span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <!-- The Commit button landing (§10.4): history like a status move, since it is
-               the task's work leaving the working copy, and worth a line at every level. -->
-          <p
-            v-else-if="row.message.kind === 'commit'"
-            class="flex items-center gap-2 px-1 text-small text-faint"
-            :title="typeof row.message.data?.title === 'string' ? row.message.data.title : ''"
-          >
-            <GitCommitHorizontal class="size-3 shrink-0 text-success" />
-            <span class="truncate">{{ commitText(row.message) }}</span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <!-- The Studio resuming a stalled session, or declining to. Timeline rather than
-               card for the same reason as the rest: nobody is speaking. -->
-          <p
-            v-else-if="row.message.kind === 'continued'"
-            class="flex items-baseline gap-2 px-1 text-small text-faint"
-          >
-            <RefreshCw class="size-3 shrink-0 translate-y-0.5" />
-            <span class="min-w-0">{{ row.message.text }}</span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <!-- Preparation and incomplete disk evidence remain visible at every level (§10.4). -->
-          <p
-            v-else-if="row.message.kind === 'file_observation_status' || row.message.kind === 'file_observation_error'"
-            class="flex items-baseline gap-2 px-1 text-small"
-            :class="row.message.kind === 'file_observation_error' ? 'text-warning' : 'text-faint'"
-          >
-            <FileText class="size-3 shrink-0 translate-y-0.5" />
-            <span class="min-w-0 break-words">{{ row.message.text }}</span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <!-- A tool call reads as a timeline entry for the same reason history does: it
-               has no author speaking, and one card per call would bury the agent's own
-               words. A call that *wrote* something carries its own icon and its size —
-               how much it changed is the one thing about it worth as much as its name
-               (Advanced and up; Compact leaves the file and its count to the column). -->
-          <p
-            v-else-if="row.message.kind === 'tool_use'"
-            class="flex items-baseline gap-2 px-1 text-small text-faint"
-            :title="toolSubject(row.message)"
-          >
-            <FilePen v-if="isFileEdit(row.message)" class="size-3 shrink-0 translate-y-0.5" />
-            <GraduationCap
-              v-else-if="isSkillCall(row.message)"
-              class="size-3 shrink-0 translate-y-0.5"
-              :style="{ color: 'var(--vxs-nav-skills)' }"
-            />
-            <Wrench v-else class="size-3 shrink-0 translate-y-0.5" />
-            <span class="shrink-0 font-mono text-primary">{{ toolName(row.message) }}</span>
-            <span class="min-w-0 truncate">{{ toolSubject(row.message) }}</span>
-            <span v-if="editStat(row.message)" class="shrink-0 font-mono">
-              <span class="text-success">+{{ editStat(row.message)!.insertions }}</span>
-              <span class="ml-1 text-danger">−{{ editStat(row.message)!.deletions }}</span>
-            </span>
-            <span class="ml-auto shrink-0">{{ formatTime(row.message.created_at) }}</span>
-          </p>
-
-          <!-- A summary that came with a result type (§10.4) wears its colour: the edge and
-               a chip in the result's green, blue or red, with the words left as they are.
-               Level 3 of the styling rules — the colour is a token resolved per entry. -->
-          <article
-            v-else
-            class="rounded-md border p-2"
-            :class="
-              row.message.role === 'user'
-                ? 'border-accent-border bg-accent-soft'
-                : 'border-line-subtle bg-elevated'
-            "
-            :style="
-              resultTypeOf(row.message)
-                ? {
-                    borderColor: resultTypeColor(resultTypeOf(row.message)!),
-                    boxShadow: `inset 3px 0 0 ${resultTypeColor(resultTypeOf(row.message)!)}`,
-                  }
-                : undefined
-            "
-          >
-            <p class="mb-1 flex items-baseline gap-2 text-small text-faint">
-              <span class="font-medium">
-                {{
-                  row.message.role === 'user'
-                    ? t('taskDetail.you')
-                    : (teams.memberById.get(row.message.member_id)?.name ??
-                      row.message.member_id)
-                }}
-              </span>
-              <span class="font-mono">{{ ['context_summary', 'compressed summary'].includes(row.message.kind) ? t('taskDetail.compression.summary') : row.message.kind }}</span>
-              <span
-                v-if="resultTypeOf(row.message)"
-                class="inline-flex items-center gap-1 font-medium"
-                :style="{ color: resultTypeColor(resultTypeOf(row.message)!) }"
-                :title="resultTypeHint(resultTypeOf(row.message)!)"
-              >
-                <span
-                  class="size-1.5 rounded-full"
-                  :style="{ background: resultTypeColor(resultTypeOf(row.message)!) }"
-                />
-                {{ resultTypeLabel(resultTypeOf(row.message)!) }}
-              </span>
-              <span class="ml-auto">{{ formatTime(row.message.created_at) }}</span>
-            </p>
-            <!-- §10.3: structured model frames use the same effort display as the header. -->
-            <div
-              v-if="row.message.kind === 'model' && typeof row.message.data?.effort === 'string'"
-              class="flex flex-wrap items-center gap-2"
-            >
-              <span v-if="typeof row.message.data.model === 'string'" class="font-mono text-small">
-                {{ row.message.data.model }}
-              </span>
-              <ModelEffortSlider
-                :model-value="row.message.data.effort"
-                :levels="teams.options?.effort_levels"
-                readonly
-              />
-              <span v-if="row.message.data.source === 'task'" class="text-small text-faint">
-                {{ t('taskDetail.runSettings.overridden') }}
-              </span>
-            </div>
-            <MarkdownText v-else-if="PROSE_KINDS.has(row.message.kind)" :text="row.message.text" />
-            <p v-else class="whitespace-pre-wrap">{{ row.message.text }}</p>
-            <!-- What a review came with (§10.4). Drawn as pictures and links, unlike the
-                 remote image a model might write into its prose: these are files of this
-                 project, served by the Studio itself, put there by the reviewer. -->
-            <ul
-              v-if="attachmentsOf(row.message).length"
-              class="mt-2 flex flex-wrap gap-2"
-              :aria-label="t('taskDetail.review.attachments')"
-            >
-              <li v-for="entry in attachmentsOf(row.message)" :key="entry.name">
-                <a
-                  :href="attachmentUrl(entry.name)"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="inline-flex max-w-72 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-small hover:bg-hover"
-                  :title="`${entry.name} · ${formatBytes(entry.size)}`"
+      <ConversationPanel :conversation-id="task.id" :messages="task.messages" :task-status="task.status"
+        :embedded="embedded" :empty-text="isHuman ? t('taskDetail.transcript.emptyPerson')
+          : task.status === 'todo' ? t('taskDetail.transcript.emptyTodo') : t('taskDetail.transcript.emptyAgent')">
+        <template v-if="selectedFile" #alternative>
+          <div class="flex min-h-0 flex-1 flex-col">
+            <div class="shrink-0 border-b border-line-subtle px-pane py-1">
+              <div class="flex items-center gap-1">
+                <button
+                  class="rounded-sm px-2 py-0.5 text-small text-faint hover:bg-hover hover:text-primary"
+                  @click="selectedFile = null"
                 >
-                  <img
-                    v-if="entry.image"
-                    :src="attachmentUrl(entry.name)"
-                    :alt="entry.name"
-                    class="max-h-24 max-w-40 rounded-sm object-contain"
-                  />
-                  <FileText v-else class="size-3.5 shrink-0 text-faint" />
-                  <span class="truncate">{{ entry.name }}</span>
-                </a>
-              </li>
-            </ul>
-          </article>
+                  {{ t('taskDetail.view.transcript') }}
+                </button>
+                <span class="rounded-sm bg-hover px-2 py-0.5 text-small font-medium">
+                  {{ t('taskDetail.view.diff') }}
+                </span>
+              </div>
+            </div>
+            <div class="min-h-0 flex-1">
+              <TaskDiff :team-id="task.team_id" :task-id="task.id" :path="selectedFile" />
+            </div>
+          </div>
         </template>
+        <template #before>
+          <section class="rounded-md bg-inset p-2">
+            <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
+              {{ t('taskDetail.sections.brief') }}
+            </p>
+            <p class="whitespace-pre-wrap">{{ task.brief || '—' }}</p>
+            <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
+          </section>
 
-        <!-- The last line of the dialogue: the newest thing Verbose would log, and the
-             task's lifetime usage (§10.4). One line under everything, below Verbose —
-             `lib/transcript.ts` says why it is not one per block, and why it follows the log
-             rather than the rows. `truncate` is the "if it does not fit" half; the text is
-             already flattened, so this cuts a long line rather than wrapping the box open.
-             The activity half is keyed on the tail count so the element is a new one on
-             every update: a CSS animation restarts when its element does, and that flash is
-             the same signal the board card gives for the same reason. -->
-        <p
-          v-if="live.activity || usage.totalTokens > 0"
-          class="flex items-center gap-2 px-1 pl-4 text-small text-faint"
-        >
-          <span
-            v-if="live.activity"
-            :key="live.seq"
-            class="vxs-task-activity min-w-0 truncate font-mono"
-            :title="live.activity"
+          <section class="rounded-md bg-inset p-2">
+            <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
+              {{ t('tasks.writePaths.label') }}
+            </p>
+            <p v-if="task.write_paths?.length" class="font-mono text-small break-all whitespace-pre-wrap">{{ task.write_paths.join('\n') }}</p>
+            <p v-else class="text-small text-faint">{{ t('tasks.writePaths.empty') }}</p>
+          </section>
+
+          <section v-if="dependencies.length" class="rounded-md bg-inset p-2">
+            <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
+              {{ t('taskDetail.sections.waitsFor') }}
+            </p>
+            <p v-for="entry in dependencies" :key="entry.id" class="flex items-baseline gap-2">
+              <span v-if="entry.displayId" class="shrink-0 font-mono text-small text-faint">
+                {{ entry.displayId }}
+              </span>
+              <span class="truncate" :class="entry.met ? 'text-faint line-through' : ''">
+                {{ entry.title }}
+              </span>
+              <span class="ml-auto shrink-0 text-small text-faint">
+                {{ statusLabel(entry.status) }}
+              </span>
+            </p>
+            <p v-if="blockedBy.length && task.auto_start" class="mt-1 text-small text-faint">
+              {{
+                task.status === 'todo'
+                  ? t('taskDetail.sections.startsAfterRelease')
+                  : t('taskDetail.sections.startsOnItsOwn')
+              }}
+            </p>
+          </section>
+
+          <section v-if="writtenDocs.length" class="rounded-md bg-inset p-2">
+            <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
+              {{ t('taskDetail.sections.documentsWritten') }}
+            </p>
+            <RouterLink
+              v-for="doc in writtenDocs"
+              :key="doc.path"
+              :to="{ name: 'docs', query: { path: doc.path } }"
+              class="flex items-center gap-1.5 text-info hover:underline"
+            >
+              <FileText class="size-3 shrink-0" />
+              <span class="truncate">{{ doc.title }}</span>
+            </RouterLink>
+          </section>
+
+          <p v-if="task.error" class="rounded-md bg-danger-soft p-2 font-mono text-small text-danger">
+            {{ task.error }}
+          </p>
+        </template>
+        <template #message-extra="{ message }">
+          <!-- What a review came with (§10.4). Drawn as pictures and links, unlike the
+               remote image a model might write into its prose: these are files of this
+               project, served by the Studio itself, put there by the reviewer. -->
+          <ul
+            v-if="attachmentsOf(message).length"
+            class="mt-2 flex flex-wrap gap-2"
+            :aria-label="t('taskDetail.review.attachments')"
           >
-            {{ live.activity }}
-          </span>
+            <li v-for="entry in attachmentsOf(message)" :key="entry.name">
+              <a
+                :href="attachmentUrl(entry.name)"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex max-w-72 items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-1 text-small hover:bg-hover"
+                :title="`${entry.name} · ${formatBytes(entry.size)}`"
+              >
+                <img
+                  v-if="entry.image"
+                  :src="attachmentUrl(entry.name)"
+                  :alt="entry.name"
+                  class="max-h-24 max-w-40 rounded-sm object-contain"
+                />
+                <FileText v-else class="size-3.5 shrink-0 text-faint" />
+                <span class="truncate">{{ entry.name }}</span>
+              </a>
+            </li>
+          </ul>
+        </template>
+        <template v-if="usage.totalTokens > 0" #usage>
           <TokenUsageChip
-            v-if="usage.totalTokens > 0"
             class="ml-auto"
             :input-tokens="usage.inputTokens"
             :output-tokens="usage.outputTokens"
@@ -1671,47 +1346,8 @@ async function complete() {
             :cost-usd="task.total_cost_usd"
             :cost-messages="task.messages"
           />
-        </p>
-
-        <p v-if="!rows.length && !live.activity && usage.totalTokens === 0" class="text-faint">
-          {{
-            isHuman
-              ? t('taskDetail.transcript.emptyPerson')
-              : task.status === 'todo'
-                ? t('taskDetail.transcript.emptyTodo')
-                : t('taskDetail.transcript.emptyAgent')
-          }}
-        </p>
-
-      </div>
-
-      <!-- Outside the scroll area on purpose: "follow" is wanted exactly when the user has
-           scrolled away from the end, which is where a control living at the end of the
-           transcript cannot be reached. -->
-      <div
-        class="shrink-0 border-t border-line-subtle px-pane py-1 text-small text-faint"
-      >
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <!-- A dial rather than a switch: there were always three readings of a run — what
-               happened, what was done, and everything — and only two settings for them. -->
-          <label
-            class="flex cursor-pointer items-center gap-2"
-            :title="t(VERBOSITY_HINTS[verbosity])"
-          >
-            {{ t('taskDetail.verbosity.label') }}
-            <select
-              v-model="verbosity"
-              class="cursor-pointer rounded-sm border border-line bg-inset px-1 py-0.5 outline-none focus:border-accent"
-            >
-              <option v-for="level in VERBOSITY_LEVELS" :key="level" :value="level">
-                {{ t(VERBOSITY_LABELS[level]) }}
-              </option>
-            </select>
-          </label>
-          <label class="flex cursor-pointer items-center gap-2" :title="t('taskDetail.follow.hint')">
-            <input v-model="follow" type="checkbox" class="accent-[var(--vxs-accent)]" />
-            {{ t('taskDetail.follow.label') }}
-          </label>
+        </template>
+        <template #controls>
           <!-- Next to Follow because both are settings for *watching* this run rather than
                fields of the card, and this is the row that is on screen at the moment the
                transcript stops mid-work. Bound through `:checked` and a handler rather than
@@ -1732,16 +1368,8 @@ async function complete() {
             />
             {{ t('taskDetail.limit.resumeOnReset') }}
           </label>
-          <button
-            v-if="!atBottom"
-            class="ml-auto flex items-center gap-1 rounded-sm px-1 hover:bg-hover hover:text-primary"
-            :title="t('taskDetail.follow.latestHint')"
-            @click="scrollToLatest()"
-          >
-            <ArrowDown class="size-3" /> {{ t('taskDetail.follow.latest') }}
-          </button>
-        </div>
-      </div>
+        </template>
+      </ConversationPanel>
 
       <footer class="space-y-2 border-t border-line p-2">
         <!-- Fixed here rather than up in the transcript: the link is what
@@ -1908,7 +1536,7 @@ async function complete() {
           </div>
         </div>
 
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
           <button
             v-if="canClaim"
             class="flex flex-1 items-center justify-center gap-1.5 vxs-btn-primary px-3 py-1.5 font-medium text-on-accent disabled:opacity-50"
@@ -2089,7 +1717,7 @@ async function complete() {
 
     <!-- Full height beside the whole dialog, not inside the transcript: it is a property of
          the task rather than of the conversation, and a reviewer reads the two together. -->
-    <aside class="w-[298px] shrink-0 border-l border-line">
+    <aside v-if="!embedded" class="w-[298px] shrink-0 border-l border-line">
       <TaskChanges
         :team-id="task.team_id"
         :task-id="task.id"

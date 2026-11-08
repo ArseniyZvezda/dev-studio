@@ -991,7 +991,7 @@ async def update_task(
             raise HTTPException(status_code=404, detail=f"No task {task_id!r}")
     try:
         task = await ctx.teams.update_task(
-            task_id, fields, actor_id=actor_id, summary_locale=summary_locale
+            task_id, fields, actor_id=actor_id, summary_locale=summary_locale, from_board=True,
         )
     except RoutingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -1080,7 +1080,7 @@ async def start_task(
     """
     try:
         task = await ctx.teams.start_task(
-            task_id, summary_locale=payload.summary_locale if payload else None
+            task_id, summary_locale=payload.summary_locale if payload else None, from_board=True,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1168,6 +1168,7 @@ async def request_changes(
             actor_id=payload.actor_id,
             attachments=payload.attachments,
             summary_locale=payload.summary_locale,
+            from_board=True,
         )
     except RoutingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

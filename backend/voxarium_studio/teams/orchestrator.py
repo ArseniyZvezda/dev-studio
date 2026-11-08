@@ -159,8 +159,12 @@ class TeamOrchestrator:
         self._write_paths_guards: dict[str, asyncio.Lock] = {}
         self._temp_locks: dict[str, asyncio.Lock] = {}
         self.subagents = SubagentManager(self)
-        self.paused_teams: set[str] = set()
-        """Producer execution gates, installed before startup dispatch (§10.11)."""
+        self.paused_producer_chats: dict[str, set[str]] = {}
+        """Paused chat IDs and the tasks explicitly released on the board during each pause (§10.11).
+
+        A release may wait for a dependency or a Solo slot. It belongs to this pause only:
+        a fresh Pause (including project startup) holds the chat's tasks again.
+        """
         self._ending: set[str] = set()
         """Runs in their last lines — locks released, the member's queue being dispatched.
 
@@ -237,8 +241,6 @@ class TeamOrchestrator:
                 select(TeamTask).where(TeamTask.status == TaskStatus.PENDING)
             )).all())
         for team in teams:
-            if team.id in self.paused_teams:
-                continue
             if team.autostart_tasks:
                 await self._release_tasks(team.id, automatic=True)
                 await self._start_if_ready([
@@ -249,6 +251,18 @@ class TeamOrchestrator:
         """Release this team's Todo/Pending agent tasks, keeping dependency/Solo gates (§10.4)."""
         return await self._release_tasks(team_id, summary_locale=summary_locale)
 
+    def producer_holds(self, task: TeamTask) -> bool:
+        released = self.paused_producer_chats.get(task.producer_chat_id)
+        return released is not None and task.id not in released
+
+    def _set_board_release(self, task: TeamTask, enabled: bool) -> None:
+        released = self.paused_producer_chats.get(task.producer_chat_id)
+        if released is not None:
+            if enabled:
+                released.add(task.id)
+            else:
+                released.discard(task.id)
+
     async def _autostart_todo(self, task: TeamTask) -> None:
         if task.status == TaskStatus.TODO:
             await self._release_tasks(task.team_id, automatic=True, task_id=task.id)
@@ -258,8 +272,6 @@ class TeamOrchestrator:
         summary_locale: str | None = None,
     ) -> list[str]:
         async with self._release_lock:
-            if team_id in self.paused_teams:
-                return []
             async with self.db.session() as session:
                 team = await session.get(Team, team_id)
                 if team is None:
@@ -289,11 +301,13 @@ class TeamOrchestrator:
                     current = await self._reload(candidate.id)
                     if current.status not in statuses or self.jobs.is_running(candidate.id):
                         continue
+                    if automatic and self.producer_holds(current):
+                        continue
                     # Keep the normal edit/status history and dispatch path. Enabling the
                     # per-task flag also queues dependencies and a busy solo member.
                     await self.update_task(
                         candidate.id, {"status": TaskStatus.PENDING, "auto_start": True},
-                        summary_locale=summary_locale,
+                        summary_locale=summary_locale, from_board=not automatic,
                     )
                     if current.status == TaskStatus.PENDING and current.auto_start:
                         # An unchanged Pending task has no edit to trigger dispatch.
@@ -802,6 +816,7 @@ class TeamOrchestrator:
         message: str | None = None,
         images: Sequence[dict[str, Any]] = (),
         summary_locale: str | None = None,
+        from_board: bool = False,
     ) -> TeamTask:
         """Run (or resume) the agent session for a task — only from ``pending`` (§10.4).
 
@@ -833,34 +848,17 @@ class TeamOrchestrator:
                     f"A task runs only from Pending, and this one is {task.status}. Move it "
                     "to Pending first — that is the step that releases work to the agents."
                 )
+            if self.jobs.is_running(task_id):
+                raise ValueError("This task is already running")
             unmet = await self._unmet_dependencies(session, task)
             if unmet:
                 raise ValueError(
                     "Task is blocked by unfinished dependencies: " + ", ".join(unmet)
                 )
-            holder = await self._solo_holder(session, member)
-            if holder is not None:
-                # The same gate for the Start button and for the queue: a solo member's
-                # second task waits in `pending` whoever asks (§10.4). Say what happens
-                # next, because the two answers differ and the card looks the same.
-                follow_up = (
-                    "This task starts on its own when that one ends."
-                    if task.auto_start
-                    else f"Start it again once {member.name} is free, or turn on "
-                    "auto-start to queue it."
-                )
-                raise ValueError(
-                    f"{member.name} runs one task at a time (Solo Mode) and is busy with "
-                    f"{self.display_id(holder)}. {follow_up}"
-                )
             if message:
                 prompt, pictures = message, list(images)
             else:
                 prompt, pictures = await self._opening_turn(session, task)
-            if self.jobs.is_running(task_id):
-                raise ValueError("This task is already running")
-            if task.team_id in self.paused_teams:
-                raise ValueError("Producer Mode is paused. Press Resume before starting tasks.")
             if summary_locale is not None:
                 task.summary_locale = _summary_locale(summary_locale)
                 session.add(task)
@@ -868,12 +866,28 @@ class TeamOrchestrator:
         if self.jobs.is_running(task_id):
             raise ValueError("This task is already running")
 
-        # Last check before submit: Pause may arrive during the database awaits above.
-        if task.team_id in self.paused_teams:
-            raise ValueError("Producer Mode is paused. Press Resume before starting tasks.")
-
         if member.id in self.removing_members:
             raise ValueError("This member is being removed. Wait for the team to refresh.")
+        # Two concurrent releases can finish loading their prompts together. Check the
+        # live Solo holder in the same event-loop turn as submit, before granting a board release.
+        holder_id = self._solo_holder_id(member)
+        if holder_id is not None:
+            holder = await self._reload(holder_id)
+            if task.auto_start and not self.producer_holds(task):
+                follow_up = "This task starts on its own when that one ends."
+            else:
+                follow_up = f"Start it again once {member.name} is free."
+                if not task.auto_start:
+                    follow_up += " Turn on auto-start to queue it."
+            raise ValueError(
+                f"{member.name} runs one task at a time (Solo Mode) and is busy with "
+                f"{self.display_id(holder)}. {follow_up}"
+            )
+        # Check after the database awaits, just before submitting (§10.11).
+        if from_board:
+            self._set_board_release(task, True)
+        elif self.producer_holds(task):
+            raise ValueError("This task's Producer chat is paused.")
         self.jobs.submit(
             task_id,
             "agent_task",
@@ -1030,7 +1044,7 @@ class TeamOrchestrator:
         result = await session.exec(statement.order_by(AgentMessage.created_at))
         return list(result.all())
 
-    async def _solo_holder(self, session, member: TeamMember) -> TeamTask | None:
+    def _solo_holder_id(self, member: TeamMember) -> str | None:
         """The task a solo-mode member is working on, or ``None`` when they are free — or
         not in solo mode at all (§10.4).
 
@@ -1052,10 +1066,12 @@ class TeamOrchestrator:
                 and handle.id not in self._ending
                 and self.jobs.is_running(handle.id)
             ):
-                holder = await session.get(TeamTask, handle.id)
-                if holder is not None:
-                    return holder
+                return handle.id
         return None
+
+    async def _solo_holder(self, session, member: TeamMember) -> TeamTask | None:
+        holder_id = self._solo_holder_id(member)
+        return await session.get(TeamTask, holder_id) if holder_id is not None else None
 
     async def dispatch_member_queue(
         self, member_id: str, *, except_task: str | None = None
@@ -1116,6 +1132,7 @@ class TeamOrchestrator:
         actor_id: str | None = None,
         attachments: Sequence[str] = (),
         summary_locale: str | None = None,
+        from_board: bool = False,
     ) -> TeamTask:
         """Send a task back with a comment, and the files attached to it.
 
@@ -1163,6 +1180,8 @@ class TeamOrchestrator:
             await self._set_task_status(
                 task_id, TaskStatus.PENDING, actor_id=actor_id, reason="changes requested"
             )
+            if from_board:
+                self._set_board_release(task, True)
             async with self.db.session() as session:
                 held_by = await self._solo_holder(session, assignee) if assignee else None
             if held_by is None:
@@ -1247,7 +1266,7 @@ class TeamOrchestrator:
 
     async def update_task(
         self, task_id: str, fields: dict[str, Any], *, actor_id: str | None = None,
-        summary_locale: str | None = None,
+        summary_locale: str | None = None, from_board: bool = False,
     ) -> TeamTask:
         """Edit a task in place — title, brief, assignee, dependencies, auto-start, status.
 
@@ -1420,6 +1439,12 @@ class TeamOrchestrator:
             started_before = task.started_at is not None
             unblocked = not await self._unmet_dependencies(session, task)
             assignee_id = task.assignee_id
+
+        # A board release also applies if the assignee is busy or a dependency is open.
+        # An unrelated edit to the brief must not wake a paused Producer's work (§10.11).
+        if (from_board and landing_status == TaskStatus.PENDING
+                and (new_status == TaskStatus.PENDING or "auto_start" in fields)):
+            self._set_board_release(task, task.auto_start)
 
         if changes:
             await self._record_edit(
@@ -1993,7 +2018,7 @@ class TeamOrchestrator:
             ):
                 if candidate.status != TaskStatus.PENDING:
                     continue
-                if candidate.team_id in self.paused_teams or candidate.archived:
+                if self.producer_holds(candidate) or candidate.archived:
                     continue
                 if self.jobs.is_running(candidate.id):
                     continue
@@ -2111,6 +2136,9 @@ class TeamOrchestrator:
         return True
 
     async def cancel_task(self, task_id: str) -> bool:
+        # Cancel withdraws even a manual release that is still waiting in the Solo queue.
+        for released in self.paused_producer_chats.values():
+            released.discard(task_id)
         cancelled = await self.jobs.cancel(task_id)
         if not cancelled:
             async with self.db.session() as session:
@@ -2164,7 +2192,7 @@ class TeamOrchestrator:
             team = await session.get(Team, task.team_id) if task else None
             if task is None or member is None:
                 return
-            if task.team_id in self.paused_teams:
+            if self.producer_holds(task):
                 # A submitted job may enter only after Pause closes the gate. Keep
                 # its explicit start intent even if it leaves the registry before
                 # the pause scan reaches this still-Pending task (§10.11).
@@ -2455,7 +2483,7 @@ class TeamOrchestrator:
             # Pause can arrive after finish_task saved a result but before the session
             # finished its cleanup/compaction. Never release that completed work again.
             saved = await self._reload(task_id)
-            paused = saved.team_id in self.paused_teams
+            paused = handle.meta.get("producer_pause", False)
             if (saved.status != TaskStatus.DONE
                     and (not paused or saved.status in {TaskStatus.PENDING, TaskStatus.IN_PROGRESS})):
                 await self._set_task_status(task_id, TaskStatus.PENDING)
@@ -2864,7 +2892,8 @@ class TeamOrchestrator:
             task.limit_resume_at = resume_at
             session.add(task)
 
-        self._schedule_limit_wait(task_id, resume_at)
+        if not self.producer_holds(task):
+            self._schedule_limit_wait(task_id, resume_at)
         await self._publish_task_changed(task_id)
         return resume_at
 
@@ -2917,7 +2946,8 @@ class TeamOrchestrator:
                 .where(TeamTask.status == TaskStatus.BLOCKED)
                 .where(TeamTask.resume_on_limit == True)  # noqa: E712 — SQL, not Python
             )
-            due = [(row.id, row.limit_resume_at) for row in rows.all() if row.limit_resume_at]
+            due = [(row.id, row.limit_resume_at) for row in rows.all()
+                   if row.limit_resume_at and not self.producer_holds(row)]
         for task_id, resume_at in due:
             self._schedule_limit_wait(task_id, resume_at)
         if due:
@@ -2967,7 +2997,7 @@ class TeamOrchestrator:
             task = await session.get(TeamTask, task_id)
             if task is None or not task.resume_on_limit:
                 return
-            if task.team_id in self.paused_teams:
+            if self.producer_holds(task):
                 return
             if TaskStatus(task.status) != TaskStatus.BLOCKED:
                 return
@@ -3303,6 +3333,9 @@ class TeamOrchestrator:
             session.add(task)
             assignee_id = task.assignee_id
             team_id = task.team_id
+
+        if status in {TaskStatus.TODO, TaskStatus.NEEDS_REVIEW, TaskStatus.DONE, TaskStatus.CANCELLED}:
+            self._set_board_release(task, False)
 
         if status != TaskStatus.BLOCKED:
             self._cancel_limit_wait(task_id)
