@@ -156,6 +156,14 @@ class TeamsConfig(BaseModel):
     required_documents: list[str] = Field(default_factory=list)
     """Initial context for every agent, supplemented by the member's requirements (§10.10)."""
 
+    memory_enabled: bool = True
+    """Project memory (§10.12): its index in every run's system prompt, and the ``recall`` /
+    ``remember`` / ``forget`` tools. Off, agents neither see nor touch it; the files stay."""
+
+    memory_index_chars: int = Field(default=8000, ge=500, le=100_000)
+    """The most of the memory index a run is sent. Entries past it are counted, not listed,
+    and a run reads them with ``recall``."""
+
     permission_mode: str = "bypassPermissions"
     max_turns: int = Field(default=40, ge=1, le=1000)
     """Shared run settings, unless a member explicitly enables its override (§10.3)."""

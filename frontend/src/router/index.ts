@@ -84,6 +84,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/VcsView.vue'),
   },
   {
+    // `.voxarium_studio/memory/` — lasting facts every agent is shown and keeps (§10.12).
+    path: '/memory',
+    name: 'memory',
+    component: () => import('@/views/MemoryView.vue'),
+  },
+  {
     // `.voxarium_studio/skills/` — folders of instructions the team's agents can be given (§10.10).
     path: '/skills',
     name: 'skills',

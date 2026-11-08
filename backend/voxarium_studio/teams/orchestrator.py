@@ -73,6 +73,7 @@ from .docs import DocStore
 from .effort_solver import EFFORT_SOLVER_ID
 from .effort_solver_runner import solve_effort
 from .file_observer import FileObserver
+from .memory import MemoryStore, memory_prompt
 from .project_skills import MemberSkills, Skill, SkillStore
 from .required_context import load_required_context
 from .project_skills import prompt_list as skill_prompt_list
@@ -136,6 +137,7 @@ class TeamOrchestrator:
         config: AppConfig,
         docs: DocStore | None = None,
         skills: SkillStore | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         self.paths = paths
         self.db = db
@@ -146,6 +148,8 @@ class TeamOrchestrator:
         self.docs = docs if docs is not None else DocStore(paths, bus)
         self.skills = skills if skills is not None else SkillStore(paths)
         """``.voxarium_studio/skills/`` — what a member's ``skills`` names resolve against (§10.10)."""
+        self.memory = memory if memory is not None else MemoryStore(paths, bus)
+        """``.voxarium_studio/memory/`` — the index every run is sent and the tools keep (§10.12)."""
         self.authoring: ProjectAuthoring | None = None
         """Live project authoring services, wired by AppContext for MCP (§10.7)."""
         self.attachments = AttachmentStore(paths)
@@ -2394,6 +2398,9 @@ class TeamOrchestrator:
                 docs_dir=self.docs.directory,
                 temp_dir=temp_dir,
                 has_studio_tools=toolset is not None,
+                # §10.12: read per run, resumed sessions included, so every run opens with
+                # what the team has recorded up to now.
+                memory=memory_prompt(self.memory, self.config.teams, has_tools=toolset is not None),
                 prompts=self.config.teams.prompts,
                 code_graph=code_graph_file(launch_root),
                 language=summary_language(task.summary_locale),
@@ -3881,6 +3888,7 @@ def _build_system_prompt(
     docs_dir: Path,
     has_studio_tools: bool,
     prompts: AgentPromptsConfig,
+    memory: str | None = None,
     temp_dir: Path | None = None,
     code_graph: Path | None = None,
     include_identity: bool = True,
@@ -3912,6 +3920,9 @@ def _build_system_prompt(
     here and never in the agent definition, though a member's list is roster data: what each
     skill *says* lives in its folder and changes without the roster changing, and the path
     that tells the session where to read it is this machine's.
+
+    ``memory`` is the project memory index (§10.12) as :func:`memory_prompt` renders it, or
+    ``None`` when no memory goes to this run — switched off, or no Studio tools to use it with.
     """
     lines = (
         agent_defs.identity_lines(
@@ -3948,6 +3959,9 @@ def _build_system_prompt(
         say("member_skills", skills=skill_prompt_list(skills))
 
     say("docs_location", docs_dir=str(docs_dir))
+
+    if memory is not None:
+        say("project_memory", entries=memory)
 
     # Absolute, because an isolated checkout starts the session somewhere the CLI's
     # default `graphify-out/graph.json` is not (§9.7): the graph describes the main

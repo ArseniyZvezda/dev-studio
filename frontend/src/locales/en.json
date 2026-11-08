@@ -133,6 +133,7 @@
       "statistics": "Statistics",
       "automations": "Automations",
       "vcs": "Version Control",
+      "memory": "Memory",
       "skills": "Skills",
       "mcp": "MCP Servers",
       "plugins": "Plugins",
@@ -1920,6 +1921,82 @@
       "empty": "No textual difference — the changes may be in binary files, which no diff can show."
     }
   },
+  "memory": {
+    "title": "Memory",
+    "openFolder": "Open folder",
+    "openFolderTitle": "Open {folder} in your file manager",
+    "intro": "Lasting facts about this project that every agent on the team is shown, whichever runtime it uses — decisions, conventions, pitfalls, where things live. Agents add to it as they work, and you can correct it here. Each entry is a file in {folder}, committed with the project.",
+    "search": "Search names and descriptions",
+    "noMatches": "No matching entries",
+    "sharing": {
+      "title": "Shared with agents",
+      "enabled": "Send project memory to agents",
+      "enabledHint": "Every task run, chat and Producer conversation opens with the index below, and agents get the recall, remember and forget tools. Switched off, agents neither see nor change it; the files stay.",
+      "cap": "Index limit, characters",
+      "capHint": "From {min} to {max}. Entries past the limit are counted rather than listed, and agents read them with recall.",
+      "capInvalid": "Enter a whole number from {min} to {max}.",
+      "usage": "Agents are sent {chars} of {cap} characters",
+      "entries": {
+        "one": "{shown} of {count} entry listed",
+        "other": "{shown} of {count} entries listed"
+      },
+      "truncated": {
+        "one": "{count} entry does not fit — agents are told it exists and read it with recall.",
+        "other": "{count} entries do not fit — agents are told how many and read them with recall."
+      },
+      "preview": "What agents are sent",
+      "previewEmpty": "Nothing yet — agents are told memory is empty and asked to record what they learn.",
+      "off": "Off — agents are told nothing about project memory."
+    },
+    "list": {
+      "title": "Entries",
+      "byUser": "Studio user",
+      "chars": {
+        "one": "{count} character",
+        "other": "{count} characters"
+      },
+      "editTitle": "Edit this entry",
+      "deleteTitle": "Delete this entry",
+      "emptyTitle": "No entries yet",
+      "emptyHint": "Agents add entries with remember as they learn about the project. You can add one here too."
+    },
+    "create": {
+      "button": "New entry",
+      "title": "New entry",
+      "name": "Name",
+      "nameHint": "The entry’s id and file name: lower-case Latin letters, digits and hyphens. Saved as {path}.",
+      "nameInvalid": "Use lower-case Latin letters, digits and hyphens, starting with a letter or digit — at most 64 characters.",
+      "taken": "An entry named {name} already exists.",
+      "description": "Description",
+      "descriptionPlaceholder": "The game targets Unreal 5.4 — plugins are pinned to it, so never upgrade one alone.",
+      "descriptionHint": "One line, at most {max} characters: the fact and when it matters. Every agent is sent it.",
+      "content": "Details",
+      "contentPlaceholder": "Why it is so, and how to apply it. Agents read this with recall."
+    },
+    "editor": {
+      "unsaved": "unsaved",
+      "length": "{length} / {max}",
+      "changedOnDisk": "This entry changed since you opened it — an agent may have updated it.",
+      "keepMine": "Keep mine",
+      "revert": "Revert",
+      "shortcutHint": "Ctrl+S saves.",
+      "discardConfirm": "Discard your unsaved changes to {name}?",
+      "deletedOnDisk": "{name} was deleted while it was open."
+    },
+    "delete": {
+      "title": "Delete {name}?",
+      "message": "Agents stop being shown it from their next run. The file is deleted:"
+    },
+    "invalid": {
+      "title": "Files agents are not shown",
+      "revealTitle": "Show in your file manager"
+    },
+    "usage": {
+      "title": "How agents use it",
+      "body": "Agents read an entry with {recall}, add or correct one with {remember}, and delete one with {forget}. Changes are written straight to the project, so colleagues working in their own checkouts see them at once.",
+      "note": "The instruction sent with the index is the {fragment} line in {settings} → {section}."
+    }
+  },
   "skills": {
     "picker": {
       "add": "Add a skill…",
@@ -2508,6 +2585,10 @@
       "docs_location": {
         "label": "Documents folder",
         "hint": "Where the team’s shared documents live on disk."
+      },
+      "project_memory": {
+        "label": "Project memory",
+        "hint": "Sent to task runs and chats while project memory is on and the Studio’s tools reach the session, also when it is empty — it asks agents to record what they learn. {entries} is the index: one line per entry, its name and description, cut at the limit set on the Memory page."
       },
       "code_graph": {
         "label": "Code graph",

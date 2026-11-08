@@ -289,7 +289,8 @@ class SubagentManager:
                     "in your final response to the parent. Do not call finish_task or change the parent task's status. "
                     "Do not create further subagents. Coordinate edits with the parent: other workers share this checkout.\n"
                     "The following parent instructions supply workspace, permissions and project context; "
-                    "their board/delegation/completion instructions apply only to the parent:\n\n"
+                    "their board, delegation, completion and memory-writing (remember, forget) "
+                    "instructions apply only to the parent:\n\n"
                     + run.request.system_prompt
                 )
                 request = replace(

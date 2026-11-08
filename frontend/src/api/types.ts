@@ -1332,6 +1332,7 @@ export interface AgentPromptsConfig {
   studio_skill: string | null
   no_studio_tools: string | null
   docs_location: string | null
+  project_memory?: string | null
   code_graph: string | null
   isolated_checkout: string | null
   outside_project: string | null
@@ -1373,6 +1374,10 @@ export interface TeamsConfig {
   /** Mandatory startup context for every agent, supplemented by each member (§10.10). */
   required_skills?: string[]
   required_documents?: string[]
+  /** Project memory's index in every run, and the recall/remember/forget tools (§10.12). */
+  memory_enabled?: boolean
+  /** The most of the memory index a run is sent; past it entries are counted, not listed. */
+  memory_index_chars?: number
   commit_backend: string
   commit_model: string
   commit_proposals: boolean
@@ -1898,6 +1903,50 @@ export interface SkillsOverview {
   invalid: { name: string; error: string; used_by: SkillUser[] }[]
   /** Given to somebody and not in the folder: renamed or deleted outside the Studio. */
   missing: { name: string; used_by: SkillUser[] }[]
+}
+
+// ---------------------------------------------------------------- project memory (§10.12)
+
+/** One `.voxarium_studio/memory/<name>.md`: a fact every agent is shown by its description. */
+export interface MemoryEntry {
+  name: string
+  /** The one line every agent's index carries. */
+  description: string
+  /** Member id of whoever wrote it last; `null` is the user. */
+  author: string | null
+  /** That member, when the roster still has them — enough to draw with `MemberMark`. */
+  author_member: SkillUser | null
+  updated_at: string
+  /** Length of the text under the frontmatter. */
+  chars: number
+  /** Why agents are told less than they could be — a hand-written file without a description. */
+  warning: string | null
+}
+
+export interface MemoryEntryDetail extends MemoryEntry {
+  content: string
+}
+
+export interface MemoryOverview {
+  /** `.voxarium_studio/memory`, relative to the project root. */
+  path: string
+  enabled: boolean
+  /** `teams.memory_index_chars` — the cap on what a run is sent. */
+  index_chars: number
+  /** The index exactly as a run gets it under the cap, with how many entries made it in. */
+  index: { text: string; chars: number; total: number; shown: number }
+  entries: MemoryEntry[]
+  /** Files in the folder agents cannot be shown — a bad name or unreadable frontmatter. */
+  invalid: { file: string; error: string }[]
+}
+
+export interface MemoryWrite {
+  description: string
+  content: string
+  /** Refuse with 409 when the name is taken. */
+  create?: boolean
+  /** Refuse with 409 when the entry changed since this was read. */
+  expected_updated_at?: string | null
 }
 
 // ---------------------------------------------------------------- automations (§6.5)

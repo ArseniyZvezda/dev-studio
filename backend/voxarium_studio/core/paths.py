@@ -129,6 +129,11 @@ class ProjectPaths:
         return self.data / "skills"
 
     @property
+    def memory(self) -> Path:
+        """Project memory, a Markdown file per entry, indexed for every agent (§10.12) — committable."""
+        return self.data / "memory"
+
+    @property
     def automations_file(self) -> Path:
         """``.voxarium_studio/automations.yaml`` — what the project does by itself (§6.5) — committable."""
         return self.data / "automations.yaml"
@@ -208,6 +213,7 @@ class ProjectPaths:
             self.docs,
             self.temp,
             self.skills,
+            self.memory,
             self.attachments,
             self.plugins,
             self.assets,

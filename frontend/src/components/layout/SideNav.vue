@@ -13,6 +13,7 @@
 import {
   ArrowUpCircle,
   Blocks,
+  Brain,
   ChartLine,
   FileText,
   FolderTree,
@@ -126,6 +127,9 @@ const builtinItems: NavItem[] = [
   // The project-shaped configuration pages sit together, after the sections that are about
   // the work itself: what the project is under, what its agents know, what they can reach.
   { to: '/vcs', labelKey: 'nav.section.vcs', icon: GitBranch, tint: 'var(--vxs-nav-vcs)' },
+  // What every agent is told the project has learned (§10.12) — before Skills, which are given
+  // member by member.
+  { to: '/memory', labelKey: 'nav.section.memory', icon: Brain, tint: 'var(--vxs-nav-memory)' },
   // Above MCP Servers: both are what an agent is equipped with, and a skill is given member by
   // member where a server is handed to every session (§10.10).
   { to: '/skills', labelKey: 'nav.section.skills', icon: GraduationCap, tint: 'var(--vxs-nav-skills)' },
