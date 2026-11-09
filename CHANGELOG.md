@@ -1,5 +1,17 @@
 # Changelog
 
+## v5.5.0 — 2026-11-09
+
+- Added project memory shared across agent backends and task checkouts. Agents receive a bounded index at startup and can recall, create and remove individual Markdown entries; the new Memory page lets people manage the same entries.
+- Added Context Viewer for tasks and chats, with token usage, a proportional map of context fragments and drill-down into prompts, Studio snapshots and supported backend journals. Source labels and locations make the displayed content traceable.
+- Added model, effort, context and token-usage chips to agent conversations. Producer task cards now show the same cumulative usage as task details.
+- Improved Producer workflows: conversations have separate plans and pause state while sharing the team board; paused conversations still allow manual task starts under the existing checks. Producer can split substantial goals into independently verifiable tasks and reuse matching board tasks.
+- Loaded the Studio skill at the start of every agent session and the Producer skill for active Producer conversations. Required skills are included once, and Codex transcripts identify explicit reads of offered skill files.
+- Added an Unreal Build pipeline node with playable Package builds through AutomationTool and Compile mode through UnrealBuildTool. Builds expose their output directory to later nodes and support target, platform, configuration, architecture and output-folder settings.
+- Migrated managed-project data from `voxarium_studio/` to `.voxarium_studio/` when projects are opened or initialized, including existing database paths and legacy document folders.
+- Added copy controls to code blocks in documents, Markdown, file previews, task diffs and update logs.
+- Improved the Producer conversation and task-card layout, skill filtering, and English and Russian interface text.
+
 ## v5.4.0 — 2026-11-06
 
 - Added the built-in Effort Solver agent with configurable scoring weights. Producer Auto effort now evaluates each proposed task before creation, maps the result to Low–Max and shows the four scores and final effort in a purple conversation block.
