@@ -16,6 +16,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ApiError, api } from '@/api/client'
 import type { MemoryEntry, MemoryEntryDetail } from '@/api/types'
 import ConfirmDialog from '@/components/explorer/ConfirmDialog.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
@@ -430,10 +431,10 @@ async function reveal(path: string): Promise<void> {
 
               <details class="pl-6">
                 <summary class="cursor-pointer text-small text-muted">{{ t('memory.sharing.preview') }}</summary>
-                <pre
-                  v-if="overview.index.text"
-                  class="memory-mono mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-inset p-2"
-                >{{ overview.index.text }}</pre>
+                <div v-if="overview.index.text" class="code-copy-block mt-2">
+                  <pre class="memory-mono max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-inset p-2">{{ overview.index.text }}</pre>
+                  <CodeCopyButton :text="overview.index.text" />
+                </div>
                 <p v-else class="mt-2 text-small text-faint">{{ t('memory.sharing.previewEmpty') }}</p>
               </details>
             </template>

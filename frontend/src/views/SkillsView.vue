@@ -469,7 +469,8 @@ async function reveal(path: string): Promise<void> {
                       {{ describeFiles(skill) }}
                     </span>
                     <span>·</span>
-                    <span v-if="skill.automatic ?? (!!skill.source && !skill.scope)">{{ t('skills.list.availableToAll') }}</span>
+                    <span v-if="skill.name === 'voxarium_studio:producer'">{{ t('skills.list.producerAutomatic') }}</span>
+                    <span v-else-if="skill.automatic ?? (!!skill.source && !skill.scope)">{{ t('skills.list.availableToAll') }}</span>
                     <template v-else-if="skill.used_by.length">
                       <span>{{ t('skills.list.givenTo') }}</span>
                       <span

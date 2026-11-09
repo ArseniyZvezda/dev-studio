@@ -282,6 +282,37 @@ async def test_a_command_is_one_call_row_even_though_codex_reports_it_twice(
     assert len(bash) == 1
 
 
+async def test_a_known_skill_file_read_is_named_as_a_skill(fake: Fake, tmp_path: Path) -> None:
+    skill_file = tmp_path / "skill_bundle" / "skills" / "studio" / "SKILL.md"
+    command = f'"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -LiteralPath \'{skill_file}\'"'
+    fake.say([
+        {"type": "thread.started", "thread_id": "thr_1"},
+        {"type": "turn.started"},
+        {"type": "item.started", "item": {"id": "read_1", "type": "command_execution", "command": command}},
+        {"type": "item.completed", "item": {"id": "read_1", "type": "command_execution",
+                                     "command": command, "aggregated_output": "skill text", "exit_code": 0}},
+        {"type": "turn.completed", "usage": {}},
+    ])
+    events = await run(make_request(tmp_path, skill_files={"voxarium_studio:studio": skill_file}))
+    calls = of_kind(events, "tool_use")
+    assert len(calls) == 1
+    assert calls[0].text == "Skill"
+    assert calls[0].data == {
+        "id": "read_1", "name": "Skill", "input": {"skill": "voxarium_studio:studio"},
+        "source_tool": "Bash", "source_command": command,
+    }
+    assert [result.text for result in of_kind(events, "tool_result")] == ["skill text"]
+
+
+def test_skill_read_detection_does_not_relabel_mentions_or_other_files(tmp_path: Path) -> None:
+    skill_file = tmp_path / "studio" / "SKILL.md"
+    skills = {"voxarium_studio:studio": skill_file}
+    assert codex._read_skill_name(f"cat '{skill_file}'", skills) == "voxarium_studio:studio"
+    assert codex._read_skill_name(f"Get-Content '{skill_file}.bak'", skills) is None
+    assert codex._read_skill_name(f"Write-Output 'Get-Content {skill_file}'", skills) is None
+    assert codex._read_skill_name(f"cat '{skill_file}'", {}) is None
+
+
 async def test_a_failed_turn_is_an_error_with_codex_own_words(fake: Fake, tmp_path: Path) -> None:
     fake.say(
         [
@@ -983,6 +1014,39 @@ async def test_a_codex_member_runs_a_task_with_its_identity_in_the_prompt(
     assert instructions is not None
     prompt = json.loads(instructions)
     assert dev.name in prompt and "Lower the cooldown." in fake.recorded()["stdin"]
+
+
+async def test_studio_task_marks_a_builtin_skill_read(ctx: AppContext, fake: Fake, wait_for) -> None:
+    skill = ctx.skills.get("voxarium_studio:studio")
+    assert skill is not None
+    command = f"Get-Content -LiteralPath '{skill.skill_file}'"
+    fake.say([
+        *HAPPY_RUN[:2],
+        {"type": "item.started", "item": {"id": "skill_read", "type": "command_execution", "command": command}},
+        {"type": "item.completed", "item": {"id": "skill_read", "type": "command_execution",
+                                     "command": command, "aggregated_output": "skill text", "exit_code": 0}},
+        *HAPPY_RUN[2:],
+    ])
+    async with ctx.db.session() as session:
+        dev = await session.get(TeamMember, DEV)
+        dev.agent_backend = "codex"
+        dev.model = "gpt-6-luna"
+        dev.isolate_worktree = False
+        session.add(dev)
+    task = await ctx.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="Read the Studio skill",
+        brief="Inspect the skill instructions.", auto_start=True,
+    )
+    await ctx.teams.update_task(task.id, {"status": TaskStatus.PENDING})
+    await wait_for(task.id, timeout=20)
+    async with ctx.db.session() as session:
+        messages = list(
+            (await session.exec(select(AgentMessage).where(AgentMessage.task_id == task.id))).all()
+        )
+    reads = [message for message in messages if message.kind == "tool_use" and message.text == "Skill"]
+    assert len(reads) == 1
+    assert reads[0].data["input"] == {"skill": "voxarium_studio:studio"}
+    assert reads[0].data["source_tool"] == "Bash"
 
 
 @pytest.mark.parametrize("resume", [None, "thr_9"])

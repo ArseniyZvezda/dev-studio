@@ -594,7 +594,9 @@ async def test_a_resume_asks_the_session_to_continue_rather_than_resending_the_b
     )
     await release(teams, task.id)
     await wait_for(task.id, timeout=20)
-    assert prompts == ["do the thing"], "a first run is the only place the brief is sent"
+    assert len(prompts) == 1
+    assert prompts[0].startswith("Required startup skills\n")
+    assert prompts[0].endswith("\n\ndo the thing"), "a first run is the only place the brief is sent"
 
     # The finished run left the task in `needs_review`, and a session starts from `pending`
     # alone — so a resume is released exactly like a first run.

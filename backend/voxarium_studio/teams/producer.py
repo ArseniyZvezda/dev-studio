@@ -242,7 +242,8 @@ class ProducerService:
                              producer_questions=[], error=None)
             if not chat.title:
                 await self._save(chat_id, title="Режим продюсера" if locale == "ru" else "Producer Mode")
-            await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_start"))
+            await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_start"),
+                             new_mode=True)
             return await self._chat(chat_id)
 
     async def set_policy(self, chat_id: str, policy: str) -> AgentChat:
@@ -284,7 +285,7 @@ class ProducerService:
         self.orchestrator.paused_producer_chats.pop(chat_id, None)
         return chat
 
-    async def queue(self, chat_id: str, prompt: str) -> None:
+    async def queue(self, chat_id: str, prompt: str, *, new_mode: bool = False) -> None:
         from .chat import JOB_KIND
         chat = await self._chat(chat_id)
         if chat_id in self.orchestrator.paused_producer_chats:
@@ -296,7 +297,8 @@ class ProducerService:
             return
         self.chats.jobs.submit(
             chat_id, JOB_KIND,
-            lambda handle: self.chats._run_turn(chat_id, chat.member_id, prompt),
+            lambda handle: self.chats._run_turn(chat_id, chat.member_id, prompt,
+                                                producer_skill_on_resume=new_mode),
             member_id=chat.member_id, chat_id=chat_id,
         )
         await self.chats._publish_chat_by_id(chat_id)

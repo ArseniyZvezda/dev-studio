@@ -8,6 +8,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from ..core.config import TeamsConfig
 from ..models.teams import TeamMember
+from . import skill as studio_skill
 from .docs import DocStore
 from .project_skills import MemberSkills, SkillStore, check_name, normalise_names
 
@@ -58,6 +59,7 @@ class RequiredContext:
 
 def load_required_context(
     settings: TeamsConfig, member: TeamMember, skills: SkillStore, docs: DocStore,
+    *, producer_mode: bool = False,
 ) -> RequiredContext:
     """Read each current requirement completely, or fail before a model is dispatched.
 
@@ -72,26 +74,40 @@ def load_required_context(
     documents = normalise_names(document_path(docs, name) for name in [
         *settings.required_documents, *(member.required_documents or []),
     ])
-    parts = []
-    if found.found:
-        parts.append(
-            "Required startup skills\n"
-            "The user has explicitly selected these skills for this agent. Activate and apply "
-            "every skill below before beginning the assignment, in the listed order. Their full "
-            "SKILL.md instructions are included; resolve referenced files relative to the stated "
-            "skill directory. These are mandatory, not optional skill suggestions."
-        )
-    for skill in found.found:
+    # §10.3, §10.10–10.11: every session starts with Studio; active Producer chats
+    # additionally start with Producer. Explicit selections must not duplicate either.
+    studio_dir = studio_skill.BUNDLE / "skills" / studio_skill.SKILL_DIRECTORY
+    startup_skills = [(studio_skill.SKILL_NAME, studio_dir, studio_dir / "SKILL.md")]
+    automatic_names = {studio_skill.SKILL_NAME}
+    if producer_mode:
+        producer_dir = studio_skill.BUNDLE / "skills" / studio_skill.PRODUCER_SKILL_DIRECTORY
+        startup_skills.append((studio_skill.PRODUCER_SKILL_NAME, producer_dir,
+                               producer_dir / "SKILL.md"))
+        automatic_names.add(studio_skill.PRODUCER_SKILL_NAME)
+    startup_skills.extend(
+        (skill.name, skill.directory, skill.skill_file)
+        for skill in found.found if skill.name not in automatic_names
+    )
+    parts = [
+        "Required startup skills\n"
+        "Voxarium Studio automatically includes its own skill first. "
+        + ("Active Producer chats also include the Producer skill. " if producer_mode else "")
+        + "Other skills below were explicitly selected for this agent. "
+        "Activate and apply every skill before beginning "
+        "the assignment, in the listed order. Their full SKILL.md instructions are included; "
+        "resolve referenced files relative to the stated skill directory."
+    ]
+    for name, directory, skill_file in startup_skills:
         try:
-            body = skill.skill_file.read_text(encoding="utf-8-sig")
+            body = skill_file.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeError) as exc:
-            raise ValueError(f"Cannot read required skill {skill.name!r}: {exc}") from exc
+            raise ValueError(f"Cannot read required skill {name!r}: {exc}") from exc
         if not body.strip():
-            raise ValueError(f"Required skill {skill.name!r} has empty instructions")
+            raise ValueError(f"Required skill {name!r} has empty instructions")
         parts.append(
-            f"--- BEGIN REQUIRED SKILL: {skill.name} ---\n"
-            f"Skill directory: {skill.directory}\nInstructions: {skill.skill_file}\n\n{body}\n"
-            f"--- END REQUIRED SKILL: {skill.name} ---"
+            f"--- BEGIN REQUIRED SKILL: {name} ---\n"
+            f"Skill directory: {directory}\nInstructions: {skill_file}\n\n{body}\n"
+            f"--- END REQUIRED SKILL: {name} ---"
         )
     if documents:
         parts.append("Required documents\nThe following complete documents are part of the context for this assignment.")

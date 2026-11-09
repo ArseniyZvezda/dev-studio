@@ -132,6 +132,10 @@ class AppContext:
             studio_skill.SKILL_NAME: (
                 studio_skill.BUNDLE / "skills" / studio_skill.SKILL_DIRECTORY, "voxarium_studio",
             ),
+            studio_skill.PRODUCER_SKILL_NAME: (
+                studio_skill.BUNDLE / "skills" / studio_skill.PRODUCER_SKILL_DIRECTORY,
+                "voxarium_studio",
+            ),
         }
         for plugin in self.registry.plugins():
             root = plugin.manifest.root

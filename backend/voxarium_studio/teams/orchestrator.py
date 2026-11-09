@@ -2447,9 +2447,10 @@ class TeamOrchestrator:
                 model=run_model,
                 effort=run_effort,
                 mcp_servers={**project_mcp, **(toolset.mcp_servers if toolset else {})},
-                # The Studio's skill is loaded whether or not its tools are on: the document
-                # dialect and the code graph are still what a member works with (§10.3).
+                # Keep the Claude plugin available for reference files and native skill calls;
+                # required_context already supplied SKILL.md at session start (§10.3).
                 plugin_dirs=[studio_skill.BUNDLE],
+                skill_files={skill.name: skill.skill_file for skill in member_skills.found},
                 extra_allowed_tools=[
                     *mcp_allowed_tools(project_mcp),
                     *(toolset.allowed_tools if toolset else []),
@@ -3949,7 +3950,7 @@ def _build_system_prompt(
             say("task_temp", temp_dir=str(temp_dir))
 
     # How to use the tools — and who may be handed work, which `list_team` answers per member —
-    # is the Studio skill's to explain (`teams/skill.py`); the prompt only points at it.
+    # is the Studio skill's to explain (`teams/skill.py`); startup context loads it.
     if has_studio_tools:
         say("studio_skill", skill=studio_skill.SKILL_NAME)
     elif reports or peers:

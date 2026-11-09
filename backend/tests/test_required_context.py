@@ -15,6 +15,7 @@ from voxarium_studio.teams.docs import DocStore
 from voxarium_studio.teams.installed_skills import InstalledSkill
 from voxarium_studio.teams.project_skills import SkillStore
 from voxarium_studio.teams.required_context import checked_documents, load_required_context
+from voxarium_studio.teams import skill as studio_skill
 from voxarium_studio.teams.skill import rule_path
 
 TEAM = "team_default"
@@ -108,6 +109,9 @@ def test_full_content_deduplicated_and_read_fresh_without_editor_or_summary_limi
     context = load_required_context(settings, member, skills, docs)
     assert [s.name for s in context.skills.found] == ["shared-skill", "member-skill"]
     assert context.documents == ("required.md", "local.md")
+    assert context.text.index("BEGIN REQUIRED SKILL: voxarium_studio:studio") < context.text.index(
+        "BEGIN REQUIRED SKILL: shared-skill")
+    assert "# Working inside Voxarium Studio" in context.text
     assert body in context.text and skill_body in context.text
     assert context.text.count("FINAL DOCUMENT LINE") == context.text.count("FINAL SKILL LINE") == 1
     assert context.prepend("Assignment").endswith("\n\nAssignment")
@@ -186,6 +190,7 @@ async def test_required_context_initial_only_and_complete_on_recovery(recorded, 
     assert first.resume_session_id is None
     for text in ("ACTIVATE shared-skill", "ACTIVATE member-skill", "Документ целиком", "LOCAL DOCUMENT"):
         assert first.prompt.count(text) == 1
+    assert first.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
     assert "ACTIVATE optional-skill" not in first.prompt
     assert "optional-skill" in first.system_prompt
     permission = rule_path(ctx.paths.skills / "member-skill")
@@ -202,6 +207,54 @@ async def test_required_context_initial_only_and_complete_on_recovery(recorded, 
     assert "Документ целиком" not in resumed.prompt
     assert resumed.recovery_prompt.count("ACTIVATE shared-skill") == 1
     assert resumed.recovery_prompt.count("Документ целиком") == 1
+    assert resumed.recovery_prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
+
+
+@pytest.mark.parametrize("surface", ["task", "chat"])
+async def test_studio_skill_autoloads_without_selected_requirements(recorded, wait_for, surface):
+    ctx, requests = recorded
+    ctx.config.teams.required_skills = []
+    ctx.config.teams.required_documents = []
+    async with ctx.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+        member.required_skills = []
+        member.required_documents = []
+        session.add(member)
+    job = await launch(ctx, surface)
+    await wait_for(job.id)
+    request = requests[-1]
+    assert request.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
+    assert "--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---" not in request.prompt
+    assert "voxarium_studio:producer" not in request.skill_files
+    assert "# Working inside Voxarium Studio" in request.prompt
+    assert str(studio_skill.BUNDLE / "skills" / "studio" / "SKILL.md") in request.prompt
+    assert "BEGIN REQUIRED DOCUMENT" not in request.prompt
+
+
+def test_selected_studio_skill_is_not_loaded_twice(project):
+    paths = materials(project)
+    skills = SkillStore(paths, builtins=lambda: {
+        studio_skill.SKILL_NAME: (studio_skill.BUNDLE / "skills" / "studio", "voxarium_studio"),
+    })
+    member = TeamMember(team_id=TEAM, name="Dev", required_skills=[studio_skill.SKILL_NAME])
+    context = load_required_context(TeamsConfig(required_skills=[studio_skill.SKILL_NAME]),
+                                    member, skills, DocStore(paths))
+    assert context.text.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
+
+
+def test_producer_skill_loads_only_for_active_mode_and_is_not_duplicated(project):
+    paths = materials(project)
+    producer_name = studio_skill.PRODUCER_SKILL_NAME
+    skills = SkillStore(paths, builtins=lambda: {
+        producer_name: (studio_skill.BUNDLE / "skills" / "producer", "voxarium_studio"),
+    })
+    member = TeamMember(team_id=TEAM, name="Producer", required_skills=[producer_name])
+    context = load_required_context(TeamsConfig(), member, skills, DocStore(paths), producer_mode=True)
+    assert context.text.count(f"--- BEGIN REQUIRED SKILL: {producer_name} ---") == 1
+    assert context.text.index("voxarium_studio:studio") < context.text.index(producer_name)
+    ordinary = load_required_context(TeamsConfig(), TeamMember(team_id=TEAM, name="Dev"),
+                                     skills, DocStore(paths))
+    assert f"--- BEGIN REQUIRED SKILL: {producer_name} ---" not in ordinary.text
 
 
 @pytest.mark.parametrize("surface", ["task", "chat"])

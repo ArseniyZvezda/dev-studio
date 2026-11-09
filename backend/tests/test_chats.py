@@ -194,7 +194,8 @@ async def test_a_message_reaches_the_member_with_the_context_in_front(chats: App
     assert request.proactive_subagents
     assert request.resume_session_id is None
     assert request.prompt.endswith("\n\nWhy is the dash slow?")
-    assert request.prompt.startswith("Where the user is in the Studio right now:\n- Page: Documents")
+    assert request.prompt.startswith("Required startup skills\n")
+    assert "Where the user is in the Studio right now:\n- Page: Documents" in request.prompt
     assert "- Selected text:\n```\nThe dash lasts 0.3 s.\n```" in request.prompt
     # The launch root, never an isolated checkout.
     assert request.workdir == chats.paths.root

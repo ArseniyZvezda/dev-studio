@@ -3,9 +3,9 @@
 What a member can do here — the task board, delegation, the shared documents and the Markdown
 they are written in, the code graph, the Studio's own files in the project — used to be spelled
 out in the system prompt, a fragment per group of tools. It is a Claude Code skill now,
-``voxarium_studio:studio``, and the prompt only points at it (``studio_skill`` in ``core/prompts.py``).
-A skill is opened when the session needs it rather than resent with every run, it carries the
-long tail — the document dialect, the pipeline format — as files read on demand, and it sits
+``voxarium_studio:studio``. Its ``SKILL.md`` is included at the start of each new task/chat
+session (``required_context.py``); reference files are still read on demand. It carries the
+long tail — the document dialect, the pipeline format — as files beside the instructions, and it sits
 beside the tools it describes, so the two change in one commit. ``test_studio_skill.py`` holds
 them together: every tool ``teams/tools.py`` exposes has to be named in it.
 
@@ -56,6 +56,10 @@ SKILL_DIRECTORY = "studio"
 
 #: What a session invokes and what the prompts name.
 SKILL_NAME = f"{PLUGIN_NAME}:{SKILL_DIRECTORY}"
+
+#: Producer Mode has its own packaged instructions (§10.11).
+PRODUCER_SKILL_DIRECTORY = "producer"
+PRODUCER_SKILL_NAME = f"{PLUGIN_NAME}:{PRODUCER_SKILL_DIRECTORY}"
 
 #: The plugin directory a session is handed.
 BUNDLE = Path(__file__).resolve().parent / "skill_bundle"
@@ -109,3 +113,8 @@ def allowed_tools() -> tuple[str, ...]:
             BUNDLE,
         )
     return tuple(rules)
+
+
+def producer_allowed_tools() -> tuple[str, ...]:
+    """Permit the separate Producer skill only in an active Producer chat (§10.11)."""
+    return (f"Skill({PRODUCER_SKILL_NAME})",)

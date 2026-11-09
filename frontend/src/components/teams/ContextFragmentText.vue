@@ -5,6 +5,7 @@ import { useIntersectionObserver } from '@vueuse/core'
 import { ChevronRight } from 'lucide-vue-next'
 import type { ContextSource } from '@/api/types'
 import CodeLines from '@/components/ui/CodeLines.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import { t } from '@/i18n'
 import { contextFormat } from '@/lib/context-format'
 import { visibleJsonRows } from '@/lib/context-json'
@@ -50,7 +51,9 @@ const code = computed(() => lines.value?.map((tokens, key) => ({ tokens, key, nu
         <button type="button" :disabled="!folded.size" @click="folded.clear()">{{ t('contextViewer.expandAll') }}</button>
         <button type="button" :disabled="folded.size === branches.length" @click="folded = new Set(branches)">{{ t('contextViewer.collapseAll') }}</button>
       </template>
+      <CodeCopyButton :text="format!.body" inline class="ml-auto" />
     </div>
+    <div v-else class="fragment-copy"><CodeCopyButton :text="source.text" inline /></div>
     <pre v-if="!format">{{ source.text }}</pre>
     <template v-else>
       <pre v-if="format.before" class="text-faint">{{ format.before.replace(/\r?\n$/, '') }}</pre>
@@ -72,6 +75,7 @@ const code = computed(() => lines.value?.map((tokens, key) => ({ tokens, key, nu
 
 <style scoped>
 .fragment-text pre, .json-lines { font: 12px/1.65 var(--vxs-font-mono, monospace); tab-size: 2; }
+.fragment-copy { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .fragment-text pre, .json-row code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .format-bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; color: var(--vxs-text-muted); font-size: 11px; }
 .format-name { font-weight: 600; margin-right: 6px; }

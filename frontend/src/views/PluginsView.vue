@@ -6,6 +6,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { LoadedPlugin } from '@/api/types'
 import ClampText from '@/components/ui/ClampText.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { hasMessage, t } from '@/i18n'
@@ -181,11 +182,10 @@ async function installEnv(plugin: LoadedPlugin) {
             </div>
           </div>
 
-          <pre
-            v-if="envLog?.id === plugin.id"
-            class="mt-2 max-h-48 overflow-auto rounded-md bg-inset p-2 font-mono text-small whitespace-pre-wrap"
-            >{{ envLog.lines.join('\n') }}</pre
-          >
+          <div v-if="envLog?.id === plugin.id" class="code-copy-block mt-2">
+            <pre class="max-h-48 overflow-auto rounded-md bg-inset p-2 font-mono text-small whitespace-pre-wrap">{{ envLog.lines.join('\n') }}</pre>
+            <CodeCopyButton :text="envLog.lines.join('\n')" />
+          </div>
         </li>
       </ul>
     </div>

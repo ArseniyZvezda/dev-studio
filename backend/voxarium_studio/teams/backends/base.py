@@ -127,6 +127,13 @@ class AgentRunRequest:
     of plugins ignores it, as it ignores servers in :attr:`mcp_servers` it cannot host.
     """
 
+    skill_files: dict[str, Path] = field(default_factory=dict)
+    """Skill names and instruction files offered to this session (§10.10).
+
+    Codex uses these to identify an actual read of a known ``SKILL.md`` in its command
+    stream. This is transcript metadata; it does not grant access or load a skill.
+    """
+
     max_continuations: int = 0
     """How many times this run may be continued after the session stopped mid-work (§10.3).
 

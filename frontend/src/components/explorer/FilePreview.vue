@@ -5,6 +5,7 @@ import { computed } from 'vue'
 import { rawFileUrl } from '@/api/client'
 import type { PreviewResult } from '@/api/types'
 import CodeLines, { type CodeRow } from '@/components/ui/CodeLines.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { t } from '@/i18n'
 import type { HighlightMode } from '@/lib/highlight/highlighter'
@@ -98,6 +99,11 @@ const skippedNote = computed(() => {
         </p>
         <p>{{ formatTime(preview.modified) }}</p>
       </div>
+      <CodeCopyButton
+        v-if="preview.kind === 'text' && preview.text !== null || preview.kind === 'binary' && preview.hex"
+        :text="preview.kind === 'text' ? preview.text! : preview.hex!"
+        inline
+      />
       <a
         :href="downloadUrl"
         download

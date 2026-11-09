@@ -380,6 +380,7 @@ class ChatService:
             text=body,
             data={"context": context.to_json(), "attachments": records},
         )
+        producer_skill_on_resume = chat.producer_mode and not chat.producer_started
         await self.producer.on_user_message(chat, message)
         await self._publish_chat_by_id(chat_id, running=True)
 
@@ -402,7 +403,8 @@ class ChatService:
             chat_id,
             JOB_KIND,
             lambda handle: self._run_turn(chat_id, member_id, prompt, self.orchestrator.attachments.images(records),
-                                          input_at=message.created_at),
+                                          input_at=message.created_at,
+                                          producer_skill_on_resume=producer_skill_on_resume),
             member_id=member_id,
             chat_id=chat_id,
         )
@@ -411,7 +413,8 @@ class ChatService:
     # ---- the turn ----
 
     async def _run_turn(self, chat_id: str, member_id: str, prompt: str, images: list[dict[str, Any]] | None = None,
-                        *, input_at: datetime | None = None) -> None:
+                        *, input_at: datetime | None = None,
+                        producer_skill_on_resume: bool = False) -> None:
         orchestrator = self.orchestrator
         async with self.db.session() as session:
             chat = await session.get(AgentChat, chat_id)
@@ -468,10 +471,13 @@ class ChatService:
             # read fresh each turn, with no transcript line: a chat is not a record of what a run
             # was told, and the page it lives on shows the conversation, not the service notes.
             from .required_context import load_required_context
-            required = load_required_context(self.config.teams, member, orchestrator.skills, orchestrator.docs)
+            required = load_required_context(
+                self.config.teams, member, orchestrator.skills, orchestrator.docs,
+                producer_mode=chat.producer_mode,
+            )
             member_skills = orchestrator.skills.for_session([
                 *(member.skills or []), *(skill.name for skill in required.skills.found),
-            ])
+            ], producer_mode=chat.producer_mode)
             system_prompt = _build_system_prompt(
                 member=member,
                 team=team,
@@ -525,10 +531,12 @@ class ChatService:
                 recovery_prompt=recovered_prompt,
                 mcp_servers={**project_mcp, **(toolset.mcp_servers if toolset else {})},
                 plugin_dirs=[studio_skill.BUNDLE],
+                skill_files={skill.name: skill.skill_file for skill in member_skills.found},
                 extra_allowed_tools=[
                     *mcp_allowed_tools(project_mcp),
                     *(toolset.allowed_tools if toolset else []),
                     *studio_skill.allowed_tools(),
+                    *(studio_skill.producer_allowed_tools() if chat.producer_mode else ()),
                     *orchestrator.attachments.allowed_tools(),
                     *member_skills.allowed_tools(),
                 ],
@@ -553,7 +561,9 @@ class ChatService:
                         self.config.teams.prompts.text(
                             "producer_summary", summary=fresh.producer_summary, prompt=request.prompt),
                         await self.messages(chat_id)))
-                    if not request.resume_session_id:
+                    # §10.11: activating Producer in an existing chat keeps its model
+                    # session, so its first Producer turn must receive the new skill.
+                    if not request.resume_session_id or producer_skill_on_resume:
                         request.prompt = required.prepend(request.prompt)
                 try:
                     await self._consume(backend, request, chat_id, member_id, input_at=input_at)

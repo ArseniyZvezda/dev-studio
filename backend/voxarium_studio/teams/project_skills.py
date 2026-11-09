@@ -7,9 +7,11 @@ offers, what a member's ``skills`` list in the team's YAML stores and what the p
 a ``name`` in the frontmatter is not consulted, so a skill copied in from somewhere else is
 named by where it was put.
 
-The same catalog includes read-only package sources: ``voxarium_studio:studio`` and the skill
-folders declared by loaded plugins. These are available to every session without roster
-assignment, and keep their canonical package paths rather than being copied into a project.
+The same catalog includes read-only package sources: ``voxarium_studio:studio``,
+``voxarium_studio:producer`` and the skill
+folders declared by loaded plugins. Studio and plugin skills reach every session without
+roster assignment; Producer reaches active Producer chats. All keep their canonical package
+paths rather than being copied into a project.
 The namespaced Studio id is a public id only, never a filesystem component. Installed
 agent skills join this catalog as read-only entries with stable opaque ids, an origin and
 backend metadata. They remain opt-in; assigning one resolves its original installation
@@ -55,7 +57,7 @@ from ..core.paths import ProjectPaths
 from ..explorer.service import remove_path
 from .docs import put_back, rename_directory
 from .installed_skills import InstalledSkill, discover_installed_skills
-from .skill import rule_path
+from .skill import PRODUCER_SKILL_NAME, SKILL_NAME, rule_path
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +116,7 @@ def check_name(name: str) -> str:
     checkout does not have must still load.
     """
     # A packaged skill's public id is not used as a filesystem component.
-    if name == "voxarium_studio:studio" or (
+    if name in (SKILL_NAME, PRODUCER_SKILL_NAME) or (
         isinstance(name, str) and re.fullmatch(r"installed:[0-9a-f]{32}", name)
     ):
         return name
@@ -426,9 +428,11 @@ class SkillStore:
                 found.append(skill)
         return MemberSkills(found=tuple(found), missing=tuple(missing))
 
-    def for_session(self, names: Iterable[str]) -> MemberSkills:
-        """Built-ins are available to every session; project skills remain opt-in (§10.10)."""
-        return self.for_member([*names, *self._builtins()])
+    def for_session(self, names: Iterable[str], *, producer_mode: bool = False) -> MemberSkills:
+        """Package skills reach sessions; Producer is automatic only in its mode (§10.10–11)."""
+        builtins = [name for name in self._builtins()
+                    if name != PRODUCER_SKILL_NAME or producer_mode]
+        return self.for_member([*names, *builtins])
 
     def read_text(self, name: str) -> tuple[Skill, str, bool]:
         """A skill with its ``SKILL.md`` for the editor: the text with ``\\n`` line endings, and

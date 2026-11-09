@@ -17,6 +17,7 @@ import { computed, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import CodeLines, { type CodeRow } from '@/components/ui/CodeLines.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import { t } from '@/i18n'
 import { parsePatch } from '@/lib/highlight/diff'
 import type { HighlightMode } from '@/lib/highlight/highlighter'
@@ -86,6 +87,7 @@ watch(() => [props.taskId, props.path], () => void load(), { immediate: true })
     >
       <span class="min-w-0 flex-1 truncate">{{ path }}</span>
       <span v-if="language" class="shrink-0">{{ language }}</span>
+      <CodeCopyButton v-if="patch.trim()" :text="patch" inline />
     </p>
 
     <!-- The canvas the Explorer's viewer sits on, so the sticky gutter is the same grey as the

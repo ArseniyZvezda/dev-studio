@@ -137,12 +137,38 @@ async def test_start_is_only_for_producer_and_opens_a_localized_conversation(pro
     assert chat.producer_started
     assert chat.producer_policy == "careful"
     request = ProducerBackend.requests[-1]
+    assert request.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
+    assert request.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---") == 1
+    assert request.prompt.index("voxarium_studio:studio") < request.prompt.index("voxarium_studio:producer")
+    assert "Break a substantial goal into **many small, concrete tasks**" in request.prompt
+    assert "Skill(voxarium_studio:producer)" in request.extra_allowed_tools
+    assert "voxarium_studio:producer" in request.skill_files
     assert "Speak Russian" in request.system_prompt
     assert "Decision policy: Careful" in request.system_prompt
     assert "Ask the user what" in request.prompt
     assert "mcp__voxarium_studio__propose_producer_plan" in request.extra_allowed_tools
     await producer.chats.producer.enable(chat.id)
     assert len(ProducerBackend.requests) == 1, "double Start must not create another turn"
+
+
+async def test_start_in_existing_chat_loads_producer_skill_on_resumed_session(producer):
+    chat = await producer.chats.create_chat(PRODUCER)
+    await producer.chats.send(chat.id, "Ordinary conversation", UserContext())
+    await finished(producer, chat.id)
+    ordinary = ProducerBackend.requests[-1]
+    assert ordinary.resume_session_id is None
+    assert "--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---" not in ordinary.prompt
+
+    await producer.chats.producer.enable(chat.id)
+    await finished(producer, chat.id)
+    started = ProducerBackend.requests[-1]
+    assert started.resume_session_id == "producer-session"
+    assert started.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---") == 1
+
+    await producer.chats.send(chat.id, "Continue", UserContext())
+    await finished(producer, chat.id)
+    continued = ProducerBackend.requests[-1]
+    assert "--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---" not in continued.prompt
 
 
 @pytest.mark.parametrize("policy", ["careful", "independent"])
@@ -836,18 +862,22 @@ async def test_required_context_is_restored_after_producer_compaction(producer, 
     assert "APPLY PRODUCER SKILL" not in summary.prompt
     assert fresh.resume_session_id is None
     assert fresh.prompt.count("APPLY PRODUCER SKILL") == 1
+    assert fresh.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---") == 1
     assert fresh.prompt.count("FULL PRODUCER DOCUMENT") == 1
 
 
 async def test_new_tools_are_documented_and_do_not_leak_to_regular_chats(producer):
     chat = await opened(producer)
     toolset = await tools_for(producer, chat)
-    skill = Path(__file__).parents[1] / "voxarium_studio/teams/skill_bundle/skills/studio/SKILL.md"
-    text = skill.read_text(encoding="utf-8")
+    skills = Path(__file__).parents[1] / "voxarium_studio/teams/skill_bundle/skills"
+    text = (skills / "producer/SKILL.md").read_text(encoding="utf-8")
+    studio = (skills / "studio/SKILL.md").read_text(encoding="utf-8")
     special = {"propose_producer_plan", "wait_producer_tasks", "ask_producer_user",
                "review_producer_task", "stop_producer_mode"}
     assert special <= toolset.keys()
     assert all(name in text for name in special)
+    assert all(name not in studio for name in special)
+    assert "Producer Mode" not in studio
     async with producer.db.session() as session:
         member = await session.get(TeamMember, PRODUCER)
     ordinary = build_toolset(producer.teams, member=member)

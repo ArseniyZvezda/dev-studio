@@ -25,6 +25,7 @@ import { computed, h, type VNodeChild } from 'vue'
 
 import { applyColorSpans, isTextColor, maskColors, GFM_OPTIONS } from '@/lib/md'
 import { safeLinkHref } from '@/lib/links'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -142,7 +143,10 @@ function render(node: RootContent): VNodeChild {
     case 'inlineCode':
       return h('code', node.value)
     case 'code':
-      return h('pre', h('code', node.value))
+      return h('div', { class: 'code-copy-block' }, [
+        h('pre', h('code', node.value)),
+        h(CodeCopyButton, { text: node.value }),
+      ])
     case 'blockquote':
       return h('blockquote', kids(node))
     case 'list':

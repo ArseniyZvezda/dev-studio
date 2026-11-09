@@ -31,6 +31,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { ApiError, api } from '@/api/client'
 import type { VcsBackendOption } from '@/api/types'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { t, type MessageKey } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
@@ -520,10 +521,10 @@ async function showDiff(): Promise<void> {
               <p v-if="diffLoading" class="p-3 text-muted">{{ t('vcs.diff.reading') }}</p>
               <p v-else-if="diffError" class="p-3 text-danger">{{ diffError }}</p>
               <p v-else-if="!diffText.trim()" class="p-3 text-muted">{{ t('vcs.diff.empty') }}</p>
-              <pre
-                v-else
-                class="max-h-96 overflow-auto p-3 font-mono text-[12px] leading-snug"
-              >{{ diffText }}</pre>
+              <div v-else class="code-copy-block">
+                <pre class="max-h-96 overflow-auto p-3 font-mono text-[12px] leading-snug">{{ diffText }}</pre>
+                <CodeCopyButton :text="diffText" />
+              </div>
             </div>
           </section>
         </template>

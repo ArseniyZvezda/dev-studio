@@ -16,9 +16,10 @@ MEMBER = "/api/teams/team_default/members/team_default__dev"
 
 def test_builtin_skills_are_readable_assignable_and_protected(client: TestClient, project: Path) -> None:
     listed = {entry["name"]: entry for entry in client.get("/api/skills").json()["skills"]}
-    assert {"graphify", "voxarium_studio:studio"} <= listed.keys()
+    assert {"graphify", "voxarium_studio:studio", "voxarium_studio:producer"} <= listed.keys()
     assert listed["graphify"]["source"] == "graphify"
     assert listed["voxarium_studio:studio"]["source"] == "voxarium_studio"
+    assert listed["voxarium_studio:producer"]["source"] == "voxarium_studio"
     assert "documents.md" in listed["voxarium_studio:studio"]["files"]
     assert not list((project / ".voxarium_studio" / "skills").iterdir()), "no stale package copies"
 
@@ -60,6 +61,9 @@ async def test_sessions_resolve_builtin_paths_and_reference_permissions(ctx: App
     resolved = ctx.skills.for_session([])
     assert {skill.name for skill in resolved.found} == {"graphify", "voxarium_studio:studio"}
     assert len(ctx.skills.for_session(["graphify", "voxarium_studio:studio"]).found) == 2
+    assert {skill.name for skill in ctx.skills.for_session([], producer_mode=True).found} == {
+        "graphify", "voxarium_studio:studio", "voxarium_studio:producer",
+    }
     assert not resolved.missing
     prompt = prompt_list(resolved.found)
     for skill in resolved.found:

@@ -87,12 +87,11 @@ SPECS: dict[str, PromptSpec] = {
     ),
     # How to work inside the Studio — the board, handing work on, the shared documents, the
     # code graph — is the `voxarium_studio:studio` skill's to say (`teams/skill.py`), not the
-    # prompt's: this only points the session at it, when the Studio's tools reach the
-    # session. `{skill}` is the skill's name, so a reworded pointer still names the right one.
+    # prompt's. Its instructions are loaded at session start (§10.3, §10.10); this fragment
+    # identifies them when Studio tools reach the session.
     "studio_skill": PromptSpec(
-        "You are working inside Voxarium Studio. Before you use its tools or write a shared "
-        "document, load the {skill} skill: it covers the team, the task board, handing work "
-        "on, the shared documents and the code graph.",
+        "You are working inside Voxarium Studio. The {skill} skill is included with your "
+        "startup instructions; apply it when using Studio tools or writing shared documents.",
         placeholders=("skill",),
     ),
     "no_studio_tools": PromptSpec(
@@ -106,9 +105,10 @@ SPECS: dict[str, PromptSpec] = {
     # (`teams/project_skills.py`).
     "member_skills": PromptSpec(
         "You have skills: folders of instructions for particular kinds of work, provided by the "
-        "project, installed agents or the Studio's packages. When your work matches a skill's description, read "
-        "its SKILL.md before you "
-        "start and follow it; any other file it points to is in the same folder, and paths "
+        "project, installed agents or the Studio's packages. The voxarium_studio:studio "
+        "SKILL.md is included with your startup instructions. When your work matches another "
+        "skill's description, read its SKILL.md before you start and follow it; any other file "
+        "it points to is in the same folder, and paths "
         "in it are relative to that folder.\n{skills}",
         placeholders=("skills",),
     ),

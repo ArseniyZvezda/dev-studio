@@ -18,6 +18,7 @@ import { useRouter } from 'vue-router'
 
 import type { SearchGroup, SearchResult } from '@/api/types'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { useSearchStore } from '@/stores/search'
@@ -223,8 +224,9 @@ function indexOf(group: SearchGroup, position: number): number {
         </ul>
 
         <div v-if="group.answer" class="mx-4 my-3 rounded-md border border-line bg-inset">
-          <p class="border-b border-line px-3 py-1 text-small text-faint">
-            {{ t('search.answer', { provider: group.label }) }}
+          <p class="flex items-center gap-2 border-b border-line px-3 py-1 text-small text-faint">
+            <span class="min-w-0 flex-1">{{ t('search.answer', { provider: group.label }) }}</span>
+            <CodeCopyButton :text="group.answer" inline />
           </p>
           <pre class="max-h-72 overflow-auto p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap">{{
             group.answer

@@ -20,6 +20,7 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, X } from 'lucide-vue-n
 import { computed, nextTick, ref, watch } from 'vue'
 
 import ModalDialog from '@/components/ui/ModalDialog.vue'
+import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import { t } from '@/i18n'
 import { useUpdatesStore } from '@/stores/updates'
 
@@ -133,12 +134,14 @@ function close(): void {
 
       <!-- Exactly what the commands printed. Wrapped, because a git or npm error is a
            paragraph and a horizontal scroller hides the end of it. -->
-      <pre
-        v-if="updates.log.length"
-        ref="transcript"
-        class="max-h-80 overflow-y-auto rounded-md bg-inset p-3 font-mono text-small whitespace-pre-wrap text-muted"
-        >{{ updates.log.join('\n') }}</pre
-      >
+      <div v-if="updates.log.length" class="code-copy-block">
+        <pre
+          ref="transcript"
+          class="max-h-80 overflow-y-auto rounded-md bg-inset p-3 font-mono text-small whitespace-pre-wrap text-muted"
+          >{{ updates.log.join('\n') }}</pre
+        >
+        <CodeCopyButton :text="updates.log.join('\n')" />
+      </div>
       <div v-else-if="updates.desktop && !updates.refusal" class="space-y-3">
         <progress v-if="updates.running && !restarting" class="w-full" :value="updates.progress" max="100" :aria-label="t('updates.desktop.downloading', { percent: updates.progress })" />
         <p>{{ t(updates.downloaded ? 'updates.desktop.ready' : updates.available ? 'updates.desktop.intro' : updates.state === 'checking' ? 'updates.desktop.checking' : failed ? 'updates.dialog.stopped' : !status?.checked_at ? 'updates.desktop.unchecked' : 'updates.desktop.upToDate') }}</p>

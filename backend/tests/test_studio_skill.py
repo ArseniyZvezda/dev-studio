@@ -46,6 +46,11 @@ def test_the_bundle_is_a_plugin_named_as_the_prompt_names_it() -> None:
     front = _frontmatter((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8"))
     assert front["name"] == studio_skill.SKILL_DIRECTORY
     assert studio_skill.SKILL_NAME == "voxarium_studio:studio"
+    producer = _frontmatter((studio_skill.BUNDLE / "skills" / "producer" / "SKILL.md").read_text(
+        encoding="utf-8"))
+    assert producer["name"] == studio_skill.PRODUCER_SKILL_DIRECTORY
+    assert studio_skill.PRODUCER_SKILL_NAME == "voxarium_studio:producer"
+    assert 0 < len(producer["description"]) <= 1024
     # The description is what a session reads before it decides to open the skill, and the
     # skill format caps it.
     assert 0 < len(front["description"]) <= 1024

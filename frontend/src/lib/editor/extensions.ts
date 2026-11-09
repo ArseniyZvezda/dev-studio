@@ -8,6 +8,7 @@
 
 import type { Attributes } from '@tiptap/core'
 import { Placeholder } from '@tiptap/extensions'
+import CodeBlock from '@tiptap/extension-code-block'
 import { TaskItem, TaskList } from '@tiptap/extension-list'
 import { Image } from '@tiptap/extension-image'
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
@@ -15,6 +16,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 
 import ImageView from '@/components/docs/nodes/ImageView.vue'
+import CodeBlockView from '@/components/docs/nodes/CodeBlockView.vue'
 import { t } from '@/i18n'
 import { isImageWidth } from '@/lib/md/image-width'
 import { BlockSelection } from './block-selection'
@@ -129,6 +131,13 @@ const MarkdownTaskItem = TaskItem.extend({
   },
 })
 
+/** The document's code stays a normal Tiptap code block; only its view gains a copy control. */
+const CopyableCodeBlock = CodeBlock.extend({
+  addNodeView() {
+    return VueNodeViewRenderer(CodeBlockView)
+  },
+})
+
 export interface EditorOptions {
   slash: SlashMenuState
   wiki?: WikiMenuState
@@ -167,11 +176,11 @@ export function createExtensions(options: EditorOptions) {
       },
       // §7 asks for undo grouped by pauses in typing rather than by keystroke.
       undoRedo: { newGroupDelay: 500 },
-      // §4.8: Tab indents *inside* a code block. Off by default, which leaves the key to
-      // the browser and moves focus out of the editor mid-word. Two spaces, matching the
-      // indent the old editor used.
-      codeBlock: { enableTabIndentation: true, tabSize: 2 },
+      codeBlock: false,
     }),
+    // block-editor spec §3.1: the view adds Copy without changing the Markdown content.
+    // §4.8: Tab still indents inside code, two spaces as before.
+    CopyableCodeBlock.configure({ enableTabIndentation: true, tabSize: 2 }),
     // After StarterKit, so the colour has the higher mark rank and its `<span>` is drawn
     // *inside* `<strong>` and `<em>` rather than around them.
     TextColor,

@@ -1461,6 +1461,67 @@ input[type='range']:focus-visible {
   font-size: 0.85em;
 }
 
+/* Code fences in transcripts, changelog and documents share the same copy control. */
+.code-copy-block {
+  position: relative;
+}
+
+.markdown-body .code-copy-block {
+  margin: 1em 0;
+}
+
+.markdown-body .code-copy-block pre {
+  margin: 0;
+}
+
+.code-copy-block > pre {
+  padding-right: 6rem;
+}
+
+/* Tiptap's NodeViewContent sets pre-wrap inline; code blocks keep their original horizontal scroll. */
+.block-editor .code-copy-block [data-node-view-content] {
+  white-space: pre !important;
+}
+
+.markdown-chat .code-copy-block {
+  margin: 0.55em 0;
+}
+
+.code-copy-button {
+  position: absolute;
+  top: var(--vxs-space-2);
+  right: var(--vxs-space-2);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vxs-space-1);
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--vxs-border);
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-bg-surface);
+  color: var(--vxs-text-secondary);
+  font-family: var(--vxs-font-sans);
+  font-size: calc(var(--vxs-text-size) - 2px);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.code-copy-button:hover,
+.code-copy-button:focus-visible {
+  background: var(--vxs-bg-hover);
+  color: var(--vxs-text-primary);
+}
+
+.code-copy-button:focus-visible {
+  outline: 2px solid var(--vxs-accent);
+  outline-offset: 2px;
+}
+
+.code-copy-button--inline {
+  position: static;
+  flex: none;
+}
+
 .markdown-body blockquote {
   border-left: 3px solid var(--vxs-border-strong);
   padding-left: var(--vxs-space-3);

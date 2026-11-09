@@ -376,7 +376,11 @@ class CodexBackend(AgentBackend):
             await process.stdin.drain()
             process.stdin.close()
 
-            state = _RunState(model=_cost_model(request), resumed=bool(request.resume_session_id))
+            state = _RunState(
+                model=_cost_model(request),
+                resumed=bool(request.resume_session_id),
+                skill_files=request.skill_files,
+            )
             usage_active = False
             frames = _frames(process.stdout, request.max_message_bytes)
             frame_task = asyncio.create_task(anext(frames, None))
@@ -848,10 +852,35 @@ class _RolloutUsage:
         return _normalise_usage(delta), self.context_tokens, self.context_window
 
 
+_SKILL_READ_COMMAND = re.compile(
+    r'''(?:^\s*|(?:-Command|-lc|-c|/c)\s+["']?\s*)(?:Get-Content|cat|type|sed|head|tail)\b''',
+    re.I,
+)
+
+
+def _read_skill_name(command: str, skill_files: dict[str, Path]) -> str | None:
+    """Identify an explicit shell read of one instruction file offered to this run (§10.6).
+
+    Codex has no Skill tool event. We relabel only a recognisable read command naming the
+    exact ``SKILL.md`` path, never a mention of the skill or an unrelated file nearby.
+    """
+    if not _SKILL_READ_COMMAND.search(command):
+        return None
+    normalised = command.replace("\\", "/")
+    matches = []
+    for name, path in skill_files.items():
+        needle = str(path).replace("\\", "/")
+        flags = re.I if os.name == "nt" else 0
+        if re.search(rf"(?<![\w./-]){re.escape(needle)}(?![\w./-])", normalised, flags):
+            matches.append(name)
+    return matches[0] if len(matches) == 1 else None
+
+
 class _RunState:
     """What one ``codex exec`` has said so far, folded into the Studio's events."""
 
-    def __init__(self, *, model: str | None = None, resumed: bool = False) -> None:
+    def __init__(self, *, model: str | None = None, resumed: bool = False,
+                 skill_files: dict[str, Path] | None = None) -> None:
         self.model = model
         self.last_message = ""
         self.failed = False
@@ -866,6 +895,7 @@ class _RunState:
         self.error_text = ""
         self.reconnecting = ""
         self._started: set[str] = set()
+        self.skill_files = skill_files or {}
 
     def events(self, frame: dict[str, Any]) -> list[AgentEvent]:
         kind = str(frame.get("type") or "")
@@ -985,7 +1015,19 @@ class _RunState:
             text = str(item.get("text") or "")
             return [AgentEvent(kind="thinking", text=text)] if text else []
         if item_type == "command_execution":
-            events = self._call_once(item_id, "Bash", {"command": item.get("command")}, phase)
+            command = str(item.get("command") or "")
+            skill = _read_skill_name(command, self.skill_files)
+            # §10.6, §10.10: this is still a Codex shell command. Keep its provenance
+            # while the transcript names the skill it actually opens.
+            events = self._call_once(
+                item_id, "Skill" if skill else "Bash",
+                {"skill": skill} if skill else {"command": item.get("command")}, phase,
+            )
+            if events and skill:
+                events[0].data.update({
+                    "source_tool": "Bash",
+                    "source_command": _summarise({"command": command})["command"],
+                })
             if phase == "completed":
                 exit_code = item.get("exit_code")
                 failed = (isinstance(exit_code, int) and exit_code != 0) or item.get(

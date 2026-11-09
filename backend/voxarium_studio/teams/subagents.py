@@ -302,7 +302,8 @@ class SubagentManager:
                 )
                 # §10.10: a worker is a fresh use of its parent member, including when
                 # its backend differs. Inherited system instructions contain only the
-                # skill catalog; required documents and skill bodies accompany this turn.
+                # skill catalog; required documents and skill bodies, including Studio's,
+                # accompany this turn.
                 from .required_context import load_required_context
                 required = load_required_context(
                     self.owner.config.teams, member, self.owner.skills, self.owner.docs)
