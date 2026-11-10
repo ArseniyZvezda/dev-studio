@@ -2336,6 +2336,42 @@
       "estimateInvalid": "Enter an amount greater than zero in US dollars."
     }
   },
+  "sync": {
+    "conflict": "“{path}” changed here and on the server at the same time. The server’s version was kept; yours is now “{copy}”.",
+    "room": {
+      "label": "Editing together",
+      "live": "Live",
+      "liveHint": "Edits to this document reach everyone who has it open as they are typed."
+    },
+    "settings": {
+      "title": "Online sync",
+      "intro": "Share this project’s Documents with your team through a Voxarium Studio Remote server: edits arrive as they are typed, and you see each other’s cursors.",
+      "enabled": "Sync this project’s Documents",
+      "url": "Server",
+      "insecure": "This address is plain HTTP to another machine: your key would cross the network unencrypted. Use an https:// address.",
+      "space": "Space",
+      "spaceHint": "One shared set of documents on the server. Everyone who enters the same name works on the same documents. Saved with the project.",
+      "token": "Your key",
+      "tokenStored": "A key is stored — type a new one to replace it",
+      "tokenMissing": "Paste the key the server’s administrator gave you",
+      "tokenHint": "Kept on this computer, never in the project.",
+      "forget": "Forget key",
+      "save": "Save and connect",
+      "signedInAs": "as {name}",
+      "online": "Also connected: {names}",
+      "alone": "Nobody else is connected right now.",
+      "state": {
+        "disabled": "Off",
+        "unconfigured": "Not set up",
+        "connecting": "Connecting…",
+        "syncing": "Synchronising documents…",
+        "connected": "Connected",
+        "offline": "Server unreachable — retrying",
+        "unauthorised": "The server refused the key",
+        "error": "Cannot sync"
+      }
+    }
+  },
   "projectSettings": {
     "title": "Project Settings",
     "accent": "Accent Color",

@@ -6,6 +6,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import CommitDescriptionSettings from '@/components/settings/CommitDescriptionSettings.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
+import SyncSettings from '@/components/settings/SyncSettings.vue'
 import { t, type MessageKey } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { ACCENTS } from '@/lib/appearance'
@@ -21,6 +22,7 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-project', titleKey: 'settings.project.title' },
   { id: 'settings-agents', titleKey: 'settings.agents.title' },
   { id: 'settings-tasks', titleKey: 'settings.tasks.title' },
+  { id: 'settings-sync', titleKey: 'sync.settings.title' },
   { id: 'settings-project-execution', titleKey: 'projectSettings.maintenance' },
 ]
 
@@ -401,6 +403,11 @@ async function clearCache() {
                 <p class="mt-1 text-small text-faint">{{ t('settings.tasks.renamesNothing') }}</p>
               </div>
             </div>
+          </section>
+
+          <section id="settings-sync" class="vxs-enter scroll-mt-4">
+            <h2 class="mb-2 font-medium">{{ t('sync.settings.title') }}</h2>
+            <SyncSettings />
           </section>
 
           <section id="settings-project-execution" class="vxs-enter scroll-mt-4">

@@ -982,3 +982,45 @@ body.is-dragging-block * {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------ live room (dev spec §16.4) */
+
+/* Another person's caret. Zero width, so it never moves the text it stands in; the colour is
+   set inline, from the one the server gave them. */
+.block-editor .collab-caret {
+  position: relative;
+  margin-inline: -1px;
+  border-inline-start: 2px solid;
+  pointer-events: none;
+  word-break: normal;
+}
+
+/* Their name, above the caret. Out of flow for the same reason the caret has no width. */
+.block-editor .collab-caret-label {
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-start: -2px;
+  padding: 0 0.35em;
+  border-radius: var(--vxs-radius-sm) var(--vxs-radius-sm) var(--vxs-radius-sm) 0;
+  color: #fff;
+  font-size: 0.7em;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* The header's row of who is here: an initial in the colour of that person's caret. */
+.collab-avatar {
+  display: grid;
+  width: 1.4rem;
+  height: 1.4rem;
+  place-items: center;
+  border-radius: 9999px;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}

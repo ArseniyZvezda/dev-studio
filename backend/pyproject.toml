@@ -20,6 +20,9 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "watchfiles>=0.24",
     "httpx>=0.27",
+    # The client end of online sync (§16). Already installed by uvicorn[standard], which
+    # serves the Studio's own sockets with it; named here because sync imports it directly.
+    "websockets>=13",
     "typer>=0.15",
     # Builds each plugin's isolated venv (В§2.1). Bundled so plugin installation works
     # out of the box rather than requiring a separate uv install.

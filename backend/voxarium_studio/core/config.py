@@ -439,6 +439,22 @@ class DocsConfig(BaseModel):
     """
 
 
+class SyncConfig(BaseModel):
+    """Online sync of the project's Documents through a Voxarium Studio Remote (§16.5).
+
+    Project-owned and committed: *which* server and space this project syncs with is a fact
+    about the project, and teammates who pull it should not have to be told. The key that
+    says *who is asking* is not here — it is the user's, and lives in their config
+    directory (``sync/credentials.py``).
+    """
+
+    enabled: bool = False
+    url: str = ""
+    """The server's address as it was entered; normalised when used."""
+    space: str = ""
+    """The shared set of documents on that server — one per project."""
+
+
 class PluginConfig(BaseModel):
     """Per-project plugin state. Plugins install globally, enable per project (§9.4)."""
 
@@ -469,6 +485,7 @@ class AppConfig(BaseModel):
     vcs: VcsConfig = Field(default_factory=VcsConfig)
     explorer: ExplorerConfig = Field(default_factory=ExplorerConfig)
     docs: DocsConfig = Field(default_factory=DocsConfig)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     plugins: dict[str, PluginConfig] = Field(default_factory=dict)
     node_cache_enabled: bool = True

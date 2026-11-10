@@ -16,6 +16,7 @@ from . import (
     runtime,
     search,
     skills,
+    sync,
     teams,
     updates,
     vcs,
@@ -33,6 +34,7 @@ api_router.include_router(teams.router)
 api_router.include_router(chats.router)
 api_router.include_router(attachments.router)
 api_router.include_router(docs.router)
+api_router.include_router(sync.router)
 api_router.include_router(skills.router)
 api_router.include_router(memory.router)
 api_router.include_router(automations.router)

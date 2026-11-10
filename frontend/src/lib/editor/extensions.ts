@@ -7,6 +7,8 @@
  */
 
 import type { Attributes } from '@tiptap/core'
+import { Collaboration } from '@tiptap/extension-collaboration'
+import { CollaborationCaret } from '@tiptap/extension-collaboration-caret'
 import { Placeholder } from '@tiptap/extensions'
 import CodeBlock from '@tiptap/extension-code-block'
 import { TaskItem, TaskList } from '@tiptap/extension-list'
@@ -17,6 +19,9 @@ import { VueNodeViewRenderer } from '@tiptap/vue-3'
 
 import ImageView from '@/components/docs/nodes/ImageView.vue'
 import CodeBlockView from '@/components/docs/nodes/CodeBlockView.vue'
+import { CarriedState, COLLAB_FIELD } from '@/lib/collab/carried'
+import { renderCaret, renderSelection } from '@/lib/collab/caret'
+import type { CollabSession } from '@/lib/collab/session'
 import { t } from '@/i18n'
 import { isImageWidth } from '@/lib/md/image-width'
 import { BlockSelection } from './block-selection'
@@ -150,6 +155,16 @@ export interface EditorOptions {
    * reader. Omitted, node views that resolve against a document use `docs.open`.
    */
   documentPath?: () => string | null
+  /**
+   * The live room this editor is a member of (dev spec §16.4). Given one, the document is
+   * the room's — bound to its Yjs document instead of loaded from `content` — and other
+   * members' cursors are drawn in it.
+   */
+  collab?: {
+    session: CollabSession
+    /** The room's document has been drawn for the first time; before this the editor is empty. */
+    onFirstRender: () => void
+  }
 }
 
 export function createExtensions(options: EditorOptions) {
@@ -162,6 +177,24 @@ export function createExtensions(options: EditorOptions) {
       : []),
     EditorShortcuts,
     TabGuard,
+    // The room, when there is one. `CarriedState` first: its attribute has to be part of
+    // the schema the binding is built over (see `carried.ts` for what it carries and why).
+    ...(options.collab
+      ? [
+          CarriedState,
+          Collaboration.configure({
+            document: options.collab.session.doc,
+            field: COLLAB_FIELD,
+            onFirstRender: options.collab.onFirstRender,
+          }),
+          CollaborationCaret.configure({
+            provider: { awareness: options.collab.session.awareness },
+            user: options.collab.session.user,
+            render: renderCaret,
+            selectionRender: renderSelection,
+          }),
+        ]
+      : []),
     StarterKit.configure({
       // §3.2: there is no underline in Markdown, and adding one through HTML is forbidden.
       underline: false,
@@ -174,8 +207,15 @@ export function createExtensions(options: EditorOptions) {
         autolink: false,
         linkOnPaste: true,
       },
-      // §7 asks for undo grouped by pauses in typing rather than by keystroke.
-      undoRedo: { newGroupDelay: 500 },
+      // §7 asks for undo grouped by pauses in typing rather than by keystroke. In a room the
+      // history is the binding's own — one that undoes this person's edits and nobody
+      // else's — and two histories over one document would each undo the other's steps.
+      undoRedo: options.collab ? false : { newGroupDelay: 500 },
+      // The empty paragraph StarterKit keeps after a final table or list is an insertion
+      // like any other. In a room it would be an edit made by opening the document — sent
+      // to everyone, and a reason for the scribe to write the file (dev spec §16.4). The gap
+      // cursor still puts a caret after a final table.
+      ...(options.collab ? { trailingNode: false as const } : {}),
       codeBlock: false,
     }),
     // block-editor spec §3.1: the view adds Copy without changing the Markdown content.

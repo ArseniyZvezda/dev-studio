@@ -17,6 +17,7 @@ import { setLocale, t } from '@/i18n'
 import { FRONTEND_VERSION, waitForBackendVersion } from '@/lib/runtime-version'
 import { onEvent, ws } from '@/ws/connection'
 import { useDocsStore } from './docs'
+import { useSyncStore } from './sync'
 import { useThemeStore } from './theme'
 
 export const useSessionStore = defineStore('session', () => {
@@ -60,6 +61,11 @@ export const useSessionStore = defineStore('session', () => {
       docs.hydrate(info.config?.docs)
       // The folds are this browser's, not the config's — but which project's, only this knows.
       docs.restoreFolds(info.root)
+      // Known before any view renders, so a document is opened in its room the first time
+      // rather than alone and then again (dev spec §16.4).
+      const sync = useSyncStore()
+      sync.subscribe()
+      await sync.load()
       void refreshTaskCounts()
     } catch (cause) {
       if (cause instanceof ApiError && cause.isAuthFailure) {

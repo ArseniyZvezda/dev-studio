@@ -11,6 +11,14 @@ diverging from it. Keep intentional scope limitations explicit in the spec.
 `docs/plugins.md` is the plugin-author guide: manifest format, the three execution
 kinds, the node-script wire protocol, and the frontend page contract.
 
+`remote/` is a **second, separately deployed server** — Voxarium Studio Remote, the shared
+server local Studios synchronise the project's Documents through (dev spec §16). It is its
+own Python package with its own `pyproject.toml`, `Dockerfile` and tests, and it imports
+nothing from `voxarium_studio`: what the two share is a wire protocol, restated on the
+Studio's side in `backend/voxarium_studio/sync/protocol.py` and versioned by
+`PROTOCOL_VERSION`. A change to a frame is a change in both places. `remote/README.md` is
+how it is run and how users are given keys.
+
 `docs/block-editor-spec.md` is a second, narrower spec: it replaces the Documents
 section's three views with one Notion-style block editor over seven staged PRs. It
 overrides the dev spec's §10.4 reasoning about that section, and its §2 decisions are
@@ -57,7 +65,21 @@ npm run dev        # http://localhost:5173, proxies /api and /ws to the backend
 npm run build      # type-checks, then writes ../backend/voxarium_studio/static
 npm run typecheck
 npm test           # vitest, node environment: lib/md, lib/editor, lib/status, stores/docs, i18n
+
+# remote (from remote/) — its tests need only the package itself
+uv pip install -e ".[dev]"
+pytest
+voxarium-studio-remote serve --data ./data     # then: voxarium-studio-remote user add <name> --data ./data
 ```
+
+`backend/tests/test_remote_sync.py` runs two Studios against the real remote in one event
+loop, and is **skipped unless the remote is installed into the backend's environment**
+(`uv pip install -e ../remote` from `backend/`). Install it before touching either side of
+sync — a skipped module is not a passing one.
+
+One frontend spec is not in the node environment: `lib/collab/editor.spec.ts` builds two
+real editors and so declares `jsdom` for itself. Everything about the *document* is still
+tested without a DOM.
 
 `voxarium_studio info <managed-project>` is the fastest way to see what the Studio actually
 loaded — config, every plugin with its load status and error, node types, pipelines —
@@ -85,6 +107,19 @@ run.cmd -Stop
 **Never start a second backend on another port.** The human tests on `:8765`; a private
 instance on `:8799` means the two of you are looking at different processes and neither
 notices. Any preview launcher must attach to the running instance rather than starting another server. If nothing is listening, run `run.cmd` — do not improvise a launch.
+
+**The one exception is `remote_test.bat`**, because online sync (§16) cannot be tried with
+one Studio. It starts a local remote and two Studios — "alice" on `:8801`, "bob" on `:8802`,
+the remote on `:8787` — already connected to each other, and opens a browser window on
+each. It never touches `:8765` or `:5173`, never calls `run.ps1`, and stops only the PIDs it
+recorded; its projects, keys and logs are under `.scratch/remote-test/`. The human
+double-clicks it and presses Enter to stop. An agent calls it detached, and stops it when
+done — left running, those are exactly the stray instances the rule above is about:
+
+```bash
+remote_test.bat --detach --no-browser   # returns once all three are up and connected
+remote_test.bat stop
+```
 
 **Call `run.cmd` with `run_in_background: true`.** A foreground call never comes back:
 `run.ps1` itself exits within seconds — it health-checks the backend, prints where it is,
@@ -149,9 +184,20 @@ Use the demo explicitly for verification.
 ## Scope discipline
 
 The spec deliberately defers several things to post-v1: plugin sandboxing, RBAC and
-multi-user access, and Docker packaging. These are accepted trade-offs recorded in §9.4
-and §14, not oversights — do not "fix" them without being asked.
-Consult the design spec before changing these intentional trade-offs.
+multi-user access to one instance, and Docker packaging of the Studio itself. These are
+accepted trade-offs recorded in §9.4 and §14, not oversights — do not "fix" them without
+being asked. Consult the design spec before changing these intentional trade-offs.
+
+Online sync (§16) is not an exception to that list, it is a different answer: every person
+still runs their own Studio, and the only thing shared — and the only thing in Docker — is
+the remote between them. §16.6 lists what sync itself leaves out on purpose (images, folder
+looks, per-space access, history); the same rule applies to those.
+
+Two invariants in §16.4 are easy to break from either end and cost somebody's file when
+they are: **a room's Yjs document is never stored** — Markdown is the only persisted form,
+and a room is rebuilt from it — and **opening a document in a room writes nothing**. The
+second is why the room's editor has no trailing node and why its scribe compares Markdown
+before saving; `lib/collab/editor.spec.ts` fails if an open produces an update.
 
 3D preview in the Explorer was on that list and is now shipped, but only as plugins
 (`vox_preview`, `fbx_preview`, `mesh_preview`) hanging off the previewer extension point in

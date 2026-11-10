@@ -16,6 +16,12 @@
  * an agent may be reading one mid-task, and losing an edit to a forgotten Ctrl+S is worse
  * than writing a little too often — but a save that lands on top of someone else's write
  * would destroy it, which is what `expected_updated_at` is for.
+ *
+ * **A document open in a live room is the exception to that last rule** (dev spec §16.4).
+ * There the document on screen is the room's, merged as it is typed, and the file is only
+ * its latest Markdown: the room's scribe writes it unconditionally, and a write arriving
+ * from somebody else is the same room's text a moment older or newer — never a reason to
+ * warn, and never something to load into the editor. `live` is what says so.
  */
 
 import { defineStore } from "pinia";
@@ -261,6 +267,12 @@ export const useDocsStore = defineStore("docs", () => {
   const saveError = ref<string | null>(null);
   /** True when the file changed underneath us and the save was refused (§14.5). */
   const staleOnDisk = ref(false);
+  /**
+   * The session id of the live room the open document is being edited in, or `null` when it
+   * is edited alone (dev spec §16.4). Set by the page that owns the session, which is also
+   * what clears it — after the last save written from the room has been sent.
+   */
+  const live = ref<string | null>(null);
 
   /** The document's heading as the editor currently has it, for the header and the tree. */
   const liveTitle = ref("");
@@ -665,6 +677,55 @@ export const useDocsStore = defineStore("docs", () => {
     }
   }
 
+  function setLive(session: string | null): void {
+    live.value = session;
+  }
+
+  /**
+   * Read the open document again, or let go of it if it is no longer there — what a page
+   * does when the room it was editing in ended because the file was replaced or deleted.
+   */
+  async function reopen(): Promise<void> {
+    const path = open.value?.path;
+    if (!path) return;
+    try {
+      const fresh = await api.doc(path);
+      if (open.value?.path !== path) return;
+      open.value = fresh;
+      liveTitle.value = fresh.title;
+      resetEditState();
+    } catch (cause) {
+      if (open.value?.path !== path) return;
+      if (cause instanceof ApiError && cause.status === 404) closeDocument();
+      else error.value = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  /**
+   * Take *content* as the open document's text and owe the file a save for it.
+   *
+   * For an editor that has just dropped out of a live room with something on screen its
+   * own disk has not seen: the text stays, is edited alone from here on, and is written.
+   */
+  function adopt(content: string): void {
+    if (!open.value) return;
+    open.value = { ...open.value, content };
+    markDirty();
+    void save(content);
+  }
+
+  /** The latest facts about the open document, without touching what is being edited. */
+  async function refreshOpen(path: string): Promise<void> {
+    try {
+      const fresh = await api.doc(path);
+      // Still the same document, still in a room: only then is "leave the editor alone,
+      // take the rest" the right thing to do with this answer.
+      if (open.value?.path === path && live.value) open.value = fresh;
+    } catch {
+      // A read that failed changes nothing here; a delete has its own event.
+    }
+  }
+
   function resetEditState(): void {
     dirty.value = false;
     saveError.value = null;
@@ -728,13 +789,19 @@ export const useDocsStore = defineStore("docs", () => {
     saving.value = true;
     saveError.value = null;
     const sent = edits;
+    // Read now, not after the round trip: the page clears it once this write is on its way.
+    const room = live.value;
     writing.add(document.path);
     try {
       const saved = await api.saveDoc(
         document.path,
         content,
         null,
-        document.updated_at,
+        // In a room the write is unconditional: what is on disk is the same room's Markdown,
+        // put there by sync from whoever was scribe before, and refusing to replace it
+        // would stop the file following the document.
+        room ? null : document.updated_at,
+        room,
       );
       if (open.value?.path === saved.path) {
         // Only what was *sent* is saved. If the user typed while it was in flight, this
@@ -1034,12 +1101,32 @@ export const useDocsStore = defineStore("docs", () => {
       // invalidating only here would never refresh the picture for the user's own edits.
       invalidateGraph();
       if (open.value?.path !== payload.path) return;
+      if (live.value) {
+        // In a room this is the room's own Markdown arriving through sync — written by its
+        // scribe, already on screen here. Nothing to warn about and nothing to load: the
+        // header's facts are refreshed and the editor is left exactly as it is. A file
+        // replaced from *outside* the room ends the room, and the page reopens it.
+        if (payload.deleted) closeDocument();
+        else void refreshOpen(payload.path);
+        return;
+      }
       // Someone else's write. With nothing local to lose, adopt it — or, for a delete, let the
       // document go, since reading it again is a 404; otherwise say so and let the user
       // decide — the save would be refused anyway (§14.5), and "Keep mine" writes it back.
       if (dirty.value || saving.value) staleOnDisk.value = true;
       else if (payload.deleted) closeDocument();
       else void select(payload.path);
+    });
+
+    onEvent("sync.conflict", (payload) => {
+      // Not lost, but moved: the person has to know their version is now another document.
+      // Said after the listing is re-read, because re-reading it clears the banner.
+      void load().finally(() => {
+        error.value = t("sync.conflict", {
+          path: payload.path,
+          copy: payload.copy,
+        });
+      });
     });
 
     onEvent("team.doc.folder_changed", (payload) => {
@@ -1067,6 +1154,10 @@ export const useDocsStore = defineStore("docs", () => {
     error,
     saveError,
     staleOnDisk,
+    live,
+    setLive,
+    reopen,
+    adopt,
     draftTitle,
     backlinks,
     query,

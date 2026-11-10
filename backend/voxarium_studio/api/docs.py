@@ -33,6 +33,10 @@ class DocWrite(BaseModel):
     exclusive: bool = False
     """Refuse with 409 when anything is already at the path — what creating a document sends,
     so a name that is taken is reported instead of written over."""
+    collab_session: str | None = None
+    """The live room this Markdown was materialised from, when the editor saving it is the
+    room's scribe (§16.4). It marks the write as the room's own, so online sync pushes it as
+    such instead of as an edit made from outside the room."""
 
 
 class DocMove(BaseModel):
@@ -299,6 +303,8 @@ async def read_doc(path: str, ctx: Ctx) -> dict[str, Any]:
 
 @router.put("/{path:path}")
 async def write_doc(path: str, payload: DocWrite, ctx: Ctx) -> dict[str, Any]:
+    if payload.collab_session:
+        ctx.sync.note_live_write(path, payload.collab_session, payload.content)
     try:
         return await ctx.docs.write(
             path,

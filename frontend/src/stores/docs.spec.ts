@@ -124,6 +124,8 @@ describe("saving", () => {
       "# Edited\n",
       null,
       "2026-08-04T10:00:00+00:00",
+      // No room: an ordinary save, which sync pushes as an ordinary edit (§16.4).
+      null,
     );
     expect(store.dirty).toBe(false);
     expect(store.saveState).toBe("saved");
@@ -245,6 +247,7 @@ describe("saving", () => {
       "# One two\n",
       null,
       "2026-08-04T10:00:01+00:00",
+      null,
     );
   });
 
@@ -263,6 +266,120 @@ describe("saving", () => {
 
     expect(store.open?.path).toBe("qa/test-plan.md");
     expect(store.open?.content).toBe("# Doc\n");
+  });
+});
+
+describe("a document open in a live room (dev spec §16.4)", () => {
+  async function inRoom() {
+    const store = useDocsStore();
+    api.docs.mockResolvedValue([entry("features/dash.md")]);
+    api.doc.mockResolvedValue(detail("features/dash.md"));
+    await store.select("features/dash.md");
+    store.subscribe();
+    store.setLive("sid-1");
+    return store;
+  }
+  const changed = (payload: Record<string, unknown>) =>
+    mockWsHandlers.get("team.doc.changed")?.(payload);
+
+  it("is written unconditionally, and marked as the room's own", async () => {
+    const store = await inRoom();
+    api.saveDoc.mockResolvedValue(detail("features/dash.md", "# Room\n"));
+    store.markDirty();
+
+    expect(await store.save("# Room\n")).toBe(true);
+    // No expectation: the file under it is the same room's Markdown, written by sync from
+    // whoever was scribe before, and refusing to replace it would stop the file following.
+    expect(api.saveDoc).toHaveBeenCalledWith(
+      "features/dash.md",
+      "# Room\n",
+      null,
+      null,
+      "sid-1",
+    );
+  });
+
+  it("still marks a save as the room's when the room is left right after it", async () => {
+    const store = await inRoom();
+    api.saveDoc.mockResolvedValue(detail("features/dash.md", "# Last\n"));
+    store.markDirty();
+    // The page saves and then leaves, in that order — and clears the room only once the
+    // write has been sent, which is what `settle` is for.
+    const saving = store.save("# Last\n");
+    await store.settle();
+    store.setLive(null);
+    await saving;
+    expect(api.saveDoc.mock.calls[0][4]).toBe("sid-1");
+  });
+
+  it("takes the room's Markdown arriving through sync without touching the editor", async () => {
+    const store = await inRoom();
+    store.markDirty();
+    api.doc.mockResolvedValue({
+      ...detail("features/dash.md", "# From the scribe\n"),
+      updated_at: "2026-08-04T10:00:09+00:00",
+    });
+
+    changed({ path: "features/dash.md", title: "Dash", author: "remote:bob" });
+    await vi.waitFor(() =>
+      expect(store.open?.updated_at).toBe("2026-08-04T10:00:09+00:00"),
+    );
+    // Not a warning about a file changed on disk, and the pending save is still owed.
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.dirty).toBe(true);
+  });
+
+  it("lets go of a document deleted from under the room", async () => {
+    const store = await inRoom();
+    changed({ path: "features/dash.md", title: null, author: "remote:bob", deleted: true });
+    expect(store.open).toBeNull();
+  });
+
+  it("reopens the file when the room ended, or closes it if the file is gone", async () => {
+    const store = await inRoom();
+    store.setLive(null);
+    store.markDirty();
+    api.doc.mockResolvedValue(detail("features/dash.md", "# Replaced by an agent\n"));
+    await store.reopen();
+    expect(store.open?.content).toBe("# Replaced by an agent\n");
+    expect(store.dirty).toBe(false);
+
+    api.doc.mockRejectedValue(new ApiError(404, "gone"));
+    await store.reopen();
+    expect(store.open).toBeNull();
+    expect(store.error).toBeNull();
+  });
+
+  it("keeps what was on screen when the room is lost, and owes the file a save", async () => {
+    const store = await inRoom();
+    store.setLive(null);
+    api.saveDoc.mockResolvedValue(detail("features/dash.md", "# On screen\n"));
+
+    store.adopt("# On screen\n");
+    expect(store.open?.content).toBe("# On screen\n");
+    expect(store.dirty).toBe(true);
+    await store.settle();
+    // Alone again, so conditional again: a file that moved meanwhile is a real conflict.
+    expect(api.saveDoc).toHaveBeenCalledWith(
+      "features/dash.md",
+      "# On screen\n",
+      null,
+      "2026-08-04T10:00:00+00:00",
+      null,
+    );
+  });
+
+  it("says where a conflicting version went", async () => {
+    const store = await inRoom();
+    mockWsHandlers.get("sync.conflict")?.({
+      path: "features/dash.md",
+      copy: "features/dash (conflict bob).md",
+      by: "alice",
+    });
+    // The copy is a new document in the tree, and the banner survives the re-read.
+    await vi.waitFor(() =>
+      expect(store.error ?? "").toContain("features/dash (conflict bob).md"),
+    );
   });
 });
 
