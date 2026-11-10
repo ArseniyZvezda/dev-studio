@@ -68,7 +68,7 @@ class RemoveBackgroundNode(BaseNode):
                 accept=READABLE,
                 description=(
                     "The picture to cut out. PNG is read with no dependencies; the other "
-                    "formats need this plugin's environment (Plugins → Build environment)."
+                    "formats need this plugin's environment, which the Studio builds by itself."
                 ),
             ),
             PortSchema(
@@ -177,8 +177,8 @@ class JpegToPngNode(BaseNode):
         description=(
             "Re-containers a JPEG as a PNG, pixel for pixel, for the nodes downstream that "
             "want one — including this plugin's own, which reads PNG with nothing installed. "
-            "Needs this plugin's environment (Plugins → Build environment): JPEG is the one "
-            "format image_ops will not decode itself."
+            "Needs this plugin's environment, which the Studio builds by itself and waits "
+            "for: JPEG is the one format image_ops will not decode itself."
         ),
         inputs=[
             PortSchema(
@@ -250,8 +250,8 @@ class Trim4x4Node(BaseNode):
                 accept=READABLE,
                 description=(
                     "The picture to cut, at least 2x2 pixels. PNG is read with no "
-                    "dependencies; the other formats need this plugin's environment "
-                    "(Plugins -> Build environment)."
+                    "dependencies; the other formats need this plugin's environment, "
+                    "which the Studio builds by itself."
                 ),
             )
         ],
@@ -334,7 +334,7 @@ class CropNode(BaseNode):
                     "Remove Background. A format carrying no alpha is opaque everywhere, so "
                     "its bounding box is the whole picture and only the framing applies. "
                     "PNG is read with no dependencies; the other formats need this plugin's "
-                    "environment (Plugins -> Build environment)."
+                    "environment, which the Studio builds by itself."
                 ),
             ),
             PortSchema(

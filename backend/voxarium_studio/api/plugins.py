@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..core.config import PluginConfig
-from ..plugins.envs import EnvError, ensure_env
+from ..plugins import envs as plugin_envs
+from ..plugins.envs import EnvError
 from ..plugins.registry import FilePreviewer, Registry, SyntaxGrammar
 from .deps import Ctx
 
@@ -166,22 +167,19 @@ async def run_plugin_action(
 
 @router.post("/{plugin_id}/install-env")
 async def install_plugin_env(plugin_id: str, ctx: Ctx, force: bool = False) -> dict[str, Any]:
-    """Provision the plugin's isolated venv with uv (§2.1).
+    """Build the plugin's isolated venv now and wait for it (§2.1).
 
-    Kept off the start-up path deliberately: a plugin pinning torch can take minutes,
-    and the Studio must still boot in the meantime.
+    The Studio's own pages no longer call this: environments build themselves in the
+    background and nodes wait for them (§9.4). It stays for plugin pages and scripts —
+    ``force`` is the one thing the automatic build never does, a rebuild from scratch.
+    It joins a build already in progress rather than starting a second one.
     """
     plugin = ctx.registry.plugin(plugin_id)
     if plugin is None:
         raise HTTPException(status_code=404, detail=f"No plugin {plugin_id!r}")
 
-    lines: list[str] = []
-
-    async def log_fn(line: str) -> None:
-        lines.append(line)
-
     try:
-        python_path = await ensure_env(plugin.manifest, force=force, log_fn=log_fn)
+        python_path, lines = await plugin_envs.provision(plugin.manifest, force=force)
     except EnvError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

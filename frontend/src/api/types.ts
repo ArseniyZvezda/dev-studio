@@ -366,6 +366,18 @@ export interface RevealResult {
 export type PluginScope = 'builtin' | 'global' | 'project'
 export type PluginStatus = 'loaded' | 'disabled' | 'error'
 
+/**
+ * Where a plugin's isolated environment stands (§2.1, §9.4). The Studio builds it by itself
+ * — on opening the project, on enabling the plugin, after its requirements change — so this
+ * is something to show, never something to act on. `pending` is "not built for the current
+ * requirements and not being built": a disabled plugin's environment, until it is enabled.
+ */
+export interface PluginEnv {
+  state: 'ready' | 'building' | 'pending' | 'failed'
+  /** What uv said, when `failed`. */
+  error: string | null
+}
+
 export interface LoadedPlugin {
   id: string
   name: string
@@ -390,6 +402,8 @@ export interface LoadedPlugin {
   automation_actions: string[]
   has_backend: boolean
   has_venv: boolean
+  /** Null when the plugin declares no isolated environment. */
+  env: PluginEnv | null
   root: string
 }
 

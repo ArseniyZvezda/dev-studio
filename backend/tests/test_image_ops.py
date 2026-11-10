@@ -536,14 +536,14 @@ def test_a_broken_png_says_what_is_wrong_with_it(nodes) -> None:
         imaging.decode_png(truncated)
 
 
-def test_an_unreadable_format_names_the_button_that_fixes_it(nodes, tmp_path: Path) -> None:
-    """PNG is the floor; everything else is what building the environment adds."""
+def test_an_unreadable_format_says_what_the_environment_adds(nodes, tmp_path: Path) -> None:
+    """PNG is the floor; everything else is what the environment adds."""
     imaging, _ = nodes
     if imaging.pillow() is not None:
         pytest.skip("Pillow is installed here, so this file is readable after all")
     target = tmp_path / "photo.jpg"
     target.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
-    with pytest.raises(imaging.ImageError, match="Build the image_ops environment"):
+    with pytest.raises(imaging.ImageError, match="The image_ops environment adds JPEG"):
         imaging.read(target)
 
 
@@ -686,7 +686,7 @@ def test_converting_a_jpeg_without_pillow_names_the_button_that_installs_it(
 
     process, results = run_script(tmp_path, {"image": str(photo)}, script="jpeg_to_png.py")
     assert process.returncode != 0
-    assert "Build the image_ops environment" in process.stderr
+    assert "The image_ops environment adds JPEG" in process.stderr
     assert results == {}
 
 

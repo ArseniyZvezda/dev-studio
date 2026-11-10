@@ -19,6 +19,7 @@ from ..core.db import Database
 from ..core.paths import ProjectPaths, current_data_path
 from ..models.base import utcnow
 from ..models.pipeline import NodeRun, NodeStatus, Run, RunStatus
+from ..plugins import envs as plugin_envs
 from ..plugins.registry import Registry
 from ..schemas.nodes import NodeTypeSchema
 from ..schemas.pipeline import NodeInstance, PipelineDefinition
@@ -515,6 +516,14 @@ class PipelineRunner:
         )
 
         try:
+            if (
+                schema.execution.kind == "python_script"
+                and schema.execution.env
+                and request.manifest is not None
+            ):
+                # Before the slot, not inside it: a first build can take minutes, and a
+                # GPU slot held through a pip install starves every other GPU node (§2.1).
+                await plugin_envs.prepare(request.manifest, log_fn)
             async with self.jobs.slot(schema.execution.resource_class):
                 result: ExecutionResult = await execute(request)
         except asyncio.CancelledError:

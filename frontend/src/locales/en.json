@@ -2224,9 +2224,15 @@
         "other": "{count} previewers"
       },
       "search": "search: {providers}",
-      "venvReady": "venv ready",
-      "venvNotBuilt": "venv not built",
-      "buildEnv": "Build env"
+      "env": {
+        "ready": "environment ready",
+        "building": "building environment…",
+        "failed": "environment failed to build",
+        "queued": "environment waiting to build",
+        "onEnable": "environment builds when enabled",
+        "notBuilt": "environment not built",
+        "retry": "The Studio tries again when a node needs this environment, when the plugin is enabled again, or when its requirements change."
+      }
     },
     "missingPage": {
       "title": "This plugin page could not be loaded",

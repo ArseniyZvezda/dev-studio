@@ -176,6 +176,8 @@ export interface EventPayloads {
   'automation.notification': AutomationNotification
 
   'plugin.changed': { plugins: LoadedPlugin[]; node_type_count: number }
+  /** A plugin's environment started or finished building — the whole entry, to replace its row. */
+  'plugin.env': { plugin: LoadedPlugin }
   /**
    * Something a plugin's own backend said (`PluginHost.publish`, §9.7). One type for every
    * plugin: a plugin's page filters on `plugin_id` and `name`, and `data` is its own shape.
