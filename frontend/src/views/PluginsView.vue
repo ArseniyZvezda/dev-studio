@@ -1,18 +1,21 @@
 <script setup lang="ts">
-/** Plugin registry: enable/disable per project, provision isolated venvs (spec §9.4). */
-import { Blocks, Boxes, HardDriveDownload, Power } from 'lucide-vue-next'
-import { computed, onMounted, ref } from 'vue'
+/**
+ * Plugin registry: enable/disable per project (spec §9.4). A plugin's isolated environment
+ * is built by the Studio itself (§2.1), so the card only says where that build stands.
+ */
+import { Blocks, Boxes, Loader2, Power } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { LoadedPlugin } from '@/api/types'
 import ClampText from '@/components/ui/ClampText.vue'
-import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { hasMessage, t } from '@/i18n'
 import { resetPluginGrammars } from '@/lib/highlight/grammars'
 import { loadPluginPages } from '@/plugin-runtime/loader'
 import { usePipelinesStore } from '@/stores/pipelines'
+import { onEvent } from '@/ws/connection'
 
 const pipelines = usePipelinesStore()
 
@@ -27,7 +30,22 @@ function filterCount(filter: typeof filters[number]): number {
 const loading = ref(true)
 const error = ref<string | null>(null)
 const busyId = ref<string | null>(null)
-const envLog = ref<{ id: string; lines: string[] } | null>(null)
+
+/** The environment's state in words — `pending` reads differently on a disabled card. */
+function envLabel(plugin: LoadedPlugin): string {
+  const env = plugin.env
+  if (!env) return ''
+  if (env.state !== 'pending') return t(`plugins.card.env.${env.state}`)
+  if (plugin.status === 'loaded') return t('plugins.card.env.queued')
+  return plugin.enabled ? t('plugins.card.env.notBuilt') : t('plugins.card.env.onEnable')
+}
+
+// A build starts and ends on its own, so the card follows the backend rather than a click.
+const stopListening = onEvent('plugin.env', ({ plugin }) => {
+  const index = plugins.value.findIndex(entry => entry.id === plugin.id)
+  if (index >= 0) plugins.value[index] = plugin
+})
+onBeforeUnmount(stopListening)
 
 /**
  * Where a plugin comes from, in words — `plugins.scope.<scope>`, looked up while rendering so it
@@ -64,21 +82,6 @@ async function toggle(plugin: LoadedPlugin) {
     // cached after its first miss, so without this, enabling `angelscript` leaves `.as`
     // plain until a reload — which reads as the plugin not working.
     resetPluginGrammars()
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    busyId.value = null
-  }
-}
-
-async function installEnv(plugin: LoadedPlugin) {
-  busyId.value = plugin.id
-  envLog.value = null
-  try {
-    const result = await api.installPluginEnv(plugin.id)
-    envLog.value = { id: plugin.id, lines: result.log }
-    if (result.detail) error.value = result.detail
-    await load()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   } finally {
@@ -156,21 +159,27 @@ async function installEnv(plugin: LoadedPlugin) {
                 <template v-if="plugin.search_providers.length">
                   · {{ t('plugins.card.search', { providers: plugin.search_providers.join(', ') }) }}
                 </template>
-                <template v-if="plugin.has_backend">
-                  · {{ plugin.has_venv ? t('plugins.card.venvReady') : t('plugins.card.venvNotBuilt') }}
+                <template v-if="plugin.env">
+                  ·
+                  <span
+                    class="inline-flex items-center gap-1"
+                    :class="{ 'text-danger': plugin.env.state === 'failed' }"
+                  >
+                    <Loader2 v-if="plugin.env.state === 'building'" class="size-3 animate-spin text-accent" />
+                    {{ envLabel(plugin) }}
+                  </span>
                 </template>
               </p>
+              <template v-if="plugin.env?.state === 'failed'">
+                <pre
+                  v-if="plugin.env.error"
+                  class="mt-1 max-h-32 overflow-auto font-mono text-small whitespace-pre-wrap text-danger"
+                >{{ plugin.env.error }}</pre>
+                <p class="mt-1 text-small text-faint">{{ t('plugins.card.env.retry') }}</p>
+              </template>
             </div>
 
             <div class="flex shrink-0 gap-2">
-              <button
-                v-if="plugin.has_backend && !plugin.has_venv"
-                class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
-                :disabled="busyId === plugin.id"
-                @click="installEnv(plugin)"
-              >
-                <HardDriveDownload class="size-3.5" /> {{ t('plugins.card.buildEnv') }}
-              </button>
               <button
                 class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
                 :disabled="busyId === plugin.id"
@@ -180,11 +189,6 @@ async function installEnv(plugin: LoadedPlugin) {
                 {{ plugin.enabled ? t('common.disable') : t('common.enable') }}
               </button>
             </div>
-          </div>
-
-          <div v-if="envLog?.id === plugin.id" class="code-copy-block mt-2">
-            <pre class="max-h-48 overflow-auto rounded-md bg-inset p-2 font-mono text-small whitespace-pre-wrap">{{ envLog.lines.join('\n') }}</pre>
-            <CodeCopyButton :text="envLog.lines.join('\n')" />
           </div>
         </li>
       </ul>

@@ -6,16 +6,18 @@
 # nothing here.
 #
 # Hunyuan3D in `local` mode is the case each plugin gets its own venv for (spec §2.1) —
-# torch plus several GB of model code. It is intentionally NOT pinned here, because
-# "Build environment" on the Hunyuan3D Settings page has to stay cheap for everyone
-# reaching the model over a server. Add it yourself when you want local inference; see
-# README.md for what to append and why the CUDA wheel index matters.
+# torch plus several GB of model code. It is intentionally NOT pinned here, because the
+# Studio builds this environment by itself as soon as the plugin is enabled, and that has
+# to stay cheap for everyone reaching the model over a server. Add it yourself when you
+# want local inference — a change to this file is installed automatically before the next
+# generation node runs; see README.md for what to append and why the CUDA wheel index
+# matters.
 numpy>=1.26
 
 # Optional, and deliberately not pinned. `nodes/imaging.py` decodes PNG and baseline
 # JPEG on the stdlib alone, which covers everything Hunyuan3D bakes; Pillow is only needed
-# for a texture in some third container — WebP, BMP, TGA. Uncomment it if you hit that,
-# and rebuild the environment. Note it changes nothing for PNG or JPEG: those never go
+# for a texture in some third container — WebP, BMP, TGA. Uncomment it if you hit that;
+# the environment picks it up by itself. Note it changes nothing for PNG or JPEG: those never go
 # through Pillow even when it is installed, so that one mesh always voxelises to one
 # result (the §8.2 cache key does not know what is in the venv).
 # pillow>=10.0

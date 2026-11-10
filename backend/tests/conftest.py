@@ -125,6 +125,30 @@ def no_graphify_cli(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
 
 
 @pytest.fixture(autouse=True)
+def no_plugin_env_builds(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a test build a plugin's isolated environment (§2.1).
+
+    A started context builds the environment of every enabled plugin that declares one, and
+    `image_ops` is enabled by default: without this, every `ctx` and `client` would run `uv`
+    to install Pillow into `plugins_builtin/image_ops/.venv` — inside this checkout — and
+    every pipeline test with one of its nodes would wait for the download. With `schedule`
+    answering "nothing to do", nodes run on whatever interpreter they find, as they did
+    before environments built themselves.
+
+    The build state is per process, so it is also reset for every test. Tests of the
+    builder itself mark themselves `@pytest.mark.real_plugin_envs` and fake the `uv` runner.
+    """
+    from voxarium_studio.plugins import envs as plugin_envs
+
+    monkeypatch.setattr(plugin_envs, "_builds", {})
+    monkeypatch.setattr(plugin_envs, "_failures", {})
+    monkeypatch.setattr(plugin_envs, "_watchers", [])
+    if request.node.get_closest_marker("real_plugin_envs"):
+        return
+    monkeypatch.setattr(plugin_envs, "schedule", lambda _manifest, *, force=False: None)
+
+
+@pytest.fixture(autouse=True)
 def no_commit_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let a commit draft reach the Agent SDK (§10.4).
 

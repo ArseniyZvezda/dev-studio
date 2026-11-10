@@ -142,6 +142,7 @@ async def test_start_all_queues_solo_and_dependencies_without_touching_other_wor
     teams: AppContext, wait_for
 ) -> None:
     gates, prompts = await _hold_dev_runs(teams, "bulk_held")
+    await _solo_on(teams)
     first = await _dev_task(teams, "first", auto_start=False)
     second = await _dev_task(teams, "second", auto_start=False)
     await release(teams, second.id)
@@ -764,6 +765,14 @@ def _let_go(gates: dict[str, asyncio.Event], task_id: str) -> None:
     gates.setdefault(task_id, asyncio.Event()).set()
 
 
+async def _solo_on(teams: AppContext, member_id: str = DEV) -> None:
+    """Switch Solo Mode on for one member; every member starts with it off (§10.4)."""
+    async with teams.db.session() as session:
+        member = await session.get(TeamMember, member_id)
+        member.solo_mode = True
+        session.add(member)
+
+
 async def _dev_task(
     teams: AppContext, title: str, *, auto_start: bool = True,
     write_paths: list[str] | tuple[str, ...] = (),
@@ -774,35 +783,47 @@ async def _dev_task(
     )
 
 
-async def test_solo_mode_is_on_by_default_and_round_trips_through_the_team_file(
+async def test_solo_mode_and_isolation_are_off_by_default_and_round_trip_through_the_team_file(
     teams: AppContext,
 ) -> None:
-    """A roster written before the flag existed runs one task at a time — the safe
-    reading — and the flag is written back like every other member setting."""
+    """A roster that never names either flag runs tasks side by side in the project itself,
+    and both flags are written back like every other member setting."""
     path = teams.paths.teams / "default-team.yaml"
-    assert "solo_mode" not in path.read_text(encoding="utf-8"), "the sample never names it"
+    text = path.read_text(encoding="utf-8")
+    assert "solo_mode" not in text and "isolate_worktree" not in text, "the sample names neither"
     async with teams.db.session() as session:
         dev = await session.get(TeamMember, DEV)
-        assert dev.solo_mode is True
-        dev.solo_mode = False
+        assert dev.solo_mode is False
+        assert dev.isolate_worktree is False
+        dev.solo_mode = True
+        dev.isolate_worktree = True
         session.add(dev)
     async with teams.db.session() as session:
         await teams.teams.store.save_from_db(session, TEAM)
-    assert "solo_mode: false" in path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    assert "solo_mode: true" in text and "isolate_worktree: true" in text
 
     await teams.teams.sync_definitions()
     async with teams.db.session() as session:
-        assert (await session.get(TeamMember, DEV)).solo_mode is False, "the file is the truth"
+        dev = await session.get(TeamMember, DEV)
+        assert dev.solo_mode is True and dev.isolate_worktree is True, "the file is the truth"
+
+
+def test_a_new_member_starts_with_solo_mode_and_isolation_off(project: Path, client) -> None:
+    created = client.post(f"/api/teams/{TEAM}/members", json={"name": "Newcomer"})
+    assert created.status_code == 201
+    assert created.json()["solo_mode"] is False
+    assert created.json()["isolate_worktree"] is False
 
 
 def test_solo_mode_is_editable_over_rest(project: Path, client) -> None:
     roster = project / ".voxarium_studio" / "teams" / "default-team.yaml"
-    saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"solo_mode": False})
-    assert saved.status_code == 200 and saved.json()["solo_mode"] is False
-    assert "solo_mode: false" in roster.read_text(encoding="utf-8")
+    saved = client.patch(f"/api/teams/{TEAM}/members/{DEV}", json={"solo_mode": True})
+    assert saved.status_code == 200 and saved.json()["solo_mode"] is True
+    assert "solo_mode: true" in roster.read_text(encoding="utf-8")
     members = {m["id"]: m for m in client.get(f"/api/teams/{TEAM}").json()["members"]}
-    assert members[DEV]["solo_mode"] is False
-    assert members[DESIGNER]["solo_mode"] is True, "everyone else is untouched"
+    assert members[DEV]["solo_mode"] is True
+    assert members[DESIGNER]["solo_mode"] is False, "everyone else is untouched"
 
 
 async def test_a_solo_member_runs_one_released_task_at_a_time(
@@ -811,6 +832,7 @@ async def test_a_solo_member_runs_one_released_task_at_a_time(
     """The rule itself: a second released task waits in `pending` until the first run
     ends, and then goes without anyone clicking — whoever asks for it in between."""
     gates, _prompts = await _hold_dev_runs(teams, "held_solo")
+    await _solo_on(teams)
     first = await _dev_task(teams, "first")
     second = await _dev_task(teams, "second")
 
@@ -840,6 +862,7 @@ async def test_the_queue_goes_lowest_number_first(teams: AppContext, wait_for) -
     """Three released at once, ended one by one: the order is the task number's, not the
     order the cards were dragged in."""
     gates, _prompts = await _hold_dev_runs(teams, "held_order")
+    await _solo_on(teams)
     first = await _dev_task(teams, "a")
     second = await _dev_task(teams, "b")
     third = await _dev_task(teams, "c")
@@ -866,6 +889,7 @@ async def test_a_task_released_without_auto_start_is_not_in_the_queue(
     teams: AppContext, wait_for
 ) -> None:
     gates, _prompts = await _hold_dev_runs(teams, "held_manual")
+    await _solo_on(teams)
     first = await _dev_task(teams, "first")
     manual = await _dev_task(teams, "manual", auto_start=False)
 
@@ -1197,6 +1221,7 @@ async def test_switching_solo_mode_off_releases_what_was_parked_behind_it(
     """The flag is the one member setting that can be holding work, so clearing it is a
     release — `PATCH …/members/{id}` calls the same dispatch."""
     gates, _prompts = await _hold_dev_runs(teams, "held_flip")
+    await _solo_on(teams)
     first = await _dev_task(teams, "first")
     second = await _dev_task(teams, "second")
     await release(teams, first.id)
@@ -1246,6 +1271,7 @@ async def test_a_review_sent_to_a_busy_solo_member_waits_and_resumes_with_the_co
     message. When the member is busy elsewhere the task is parked instead — and the
     comment must not be the one thing the later resume forgets."""
     gates, prompts = await _hold_dev_runs(teams, "held_review")
+    await _solo_on(teams)
     reviewed = await _dev_task(teams, "reviewed", auto_start=False)
     other = await _dev_task(teams, "other")
 
@@ -3106,9 +3132,22 @@ async def test_a_run_is_told_its_members_skills_and_may_read_them(
                 )
             )
         ).all()
+    # §10.4: the Status column reads which of them were handed over whole at start-up — the
+    # Studio's own skill always is — apart from the ones only named to the agent.
     assert [note.data for note in notes] == [
-        {"skills": ["level-prototyping", "voxarium_studio:studio", "graphify"], "missing": ["renamed-away"]}
+        {"skills": ["level-prototyping", "voxarium_studio:studio", "graphify"], "missing": ["renamed-away"],
+         "loaded": ["voxarium_studio:studio"], "labels": {}}
     ]
+    async with teams.db.session() as session:
+        servers = (
+            await session.exec(
+                select(AgentMessage).where(AgentMessage.task_id == given.id, AgentMessage.kind == "mcp")
+            )
+        ).all()
+    # The servers the run was handed, recorded by the Studio whichever backend runs it.
+    assert request.mcp_servers
+    assert [entry.data for entry in servers] == [{"servers": sorted(request.mcp_servers)}]
+    assert {entry.role for entry in servers} == {"system"}
 
     # Marina was given nothing, so she is told nothing and may read nothing of it.
     other = await teams.teams.create_task(

@@ -41,7 +41,7 @@ describe('Shared task conversation summaries', () => {
       message('tool-result', 2, { kind: 'tool_result', role: 'system' }),
       closing,
       message('result', 4, { kind: 'result', role: 'system' }),
-    ], 'advanced')
+    ], 'default')
     expect(rows.map(row => row.key)).toEqual(['report', 'closing'])
     expect(rows.map(row => resultTypeOf(row.message))).toEqual([null, resultType])
     expect(report.kind).toBe('summary')
@@ -54,7 +54,7 @@ describe('Shared task conversation summaries', () => {
     const continued = message('continued', 3, { kind: 'continued', role: 'system' })
     const next = message('next', 4)
     const error = message('error', 5, { kind: 'error', role: 'system' })
-    const rows = transcriptRows([report, cancelled, continued, next, error], 'compact')
+    const rows = transcriptRows([report, cancelled, continued, next, error], 'default')
     expect(rows.map(row => row.key)).toEqual(['report', 'cancelled', 'continued', 'next', 'error'])
     expect(resultTypeOf(rows[0]!.message)).toBe('done')
     expect(resultTypeOf(rows[3]!.message)).toBeNull()
@@ -64,7 +64,7 @@ describe('Shared task conversation summaries', () => {
     const rows = transcriptRows([
       message('report', 1, { kind: 'summary', text: 'Done', data: { result_type: 'done' } }),
       message('closing', 2, { text: 'Done' }),
-    ], 'compact')
+    ], 'default')
     expect(rows.map(row => row.key)).toEqual(['closing'])
     expect(resultTypeOf(rows[0]!.message)).toBe('done')
   })

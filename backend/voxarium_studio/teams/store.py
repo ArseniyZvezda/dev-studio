@@ -69,9 +69,11 @@ class MemberDefinition(BaseModel):
     run_settings_override: bool = False
     max_turns: int = 40
     permission_mode: str = "bypassPermissions"
-    isolate_worktree: bool = True
-    solo_mode: bool = True
-    """Run one task at a time; a second released task waits for the first (§10.4)."""
+    isolate_worktree: bool = False
+    """Run tasks in a dedicated checkout (§10.5). Off when the roster omits it."""
+    solo_mode: bool = False
+    """Run one task at a time; a second released task waits for the first (§10.4). Off when
+    the roster omits it."""
 
     avatar_color: str | None = None
     avatar_icon: str | None = None

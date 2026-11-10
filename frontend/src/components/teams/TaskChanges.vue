@@ -278,10 +278,12 @@ const commitNote = computed(() => {
 
 <template>
   <section class="flex h-full min-h-0 w-full flex-col bg-canvas">
-    <header class="flex shrink-0 items-center gap-1.5 border-b border-line px-3 py-2">
-      <span class="flex-1 truncate text-small font-semibold tracking-wide text-faint uppercase">
+    <!-- A subsection of the Status column (§10.4), worded like the ones above it. -->
+    <header class="flex shrink-0 items-center gap-1.5 px-3 pt-2 pb-1">
+      <FileDiff class="size-3 shrink-0 text-faint" />
+      <span class="flex-1 truncate text-small font-medium text-faint">
         {{ changes?.source === 'tools' ? t('tasks.changes.touched') : t('tasks.changes.changed') }}
-        <span v-if="changes" class="ml-1 font-medium text-primary">{{ rows.length }}</span>
+        <span v-if="changes" class="ml-1 font-mono">{{ rows.length }}</span>
       </span>
       <button
         class="grid size-5 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"

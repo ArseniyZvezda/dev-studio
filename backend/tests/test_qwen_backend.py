@@ -145,6 +145,17 @@ def test_usage_attaches_once_and_ignores_subagent_and_user_usage():
     assert all("usage" not in event.data for event in state.events({**frame, "type": "user"}))
 
 
+def test_system_frames_are_named_by_their_subtype():
+    """§10.4: the Status column reads MCP server states from `init`, as it does Claude Code's."""
+    frame = {"type": "system", "subtype": "init", "session_id": "s",
+             "mcp_servers": [{"name": "voxarium_studio", "status": "connected"}]}
+    [event] = qwen._RunState("session").events(frame)
+    assert (event.kind, event.text) == ("system", "init")
+    assert event.data["mcp_servers"] == [{"name": "voxarium_studio", "status": "connected"}]
+    [unnamed] = qwen._RunState("session").events({"type": "system"})
+    assert unnamed.text == "system"
+
+
 def test_usage_missing_and_malformed_counts_are_not_invented():
     assert qwen._normalise_usage(None) == {}
     assert qwen._normalise_usage({"input_tokens": -1, "output_tokens": "100",

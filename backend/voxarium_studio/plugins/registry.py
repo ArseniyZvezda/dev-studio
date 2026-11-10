@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..schemas.nodes import NodeTypeSchema
+from . import envs as plugin_envs
 from .api import BaseNode
 from .manifest import PluginManifest
 
@@ -192,6 +193,9 @@ class LoadedPlugin:
             "automation_actions": list(self.automation_action_ids),
             "has_backend": m.backend is not None and m.backend.entry is not None,
             "has_venv": m.venv_python() is not None,
+            # None when the plugin declares no isolated environment; otherwise where its
+            # automatic build stands (§2.1, §9.4).
+            "env": plugin_envs.status(m),
             "root": str(m.root) if m.root else None,
         }
 

@@ -1,5 +1,5 @@
 /**
- * What each verbosity level puts on the screen, where Compact draws its blocks, and what
+ * What each verbosity level puts on the screen, how it groups it into blocks, and what
  * the one line under them says.
  *
  * The grouping is the part worth pinning: it decides what a reader sees of a run, and it
@@ -8,7 +8,16 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AgentMessage } from '@/api/types'
-import { editStat, isFileEdit, isVerbosity, liveLine, transcriptRows, upsertTranscript } from '@/lib/transcript'
+import {
+  editStat,
+  isFileEdit,
+  isVerbosity,
+  liveLine,
+  readVerbosity,
+  transcriptBlocks,
+  transcriptRows,
+  upsertTranscript,
+} from '@/lib/transcript'
 
 let sequence = 0
 
@@ -24,7 +33,7 @@ const message = (overrides: Partial<AgentMessage> = {}): AgentMessage => ({
   ...overrides,
 })
 
-/** The tool calls between two things anyone said — the half Compact folds away. */
+/** The tool calls between two things anyone said — what a tools block holds. */
 const call = (name: string, input: Record<string, unknown> = {}, data = {}) =>
   message({ kind: 'tool_use', text: name, data: { name, input, ...data } })
 
@@ -35,13 +44,13 @@ const spent = (output: number, overrides: Partial<AgentMessage> = {}) =>
 const kinds = (rows: ReturnType<typeof transcriptRows>) => rows.map((row) => row.message.kind)
 
 describe('compressed task context (§10.4)', () => {
-  it.each(['compact', 'advanced', 'verbose'] as const)('hides archive accounting metadata in %s', (level) => {
+  it.each(['default', 'verbose'] as const)('hides archive accounting metadata in %s', (level) => {
     const accounting = message({ kind: 'accounting', role: 'system', data: { evidence: [] } })
     expect(transcriptRows([accounting], level)).toEqual([])
     expect(liveLine([accounting], level).activity).toBe('')
   })
 
-  it.each(['compact', 'advanced', 'verbose'] as const)('keeps the handoff visible in %s', (level) => {
+  it.each(['default', 'verbose'] as const)('keeps the handoff visible in %s', (level) => {
     const summary = message({ kind: 'compressed summary', text: 'Completed work. Next steps.' })
     expect(kinds(transcriptRows([summary, message({ kind: 'tool_result', role: 'system' })], level)))
       .toContain('compressed summary')
@@ -49,7 +58,7 @@ describe('compressed task context (§10.4)', () => {
 })
 
 describe('bounded file observation (§10.4)', () => {
-  it.each(['compact', 'advanced', 'verbose'] as const)('keeps preparation and incomplete evidence visible in %s', (level) => {
+  it.each(['default', 'verbose'] as const)('keeps preparation and incomplete evidence visible in %s', (level) => {
     const feed = [
       message({ role: 'system', kind: 'file_observation_status', text: 'Preparing file observation.' }),
       message({ role: 'system', kind: 'file_observation_status', text: 'Still scanning the project.' }),
@@ -67,7 +76,7 @@ describe('bounded file observation (§10.4)', () => {
 describe('closing summary (§10.4)', () => {
   const report = () => message({ kind: 'summary', text: 'Detailed report.', data: { result_type: 'done' } })
 
-  it.each(['compact', 'advanced', 'verbose'] as const)('highlights the closing reply in %s without changing stored messages', (level) => {
+  it.each(['default', 'verbose'] as const)('highlights the closing reply in %s without changing stored messages', (level) => {
     const original = report()
     const closing = message({ text: 'Done. Tests passed.', data: { usage: { output_tokens: 12 } } })
     const feed = [original, message({ kind: 'tool_result', role: 'system' }), closing,
@@ -83,7 +92,7 @@ describe('closing summary (§10.4)', () => {
   })
 
   it('shows an identical report only once', () => {
-    expect(kinds(transcriptRows([report(), message({ text: 'Detailed report.' })], 'compact'))).toEqual(['summary'])
+    expect(kinds(transcriptRows([report(), message({ text: 'Detailed report.' })], 'default'))).toEqual(['summary'])
   })
 
   it.each(['status', 'continued', 'result', 'error', 'cancelled', 'result_missing', 'note', 'review'])('does not borrow a closing reply across %s', (kind) => {
@@ -95,7 +104,7 @@ describe('closing summary (§10.4)', () => {
 
   it('keeps the report when there is no closing reply or work continues after the text', () => {
     const original = report()
-    expect(transcriptRows([original], 'compact')[0]?.message).toEqual(original)
+    expect(transcriptRows([original], 'default')[0]?.message).toEqual(original)
     const rows = transcriptRows([original, message({ text: 'Still working.' }), call('Bash')], 'verbose')
     expect(rows[0]?.message.kind).toBe('summary')
     expect(rows[1]?.message.kind).toBe('text')
@@ -103,10 +112,10 @@ describe('closing summary (§10.4)', () => {
 
   it('does not promote another author or a human submission', () => {
     for (const role of ['human', 'user', 'assistant'] as const) {
-      const rows = transcriptRows([report(), message({ role, member_id: 'other', text: 'Reply.' })], 'compact')
+      const rows = transcriptRows([report(), message({ role, member_id: 'other', text: 'Reply.' })], 'default')
       expect(kinds(rows)).toEqual(['summary', 'text'])
     }
-    expect(kinds(transcriptRows([message({ ...report(), role: 'human' }), message({ text: 'Reply.' })], 'compact'))).toEqual(['summary', 'text'])
+    expect(kinds(transcriptRows([message({ ...report(), role: 'human' }), message({ text: 'Reply.' })], 'default'))).toEqual(['summary', 'text'])
   })
 
   it('uses the last reply and preserves the result type for each run', () => {
@@ -114,7 +123,7 @@ describe('closing summary (§10.4)', () => {
       report(), message({ text: 'More detail.' }), message({ text: 'First done.' }),
       message({ kind: 'status', role: 'system' }),
       message({ ...report(), data: { result_type: 'question' } }), message({ text: 'Which option?' }),
-    ], 'compact')
+    ], 'default')
     const summaries = rows.filter((row) => row.message.kind === 'summary')
     expect(summaries.map((row) => [row.message.text, row.message.data?.result_type])).toEqual([
       ['First done.', 'done'], ['Which option?', 'question'],
@@ -131,13 +140,13 @@ describe('what a level shows', () => {
     message({ role: 'system', kind: 'system', text: 'init' }),
   ]
 
-  it('keeps the tool calls and the task’s own history at every level', () => {
+  it('keeps the task’s own history at every level, and the tool calls from Default up', () => {
     // The audit trail carries `role: "system"` like the noise does, and hiding it would
     // defeat the point of the transcript being the history (§10.4).
-    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+    for (const level of ['default', 'verbose'] as const) {
       expect(kinds(transcriptRows(feed, level))).toContain('status')
     }
-    expect(kinds(transcriptRows(feed, 'advanced'))).toEqual([
+    expect(kinds(transcriptRows(feed, 'default'))).toEqual([
       'status',
       'text',
       'tool_use',
@@ -159,134 +168,120 @@ describe('what a level shows', () => {
     // The `init` frame is the last thing logged and the last thing both levels below Verbose
     // hide, which is the case the line exists for. At Verbose it is already the last row,
     // and a copy of it under the scroller would say nothing.
-    expect(liveLine(feed, 'compact').activity).toBe('init')
-    expect(liveLine(feed, 'advanced').activity).toBe('init')
+    expect(liveLine(feed, 'default').activity).toBe('init')
     expect(liveLine(feed, 'verbose').activity).toBe('')
   })
 
-  it('recognises only the three levels', () => {
-    expect(isVerbosity('compact')).toBe(true)
+  it('recognises only the two levels', () => {
+    expect(isVerbosity('default')).toBe(true)
+    expect(isVerbosity('verbose')).toBe(true)
+    expect(isVerbosity('compact')).toBe(false)
     expect(isVerbosity('quiet')).toBe(false)
     expect(isVerbosity(null)).toBe(false)
   })
+
+  it('reads a remembered Advanced or Compact as Default, and anything unknown as Default', () => {
+    expect(readVerbosity('advanced')).toBe('default')
+    expect(readVerbosity('compact')).toBe('default')
+    expect(readVerbosity('verbose')).toBe('verbose')
+    expect(readVerbosity('quiet')).toBe('default')
+    expect(readVerbosity(null)).toBe('default')
+  })
 })
 
-describe('Compact', () => {
-  it('opens a block where someone speaks, and draws no row for the work between', () => {
+describe('blocks', () => {
+  const blockTypes = (blocks: ReturnType<typeof transcriptBlocks>) => blocks.map((block) => block.type)
+
+  it('folds consecutive tool calls into one block, whatever the tools, and counts the calls', () => {
     const feed = [
-      message({ kind: 'text', text: 'Looking at the movement code.' }),
+      message({ kind: 'text', text: 'Looking.' }),
       call('Read', { file_path: 'a.ts' }),
+      call('Grep', { pattern: 'dash' }),
+      call('mcp__voxarium_studio__list_tasks'),
+      call('Skill', { skill: 'voxarium_studio:studio' }),
+      message({ kind: 'text', text: 'Found it.' }),
       call('Bash', { command: 'npm test' }),
+    ]
+    const blocks = transcriptBlocks(feed, 'default')
+
+    expect(blockTypes(blocks)).toEqual(['message', 'tools', 'message', 'tools'])
+    const first = blocks[1] as Extract<(typeof blocks)[number], { type: 'tools' }>
+    expect(first.calls).toBe(4)
+    expect(first.key).toBe(feed[1]!.id)
+  })
+
+  it('draws thinking as a block of its own, and drops the empty blocks a runtime redacts', () => {
+    const feed = [
+      call('Read', { file_path: 'a.ts' }),
+      message({ kind: 'thinking', text: 'The cooldown is off by one.' }),
+      message({ kind: 'thinking', text: '   ' }),
+      call('Edit', { file_path: 'a.ts' }),
+    ]
+    expect(blockTypes(transcriptBlocks(feed, 'default'))).toEqual(['tools', 'thinking', 'tools'])
+    expect(blockTypes(transcriptBlocks(feed, 'verbose'))).toEqual(['tools', 'thinking', 'tools'])
+  })
+
+  it('puts each result under its call at Verbose, and keeps a busy run in one block', () => {
+    const read = call('Read', { file_path: 'a.ts' }, { id: 'toolu_1' })
+    const bash = call('Bash', { command: 'npm test' }, { id: 'toolu_2' })
+    const feed = [
+      message({ role: 'system', kind: 'system', text: 'init' }),
+      read,
+      bash,
+      message({ role: 'system', kind: 'tool_result', text: 'export const a = 1', data: { tool_use_id: 'toolu_1' } }),
+      message({ role: 'system', kind: 'system', text: 'task_progress' }),
+      message({ role: 'system', kind: 'tool_result', text: '12 passed', data: { tool_use_id: 'toolu_2' } }),
       message({ kind: 'text', text: 'Tests pass.' }),
     ]
-    const rows = transcriptRows(feed, 'compact')
+    const blocks = transcriptBlocks(feed, 'verbose')
 
-    expect(rows).toHaveLength(2)
-    expect(rows.map((row) => row.message.text)).toEqual([
-      'Looking at the movement code.',
-      'Tests pass.',
-    ])
-    // Nothing of those two calls is left between the blocks — a stale "Bash · npm test"
-    // there read as something still happening. The line under the rows follows the log
-    // rather than the blocks, so it is the sentence that closed them.
-    expect(liveLine(feed, 'compact').activity).toBe('Tests pass.')
+    // The init frame comes before any call, so it is a row; the progress frame between two
+    // results stays in the block rather than splitting it.
+    expect(blockTypes(blocks)).toEqual(['message', 'tools', 'message'])
+    const tools = blocks[1] as Extract<(typeof blocks)[number], { type: 'tools' }>
+    expect(tools.calls).toBe(2)
+    expect(tools.entries.map((entry) => entry.message.kind)).toEqual(['tool_use', 'tool_use', 'system'])
+    expect(tools.entries[0]!.results.map((result) => result.text)).toEqual(['export const a = 1'])
+    expect(tools.entries[1]!.results.map((result) => result.text)).toEqual(['12 passed'])
+    // Default draws the same calls in the same block, without the results.
+    const quieter = transcriptBlocks(feed, 'default')
+    expect(blockTypes(quieter)).toEqual(['tools', 'message'])
   })
 
-  it('folds a file edit away with the calls around it', () => {
-    // The changed-files column lists what was written, counts included, so a row per edit
-    // in the feed said it twice. A `write_doc` goes through MCP and is still an edit.
+  it('keeps a delegated agent’s work inside the block of the call that started it', () => {
     const feed = [
-      message({ kind: 'text', text: 'Fixing the cooldown.' }),
-      call('Read', { file_path: 'dash.ts' }),
+      call('Agent', { description: 'Review' }, { id: 'toolu_9' }),
+      message({ kind: 'text', text: 'Reviewing.', data: { parent_tool_use_id: 'toolu_9' } }),
+      call('Read', { file_path: 'a.ts' }, { parent_tool_use_id: 'toolu_9' }),
+      message({ kind: 'text', text: 'The review is done.' }),
+    ]
+    const blocks = transcriptBlocks(feed, 'default')
+
+    expect(blockTypes(blocks)).toEqual(['tools', 'message'])
+    const tools = blocks[0] as Extract<(typeof blocks)[number], { type: 'tools' }>
+    expect(tools.calls).toBe(2)
+    expect(tools.entries).toHaveLength(3)
+  })
+})
+
+describe('Default', () => {
+  it('keeps a person’s words, the history, errors and the Producer’s cards beside the work', () => {
+    // Compact used to be the level that kept only these; since 2026-11-10 it is gone, and
+    // Default is the quietest reading there is.
+    const feed = [
+      message({ role: 'human', kind: 'note', text: 'Check the edge case.' }),
+      message({ role: 'system', kind: 'status', text: 'In progress → Needs review' }),
+      message({ role: 'system', kind: 'error', text: 'The session failed.' }),
+      message({ role: 'system', kind: 'effort_solver', data: {} }),
+      message({ role: 'system', kind: 'system', text: 'init' }),
       call('Edit', { file_path: 'dash.ts' }, { edit: { insertions: 4, deletions: 2 } }),
-      call('mcp__voxarium_studio__write_doc', { path: 'qa/notes.md' }),
-      call('Bash', { command: 'npm test' }),
     ]
-    const rows = transcriptRows(feed, 'compact')
-
-    expect(rows).toHaveLength(1)
-    expect(rows[0].message.kind).toBe('text')
-    // Advanced is untouched: the edit is a row there, as every call is.
-    const advanced = transcriptRows(feed, 'advanced')
-    expect(advanced.filter((row) => isFileEdit(row.message))).toHaveLength(2)
-  })
-
-  it('draws every MCP call as a row, however little it wrote', () => {
-    // A call to the board or to a project's own server is a step the reader follows; the
-    // built-in reads and shell commands around it still fold onto the tail.
-    const rows = transcriptRows(
-      [
-        message({ kind: 'text', text: 'Checking the board.' }),
-        call('Read', { file_path: 'a.ts' }),
-        call('mcp__voxarium_studio__list_tasks', { status: 'needs_review' }),
-        call('Bash', { command: 'ls' }),
-        call('mcp__unreal__import_asset', { path: 'Content/Rock.fbx' }),
-      ],
-      'compact',
-    )
-
-    expect(rows.map((row) => row.message.text)).toEqual([
-      'Checking the board.',
-      'mcp__voxarium_studio__list_tasks',
-      'mcp__unreal__import_asset',
-    ])
-    expect(transcriptRows([call('mcp__voxarium_studio__list_tasks')], 'advanced')).toHaveLength(1)
-  })
-
-  it('draws a skill being loaded as a row, and only the Skill call itself', () => {
-    // Which instructions the agent took up is a step the reader follows; the Read of the
-    // skill's reference file right after it is ordinary work and still folds away.
-    const feed = [
-      message({ kind: 'text', text: 'Checking how callouts are written.' }),
-      call('Skill', { skill: 'voxarium_studio:studio' }),
-      call('Read', { file_path: 'skills/studio/documents.md' }),
-    ]
-    const rows = transcriptRows(feed, 'compact')
-
-    expect(rows.map((row) => row.message.text)).toEqual([
-      'Checking how callouts are written.',
-      'Skill',
-    ])
-    expect(liveLine([feed[1]], 'compact').activity).toBe('Skill · voxarium_studio:studio')
-    expect(transcriptRows(feed, 'advanced')).toHaveLength(3)
-  })
-
-  it('leads with a person’s words, which no log line would carry', () => {
-    // `note` and `review` are silent to `activityLine`, so a level that folded them would
-    // drop them from the transcript rather than shorten them.
-    const rows = transcriptRows(
-      [
-        message({ role: 'human', kind: 'note', text: 'Check the edge case.' }),
-        message({ role: 'user', kind: 'review', text: 'Not merged yet.' }),
-      ],
-      'compact',
-    )
-
-    expect(rows.map((row) => row.message.text)).toEqual(['Check the edge case.', 'Not merged yet.'])
-  })
-
-  it('stands history on its own line', () => {
-    const rows = transcriptRows(
-      [
-        message({ kind: 'text', text: 'Done.' }),
-        message({ role: 'system', kind: 'status', text: 'In progress → Needs review' }),
-        call('Bash', { command: 'git log' }),
-      ],
-      'compact',
-    )
-
-    expect(kinds(rows)).toEqual(['text', 'status'])
-  })
-
-  it('draws no row at all for a run that has only made tool calls', () => {
-    // The work is not lost — it is the line under the rows, which is the whole of what
-    // Compact says about a session nobody has narrated yet.
-    expect(transcriptRows([call('Read', { file_path: 'spec.md' })], 'compact')).toEqual([])
+    expect(kinds(transcriptRows(feed, 'default'))).toEqual(['note', 'status', 'error', 'effort_solver', 'tool_use'])
   })
 })
 
 describe('the line under the rows', () => {
-  it.each(['compact', 'advanced'] as const)('keeps structured model metadata without textual effort in %s', (level) => {
+  it.each(['default'] as const)('keeps structured model metadata without textual effort in %s', (level) => {
     const entry = message({
       role: 'system', kind: 'model',
       text: 'Running this task on model model-test, effort high — set on the task, not on Developer.',
@@ -302,12 +297,12 @@ describe('the line under the rows', () => {
       role: 'system', kind: 'model', text: 'Running with effort high.',
       data: { model: null, effort: 'high', source: 'task' },
     })
-    expect(liveLine([entry], 'compact').activity).toBe('Set on this task')
-    expect(liveLine([{ ...entry, data: { model: 'model-test', effort: 'high' } }], 'compact').activity)
+    expect(liveLine([entry], 'default').activity).toBe('Set on this task')
+    expect(liveLine([{ ...entry, data: { model: 'model-test', effort: 'high' } }], 'default').activity)
       .toBe('Model: model-test')
   })
 
-  it.each(['compact', 'advanced'] as const)('preserves unstructured historical model text and prose in %s', (level) => {
+  it.each(['default'] as const)('preserves unstructured historical model text and prose in %s', (level) => {
     const text = 'Running this task on model model-test, effort high.'
     const historical = message({ role: 'system', kind: 'model', text })
     expect(liveLine([historical], level).activity).toBe(text)
@@ -315,15 +310,14 @@ describe('the line under the rows', () => {
     expect(liveLine([prose], level).activity).toBe(text)
   })
 
-  it('names the newest thing logged, at both levels that hide something', () => {
+  it('names the newest thing logged, at Default, which hides some of it', () => {
     const feed = [
       message({ kind: 'text', text: 'Looking at the movement code.' }),
       call('Read', { file_path: 'a.ts' }),
       call('Bash', { command: 'npm test' }),
     ]
 
-    expect(liveLine(feed, 'compact').activity).toBe('Bash · npm test')
-    expect(liveLine(feed, 'advanced').activity).toBe('Bash · npm test')
+    expect(liveLine(feed, 'default').activity).toBe('Bash · npm test')
   })
 
   it('shows what the level is hiding — which is the whole reason to look at it', () => {
@@ -334,8 +328,7 @@ describe('the line under the rows', () => {
       message({ role: 'system', kind: 'tool_result', text: '12 passed' }),
     ]
 
-    expect(liveLine(feed, 'compact').activity).toBe('12 passed')
-    expect(liveLine(feed, 'advanced').activity).toBe('12 passed')
+    expect(liveLine(feed, 'default').activity).toBe('12 passed')
     expect(liveLine(feed, 'verbose').activity).toBe('')
   })
 
@@ -346,7 +339,7 @@ describe('the line under the rows', () => {
       call('Bash', { command: 'git log' }),
     ]
 
-    expect(liveLine(feed, 'compact').activity).toBe('Bash · git log')
+    expect(liveLine(feed, 'default').activity).toBe('Bash · git log')
   })
 
   it('counts every line, so the same tool twice still blinks twice', () => {
@@ -358,7 +351,7 @@ describe('the line under the rows', () => {
 
     // Same words, different count — the view keys its animation on the number, and an
     // element that is not replaced never replays the flash.
-    const line = liveLine(feed, 'compact')
+    const line = liveLine(feed, 'default')
     expect(line.activity).toBe('Bash · npm test')
     expect(line.seq).toBe(3)
   })
@@ -367,7 +360,7 @@ describe('the line under the rows', () => {
     // A tool result is many lines and a traceback is more. Wrapped, they would push the
     // token count beside them out of the box before CSS had a single line to truncate.
     const traceback = `Traceback (most recent call last):\n  File "a.py", line 1\n${'x'.repeat(200)}`
-    const activity = liveLine([message({ kind: 'tool_result', text: traceback })], 'compact')
+    const activity = liveLine([message({ kind: 'tool_result', text: traceback })], 'default')
       .activity
 
     expect(activity).not.toContain('\n')
@@ -386,7 +379,7 @@ describe('the line under the rows', () => {
       message({ role: 'system', kind: 'system', text: '' }),
     ]
 
-    expect(liveLine(feed, 'compact').activity).toBe('Wrote document qa/notes.md')
+    expect(liveLine(feed, 'default').activity).toBe('Wrote document qa/notes.md')
   })
 
   it('sums what the model wrote, at every level', () => {
@@ -394,17 +387,17 @@ describe('the line under the rows', () => {
     // called two tools is one API response, and the backend puts its usage on one event.
     const feed = [spent(1200), call('Bash', { command: 'npm test' }), spent(340)]
 
-    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+    for (const level of ['default', 'verbose'] as const) {
       expect(liveLine(feed, level).tokens).toBe(1540)
     }
   })
 
   it('reconciles streamed assistant output with the result instead of counting it twice', () => {
     const feed = [spent(10), spent(20), spent(30, { role: 'system', kind: 'result' })]
-    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+    for (const level of ['default', 'verbose'] as const) {
       expect(liveLine(feed, level).tokens).toBe(30)
     }
-    expect(liveLine([spent(10), spent(40, { role: 'system', kind: 'result' })], 'compact').tokens)
+    expect(liveLine([spent(10), spent(40, { role: 'system', kind: 'result' })], 'default').tokens)
       .toBe(40)
   })
 
@@ -414,13 +407,13 @@ describe('the line under the rows', () => {
     })
     const feed = [reply('response_a', 10), reply('response_a', 20), reply('response_a', 12),
       reply('response_b', 7)]
-    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+    for (const level of ['default', 'verbose'] as const) {
       expect(liveLine(feed, level).tokens).toBe(27)
     }
     feed.push(message({ role: 'system', kind: 'result',
       data: { continued: true, usage: { output_tokens: 27 } } }),
       reply('response_a', 20), reply('response_c', 5), spent(5, { role: 'system', kind: 'result' }))
-    expect(liveLine(feed, 'compact').tokens).toBe(32)
+    expect(liveLine(feed, 'default').tokens).toBe(32)
   })
 
   it('uses the latest repaired output before the cutoff while retaining dialogue and new output', () => {
@@ -431,8 +424,8 @@ describe('the line under the rows', () => {
     const feed = [spent(200, { text: 'Original answer' }), spent(400, { role: 'system', kind: 'result' }),
       repair(25, '2026-09-04T11:00:00Z'), repair(30, '2026-09-04T12:00:00Z'),
       spent(5, { text: 'Fresh answer', created_at: '2026-09-04T13:00:00Z' })]
-    expect(liveLine(feed, 'compact')).toMatchObject({ tokens: 35, activity: 'Fresh answer' })
-    expect(transcriptRows(feed, 'advanced').some(row => row.message.text === 'Original answer')).toBe(true)
+    expect(liveLine(feed, 'default')).toMatchObject({ tokens: 35, activity: 'Fresh answer' })
+    expect(transcriptRows(feed, 'default').some(row => row.message.text === 'Original answer')).toBe(true)
   })
 
   it('retains canonical output after compression or archive without charging retained results twice', () => {
@@ -441,7 +434,7 @@ describe('the line under the rows', () => {
         { kind: 'result', role: 'system', created_at: '2026-09-04T10:00:00Z', data: { usage: { output_tokens: 30 } } },
         { kind: 'system', text: 'usage_update', created_at: '2026-09-04T10:00:01Z', data: { usage: { output_tokens: 30 } } },
       ] } })
-      expect(liveLine([retained, spent(5, { created_at: '2026-09-04T11:00:00Z' })], 'compact').tokens).toBe(35)
+      expect(liveLine([retained, spent(5, { created_at: '2026-09-04T11:00:00Z' })], 'default').tokens).toBe(35)
     }
   })
 
@@ -450,20 +443,20 @@ describe('the line under the rows', () => {
       message({ role: 'system', kind: 'result', data: { continued: true, usage: { output_tokens: 30 } } }),
       message({ role: 'system', kind: 'continued' }),
       spent(5), spent(7), spent(12, { role: 'system', kind: 'result' })]
-    expect(liveLine(feed, 'compact').tokens).toBe(42)
+    expect(liveLine(feed, 'default').tokens).toBe(42)
   })
 
   it('counts Codex turn deltas once when the run result repeats their total', () => {
     const turn = (output: number) => spent(output, { role: 'system', kind: 'system', text: 'turn.completed' })
     const feed = [turn(10), turn(20)]
-    expect(liveLine(feed, 'compact').tokens).toBe(30)
-    expect(liveLine([...feed, spent(30, { role: 'system', kind: 'result' })], 'compact').tokens).toBe(30)
+    expect(liveLine(feed, 'default').tokens).toBe(30)
+    expect(liveLine([...feed, spent(30, { role: 'system', kind: 'result' })], 'default').tokens).toBe(30)
   })
 
   it('retains output totals for older transcripts that only recorded results', () => {
     const feed = [spent(30, { role: 'system', kind: 'result' }),
       spent(12, { role: 'system', kind: 'result' })]
-    expect(liveLine(feed, 'compact').tokens).toBe(42)
+    expect(liveLine(feed, 'default').tokens).toBe(42)
   })
 
   it('counts nothing for a transcript written before the backend recorded any', () => {
@@ -475,7 +468,7 @@ describe('the line under the rows', () => {
       message({ kind: 'text', text: 'Done.', data: { usage: { output_tokens: 'lots' } } }),
     ]
 
-    expect(liveLine(feed, 'compact').tokens).toBe(0)
+    expect(liveLine(feed, 'default').tokens).toBe(0)
   })
 
   it('words history from its data, the way its row does, and not from the stored English', () => {
@@ -484,7 +477,7 @@ describe('the line under the rows', () => {
     const edited = (data: Record<string, unknown>) =>
       message({ role: 'system', kind: 'edited', text: 'Edited brief, title', data })
 
-    const line = (entry: AgentMessage) => liveLine([entry], 'compact').activity
+    const line = (entry: AgentMessage) => liveLine([entry], 'default').activity
     expect(line(status({ from: 'in_progress', to: 'needs_review', reason: 'submitted' }))).toBe(
       'In progress → Needs review · submitted',
     )
@@ -521,10 +514,10 @@ describe('a writing call', () => {
 it('shows current thinking in the counter, replaces it with final usage, and hides telemetry', () => {
   const prior = message({ data: { usage: { output_tokens: 10 } } })
   const counter = message({ role: 'system', kind: 'system', text: 'thinking_tokens', data: { estimated_tokens: 25 } })
-  expect(liveLine([prior, counter], 'advanced').tokens).toBe(35)
+  expect(liveLine([prior, counter], 'default').tokens).toBe(35)
   expect(transcriptRows([prior, counter], 'verbose').map((row) => row.message.id)).toEqual([prior.id])
   const answer = message({ data: { usage: { output_tokens: 40 } } })
-  expect(liveLine([prior, counter, answer], 'advanced').tokens).toBe(50)
+  expect(liveLine([prior, counter, answer], 'default').tokens).toBe(50)
 })
 
 

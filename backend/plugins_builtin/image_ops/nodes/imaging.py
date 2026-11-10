@@ -318,10 +318,12 @@ def read(path: Path) -> Raster:
     if data.startswith(PNG_MAGIC):
         return decode_png(data)
 
+    # The Studio builds that environment by itself and the node waits for it, so reaching
+    # this means the build failed — which is what the Plugins page shows, with uv's reason.
     raise ImageError(
         f"{path.name} is not a PNG, and PNG is the only format this plugin reads on its "
-        "own. Build the image_ops environment (Plugins -> Build environment) to add JPEG, "
-        "WebP, BMP, TGA and TIFF."
+        "own. The image_ops environment adds JPEG, WebP, BMP, TGA and TIFF, and it is not "
+        "built — the Plugins page shows why."
     )
 
 

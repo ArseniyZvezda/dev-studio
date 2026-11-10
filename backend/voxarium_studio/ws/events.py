@@ -73,6 +73,12 @@ class EventType(StrEnum):
 
     # Plugins
     PLUGIN_CHANGED = "plugin.changed"
+    PLUGIN_ENV = "plugin.env"
+    """A plugin's isolated environment started or finished building (§2.1, §9.4). Carries
+    ``plugin``, the whole entry as ``GET /api/plugins`` lists it, so a client replaces its
+    row. Its own type rather than ``plugin.changed``, which makes every store re-read the
+    registry — and nothing the registry holds has changed."""
+
     PLUGIN_EVENT = "plugin.event"
     """Something a plugin's own backend code said, through ``PluginHost.publish`` (§9.7).
     Carries ``plugin_id``, the plugin's ``name`` for the event and its ``data``. One type

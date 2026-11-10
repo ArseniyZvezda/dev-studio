@@ -322,7 +322,10 @@ class _RunState:
         kind = frame.get("type")
         events = []
         if kind == "system":
-            events.append(AgentEvent(kind="system", data=frame))
+            # Named by its subtype, as Claude Code's frames are: `init` is what the Status
+            # column reads MCP server states from, whichever runtime sent it (§10.4).
+            events.append(AgentEvent(kind="system", text=str(frame.get("subtype") or "system"),
+                                     data=frame))
         elif kind in {"assistant", "user"}:
             message = frame.get("message") or {}
             for block in message.get("content", []):

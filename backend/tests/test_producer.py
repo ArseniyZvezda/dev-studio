@@ -63,6 +63,14 @@ async def producer(ctx):
     return ctx
 
 
+async def solo_on(ctx):
+    """Switch Solo Mode on for DEV; every member starts with it off (§10.4)."""
+    async with ctx.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+        member.solo_mode = True
+        session.add(member)
+
+
 async def opened(ctx):
     chat = await ctx.chats.create_chat(PRODUCER)
     await ctx.chats.producer.enable(chat.id, "ru")
@@ -1166,6 +1174,7 @@ async def test_existing_database_gains_careful_policy_without_changing_waits(pro
 
 
 async def test_pause_preserves_owned_sessions_while_manual_work_uses_the_same_solo_queue(producer, monkeypatch):
+    await solo_on(producer)
     chat = await opened(producer)
     other = await opened(producer)
     task = await producer.teams.create_task(team_id=TEAM, assignee_id=DEV,
@@ -1451,6 +1460,7 @@ async def test_board_cancel_withdraws_release_during_pause_and_allows_explicit_r
 
 
 async def test_concurrent_board_starts_keep_solo_and_a_refused_task_stays_paused(producer, monkeypatch):
+    await solo_on(producer)
     chat = await opened(producer)
     await producer.chats.producer.pause(chat.id)
     tasks = [await draft(producer, chat, title) for title in ("First", "Second")]

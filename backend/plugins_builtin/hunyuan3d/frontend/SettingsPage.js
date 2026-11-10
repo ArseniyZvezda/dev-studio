@@ -103,17 +103,18 @@ const MESSAGES = {
     environment: {
       title: 'Isolated environment',
       blurb:
-        'The generation nodes run out of process. Without a venv they fall back to the Studio’s interpreter, which ' +
-        'works but skips numpy. Hunyuan3D in server mode needs nothing installed here; local mode needs torch and ' +
-        'the model packages added to requirements.txt first — see the plugin’s README.',
+        'The generation nodes run out of process, in this plugin’s own venv. The Studio builds it by itself — when ' +
+        'the plugin is enabled, and again after requirements.txt changes — and a node that needs it waits for the ' +
+        'build. If the build fails, the nodes run on the Studio’s interpreter, which works but skips numpy. ' +
+        'Hunyuan3D in server mode needs nothing more here; for local mode add torch and the model packages to ' +
+        'requirements.txt — see the plugin’s README.',
       status: 'Status: {state}',
       unknown: 'unknown',
-      provisioned: 'provisioned',
-      notBuilt: 'not built',
-      build: 'Build environment',
-      building: 'Building…',
-      provisioning: 'Provisioning the plugin environment with uv…',
-      done: 'Done.',
+      ready: 'ready',
+      building: 'building…',
+      pending: 'waiting to build',
+      failed: 'failed to build',
+      retry: 'The Studio tries again the next time a generation node runs or requirements.txt changes.',
     },
   },
   ru: {
@@ -209,17 +210,18 @@ const MESSAGES = {
     environment: {
       title: 'Изолированное окружение',
       blurb:
-        'Узлы генерации выполняются в отдельном процессе. Без venv они используют интерпретатор Studio — это ' +
-        'работает, но без numpy. Hunyuan3D в серверном режиме не требует ничего устанавливать здесь; для локального ' +
-        'режима сначала нужно добавить torch и пакеты модели в requirements.txt — см. README плагина.',
+        'Узлы генерации выполняются в отдельном процессе, в собственном venv плагина. Studio собирает его сама — при ' +
+        'включении плагина и заново после изменения requirements.txt, — а узел, которому оно нужно, дожидается ' +
+        'сборки. Если сборка не удалась, узлы используют интерпретатор Studio: это работает, но без numpy. ' +
+        'Серверному режиму Hunyuan3D здесь больше ничего не нужно; для локального добавьте torch и пакеты ' +
+        'модели в requirements.txt — см. README плагина.',
       status: 'Состояние: {state}',
       unknown: 'неизвестно',
-      provisioned: 'собрано',
-      notBuilt: 'не собрано',
-      build: 'Собрать окружение',
-      building: 'Сборка…',
-      provisioning: 'Подготовка окружения плагина через uv…',
-      done: 'Готово.',
+      ready: 'готово',
+      building: 'собирается…',
+      pending: 'ждёт сборки',
+      failed: 'не собралось',
+      retry: 'Studio попробует снова при следующем запуске узла генерации или после изменения requirements.txt.',
     },
   },
 }
@@ -245,8 +247,8 @@ const TEXTURE_RESOLUTIONS = ['512', '768']
 
 const DEFAULT_SERVER_URL = 'http://127.0.0.1:8081'
 
-export default function ({ vue, api, settings, i18n }) {
-  const { defineComponent, h, computed, onMounted, ref } = vue
+export default function ({ vue, api, settings, i18n, onEvent }) {
+  const { defineComponent, h, computed, onBeforeUnmount, onMounted, ref } = vue
   const t = i18n.translator(MESSAGES)
 
   return defineComponent({
@@ -292,8 +294,12 @@ export default function ({ vue, api, settings, i18n }) {
       const stored = ref({})
 
       const plugin = ref(null)
-      const building = ref(false)
-      const buildLog = ref([])
+      // The Studio builds the environment by itself (spec §2.1, §9.4); this page only
+      // follows it, so a build that starts or ends while it is open shows up here.
+      const stopListening = onEvent('plugin.env', (payload) => {
+        if (payload?.plugin?.id === PLUGIN_ID) plugin.value = payload.plugin
+      })
+      onBeforeUnmount(stopListening)
 
       // The server's own /health, fetched straight from the browser — it sends
       // `Access-Control-Allow-Origin: *`, and the Studio has no business proxying a
@@ -411,10 +417,10 @@ export default function ({ vue, api, settings, i18n }) {
         }
       }
 
-      const envLabel = computed(() => {
-        if (!plugin.value) return t('environment.unknown')
-        return plugin.value.has_venv ? t('environment.provisioned') : t('environment.notBuilt')
-      })
+      const envState = computed(() => plugin.value?.env?.state ?? null)
+      const envLabel = computed(() =>
+        envState.value ? t(`environment.${envState.value}`) : t('environment.unknown'),
+      )
 
       /** A figure in gigabytes, one decimal, in the language on screen (6.9 / 6,9). */
       const gb = (value) =>
@@ -716,47 +722,27 @@ export default function ({ vue, api, settings, i18n }) {
             h('p', { class: 'mb-3 text-[11px] text-faint' }, t('environment.blurb')),
             h(
               'p',
-              { class: 'mb-3' },
+              { class: envState.value === 'failed' ? 'text-danger' : '' },
               rich(t('environment.status'), { state: h('span', { class: 'font-mono' }, envLabel.value) }),
             ),
-            h(
-              'button',
-              {
-                class:
-                  'rounded-md border border-line px-3 py-1.5 hover:bg-hover disabled:opacity-50',
-                disabled: building.value,
-                onClick: buildEnv,
-              },
-              building.value ? t('environment.building') : t('environment.build'),
-            ),
-            buildLog.value.length
-              ? h(
-                  'pre',
-                  {
-                    class:
-                      'mt-3 max-h-64 overflow-auto rounded-md bg-inset p-3 font-mono ' +
-                      'text-[11px] whitespace-pre-wrap',
-                  },
-                  buildLog.value.join('\n'),
-                )
+            envState.value === 'failed'
+              ? [
+                  plugin.value.env.error
+                    ? h(
+                        'pre',
+                        {
+                          class:
+                            'mt-3 max-h-64 overflow-auto rounded-md bg-inset p-3 font-mono ' +
+                            'text-[11px] whitespace-pre-wrap text-danger',
+                        },
+                        plugin.value.env.error,
+                      )
+                    : null,
+                  h('p', { class: 'mt-2 text-[11px] text-faint' }, t('environment.retry')),
+                ]
               : null,
           ]),
         ])
-
-      async function buildEnv() {
-        building.value = true
-        error.value = null
-        buildLog.value = [t('environment.provisioning')]
-        try {
-          const result = await api.installPluginEnv(PLUGIN_ID)
-          buildLog.value = result.log?.length ? result.log : [result.detail ?? t('environment.done')]
-          await refreshPlugin()
-        } catch (cause) {
-          error.value = cause instanceof Error ? cause.message : String(cause)
-        } finally {
-          building.value = false
-        }
-      }
     },
   })
 }

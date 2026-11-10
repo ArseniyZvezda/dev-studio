@@ -19,6 +19,7 @@ from ..engine.runner import PipelineRunner
 from ..engine.store import PipelineStore
 from ..explorer.service import ExplorerService
 from ..explorer.watcher import FileWatcher
+from ..plugins import envs as plugin_envs
 from ..plugins import loader as plugin_loader
 from ..plugins.api import PluginHost
 from ..plugins.registry import PluginHook, Registry
@@ -128,6 +129,8 @@ class AppContext:
         self._opened_for: set[str] = set()
         """Plugins whose *project opened* hooks have run in this context. A reload after a
         settings save must not run them again; enabling a plugin must."""
+        self._env_watch: Callable[[], None] | None = None
+        """Unsubscribes this project from plugin environment builds (§2.1)."""
 
     def _builtin_skills(self) -> dict[str, tuple[Path, str]]:
         """Package sources stay live across plugin reloads; nothing is copied into projects (§10.10)."""
@@ -195,6 +198,7 @@ class AppContext:
         # Last, once everything a hook might want is up: the hooks run in the background,
         # so the project is ready before any of them has done anything (§9.7).
         self._start_plugin_hooks()
+        self._start_plugin_envs()
         log.info("Voxarium Studio ready for project %s", self.paths.root)
 
     async def shutdown(self) -> None:
@@ -203,6 +207,11 @@ class AppContext:
         if self._teams_ready:
             await self.chats.producer.restore_paused()
         await self._stop_plugin_hooks()
+        if self._env_watch is not None:
+            # Builds are the process's, not this project's: another project may be waiting
+            # on the same one, so only server shutdown stops them (`shutdown_workspace`).
+            self._env_watch()
+            self._env_watch = None
         await self.automations.stop()
         await self.updates.stop()
         await self.sync.stop()
@@ -304,6 +313,28 @@ class AppContext:
         """What plugins have running in the background right now — for tests and diagnostics."""
         return [task for task in self._plugin_tasks if not task.done()]
 
+    # ---- plugin environments (§2.1, §9.4) ----
+
+    def _start_plugin_envs(self) -> None:
+        """Build every enabled plugin's isolated environment that is missing or out of date.
+
+        In the background, never awaited: a plugin pinning torch takes minutes and the
+        project has to be usable meanwhile. A node that runs in one waits for it instead
+        (``PipelineRunner``). Called again after every reload, so enabling a plugin builds
+        its environment and a changed ``requirements.txt`` is picked up by the next save
+        or enable; a build already running is joined, not repeated.
+        """
+        if self._env_watch is None:
+            self._env_watch = plugin_envs.watch(self._publish_plugin_env)
+        for plugin in self.registry.plugins():
+            if plugin.enabled and plugin.status == "loaded":
+                plugin_envs.schedule(plugin.manifest)
+
+    async def _publish_plugin_env(self, venv: Path) -> None:
+        for plugin in self.registry.plugins():
+            if plugin.manifest.venv_path == venv:
+                await self.bus.publish(EventType.PLUGIN_ENV, {"plugin": plugin.to_json()})
+
     # ---- version control ----
 
     async def detect_vcs(self) -> VcsBackend | None:
@@ -371,6 +402,7 @@ class AppContext:
         # is started — a reload before that is a test building a registry, not a project.
         if self._plugin_pump is not None:
             self._start_plugin_hooks()
+            self._start_plugin_envs()
         await self.bus.publish(
             EventType.PLUGIN_CHANGED,
             {

@@ -205,7 +205,10 @@ is the same shape the server's `images` map has. Its checkpoint is a **separate 
 (`tencent/Hunyuan3D-2mv`), which is why the settings page has two checkpoint fields and two
 subfolder fields; the multi-view weights sit in `hunyuan3d-dit-v2-mv`.
 
-Append the model to `requirements.txt` and press **Build environment**:
+Append the model to `requirements.txt`. There is nothing to press: the Studio notices the
+file changed and installs the additions into the plugin's venv by itself — the next time a
+generation node runs, the plugin is enabled, or its settings are saved — and the node waits
+for that install. The Hunyuan3D Settings page shows where the build stands.
 
 ```
 --extra-index-url https://download.pytorch.org/whl/cu124

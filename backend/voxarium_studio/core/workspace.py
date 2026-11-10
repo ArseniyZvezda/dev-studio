@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models.base import utcnow
+from ..plugins import envs as plugin_envs
 from ..ws.bus import EventBus
 from ..ws.events import EventType
 from .context import AppContext
@@ -65,6 +66,8 @@ async def shutdown_workspace(state: Any) -> None:
         contexts = list(state.project_contexts.values())
         results = await asyncio.gather(*(ctx.shutdown() for ctx in contexts), return_exceptions=True)
         state.project_contexts.clear()
+        # Shared by every project, so stopped here rather than by any one of them (§2.1).
+        await plugin_envs.shutdown()
         for result in results:
             if isinstance(result, BaseException):
                 raise result

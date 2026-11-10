@@ -169,8 +169,11 @@ to trim" and "the node is broken" look identical otherwise.
 Nothing has to be installed for PNG: `nodes/imaging.py` decodes and encodes it on `zlib`,
 so the node works the moment the plugin is enabled, and its own output is a PNG.
 
-Building the environment (Plugins → Build environment) installs Pillow, which adds JPEG,
-WebP, BMP, TGA and TIFF — and takes over PNG too, because it is faster and produces
+The environment installs Pillow, which adds JPEG, WebP, BMP, TGA and TIFF. There is no
+button for it: the Studio builds it in the background as soon as the plugin is enabled,
+rebuilds it when `requirements.txt` changes, and a node started before the build is done
+waits for it — the Plugins page shows where it stands, and uv's reason if it failed.
+Pillow takes over PNG too, because it is faster and produces
 identical pixels. That last point is the difference from `hunyuan3d/nodes/imaging.py`, which
 deliberately keeps Pillow away from JPEG: PNG decoding has exactly one right answer, while
 two JPEG decoders need not agree in the last bit, and the §8.2 cache key cannot see which

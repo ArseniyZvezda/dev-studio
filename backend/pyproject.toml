@@ -80,4 +80,5 @@ markers = [
     "real_vcs: let this test probe the machine for version control instead of being told there is none (see tests/conftest.py)",
     "real_updates: let this test arm the update checker against the Studio's own remote (see tests/conftest.py)",
     "real_graphify: let this test find the graphify CLI on the machine instead of being told it is absent (see tests/conftest.py)",
+    "real_plugin_envs: let started contexts and nodes schedule plugin environment builds; the test fakes uv itself (see tests/conftest.py)",
 ]

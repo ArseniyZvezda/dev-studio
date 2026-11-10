@@ -201,8 +201,8 @@ describe('task header usage (§10.4)', () => {
     const report = telemetry({ task_total_tokens: 1000, usage: { output_tokens: 500 } })
     const messages = [message({ data: { usage: { output_tokens: 50 } } }), report]
     expect(tailLine(report)).toBe('')
-    expect(liveLine(messages, 'compact')).toEqual({ activity: 'Working', seq: 1, tokens: 50 })
-    for (const level of ['compact', 'advanced', 'verbose'] as const) {
+    expect(liveLine(messages, 'default')).toEqual({ activity: 'Working', seq: 1, tokens: 50 })
+    for (const level of ['default', 'verbose'] as const) {
       expect(transcriptRows(messages, level)).toHaveLength(1)
     }
   })
