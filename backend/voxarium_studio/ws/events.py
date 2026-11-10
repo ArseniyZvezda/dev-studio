@@ -108,6 +108,16 @@ class EventType(StrEnum):
     UPDATE_LOG = "update.log"
     """One line from the update's transcript, as the command it came from prints it."""
 
+    # Online sync (§16)
+    SYNC_STATUS = "sync.status"
+    """Everything ``GET /api/sync`` returns, whenever any of it changes: the connection's
+    state, who the server says this is, and who else is in the space. Whole, like
+    ``update.status``, so a missed frame is corrected by the next one."""
+
+    SYNC_CONFLICT = "sync.conflict"
+    """A document changed here and on the server at once, outside a live room. The server's
+    version took the path and the local one was kept beside it as ``copy`` (§16.3)."""
+
     # Workspace
     PROJECT_OPENED = "project.opened"
     """The Studio was pointed at a different managed project. Every client's view of

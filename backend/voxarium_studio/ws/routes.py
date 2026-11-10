@@ -20,6 +20,23 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.websocket("/ws/collab")
+async def collab_endpoint(websocket: WebSocket) -> None:
+    """One browser's live editing session on one document (§16.4).
+
+    A socket of its own rather than frames on ``/ws``: that channel is a broadcast every tab
+    receives, and this one is a conversation between one editor and one room — it starts
+    when a document is opened and its closing *is* the editor leaving. The remote is never
+    reached from the browser; this backend relays, and keeps the key.
+    """
+    if not await authorise_websocket(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorised")
+        return
+    ctx = websocket.app.state.ctx
+    await websocket.accept()
+    await ctx.sync.serve_collab(websocket)
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     if not await authorise_websocket(websocket):

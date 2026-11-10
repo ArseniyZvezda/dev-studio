@@ -1,0 +1,33 @@
+[project]
+name = "voxarium_studio_remote"
+version = "0.1.0"
+description = "Voxarium Studio Remote — the shared server local Studios synchronise through"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "typer>=0.15",
+    # The room's copy of a document being edited live is a Yjs document (dev spec §16.4).
+    # pycrdt is the Yrs binding Jupyter collaborates through; the server only ever applies
+    # and re-encodes updates with it, it never reads the document's structure.
+    "pycrdt>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+voxarium-studio-remote = "voxarium_studio_remote.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["voxarium_studio_remote"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

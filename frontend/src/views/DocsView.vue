@@ -14,6 +14,13 @@
  * in it, renames it — in a dialog that shows the links into it being mended, document by document
  * — deletes it, and gives it a colour and an icon; a document's deletes it. The header's Delete
  * opens the same confirmation the menu does.
+ *
+ * **This page owns the live room** (dev spec §16.4). While the project is in step with its
+ * server, the open document is edited in a room shared with everyone else who has it open:
+ * the page joins it, hands the session to the editor, and leaves it when the document is
+ * closed. The editor is keyed on the session as well as on the path, so joining or leaving a
+ * room is a new editor — one that is either bound to the room's document or to the file,
+ * never something in between. `bind()` is the only place that decides which.
  */
 import {
   AArrowDown,
@@ -29,7 +36,15 @@ import {
   Trash2,
   X,
 } from "lucide-vue-next";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import BlockEditor from "@/components/docs/BlockEditor.vue";
@@ -43,6 +58,13 @@ import SidePane from "@/components/layout/SidePane.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import { formatNumber, t, type MessageKey } from "@/i18n";
 import I18nT from "@/i18n/I18nT.vue";
+import { seedUpdate } from "@/lib/collab/seed";
+import {
+  openSession,
+  type CollabSession,
+  type CollabUser,
+  type EndReason,
+} from "@/lib/collab/session";
 import type { Heading } from "@/lib/editor/outline";
 import { titleOf } from "@/lib/md/title";
 import { formatTime } from "@/lib/status";
@@ -56,6 +78,7 @@ import {
   type SaveState,
 } from "@/stores/docs";
 import { useSessionStore } from "@/stores/session";
+import { useSyncStore } from "@/stores/sync";
 import { useThemeStore } from "@/stores/theme";
 import { useVcsStore } from "@/stores/vcs";
 
@@ -63,6 +86,7 @@ const docs = useDocsStore();
 const theme = useThemeStore();
 const session = useSessionStore();
 const vcs = useVcsStore();
+const sync = useSyncStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -90,6 +114,188 @@ const createFolderPath = ref<string | null>(null);
 const deleting = ref<{ path: string; folder: boolean } | null>(null);
 
 const editor = ref<InstanceType<typeof BlockEditor> | null>(null);
+
+/** The room the open document is being edited in, when it is (dev spec §16.4). */
+const room = shallowRef<CollabSession | null>(null);
+/** A room is being asked for. The editor is not drawn until the answer is in. */
+const joining = ref(false);
+/** Everyone else in the room, for the header. */
+const roomPeers = ref<CollabUser[]>([]);
+/** Bumped by every `bind()`, so an answer that arrives for a superseded one is dropped. */
+let binding = 0;
+
+/**
+ * A different document is a different editor (§7) — and so is the same document in a
+ * different room, or in none.
+ */
+const editorKey = computed(
+  () => `${docs.open?.path ?? ""}\u0000${room.value?.sid ?? ""}`,
+);
+
+/** Leave *session* — after whatever was saved from it has been sent on its way. */
+async function leave(session: CollabSession): Promise<void> {
+  // Not before the editor bound to it is gone: closing destroys the document under it.
+  await nextTick();
+  // The editor's last save is marked as the room's own, and has to be: written after the
+  // room is left it would count as a write from outside and end the room for the others.
+  await docs.settle();
+  if (docs.live === session.sid) docs.setLive(null);
+  session.close();
+}
+
+/**
+ * The editor says the user changed *path*. Ignored for a document that is no longer the
+ * open one: an editor on its way out must not mark its successor's document as edited.
+ */
+function onDirty(path: string): void {
+  if (docs.open?.path === path) docs.markDirty();
+}
+
+/** The editor hands over Markdown for *path* — written only if that is still the open document. */
+function onChange(markdown: string, path: string): void {
+  if (docs.open?.path === path) void docs.save(markdown);
+}
+
+/**
+ * Stop editing in *session* and carry on alone with what is on screen.
+ *
+ * The text is read out of the editor while it is still the room's, before anything that
+ * replaces it, and becomes the document edited alone. If the room had moved on from what
+ * this disk last saw, that text is owed a save — an ordinary one, since the room is gone.
+ */
+function dropToSolo(session: CollabSession): void {
+  const markdown = session.changed ? editor.value?.takeMarkdown() : undefined;
+  room.value = null;
+  roomPeers.value = [];
+  joining.value = false;
+  docs.setLive(null);
+  if (markdown !== undefined && markdown !== docs.open?.content)
+    docs.adopt(markdown);
+  // After the editor bound to it is gone — the key has just changed.
+  void nextTick(() => session.close());
+}
+
+/** How many times a room that could not be joined is asked for again, and how often. */
+const JOIN_RETRIES = 3;
+const JOIN_RETRY_MS = 2500;
+let retries = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Decide what the open document is edited in — its room, or the file alone.
+ *
+ * Everything that changes the answer comes through here: another document, the project
+ * falling in or out of step with its server, a room ending. The first half is synchronous
+ * on purpose. By the time the page renders again the editor must already be gone or hidden;
+ * one frame of the new document's editor bound to the old document's room would show — and
+ * could save — the wrong text.
+ */
+function bind(): void {
+  const generation = ++binding;
+  const previous = room.value;
+  const path = docs.open?.path ?? null;
+  const wanted = Boolean(path) && sync.live;
+  const focused = editor.value?.hasFocus() ?? false;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+
+  // The same document, and no room to be had any more: the project fell out of step.
+  if (previous && previous.path === path && !wanted) {
+    dropToSolo(previous);
+    return;
+  }
+
+  // An edit made alone and not saved yet goes to the file first: the room is joined from
+  // the revision on disk, and the editor about to replace this one starts from it.
+  if (!previous) editor.value?.flush();
+  room.value = null;
+  roomPeers.value = [];
+  joining.value = wanted;
+
+  void (async () => {
+    if (previous) await leave(previous);
+    else await docs.settle();
+    if (generation !== binding) return;
+    if (!wanted || !path) return;
+
+    const session = await openSession({ path, seed: seedUpdate });
+    if (generation !== binding || docs.open?.path !== path) {
+      session?.close();
+      return;
+    }
+    if (session) {
+      session.onEnd((reason) => void onRoomEnd(session, reason));
+      session.onPeers(() => {
+        if (room.value === session) roomPeers.value = session.peers();
+      });
+      docs.setLive(session.sid);
+      room.value = session;
+      roomPeers.value = session.peers();
+    }
+    // With no room to be had the document is simply edited alone, as it always was.
+    joining.value = false;
+    if (focused) void nextTick(() => editor.value?.focus());
+    if (session) retries = 0;
+    else scheduleRetry(generation);
+  })();
+}
+
+/**
+ * Ask for the room again in a moment, a few times.
+ *
+ * A room is refused while the file is not yet in step with the server — a save still on
+ * its way up, a change still on its way down — and that passes by itself. Editing alone
+ * meanwhile is harmless, but staying alone is not: the next save would be a write from
+ * outside the room everybody else is in. Not while there is an unsaved edit, though: asking
+ * means a new editor, and that is not something to do to someone mid-sentence.
+ */
+function scheduleRetry(generation: number): void {
+  if (retries >= JOIN_RETRIES) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (generation !== binding || !sync.live || !docs.open) return;
+    if (docs.dirty || docs.saving) {
+      scheduleRetry(generation);
+      return;
+    }
+    retries += 1;
+    bind();
+  }, JOIN_RETRY_MS);
+}
+
+/** The room ended without this page leaving it. */
+async function onRoomEnd(
+  session: CollabSession,
+  reason: EndReason,
+): Promise<void> {
+  if (room.value !== session) return;
+  if (reason === "reset") {
+    // The file was replaced or deleted from outside the room. What the room held no longer
+    // describes it; read the file again and join whatever room there is now.
+    binding += 1;
+    room.value = null;
+    roomPeers.value = [];
+    joining.value = true;
+    docs.setLive(null);
+    // After the editor bound to it is gone — `joining` has just hidden it.
+    void nextTick(() => session.close());
+    await docs.reopen();
+    bind();
+    return;
+  }
+  // The connection went away. What is on screen stays on screen.
+  binding += 1;
+  dropToSolo(session);
+}
+
+watch(
+  () => docs.open?.path,
+  () => {
+    // A different document starts its own count of attempts.
+    retries = 0;
+  },
+);
+watch([() => docs.open?.path, () => sync.live], bind, { immediate: true });
 
 const requestedPath = computed(() => {
   const value = route.query.path;
@@ -173,7 +379,14 @@ onMounted(async () => {
 });
 
 // Leaving the view with a pending edit still in the editor would lose it.
-onBeforeUnmount(() => editor.value?.flush());
+onBeforeUnmount(() => {
+  editor.value?.flush();
+  binding += 1;
+  if (retryTimer) clearTimeout(retryTimer);
+  const session = room.value;
+  room.value = null;
+  if (session) void leave(session);
+});
 
 watch(requestedPath, async (path) => {
   if (path && path !== docs.open?.path) await select(path);
@@ -548,6 +761,32 @@ async function forceSave() {
             >
           </span>
 
+          <!-- Who else is editing this document right now (dev spec §16.4). Each in the
+               colour their cursor is drawn in, so a caret in the text can be put to a name. -->
+          <div
+            v-if="room"
+            class="flex shrink-0 items-center gap-1"
+            role="group"
+            :aria-label="t('sync.room.label')"
+          >
+            <span
+              class="flex items-center gap-1 text-small text-faint"
+              :title="t('sync.room.liveHint')"
+            >
+              <span class="size-1.5 rounded-full bg-success" />
+              {{ t("sync.room.live") }}
+            </span>
+            <span
+              v-for="peer in roomPeers"
+              :key="peer.id"
+              class="collab-avatar"
+              :style="{ backgroundColor: peer.color }"
+              :title="peer.name"
+            >
+              {{ peer.name.slice(0, 1).toUpperCase() }}
+            </span>
+          </div>
+
           <!-- The reading size, next to the document it applies to rather than buried in
                Settings — it is changed while reading, not while configuring. -->
           <div
@@ -642,16 +881,21 @@ async function forceSave() {
              navigation here. Around the editor rather than on it, which the `:key` re-mounts
              for every document switched to — that is not a page arriving. -->
         <div class="vxs-enter flex min-h-0 flex-1">
+          <!-- Not drawn while a room is being asked for (dev spec §16.4): whichever editor
+               comes next — the room's or the file's — must be the first one typed into. -->
+          <div v-if="joining" class="min-w-0 flex-1" aria-busy="true" />
           <BlockEditor
+            v-else
             ref="editor"
-            :key="docs.open.path"
+            :key="editorKey"
             :source="docs.open.content"
             :path="docs.open.path"
             :documents="documents"
+            :collab="room"
             class="min-w-0 flex-1"
             :style="editorStyle"
-            @dirty="docs.markDirty()"
-            @change="docs.save($event)"
+            @dirty="onDirty"
+            @change="onChange"
             @save="saveNow"
             @headings="onHeadings"
             @active="activeHeading = $event"

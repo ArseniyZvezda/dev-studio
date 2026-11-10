@@ -13,6 +13,7 @@ import type {
   NodeStatus,
   RunStatus,
   TaskStatus,
+  SyncStatus,
   UpdateStatus,
 } from '@/api/types'
 
@@ -190,6 +191,14 @@ export interface EventPayloads {
   'update.status': UpdateStatus
   /** One line of an update's transcript, as the command it came from printed it. */
   'update.log': { line: string; step: string | null }
+
+  /** Everything `GET /api/sync` returns, whenever any of it changes (§16.5). */
+  'sync.status': SyncStatus
+  /**
+   * A document changed here and on the server at once, outside a live room. The server's
+   * version has the path; this Studio's was kept beside it as `copy` (§16.3).
+   */
+  'sync.conflict': { path: string; copy: string; by: string | null }
 
   /**
    * The backend was pointed at a different managed project. Every store is now holding

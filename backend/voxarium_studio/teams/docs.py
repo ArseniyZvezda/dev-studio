@@ -495,6 +495,16 @@ class DocStore:
             )
         return scanned
 
+    def files(self) -> list[tuple[str, Path, int, int]]:
+        """Every document as ``(relative path, file, mtime_ns, size)`` — no file opened.
+
+        What online sync compares the tree with (§16.3): the same pass every read is
+        validated by, so the two can never disagree about which files are documents.
+        """
+        return [
+            (item.relative, item.path, item.mtime_ns, item.size_bytes) for item in self._scan()
+        ]
+
     def _build(
         self, scanned: list[_Scanned], signature: tuple[tuple[str, int, int], ...]
     ) -> _DocIndex:

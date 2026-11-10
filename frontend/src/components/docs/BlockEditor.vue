@@ -17,6 +17,14 @@
  * The parent mounts this with `:key` on the document path. A different document is a
  * different editor: that is what resets the undo history at close, as §7 requires, without
  * anyone having to remember to clear it.
+ *
+ * **In a live room the document is the room's, not this editor's** (dev spec §16.4). Given a
+ * `collab` session the editor is bound to the room's Yjs document: `source` is no longer
+ * what is shown (it only supplies the envelope), nothing is ever replaced from it, and what
+ * decides that there is something to save is the *room* changing — by anyone — rather than
+ * a transaction of this editor's. Only the room's scribe writes; everybody else's file
+ * arrives through sync. The session is fixed for the life of the component: the parent's
+ * `:key` includes it, so joining or leaving a room is a different editor too.
  */
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { GripVertical, Plus } from 'lucide-vue-next'
@@ -41,8 +49,10 @@ import {
   type ImageDropOptions,
 } from '@/lib/editor/image-drop'
 import { uploadDocAsset } from '@/api/client'
+import type { CollabSession } from '@/lib/collab/session'
 import { parseDocument, serializeDocument, type DocumentEnvelope } from '@/lib/md/document'
 import { mdastToProseMirror, proseMirrorToMdast, type PmNode } from '@/lib/md/prosemirror'
+import type { Node as PmDocNode } from '@tiptap/pm/model'
 
 const props = defineProps<{
   source: string
@@ -50,13 +60,21 @@ const props = defineProps<{
   path: string
   /** Candidates for the `[[` autocomplete (§5). */
   documents: { path: string; title: string }[]
+  /** The live room this editor is in, if any (dev spec §16.4). Never changes once mounted. */
+  collab?: CollabSession | null
 }>()
 
 const emit = defineEmits<{
-  /** The user changed something. Cheap, immediate, and what drives the §7 indicator. */
-  dirty: []
+  /**
+   * The user changed something. Cheap, immediate, and what drives the §7 indicator.
+   *
+   * Both this and `change` name the document they are about. An editor being torn down
+   * flushes on its way out, and by then the page may already be showing another document —
+   * the text must not be saved into that one.
+   */
+  dirty: [path: string]
   /** Markdown ready to write. Debounced, on blur, and on Ctrl+S. */
-  change: [markdown: string]
+  change: [markdown: string, path: string]
   save: []
   headings: [headings: Heading[]]
   /** Position of the heading the reader is under, for the outline's highlight (§6). */
@@ -70,6 +88,11 @@ const emit = defineEmits<{
 
 /** §7: "600–800 мс после последнего ввода". */
 const AUTOSAVE_DELAY_MS = 700
+/**
+ * In a room, the longest the file is left behind while people keep typing. The debounce
+ * alone waits for a pause, and with several people in a document there may not be one.
+ */
+const ROOM_MAX_WAIT_MS = 3000
 /** The outline must not be rebuilt on every keystroke (§9). */
 const OUTLINE_DELAY_MS = 250
 
@@ -91,6 +114,35 @@ let envelope: DocumentEnvelope = { frontmatter: '', eol: '\n', finalNewline: tru
 let unsaved = false
 let autosave: ReturnType<typeof setTimeout> | null = null
 let outlineTimer: ReturnType<typeof setTimeout> | null = null
+
+// Read once: the parent re-keys the component when the room changes.
+const collab = props.collab ?? null
+/**
+ * Whether the editor shows the document yet. Bound to a room it starts **empty** and the
+ * binding draws the room's document a tick later — and an empty editor serialises to an
+ * empty file. Until then nothing may be read out of it.
+ */
+let rendered = collab === null
+/**
+ * The room changed since its Markdown was last written from here. A member who is not the
+ * scribe only remembers this; it becomes a save the moment the job is inherited, because
+ * whoever held it may have left before writing the last of it.
+ */
+let roomAhead = false
+/**
+ * The room's document as it was first drawn — the document this editor's disk already has,
+ * unless the room said it was ahead of the file when we joined. Kept as the (immutable)
+ * node rather than as text: it is only serialised if a save is ever considered.
+ */
+let firstDrawn: PmDocNode | null = null
+/**
+ * The Markdown the file is known to hold as far as this editor is concerned: what it last
+ * handed out, or what `firstDrawn` serialises to. `undefined` until first asked; `null`
+ * when it cannot be known and the next save must simply be made.
+ */
+let onDisk: string | null | undefined
+/** When the save now owed was first owed, so a room that never pauses is still written. */
+let owedSince: number | null = null
 
 function initialContent(source: string): PmNode {
   const parsed = parseDocument(source)
@@ -170,13 +222,36 @@ function onDrop(event: DragEvent) {
   void receiveImageDrop(view, files, at?.pos ?? view.state.doc.content.size, imageDrop)
 }
 
+// A room supplies the document; the file still supplies what the tree does not hold.
+if (collab) envelope = parseDocument(props.source).envelope
+
 const editor = useEditor({
-  content: initialContent(props.source),
+  // Bound to a room there is no initial content: the binding fills the editor from the
+  // room's document, and content given here as well would be inserted into it a second time.
+  content: collab ? undefined : initialContent(props.source),
   extensions: createExtensions({
     slash,
     wiki,
     documents: () => props.documents,
     images: imageDrop,
+    collab: collab
+      ? {
+          session: collab,
+          onFirstRender: () => {
+            rendered = true
+            if (collab.aheadAtJoin) {
+              // Edits were made in the room that no scribe has written yet — the one who
+              // would have may be gone. Should the job come to us, the file is owed them.
+              onDisk = null
+              roomAhead = true
+              if (collab.scribe) owe()
+            } else {
+              firstDrawn = editor.value?.state.doc ?? null
+            }
+            refreshOutline()
+          },
+        }
+      : undefined,
   }),
   editorProps: {
     attributes: {
@@ -188,10 +263,14 @@ const editor = useEditor({
   },
   onUpdate: ({ transaction }) => {
     if (!transaction.docChanged) return
-    unsaved = true
-    emit('dirty')
-    schedule()
     scheduleOutline()
+    // In a room, saving follows the room's document (`roomChanged`), not this editor's
+    // transactions: the binding's first draw is a transaction too, and so is every edit
+    // somebody else made.
+    if (collab) return
+    unsaved = true
+    emit('dirty', props.path)
+    schedule()
   },
   onBlur: () => flush(),
   onCreate: () => refreshOutline(),
@@ -260,15 +339,60 @@ function onTransform(target: Parameters<typeof applyTransform>[2]): void {
 
 function serialize(): string {
   const document = editor.value?.getJSON() as PmNode | undefined
-  if (!document) return props.source
+  if (!document || !rendered) return props.source
   return serializeDocument(proseMirrorToMdast(document), envelope)
 }
 
 /** Serialize *and* mark it as handed over — for every caller about to write the file. */
 function takeMarkdown(): string {
   unsaved = false
+  // Only the scribe's reading is a write. Anyone else asking (Ctrl+S, the page) must not
+  // make this editor forget that the room is ahead of what it last wrote.
+  if (!collab || collab.scribe) roomAhead = false
   return serialize()
 }
+
+/**
+ * There may be something to write, and this editor is the one to write it.
+ *
+ * "May", because the room changing is not the Markdown changing: an attribute put right, an
+ * empty block added and removed. Whether the file is actually behind is decided when the
+ * debounce fires (`flush`), by comparing text — so nothing is announced as unsaved here.
+ */
+function owe(): void {
+  unsaved = true
+  owedSince ??= Date.now()
+  schedule()
+  if (Date.now() - owedSince >= ROOM_MAX_WAIT_MS) flush()
+}
+
+/** What the file holds, as far as this editor knows — see `onDisk`. */
+function knownOnDisk(): string | null {
+  if (onDisk === undefined) {
+    onDisk = firstDrawn
+      ? serializeDocument(proseMirrorToMdast(firstDrawn.toJSON() as PmNode), envelope)
+      : null
+    firstDrawn = null
+  }
+  return onDisk
+}
+
+/**
+ * The room's document changed — typed here, or by anyone else in it (dev spec §16.4).
+ *
+ * The scribe owes the file a save for every such change, whoever made it: that is what keeps
+ * the Markdown on everybody's disk following the room, with one writer and no two saves
+ * racing. Everyone else only notes that the room is ahead of what they last wrote.
+ */
+function roomChanged(): void {
+  roomAhead = true
+  if (collab?.scribe) owe()
+}
+
+const offRoomChange = collab?.onChange(roomChanged)
+const offScribe = collab?.onScribe(() => {
+  if (roomAhead) owe()
+})
 
 function schedule(): void {
   if (autosave) clearTimeout(autosave)
@@ -288,7 +412,23 @@ function flush(): void {
   if (!autosave) return
   clearTimeout(autosave)
   autosave = null
-  emit('change', takeMarkdown())
+  if (collab && !rendered) {
+    // The room changed before its document was drawn here. There is nothing to read out
+    // of the editor yet; the save stays owed and is asked for again.
+    schedule()
+    return
+  }
+  owedSince = null
+  const markdown = takeMarkdown()
+  if (collab) {
+    // In a room a save is owed for every change to the room's document, and most of those
+    // are real. The ones that are not must not reach the file: a document that was only
+    // opened — by anyone, in any number of windows — is never written (§8.2).
+    if (markdown === knownOnDisk()) return
+    onDisk = markdown
+    emit('dirty', props.path)
+  }
+  emit('change', markdown, props.path)
 }
 
 /** Drop the pending debounce without writing — what an explicit save supersedes. */
@@ -358,6 +498,8 @@ function onKeydown(event: KeyboardEvent): void {
 // switches documents.
 onBeforeUnmount(() => {
   if (outlineTimer) clearTimeout(outlineTimer)
+  offRoomChange?.()
+  offScribe?.()
   flush()
 })
 
@@ -374,7 +516,10 @@ watch(
   () => props.source,
   (next) => {
     const instance = editor.value
-    if (!instance || unsaved || next === serialize()) return
+    // In a room the file follows the document, never the other way round: replacing the
+    // content here would be an edit, sent to everyone, undoing whatever they typed since
+    // this copy of the file was written. A file replaced from outside ends the room instead.
+    if (collab || !instance || unsaved || next === serialize()) return
     instance.commands.setContent(initialContent(next), { emitUpdate: false })
     refreshOutline()
   },
@@ -427,13 +572,14 @@ defineExpose({
    */
   reload: () => {
     const instance = editor.value
-    if (!instance) return
+    if (!instance || collab) return
     cancelPending()
     unsaved = false
     instance.commands.setContent(initialContent(props.source), { emitUpdate: false })
     refreshOutline()
   },
   focus: () => editor.value?.commands.focus(),
+  hasFocus: () => editor.value?.isFocused ?? false,
   /** Put a heading at the top of the scroller — what clicking the outline does (§6). */
   scrollTo: (heading: Heading) => {
     elementAt(heading.pos)?.scrollIntoView({ block: 'start', behavior: 'smooth' })

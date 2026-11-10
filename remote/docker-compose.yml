@@ -1,0 +1,20 @@
+# Voxarium Studio Remote (dev spec §16).
+#
+#   docker compose up -d --build
+#   docker compose exec remote voxarium-studio-remote user add alice   # prints alice's key
+#
+# The port is published on loopback only: keys travel in a request header, so the server
+# belongs behind a reverse proxy that terminates TLS (Caddy, nginx, Traefik) and forwards
+# WebSocket upgrades to 127.0.0.1:8787. See README.md for a Caddy example.
+services:
+  remote:
+    build: .
+    image: voxarium-studio-remote:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - remote-data:/data
+
+volumes:
+  remote-data:

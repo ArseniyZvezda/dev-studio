@@ -1267,6 +1267,72 @@ export interface DocsConfig {
   line_height: number | null
 }
 
+/** Online sync of the project's Documents through a remote server (§16.5). */
+export interface SyncConfig {
+  enabled: boolean
+  /** The server's address as it was entered. */
+  url: string
+  /** The shared set of documents on that server. */
+  space: string
+}
+
+/** Somebody on the server: how they are named and what colour their cursor is. */
+export interface SyncUser {
+  id: string
+  name: string
+  color: string
+}
+
+/** One person connected to the space, with the documents they have open. */
+export interface SyncPeer {
+  user: SyncUser
+  /** How many Studios they are connected from. */
+  connections: number
+  docs: string[]
+  /** Whether this is the person looking at the page. */
+  self: boolean
+}
+
+/**
+ * - `disabled` — switched off for this project.
+ * - `unconfigured` — switched on, but an address, a space or a key is missing.
+ * - `connecting` / `syncing` — on its way; documents are not in step yet.
+ * - `connected` — in step. The only state live editing is offered in.
+ * - `offline` — the server cannot be reached; retrying.
+ * - `unauthorised` — the server refused the key. Not retried.
+ * - `error` — something retrying cannot fix; `message` says what.
+ */
+export type SyncState =
+  | 'disabled'
+  | 'unconfigured'
+  | 'connecting'
+  | 'syncing'
+  | 'connected'
+  | 'offline'
+  | 'unauthorised'
+  | 'error'
+
+/** Everything `GET /api/sync` answers, and what `sync.status` carries (§16.5). */
+export interface SyncStatus extends SyncConfig {
+  /** Whether a key is stored for this address. The key itself is never sent back. */
+  has_token: boolean
+  /** The address is plain HTTP to another machine: the key would travel in the clear. */
+  insecure: boolean
+  state: SyncState
+  message: string | null
+  user: SyncUser | null
+  peers: SyncPeer[]
+}
+
+/** A patch to the sync settings; a key left out is left alone. */
+export interface SyncUpdate {
+  enabled?: boolean
+  url?: string
+  space?: string
+  /** The user's key. An empty string forgets the stored one. */
+  token?: string
+}
+
 export interface AppConfig {
   version: number
   /** User-wide preference; absent/null keeps the browser's startup language (§6.4). */
@@ -1285,6 +1351,7 @@ export interface AppConfig {
   vcs: VcsConfig
   explorer: ExplorerConfig
   docs: DocsConfig
+  sync: SyncConfig
   updates: UpdatesConfig
   plugins: Record<string, { enabled: boolean; settings: Record<string, unknown> }>
   node_cache_enabled: boolean

@@ -22,6 +22,7 @@ from ..explorer.watcher import FileWatcher
 from ..plugins import loader as plugin_loader
 from ..plugins.api import PluginHost
 from ..plugins.registry import PluginHook, Registry
+from ..sync import RemoteSync
 from ..teams import skill as studio_skill
 from ..teams.authoring import ProjectAuthoring
 from ..teams.chat import ChatService
@@ -76,6 +77,8 @@ class AppContext:
             config=config,
         )
         self.docs = DocStore(paths, self.bus)
+        self.sync = RemoteSync(paths, lambda: self.config, self.docs, self.bus)
+        """The connection to a Voxarium Studio Remote, when the project has one (§16)."""
         self.skills = SkillStore(paths, builtins=self._builtin_skills)
         """``.voxarium_studio/skills/`` — the Skills page's folder, and what members are given (§10.10)."""
         self.memory = MemoryStore(paths, self.bus)
@@ -185,6 +188,8 @@ class AppContext:
         await self.teams.resume_limit_waits()
         await self.teams.resume_autostart_tasks()
         self.watcher.start()
+        # After the watcher: sync learns about edits made behind the Studio's back from it.
+        await self.sync.start()
         await self.updates.start()
         await self.automations.start()
         # Last, once everything a hook might want is up: the hooks run in the background,
@@ -200,6 +205,7 @@ class AppContext:
         await self._stop_plugin_hooks()
         await self.automations.stop()
         await self.updates.stop()
+        await self.sync.stop()
         await self.watcher.stop()
         self.teams.cancel_limit_waits()
         await self.teams.cancel_commit_jobs()

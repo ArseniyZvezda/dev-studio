@@ -73,6 +73,8 @@ import type {
   SearchProviderInfo,
   SearchResponse,
   SettingsUpdate,
+  SyncStatus,
+  SyncUpdate,
   SkillDetail,
   SkillsOverview,
   StatusInfo,
@@ -710,6 +712,10 @@ export const api = {
       { query: { force } },
     ),
 
+  // ------------------------------------------------------------ online sync (§16)
+  sync: () => request<SyncStatus>('GET', '/sync'),
+  updateSync: (body: SyncUpdate) => request<SyncStatus>('PUT', '/sync', { body }),
+
   // ------------------------------------------------------------ project docs
   docs: () => request<DocEntry[]>('GET', '/docs'),
   doc: (path: string) => request<DocDetail>('GET', `/docs/${encodePath(path)}`),
@@ -723,9 +729,20 @@ export const api = {
     content: string,
     author: string | null = null,
     expectedUpdatedAt: string | null = null,
+    /**
+     * The live room this Markdown was written from, when the editor saving it is the
+     * room's scribe (§16.4) — so sync pushes it as the room's own text, not as an edit
+     * from outside that would end the room for everyone in it.
+     */
+    collabSession: string | null = null,
   ) =>
     request<DocDetail>('PUT', `/docs/${encodePath(path)}`, {
-      body: { content, author, expected_updated_at: expectedUpdatedAt },
+      body: {
+        content,
+        author,
+        expected_updated_at: expectedUpdatedAt,
+        collab_session: collabSession,
+      },
     }),
   /**
    * A new document, refused with 409 when anything is already at the path. A write with no

@@ -1310,6 +1310,7 @@ dependencies = [
     { name = "uv" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "watchfiles" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -1342,6 +1343,7 @@ requires-dist = [
     { name = "uv", specifier = ">=0.5" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
     { name = "watchfiles", specifier = ">=0.24" },
+    { name = "websockets", specifier = ">=13" },
 ]
 provides-extras = ["teams", "dev"]
 

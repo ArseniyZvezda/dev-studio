@@ -370,6 +370,8 @@ async def reload_everything(request: Request, ctx: Ctx) -> dict[str, Any]:
             await ctx.teams.sync_agent_definitions()
             await _configure_application(ctx, load_application_config())
             await ctx.reload_plugins()
+            # §16.5: a hand-edited address or space takes effect like any other setting.
+            await ctx.sync.reconfigure()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
