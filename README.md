@@ -8,6 +8,13 @@ Includes an English/Russian web UI and a Windows desktop app.
 
 <img width="1920" height="1080" alt="producer-overview" src="https://github.com/user-attachments/assets/e1b4229d-6527-4006-8d46-c54d91add968" />
 
+## Which version to choose?
+
+The best choice for everyday work is the
+[latest release](https://github.com/voxarium-studio/dev-studio/releases/latest): it is
+the more stable option. The `main` branch includes commits where the application may be
+unstable and features unfinished.
+
 ## Build a Windows installer
 
 On Windows x64, install Node.js 22.12+ (x64, with npm) and
