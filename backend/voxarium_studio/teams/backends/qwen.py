@@ -80,10 +80,122 @@ def _launcher() -> list[str] | None:
     return [str(path)]
 
 
+#: Models for the member editor's picker (§10.6), mirroring Qwen Code's own catalogue
+#: (its models.dev projection): every chat-capable Qwen family model, newest generation
+#: first within each group. Speciality endpoints an agent member cannot drive — math,
+#: doc, character and realtime models — are left out. Not a whitelist, exactly like
+#: `SUGGESTED_MODELS` in `api/teams.py`: `member.model` reaches `qwen --model` verbatim,
+#: so a release newer than this list stays usable by typing it in, and keeping the list
+#: current is cosmetic rather than load-bearing.
+_SUGGESTED_MODELS: list[dict[str, str]] = [
+    # An empty model selects Qwen's configured provider/model, without pinning a release.
+    {"id": "", "label": "Qwen Code default", "group": "Qwen Code",
+     "note": "Uses Qwen Code's configured model"},
+    {"id": "qwen3-coder-plus", "label": "Qwen3 Coder Plus", "group": "Qwen Code",
+     "note": "Flagship coding model; 1M context"},
+    {"id": "qwen3-coder-flash", "label": "Qwen3 Coder Flash", "group": "Qwen Code",
+     "note": "Fast and cheap coding; 1M context"},
+    {"id": "qwen3-coder-480b-a35b-instruct", "label": "Qwen3 Coder 480B (open-weight)",
+     "group": "Qwen Code", "note": "256K context"},
+    {"id": "qwen3-coder-30b-a3b-instruct", "label": "Qwen3 Coder 30B (open-weight)",
+     "group": "Qwen Code", "note": "256K context"},
+
+    {"id": "qwen3.8-max", "label": "Qwen3.8 Max", "group": "Qwen",
+     "note": "Newest flagship; 1M context, image/PDF/video"},
+    {"id": "qwen3.8-flash", "label": "Qwen3.8 Flash", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3.7-plus", "label": "Qwen3.7 Plus", "group": "Qwen",
+     "note": "Image/video"},
+    {"id": "qwen3.7-flash", "label": "Qwen3.7 Flash", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3.6-plus", "label": "Qwen3.6 Plus", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3.6-flash", "label": "Qwen3.6 Flash", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3.5-plus", "label": "Qwen3.5 Plus", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3.5-flash", "label": "Qwen3.5 Flash", "group": "Qwen",
+     "note": "1M context, image/video"},
+    {"id": "qwen3-max", "label": "Qwen3 Max", "group": "Qwen", "note": "256K context"},
+    {"id": "qwen-plus", "label": "Qwen Plus", "group": "Qwen",
+     "note": "Rolling alias; follows the current Plus release"},
+    {"id": "qwen-flash", "label": "Qwen Flash", "group": "Qwen",
+     "note": "Rolling alias; follows the current Flash release"},
+    {"id": "qwen-turbo", "label": "Qwen Turbo", "group": "Qwen",
+     "note": "Cheapest hosted tier; 1M context"},
+
+    {"id": "qwen3.5-397b-a17b", "label": "Qwen3.5 397B-A17B", "group": "Qwen Open-weight",
+     "note": "Largest open-weight; image/audio/video"},
+    {"id": "qwen3.5-122b-a10b", "label": "Qwen3.5 122B-A10B", "group": "Qwen Open-weight",
+     "note": "Image/audio/video"},
+    {"id": "qwen3.6-35b-a3b", "label": "Qwen3.6 35B-A3B", "group": "Qwen Open-weight",
+     "note": "Image/audio/video"},
+    {"id": "qwen3.6-27b", "label": "Qwen3.6 27B", "group": "Qwen Open-weight",
+     "note": "Dense; image/audio/video"},
+    {"id": "qwen3.5-35b-a3b", "label": "Qwen3.5 35B-A3B", "group": "Qwen Open-weight",
+     "note": "Image/audio/video"},
+    {"id": "qwen3.5-27b", "label": "Qwen3.5 27B", "group": "Qwen Open-weight",
+     "note": "Dense; image/audio/video"},
+    {"id": "qwen3-235b-a22b", "label": "Qwen3 235B-A22B", "group": "Qwen Open-weight",
+     "note": ""},
+    {"id": "qwen3-32b", "label": "Qwen3 32B", "group": "Qwen Open-weight", "note": ""},
+    {"id": "qwen3-14b", "label": "Qwen3 14B", "group": "Qwen Open-weight", "note": ""},
+    {"id": "qwen3-8b", "label": "Qwen3 8B", "group": "Qwen Open-weight", "note": ""},
+    {"id": "qwen3-next-80b-a3b-thinking", "label": "Qwen3-Next 80B Thinking",
+     "group": "Qwen Open-weight", "note": "Reasoning variant"},
+    {"id": "qwen3-next-80b-a3b-instruct", "label": "Qwen3-Next 80B Instruct",
+     "group": "Qwen Open-weight", "note": ""},
+
+    {"id": "qwen3.8-omni-flash", "label": "Qwen3.8 Omni Flash",
+     "group": "Qwen Vision & Omni", "note": "Image/audio/video; 1M context"},
+    {"id": "qwen3-omni-flash", "label": "Qwen3 Omni Flash", "group": "Qwen Vision & Omni",
+     "note": "Image/audio/video"},
+    {"id": "qwen3-vl-plus", "label": "Qwen3 VL Plus", "group": "Qwen Vision & Omni",
+     "note": "Vision; 256K context"},
+    {"id": "qwen3-vl-235b-a22b", "label": "Qwen3 VL 235B-A22B",
+     "group": "Qwen Vision & Omni", "note": "Vision, open-weight"},
+    {"id": "qwen3-vl-30b-a3b", "label": "Qwen3 VL 30B-A3B", "group": "Qwen Vision & Omni",
+     "note": "Vision, open-weight"},
+    {"id": "qwen-vl-max", "label": "Qwen VL Max", "group": "Qwen Vision & Omni",
+     "note": "Vision"},
+    {"id": "qwen-vl-plus", "label": "Qwen VL Plus", "group": "Qwen Vision & Omni",
+     "note": "Vision"},
+    {"id": "qvq-max", "label": "QVQ Max", "group": "Qwen Vision & Omni",
+     "note": "Visual reasoning"},
+
+    {"id": "qwq-plus", "label": "QwQ Plus", "group": "Qwen Reasoning",
+     "note": "Reasoning model"},
+    {"id": "qwq-32b", "label": "QwQ 32B", "group": "Qwen Reasoning",
+     "note": "Reasoning, open-weight"},
+
+    {"id": "qwen-long", "label": "Qwen Long", "group": "Qwen Special",
+     "note": "10M-context document analysis"},
+    {"id": "qwen-deep-research", "label": "Qwen Deep Research", "group": "Qwen Special",
+     "note": "Autonomous research agent"},
+
+    {"id": "qwen2.5-72b-instruct", "label": "Qwen2.5 72B Instruct", "group": "Qwen 2.5",
+     "note": "Legacy"},
+    {"id": "qwen2.5-32b-instruct", "label": "Qwen2.5 32B Instruct", "group": "Qwen 2.5",
+     "note": "Legacy"},
+    {"id": "qwen2.5-14b-instruct", "label": "Qwen2.5 14B Instruct", "group": "Qwen 2.5",
+     "note": "Legacy"},
+    {"id": "qwen2.5-7b-instruct", "label": "Qwen2.5 7B Instruct", "group": "Qwen 2.5",
+     "note": "Legacy"},
+    {"id": "qwen2.5-coder-32b-instruct", "label": "Qwen2.5 Coder 32B Instruct",
+     "group": "Qwen 2.5", "note": "Legacy coder"},
+    {"id": "qwen2.5-coder-7b-instruct", "label": "Qwen2.5 Coder 7B Instruct",
+     "group": "Qwen 2.5", "note": "Legacy coder"},
+    {"id": "qwen2.5-vl-72b-instruct", "label": "Qwen2.5 VL 72B Instruct",
+     "group": "Qwen 2.5", "note": "Legacy vision"},
+    {"id": "qwen2.5-vl-7b-instruct", "label": "Qwen2.5 VL 7B Instruct",
+     "group": "Qwen 2.5", "note": "Legacy vision"},
+    {"id": "qwen2.5-omni-7b", "label": "Qwen2.5 Omni 7B", "group": "Qwen 2.5",
+     "note": "Legacy; image/audio/video"},
+]
+
+
 def suggested_models() -> list[dict[str, str]]:
-    # Empty model selects Qwen's configured provider/model, without pinning a release.
-    return [{"id": "", "label": "Qwen Code default", "group": "Qwen Code",
-             "note": "Uses Qwen Code's configured model", "backend": "qwen"}]
+    return [dict(entry, backend="qwen") for entry in _SUGGESTED_MODELS]
 
 
 def _command(launcher: list[str], request: AgentRunRequest, config: Path

@@ -372,9 +372,15 @@ class CodexBackend(AgentBackend):
             )
             assert process.stdin and process.stdout and process.stderr
             stderr_task = asyncio.create_task(_drain(process.stderr, stderr_tail))
-            process.stdin.write(stdin_text.encode("utf-8"))
-            await process.stdin.drain()
-            process.stdin.close()
+            try:
+                process.stdin.write(stdin_text.encode("utf-8"))
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # §10.6: an early CLI exit can close stdin before the prompt is sent.
+                # Read its stdout, stderr and exit code to report the actual failure.
+                pass
+            finally:
+                process.stdin.close()
 
             state = _RunState(
                 model=_cost_model(request),

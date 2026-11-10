@@ -2456,10 +2456,12 @@ def test_the_member_editor_is_offered_models_and_effort_levels(client) -> None:
     claude = [e for e in options["suggested_models"] if e["backend"] == "claude_code"]
     assert {entry["group"] for entry in claude} == {"Aliases", "Pinned"}
     # Other catalogues are tagged for their backend (§10.6). Codex's cache may be empty;
-    # Qwen always offers its configured default, without pinning a model release.
+    # Qwen always offers its configured default first, then its full model list.
     assert all(e["backend"] in {"codex", "qwen"}
                for e in options["suggested_models"] if e not in claude)
-    assert any(e["backend"] == "qwen" for e in options["suggested_models"])
+    qwen = [e for e in options["suggested_models"] if e["backend"] == "qwen"]
+    assert qwen[0]["id"] == "", "the default row stays first"
+    assert any(e["id"] == "qwen3-coder-plus" for e in qwen)
     assert options["effort_levels"][0] == "low" and options["effort_levels"][-1] == "max"
 
 

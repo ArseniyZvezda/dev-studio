@@ -30,6 +30,10 @@ DEV = f"{TEAM}__dev"
 
 FAKE_CODEX = '''
 import json, os, sys
+if os.environ.get("FAKE_CODEX_EARLY_EXIT"):
+    sys.stderr.write("error: invalid policy override\\n")
+    sys.stderr.flush()
+    sys.exit(2)
 record = os.environ["FAKE_CODEX_RECORD"]
 stdin = sys.stdin.read() if "-" in sys.argv[1:] else ""
 with open(record, "w", encoding="utf-8") as fh:
@@ -441,6 +445,18 @@ async def test_a_nonzero_exit_reports_stderr(
     assert len(errors) == 1
     assert "code 2" in errors[0].text and "not logged in" in errors[0].text
     assert events[-1].data["is_error"] is True and events[-1].data["exit_code"] == 2
+
+
+async def test_an_early_cli_exit_reports_stderr_instead_of_broken_pipe(
+    fake: Fake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_CODEX_EARLY_EXIT", "1")
+    events = await run(make_request(tmp_path, prompt="x" * 1_000_000))
+    errors = of_kind(events, "error")
+    assert len(errors) == 1
+    assert "invalid policy override" in errors[0].text
+    assert "BrokenPipeError" not in errors[0].text
+    assert events[-1].kind == "result" and events[-1].data["exit_code"] == 2
 
 
 async def test_an_oversized_line_is_skipped_and_the_run_goes_on(fake: Fake, tmp_path: Path) -> None:

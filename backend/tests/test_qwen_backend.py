@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -220,6 +221,23 @@ async def test_model_fallback_long_role_and_image_paths(fake, tmp_path):
     assert req.system_prompt in record["stdin"] and "image.png" in record["stdin"]
     assert {"model_fallback", "system_prompt_in_message"} <= {
         e.data.get("subtype") for e in events if e.kind == "system"}
+
+
+def test_suggested_models_cover_the_qwen_family():
+    models = qwen.suggested_models()
+    assert models[0]["id"] == "" and models[0]["backend"] == "qwen", \
+        "the configured-default row stays first"
+    assert all(entry["backend"] == "qwen" for entry in models)
+    ids = [entry["id"] for entry in models]
+    assert len(ids) == len(set(ids)), "one row per model, no models.dev alias duplicates"
+    # Coder, flagship, vision and reasoning lines the installed CLI's own catalogue knows.
+    assert {"qwen3-coder-plus", "qwen3-coder-flash", "qwen3.8-max", "qwen3-vl-plus",
+            "qwq-plus"} <= set(ids)
+    # A picker row, not a whitelist entry: every id still has to look like a model id
+    # (`_MODEL_NAME` in `api/teams.py`), and callers get copies they may not corrupt.
+    assert all(re.fullmatch(r"[A-Za-z0-9._-]*", entry["id"]) for entry in models)
+    models[0]["id"] = "mutated"
+    assert qwen.suggested_models()[0]["id"] == ""
 
 
 @pytest.mark.parametrize("error_style", ["id", "title"])
