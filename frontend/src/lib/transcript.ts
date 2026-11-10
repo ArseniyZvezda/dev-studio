@@ -1,19 +1,22 @@
 /**
- * How much of a task's transcript is on screen, and how it is grouped (spec §10.4).
+ * How much of a transcript is on screen, and how it is grouped (spec §10.4).
  *
- * One dial with three detents rather than a checkbox, because there were always three
- * readings of a run and only two settings for them. **Compact** is someone reading what
- * happened: a block per thing that was *said* or *written*, with the tool calls between
- * them folded away. **Advanced** is the feed itself, a row per message. **Verbose** adds the
- * bulky half back: tool results and the Studio's own system notices.
+ * Every conversation with an agent goes through here — a task, an ordinary chat and the
+ * Producer's — so all of them read the same way at the same setting (§10.9).
+ *
+ * One dial with two detents (Compact was removed on 2026-11-10, by the user's request).
+ * **Default** is what was said, with the work around it as folded blocks — each thinking
+ * block, and each run of consecutive tool calls as one "Tools used: N" — both drawn
+ * collapsed. **Verbose** filters nothing: tool results sit under their calls, the Studio's
+ * own system notices are rows, and the same folds are drawn open.
  *
  * Below Verbose, one line at the bottom carries the tail of the *whole* feed — the newest
  * thing logged, whether or not this level draws a row for it, flattened to one line and
  * flashed. It is a window onto Verbose rather than an entry in the log: nothing about it is
  * kept, and turning the dial up is what puts the same lines in the transcript for good.
  *
- * The levels nest — compact ⊂ advanced ⊂ verbose — so turning the dial up never takes
- * anything off the screen. Nothing here touches the DOM: what a level shows is a property
+ * The levels nest — default ⊂ verbose — so turning the dial up never takes anything off
+ * the screen. Nothing here touches the DOM: what a level shows is a property
  * of the messages, and is checked as one.
  */
 
@@ -41,9 +44,12 @@ export function upsertTranscript<M extends TranscriptMessage>(messages: M[], mes
 }
 
 /** Quietest first — the order the picker offers them in, and the order they nest in. */
-export const VERBOSITY_LEVELS = ['compact', 'advanced', 'verbose'] as const
+export const VERBOSITY_LEVELS = ['default', 'verbose'] as const
 
 export type Verbosity = (typeof VERBOSITY_LEVELS)[number]
+
+/** What a reader who never touched the dial sees — the level named for it. */
+export const DEFAULT_VERBOSITY: Verbosity = 'default'
 
 /**
  * The picker's own words. Spelled out rather than capitalised in CSS: the option list is
@@ -53,21 +59,27 @@ export type Verbosity = (typeof VERBOSITY_LEVELS)[number]
  * so the options follow the interface language instead of the one this module loaded in.
  */
 export const VERBOSITY_LABELS: Record<Verbosity, MessageKey> = {
-  compact: 'taskDetail.verbosity.level.compact',
-  advanced: 'taskDetail.verbosity.level.advanced',
+  default: 'taskDetail.verbosity.level.default',
   verbose: 'taskDetail.verbosity.level.verbose',
 }
 
 /** What each level answers, for the picker's tooltip — keys, like the labels. */
 export const VERBOSITY_HINTS: Record<Verbosity, MessageKey> = {
-  compact: 'taskDetail.verbosity.hint.compact',
-  advanced: 'taskDetail.verbosity.hint.advanced',
+  default: 'taskDetail.verbosity.hint.default',
   verbose: 'taskDetail.verbosity.hint.verbose',
 }
 
 /** Guards a remembered choice: a stored level from an older build may no longer exist. */
 export function isVerbosity(value: unknown): value is Verbosity {
   return VERBOSITY_LEVELS.includes(value as Verbosity)
+}
+
+/**
+ * A remembered level, read back. `advanced` is Default's name from before 2026-11-10, and
+ * `compact` a level that no longer exists; both read as Default, the nearest one there is.
+ */
+export function readVerbosity(value: unknown): Verbosity {
+  return isVerbosity(value) ? value : DEFAULT_VERBOSITY
 }
 
 /**
@@ -79,7 +91,8 @@ const HISTORY_KINDS = new Set([
 ])
 
 /**
- * The history plus the tool calls, and `continued` with them.
+ * The history plus the tool calls, and `continued` with them — what Default keeps of the
+ * `system` role.
  *
  * A tool call is what the agent actually *did*: hidden, a run that spent ten minutes
  * reading and writing files looked like a session that went quiet after its last sentence.
@@ -103,21 +116,6 @@ export const TIMELINE_KINDS = new Set([...HISTORY_KINDS, 'continued'])
 export const PROSE_KINDS = new Set(['text', 'thinking', 'result', 'note', 'summary', 'review', 'context_summary', 'compressed summary'])
 
 /**
- * What opens a block in Compact: someone speaking in their own words.
- *
- * `review` and `summary` are on the list for a reason beyond symmetry with `note` — a level
- * that did not lead with them would leave a person's words nowhere in the transcript but
- * the tail, which is one line and keeps nothing.
- *
- * A file edit used to open a block too (with its `+4 −1` beside the path), and since
- * 2026-10-21 it folds away with the reads around it: the changed-files column beside the
- * transcript lists every file a task wrote *with* those counts, so the row in the feed
- * said the same thing a second time, once per edit, between the sentences a reader at
- * Compact came for. Advanced still draws each one.
- */
-const LEAD_KINDS = new Set(['text', 'note', 'review', 'summary', 'context_summary', 'compressed summary'])
-
-/**
  * Tools whose call means "this file now differs" — the same set the changes column matches
  * on (`teams/changes.py`), so the two agree about what counts as writing. Matched on the
  * last segment of the name, which is what makes an MCP tool recognisable as itself.
@@ -136,13 +134,30 @@ export interface TranscriptRow<M extends TranscriptMessage = TranscriptMessage> 
   message: M
 }
 
+/** One call inside a "Tools used" block, with the results that answered it (Verbose). */
+export interface ToolEntry<M extends TranscriptMessage = TranscriptMessage> {
+  key: string
+  message: M
+  results: M[]
+}
+
+/**
+ * What the transcript draws, at whichever level is showing: a message on its own, a
+ * thinking block, or a run of consecutive tool calls folded into one "Tools used: N" block.
+ * The two folds start collapsed at Default and open at Verbose — task, chat and Producer alike.
+ */
+export type TranscriptBlock<M extends TranscriptMessage = TranscriptMessage> =
+  | { type: 'message'; key: string; message: M }
+  | { type: 'thinking'; key: string; message: M }
+  | { type: 'tools'; key: string; entries: ToolEntry<M>[]; calls: number }
+
 /**
  * The last line of the transcript: what was logged most recently, and what the run has
  * produced.
  *
- * One line, at the bottom — which is the whole difference from the lines Compact used to
- * leave folded onto every block. Left behind on each one they were the tool feed again,
- * which is what Advanced is for, and they read as history: "Bash · npm test" still sitting
+ * One line, at the bottom — which is the whole difference from the lines the transcript used
+ * to leave folded onto every block. Left behind on each one they were the tool feed again,
+ * which is what Default is for, and they read as history: "Bash · npm test" still sitting
  * under a block the run walked away from ten minutes ago, indistinguishable from the line
  * that is actually live.
  *
@@ -174,13 +189,7 @@ export function isFileEdit(message: TranscriptMessage): boolean {
   return message.kind === 'tool_use' && WRITING_TOOLS.has(bareToolName(message).toLowerCase())
 }
 
-/**
- * Whether this call went to an MCP server — `mcp__<server>__<tool>`, as the runtime names
- * them. Compact draws these as rows of their own: a call to the Studio's board or to a
- * project's own server is a step a reader follows, where a `Read` between two sentences
- * is not. The one exception is a write (`write_doc`), which is a file edit first and
- * folds like one.
- */
+/** Whether this call went to an MCP server — `mcp__<server>__<tool>`, as the runtimes name them. */
 export function isMcpCall(message: TranscriptMessage): boolean {
   if (message.kind !== 'tool_use') return false
   const raw = typeof message.data?.name === 'string' ? message.data.name : message.text
@@ -189,9 +198,8 @@ export function isMcpCall(message: TranscriptMessage): boolean {
 
 /**
  * Whether this call loaded a skill — the runtime's `Skill` tool, `voxarium_studio:studio` or one of
- * the project's own. Compact draws it as a row, as it does an MCP call: which instructions the
- * agent took up is a step the reader follows, and folded into the tail it was gone as soon as
- * the next `Read` landed.
+ * the project's own. Codex has no such tool; its backend names a shell read of a known
+ * `SKILL.md` as a `Skill` call, so the three runtimes read alike here (§10.10).
  */
 export function isSkillCall(message: TranscriptMessage): boolean {
   return message.kind === 'tool_use' && bareToolName(message) === 'Skill'
@@ -271,44 +279,97 @@ export function outputAccounting(messages: TranscriptMessage[]): OutputMessage[]
   return canonical.sort((a, b) => parseUtc(a.created_at) - parseUtc(b.created_at))
 }
 
-/** Whether a message survives this level. Compact and Advanced hide the same things. */
+/**
+ * Work a delegated agent did inside the member's session — the runtime streams it with the
+ * call that started it (`parent_tool_use_id`). It is the member's tool call doing its job,
+ * not the member speaking, so it folds into the tools block with the rest of the work.
+ */
+export function isDelegatedWork(message: TranscriptMessage): boolean {
+  const parent = message.data?.parent_tool_use_id
+  return typeof parent === 'string' && parent !== ''
+}
+
+/** Whether a message survives this level. Default hides the bulky half; Verbose nothing. */
 function shows(message: TranscriptMessage, verbosity: Verbosity): boolean {
   if (message.kind === 'accounting') return false
   if (message.kind === 'system' && ['thinking_tokens', 'usage_update'].includes(message.text)) return false
+  // The runtimes redact most thinking to an empty block; a fold with nothing inside says nothing.
+  if (message.kind === 'thinking' && !message.text.trim()) return false
   if (verbosity === 'verbose') return true
   return ALWAYS_KINDS.has(message.kind) || message.role !== 'system'
 }
 
-/** Whether this message starts a block of its own in Compact. */
-function opensBlock(message: TranscriptMessage): boolean {
-  return (
-    LEAD_KINDS.has(message.kind) ||
-    PRODUCER_EVENTS.has(message.kind) ||
-    isSkillCall(message) ||
-    (isMcpCall(message) && !isFileEdit(message))
-  )
-}
-
 /**
- * The transcript as the chosen level renders it.
+ * The transcript as the chosen level filters it, one row per message, nothing grouped.
  *
- * Above Compact this is the filtered feed, one row per message and nothing folded. Compact
- * keeps only what is worth a block of its own — something said, a call to an MCP server, a
- * skill loaded, or an entry in the task's own history — and the work between those, file
- * edits included, is
- * drawn nowhere here: it becomes the single line `liveLine` puts at the bottom of the
- * transcript.
+ * Default keeps what was said, the history, the thinking and the tool calls; Verbose
+ * everything. `transcriptBlocks` is the same list as the panel draws it.
  */
 export function transcriptRows<M extends TranscriptMessage>(
   messages: M[],
   verbosity: Verbosity,
 ): TranscriptRow<M>[] {
-  const shown = closingSummaries(messages).filter((message) => shows(message, verbosity))
-  const rows =
-    verbosity === 'compact'
-      ? shown.filter((message) => TIMELINE_KINDS.has(message.kind) || opensBlock(message))
-      : shown
-  return rows.map((message) => ({ key: message.id, message }))
+  return closingSummaries(messages)
+    .filter((message) => shows(message, verbosity))
+    .map((message) => ({ key: message.id, message }))
+}
+
+/**
+ * The rows grouped as every transcript panel draws them (§10.4, §10.9).
+ *
+ * A thinking message becomes a thinking block. Consecutive tool calls become one tools
+ * block, whatever the tools were — `Bash`, `Grep`, an MCP call, a skill being loaded — so
+ * a run that read twelve files between two sentences is one folded line rather than twelve.
+ * At Verbose each call keeps its results under it, matched on the call's id; a result whose
+ * call is not in sight, a delegated agent's work, and a system frame arriving between two
+ * calls stay inside the block too, so the noise of a busy run does not split it into a
+ * dozen one-call blocks. Anything else — someone speaking, a history line — ends the block.
+ *
+ * The count is of calls, not entries: results and frames are what the calls produced.
+ */
+export function transcriptBlocks<M extends TranscriptMessage>(
+  messages: M[],
+  verbosity: Verbosity,
+): TranscriptBlock<M>[] {
+  type ToolsBlock = Extract<TranscriptBlock<M>, { type: 'tools' }>
+  const blocks: TranscriptBlock<M>[] = []
+  const calls = new Map<string, ToolEntry<M>>()
+  let group: ToolsBlock | null = null
+
+  for (const { key, message } of transcriptRows(messages, verbosity)) {
+    const work =
+      message.kind === 'tool_use' ||
+      message.kind === 'tool_result' ||
+      isDelegatedWork(message) ||
+      (group !== null && message.role === 'system' && message.kind === 'system')
+    if (!work) {
+      group = null
+      blocks.push(message.kind === 'thinking'
+        ? { type: 'thinking', key, message }
+        : { type: 'message', key, message })
+      continue
+    }
+    if (message.kind === 'tool_result') {
+      const id = message.data?.tool_use_id
+      const owner = typeof id === 'string' ? calls.get(id) : undefined
+      if (owner) {
+        owner.results.push(message)
+        continue
+      }
+    }
+    if (group === null) {
+      group = { type: 'tools', key, entries: [], calls: 0 }
+      blocks.push(group)
+    }
+    const entry: ToolEntry<M> = { key, message, results: [] }
+    group.entries.push(entry)
+    if (message.kind === 'tool_use') {
+      group.calls += 1
+      const id = message.data?.id
+      if (typeof id === 'string' && id) calls.set(id, entry)
+    }
+  }
+  return blocks
 }
 
 /**

@@ -394,7 +394,7 @@ describe('the activity line', () => {
 
     feed.forEach((event, index) => {
       message?.(event as never)
-      const dialog = liveLine(feed.slice(0, index + 1), 'compact')
+      const dialog = liveLine(feed.slice(0, index + 1), 'default')
       expect(store.activity['task_1']).toEqual({ text: dialog.activity, seq: dialog.seq })
     })
     expect(store.activity['task_1']).toEqual({

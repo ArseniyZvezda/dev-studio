@@ -184,19 +184,21 @@ class TeamMember(SQLModel, table=True):
 
     max_turns: int = 40
     permission_mode: str = "bypassPermissions"
-    isolate_worktree: bool = True
-    """Run this member's tasks in a dedicated git worktree when the project is a repo (§10.5)."""
+    isolate_worktree: bool = False
+    """Run this member's tasks in a dedicated checkout when the VCS can provide one (§10.5).
 
-    solo_mode: bool = True
+    Off by default: tasks run in the project itself, and overlapping ``write_paths`` are
+    serialised by coordination locks instead."""
+
+    solo_mode: bool = False
     """One task at a time (§10.4).
 
     On, a released task waits in ``pending`` while any other task of this member is
     ``in_progress``, and starts by itself when that one ends — the member's released tasks
     are a queue, lowest number first. Off, every released task runs as soon as it is
-    unblocked, up to the job engine's ``agent`` slots. On by default: one session per role
-    is what a person expects of a colleague, and two sessions of the same member editing
-    the same files against each other is the failure this prevents. Meaningless for a
-    human, who claims tasks by hand and may hold several.
+    unblocked, up to the job engine's ``agent`` slots. Off by default; switch it on for a
+    role whose parallel sessions would edit the same files against each other. Meaningless
+    for a human, who claims tasks by hand and may hold several.
     """
 
     avatar_color: str | None = None
@@ -421,7 +423,7 @@ class TeamTask(SQLModel, table=True):
 
     Only a ``done`` task can be archived: the board's Done column fills up with finished
     work nobody needs to see again, and this is how it is put away. The row is kept whole
-    — its cost, its Advanced transcript, its number — because the figure over the board and the
+    — its cost, its Default transcript, its number — because the figure over the board and the
     Statistics page sum *every* finished task, and deleting one would quietly shrink what
     the project has paid. ``TeamOrchestrator.update_task`` enforces both halves of the
     invariant: archiving anything but a ``done`` task is refused, and a status move off

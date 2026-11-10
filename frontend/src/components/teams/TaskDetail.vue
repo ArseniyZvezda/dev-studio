@@ -25,9 +25,7 @@ import {
   Archive,
   ArrowRight,
   Ban,
-  Bot,
   Check,
-  ChevronDown,
   Copy,
   Minimize2,
   LoaderCircle,
@@ -61,6 +59,8 @@ import DependencyPicker from '@/components/teams/DependencyPicker.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import MemberSelect from '@/components/teams/MemberSelect.vue'
 import RunOverrides from '@/components/teams/RunOverrides.vue'
+import SessionStatus from '@/components/teams/SessionStatus.vue'
+import SubagentSummary from '@/components/teams/SubagentSummary.vue'
 import TaskChanges from '@/components/teams/TaskChanges.vue'
 import TaskDiff from '@/components/teams/TaskDiff.vue'
 import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
@@ -72,7 +72,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import ContextUsageBar from '@/components/ui/ContextUsageBar.vue'
-import { t, type MessageKey } from '@/i18n'
+import { t } from '@/i18n'
 import { dialogEscape } from '@/lib/dialog'
 import {
   formatBytes,
@@ -80,11 +80,9 @@ import {
   formatDuration,
   formatTime,
   parseUtc,
-  statusColor,
   statusLabel,
 } from '@/lib/status'
-import type { Subagent } from '@/lib/subagents'
-import { running as stillRunning, subagents } from '@/lib/subagents'
+import { subagents } from '@/lib/subagents'
 import { useTaskClock } from '@/lib/task-clock'
 import {
   RESULT_TYPES,
@@ -495,102 +493,11 @@ const limitWait = computed(() => {
 })
 
 /**
- * The sub-agents and workflows this session started (§10.3).
- *
- * Folded out of the messages rather than shown as transcript rows: the lifecycle frames are
- * `system` messages, which every level below Verbose hides, and even shown they are one row
- * per progress report rather than one row per piece of work. What a reader wants is the
- * current list — which is also the thing that explains a task sitting In progress after its
- * agent has apparently stopped talking.
- *
- * It is a row of the header rather than a card in the transcript because what a run still
- * has delegated is a property of the run, like the duration and the cost it now sits under,
- * and in the scroller it was carried away exactly while a session sat waiting on five agents
- * with nothing else to show.
+ * The sub-agents and workflows this session started (§10.3) — folded and drawn by
+ * `SubagentSummary`, in the Status column beside the transcript (§10.4), or in the header
+ * of a Producer page card, which has no column to hold it.
  */
 const delegated = computed(() => subagents(props.task.messages, props.task.subagents))
-const delegatedRunning = computed(() => stillRunning(delegated.value))
-/** Work the run is actually held open for — a background shell is shown and is not that. */
-const heldFor = computed(() => delegatedRunning.value.filter((entry) => entry.holdsRun).length)
-
-/**
- * How the finished half ended, for the line that shows while the list is folded away —
- * "3 done · 1 failed". A failure is named rather than counted into "done": it is usually why
- * the task above it is worth a second look, and folded this line is all there is.
- *
- * Counted here rather than in `lib/subagents.ts` because the two rules that are easy to get
- * wrong — what holds a run open, and what closes a piece of work when the run ends — already
- * live there and are tested there; this is a loop over a list already in hand.
- */
-const delegatedTally = computed(() => {
-  let done = 0
-  let failed = 0
-  let stopped = 0
-  for (const entry of delegated.value) {
-    if (entry.status === 'completed') done += 1
-    else if (entry.status === 'failed') failed += 1
-    else if (entry.status === 'stopped') stopped += 1
-  }
-  const parts: string[] = []
-  if (done) parts.push(t('taskDetail.delegated.done', { count: done }))
-  if (failed) parts.push(t('taskDetail.delegated.failed', { count: failed }))
-  if (stopped) parts.push(t('taskDetail.delegated.stopped', { count: stopped }))
-  return parts.join(' · ')
-})
-
-/**
- * Why the run is still open, on the folded line's tooltip so the answer does not depend on
- * unfolding it. `heldFor` rather than the running count, for the same reason the sentence
- * under the list uses it: a background shell is listed and is not what the session waits for.
- */
-const delegatedHint = computed(() =>
-  heldFor.value
-    ? t('taskDetail.delegated.heldOpen', { count: heldFor.value })
-    : t('taskDetail.delegated.hint'),
-)
-
-/**
- * Folded or open, remembered like the verbosity dial and for the same reason: the preference
- * is the reader's rather than the task's, and it is worth nothing to the project, so it lives
- * in `localStorage` rather than in the project's settings. Folded is where a first read
- * starts — the header floors at its content height and the transcript is the sibling that
- * gives way, so a run with twenty sub-agents would otherwise leave nothing to read.
- */
-const DELEGATED_KEY = 'voxarium_studio.transcript.delegated'
-const delegatedOpen = ref(window.localStorage.getItem(DELEGATED_KEY) === 'open')
-
-/**
- * The shared status vocabulary, so a sub-agent that is running is the same amber as the
- * task and the pipeline node that are (`lib/status.ts`). Only the words differ: what the
- * runtime calls `completed` the board calls `done`.
- */
-function subagentColor(entry: Subagent): string {
-  return statusColor(entry.status === 'completed' ? 'done' : entry.status)
-}
-
-/** How a finished row says it ended — the runtime's word, in the interface language. */
-const SUBAGENT_ENDINGS: Record<Exclude<Subagent['status'], 'running'>, MessageKey> = {
-  completed: 'taskDetail.delegated.status.completed',
-  failed: 'taskDetail.delegated.status.failed',
-  stopped: 'taskDetail.delegated.status.stopped',
-}
-
-/**
- * The right-hand end of a row: what it is doing now, or how it ended.
- *
- * Counted rather than timed on purpose — a duration would have to tick, and a row that
- * re-renders every second while five agents work is the thing the panel exists to replace.
- */
-function subagentNote(entry: Subagent): string {
-  const parts: string[] = []
-  if (entry.status === 'running') {
-    if (entry.lastTool) parts.push(entry.lastTool)
-  } else {
-    parts.push(t(SUBAGENT_ENDINGS[entry.status]))
-  }
-  if (entry.toolUses) parts.push(t('taskDetail.delegated.calls', { count: entry.toolUses }))
-  return parts.join(' · ')
-}
 
 /** Documents the agent wrote while working — the durable half of what it produced. */
 const writtenDocs = computed(() => {
@@ -601,10 +508,6 @@ const writtenDocs = computed(() => {
     if (path) seen.set(path, String(message.data?.title ?? path))
   }
   return [...seen].map(([path, title]) => ({ path, title }))
-})
-
-watch(delegatedOpen, (open) => {
-  window.localStorage.setItem(DELEGATED_KEY, open ? 'open' : 'closed')
 })
 
 // ---------------------------------------------------------------- what the task changed
@@ -1039,85 +942,13 @@ async function complete() {
           </span>
         </div>
 
-        <!-- A third row of the header, under the telemetry it belongs beside: what a run has
-             delegated is a property of the run (§10.3), not a turn in the conversation, and
-             in the transcript it scrolled away precisely while a session sat waiting on five
-             agents with nothing else to show. The frames it is folded from are `system`
-             messages, which every level below Verbose hides.
-
-             Folded to one line by default, and the open list capped and scrolling in its own
-             right: the header floors at its content height and the transcript is the sibling
-             with `min-h-0`, so every row added here is a row taken off the conversation. What
-             cannot wait for a click is on the line that is always there — how many are
-             running, pulsing in the same amber the board card uses for the same fact. -->
-        <section v-if="delegated.length" class="mt-2 border-t border-line-subtle pt-1.5">
-          <button
-            class="flex w-full items-center gap-1.5 rounded-sm py-0.5 text-small text-faint hover:bg-hover hover:text-primary"
-            :aria-expanded="delegatedOpen"
-            :title="delegatedHint"
-            @click="delegatedOpen = !delegatedOpen"
-          >
-            <Bot class="size-3 shrink-0" />
-            <span class="truncate font-medium">{{ t('taskDetail.delegated.title') }}</span>
-            <span
-              v-if="delegatedRunning.length"
-              class="vxs-subagent-running flex shrink-0 items-center gap-1"
-              :style="{ color: statusColor('in_progress') }"
-            >
-              <span class="size-1.5 rounded-full bg-current" />
-              {{ t('taskDetail.delegated.running', { count: delegatedRunning.length }) }}
-            </span>
-            <span v-if="delegatedRunning.length && delegatedTally" class="shrink-0">·</span>
-            <span v-if="delegatedTally" class="shrink-0">{{ delegatedTally }}</span>
-            <ChevronDown
-              class="vxs-chevron ml-auto size-3.5 shrink-0"
-              :class="delegatedOpen ? 'rotate-180' : ''"
-            />
-          </button>
-
-          <template v-if="delegatedOpen">
-            <!-- Its own scroller: a disclosure alone still hands an arbitrary height to a
-                 region that has none to give, and five agents in flight is a number this
-                 project has actually seen. -->
-            <div class="mt-0.5 max-h-40 overflow-auto pr-1">
-              <p
-                v-for="entry in delegated"
-                :key="entry.id"
-                class="flex flex-wrap items-center gap-x-2 gap-y-1 py-0.5"
-                :title="entry.summary || entry.description"
-              >
-                <span
-                  class="size-1.5 shrink-0 translate-y-[-1px] rounded-full"
-                  :class="entry.status === 'running' ? 'vxs-subagent-running' : ''"
-                  :style="{ background: subagentColor(entry) }"
-                />
-                <span class="shrink-0 text-small text-faint">{{ entry.typeLabel }}</span>
-                <span
-                  v-if="entry.backend"
-                  class="shrink-0 text-small text-faint"
-                  :title="entry.model || entry.backend"
-                >{{ entry.backend }}</span>
-                <span class="min-w-0 flex-1 truncate" :class="entry.status === 'running' ? '' : 'text-faint'">
-                  {{ entry.description }}
-                </span>
-                <span class="ml-auto min-w-0 break-words text-right font-mono text-small text-faint">
-                  {{ subagentNote(entry) }}
-                </span>
-                <TokenUsageChip
-                  :input-tokens="entry.inputTokens"
-                  :output-tokens="entry.outputTokens"
-                  :cached-tokens="entry.cacheReadTokens"
-                  :cost-usd="entry.costUsd"
-                />
-              </p>
-            </div>
-            <!-- Outside the scroller on purpose: it explains the whole list, so it must not
-                 be the thing that scrolls out of it. -->
-            <p v-if="heldFor" class="mt-1 text-small text-faint">
-              {{ t('taskDetail.delegated.heldOpen', { count: heldFor }) }}
-            </p>
-          </template>
-        </section>
+        <!-- A Producer page card has no Status column, so what the run has delegated stays
+             under its telemetry (§10.3, §10.11); the task dialog shows it in the column. -->
+        <SubagentSummary
+          v-if="embedded && delegated.length"
+          class="mt-2 border-t border-line-subtle pt-1.5"
+          :entries="delegated"
+        />
       </header>
 
       <form
@@ -1715,16 +1546,19 @@ async function complete() {
       </footer>
     </div>
 
-    <!-- Full height beside the whole dialog, not inside the transcript: it is a property of
-         the task rather than of the conversation, and a reviewer reads the two together. -->
+    <!-- Full height beside the whole dialog, not inside the transcript: the session's
+         status — its sub-agents, skills, MCP servers and the files it touched — is a property
+         of the task rather than of the conversation, and a reviewer reads the two together. -->
     <aside v-if="!embedded" class="w-[298px] shrink-0 border-l border-line">
-      <TaskChanges
-        :team-id="task.team_id"
-        :task-id="task.id"
-        :revision="changesRevision"
-        :selected="selectedFile"
-        @select="selectedFile = $event"
-      />
+      <SessionStatus :messages="task.messages" :subagents="delegated">
+        <TaskChanges
+          :team-id="task.team_id"
+          :task-id="task.id"
+          :revision="changesRevision"
+          :selected="selectedFile"
+          @select="selectedFile = $event"
+        />
+      </SessionStatus>
     </aside>
   </div>
 </template>

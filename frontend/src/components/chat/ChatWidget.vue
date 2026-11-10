@@ -47,7 +47,6 @@ import { useDocsStore } from '@/stores/docs'
 import { useTeamsStore } from '@/stores/teams'
 
 import ConversationPanel from '@/components/teams/ConversationPanel.vue'
-import ChatTranscript from './ChatTranscript.vue'
 import ChatList from './ChatList.vue'
 import ChatHeaderChips from './ChatHeaderChips.vue'
 import ProducerControls from './ProducerControls.vue'
@@ -517,11 +516,13 @@ onBeforeUnmount(() => {
           <p>{{ t('chat.chooseConversation') }}</p>
         </div>
 
+        <!-- The Producer page opens on its own composer, so its "new" screen is the empty
+             transcript rather than a member picker. -->
         <ConversationPanel
-          v-else-if="producerPage || (chat.view === 'chat' && chat.activeChat?.producer_mode)"
+          v-else-if="producerPage"
           :conversation-id="chat.view === 'chat' ? chat.activeChatId : null"
           :messages="chat.view === 'chat' ? chat.activeMessages : []"
-          :producer="{ name: producerName, running }"
+          :chat="{ name: producerName, running }"
           :empty-text="t(chat.view === 'new' ? 'chat.new.hint' : 'chat.transcript.empty', { name: producerName })"
         />
 
@@ -540,13 +541,14 @@ onBeforeUnmount(() => {
           </p>
         </div>
 
-        <!-- The conversation. -->
-        <ChatTranscript
+        <!-- The conversation, in the same widget as a task's transcript and the Producer's
+             (§10.9): one verbosity dial, the same folded thinking and tool blocks. -->
+        <ConversationPanel
           v-else
+          :conversation-id="chat.activeChatId"
           :messages="chat.activeMessages"
-          :member="activeMember"
-          :member-name="activeMember?.name ?? t('chat.theMember')"
-          :running="running"
+          :chat="{ name: producerName, running }"
+          :empty-text="t('chat.transcript.empty', { name: producerName })"
         />
 
         <ProducerTaskStatus v-if="!producerPage" />

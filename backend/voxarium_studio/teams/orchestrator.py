@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2375,10 +2375,7 @@ class TeamOrchestrator:
                     role="system",
                     kind="skills",
                     text=_skills_note(member_skills),
-                    data={
-                        "skills": [skill.name for skill in member_skills.found],
-                        "missing": list(member_skills.missing),
-                    },
+                    data=_skills_data(member_skills, required.startup_skills),
                 )
 
             run_id = new_id("run")
@@ -2469,6 +2466,19 @@ class TeamOrchestrator:
                 max_message_bytes=self.config.teams.max_message_bytes,
                 delegated_work_idle_timeout=self.config.teams.delegated_work_idle_timeout,
             )
+            # §10.4: the Status column lists the servers the Studio handed this run. Recorded
+            # here rather than read from the runtime, because only Claude Code and Qwen Code
+            # report their servers at start-up; Codex says nothing, and the list must not
+            # depend on which backend ran the task.
+            if request.mcp_servers:
+                await self.record_message(
+                    task_id,
+                    member_id,
+                    role="system",
+                    kind="mcp",
+                    text=_mcp_note(request.mcp_servers),
+                    data={"servers": sorted(request.mcp_servers)},
+                )
 
             # Says so in the transcript when the run has to queue behind `concurrency.agents`:
             # the task already reads In progress, and a silent wait looks like a hang.
@@ -3845,6 +3855,31 @@ def _skills_note(skills: MemberSkills) -> str:
             "Not in .voxarium_studio/skills, so not offered: " + ", ".join(skills.missing) + "."
         )
     return " ".join(parts)
+
+
+def _skills_data(skills: MemberSkills, startup: Iterable[str]) -> dict[str, Any]:
+    """The skills record's data, for the transcript and the Status column (§10.4, §10.10).
+
+    ``loaded`` names the skills whose ``SKILL.md`` the session was handed at start-up
+    (``required_context``); the rest were only offered. ``labels`` carries the names people
+    read, since a native installation is stored under an opaque ``installed:<id>``.
+    """
+    started = set(startup)
+    return {
+        "skills": [skill.name for skill in skills.found],
+        "missing": list(skills.missing),
+        "loaded": [skill.name for skill in skills.found if skill.name in started],
+        "labels": {
+            skill.name: skill.display_name
+            for skill in skills.found
+            if skill.display_name and skill.display_name != skill.name
+        },
+    }
+
+
+def _mcp_note(servers: dict[str, Any]) -> str:
+    """The transcript line naming the MCP servers a run was handed (§10.7)."""
+    return "MCP servers this run may use: " + ", ".join(sorted(servers)) + "."
 
 
 #: Where graphify keeps its knowledge graphs, relative to the directory it indexed, in the

@@ -1114,6 +1114,33 @@
       "resumeOnReset": "Resume on Limit reset",
       "resumeOnResetHint": "Running out of usage blocks the task. Ticked, it waits for the window to reset and starts itself again a couple of minutes later (teams.limit_resume_grace)."
     },
+    "status": {
+      "title": "Status",
+      "noSubagents": "none started",
+      "skills": "Skills",
+      "noSkills": "No skills in this session yet.",
+      "noMcp": "No MCP servers in this session yet.",
+      "skill": {
+        "used": "used",
+        "loaded": "loaded",
+        "offered": "available",
+        "missing": "missing",
+        "usedHint": "The agent loaded this skill during the session.",
+        "loadedHint": "Its SKILL.md was handed to the session at start.",
+        "offeredHint": "Named to the agent; it has not opened it yet.",
+        "missingHint": "Given to the member, but no longer in the skills folder."
+      },
+      "mcp": {
+        "title": "MCP servers",
+        "connected": "connected",
+        "failed": "failed",
+        "pending": "connecting",
+        "needsAuth": "needs sign-in",
+        "disabled": "disabled",
+        "configured": "configured",
+        "calls": "{count} calls"
+      }
+    },
     "delegated": {
       "title": "Delegated work",
       "running": "{count} running",
@@ -1181,19 +1208,19 @@
       "tokensHint": "Tokens the model has written across this task — its thinking, its answers and its tool calls. The header above counts the whole bill, cache reads and the prompt included.",
       "emptyPerson": "No messages yet. Claim the task to pick it up.",
       "emptyTodo": "No messages yet. Release the task to Pending to hand it to the agent.",
-      "emptyAgent": "No messages yet. Start the task to hand it to the agent."
+      "emptyAgent": "No messages yet. Start the task to hand it to the agent.",
+      "thinking": "Thinking",
+      "toolsUsed": "Tools used: {count}"
     },
     "verbosity": {
       "label": "Verbosity",
       "level": {
-        "compact": "Compact",
-        "advanced": "Advanced",
+        "default": "Default",
         "verbose": "Verbose"
       },
       "hint": {
-        "compact": "A block per message, MCP call or skill loaded; file edits and the other tool calls fold onto the line below.",
-        "advanced": "Every message and tool call, one row each.",
-        "verbose": "Everything, tool results and system notices included."
+        "default": "Messages and summaries, with thinking and each run of tool calls as a collapsed block.",
+        "verbose": "Everything, unfiltered and expanded: thinking, tool calls with their results, and system notices."
       }
     },
     "follow": {
@@ -2272,7 +2299,6 @@
     },
     "transcript": {
       "empty": "Say hello. {name} sees the page you are on, the document you have open and anything you select, and has the same tools as on a task.",
-      "thinking": "Thinking",
       "stopped": "Stopped"
     },
     "errors": {

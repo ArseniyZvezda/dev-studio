@@ -7,7 +7,6 @@ import type { AgentChatMessage } from '@/api/types'
 import { setLocale } from '@/i18n'
 import { transcriptRows, VERBOSITY_LEVELS } from '@/lib/transcript'
 import EffortSolverResult from './EffortSolverResult.vue'
-import ChatTranscript from './ChatTranscript.vue'
 import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 
 const data = { scores: { complexity: 9, creativity: 6, depth: 8, coverage: 8 }, effort: 4, effort_level: 'xhigh' }
@@ -24,11 +23,11 @@ describe('Effort Solver result in Producer dialogue', () => {
 
   it.each(['ordinary chat', 'Producer Mode'])('renders only the scores and effort in %s', async surface => {
     await setLocale('en')
-    const app = surface === 'Producer Mode'
-      ? createSSRApp(ConversationPanel, {
-        messages: [message], conversationId: 'producer', emptyText: '', producer: { name: 'Producer', running: true },
-      })
-      : createSSRApp(ChatTranscript, { messages: [message], member: null, memberName: 'Producer', running: false })
+    // §10.9: both surfaces are the one transcript widget now; only the turn state differs.
+    const app = createSSRApp(ConversationPanel, {
+      messages: [message], conversationId: 'producer', emptyText: '',
+      chat: { name: 'Producer', running: surface === 'Producer Mode' },
+    })
     const html = await renderToString(app.use(createPinia()))
     expect(html).toContain('border-violet-500/40')
     expect(html).toContain('aria-label="Effort Solver"')

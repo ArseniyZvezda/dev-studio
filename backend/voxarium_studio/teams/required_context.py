@@ -52,6 +52,9 @@ class RequiredContext:
     skills: MemberSkills
     documents: tuple[str, ...]
     text: str
+    startup_skills: tuple[str, ...] = ()
+    """Every skill whose ``SKILL.md`` :attr:`text` carries — the automatic Studio (and
+    Producer) skills as well as the selected ones. What the Status column calls loaded (§10.4)."""
 
     def prepend(self, prompt: str) -> str:
         return f"{self.text}\n\n{prompt}" if self.text else prompt
@@ -123,4 +126,5 @@ def load_required_context(
             f"--- BEGIN REQUIRED DOCUMENT: {name} ---\n{body}\n"
             f"--- END REQUIRED DOCUMENT: {name} ---"
         )
-    return RequiredContext(found, tuple(documents), "\n\n".join(parts))
+    return RequiredContext(found, tuple(documents), "\n\n".join(parts),
+                           tuple(name for name, _directory, _file in startup_skills))
