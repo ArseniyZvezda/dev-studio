@@ -75,7 +75,7 @@ class AuthSettings:
         return secrets.token_urlsafe(32)
 
 
-def _token_from_request(request: Request) -> str | None:
+def _token_from_request(request: HTTPConnection) -> str | None:
     header = request.headers.get("authorization")
     if header and header.lower().startswith("bearer "):
         return header[7:].strip()
@@ -153,9 +153,4 @@ async def authorise_websocket(websocket: WebSocket) -> bool:
         return False
     if not settings.enabled:
         return True
-    provided = (
-        websocket.query_params.get("token")
-        or websocket.headers.get("x-voxarium_studio-token")
-        or (websocket.headers.get("authorization") or "").removeprefix("Bearer ").strip()
-    )
-    return verify_token(settings.token or "", provided or None)
+    return verify_token(settings.token or "", _token_from_request(websocket))

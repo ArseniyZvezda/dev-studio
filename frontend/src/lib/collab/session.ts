@@ -185,10 +185,11 @@ export class CollabSession {
    */
   close(): void {
     if (!this.ended) {
-      this.ended = true
       // Said while the socket is still open, so the others drop this cursor at once
-      // instead of when the server notices the socket has gone.
+      // instead of when the server notices the socket has gone. Before `ended` is set:
+      // `send` drops everything after it, and this removal is the one frame that must go.
       removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
+      this.ended = true
       this.socket.onclose = null
       this.socket.close()
     }
