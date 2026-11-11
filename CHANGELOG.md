@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.6.0 — 2026-11-11
+
+- Added online Documents sync through the separately deployed Voxarium Studio Remote server. Each person keeps a local Studio and project checkout; Markdown documents sync across them, and open documents support live collaborative editing with shared cursors. Project Settings now has an Online sync connection panel.
+- Added revision-based reconciliation for offline and external edits, including conflict copies when both sides change the same document. Remote stores the latest Markdown and deletion markers; images, folder appearance and document history are outside this release's sync scope.
+- Made plugin Python environments build automatically in the background when a project opens, a plugin is enabled or its dependencies change. The Plugins page shows build progress and errors, and pipeline nodes wait for their environment before running.
+- Unified task, Active tasks, chat and Producer transcripts in one conversation panel. A shared Default / Verbose control folds thinking and tool activity into expandable blocks.
+- Replaced the Files touched sidebar with a Status column showing delegated work, session skills and MCP servers alongside touched files. New team members now start with Solo Mode and separate-checkout isolation disabled; existing explicit settings remain in effect.
+- Added messages to running tasks and chats. Messages are queued without interrupting the agent and marked delivered when the backend receives them.
+- Extended task write paths to cover an entire directory with `path/*`. An active task's assignee can update its write paths when the new paths are free; conflicting path locks are acquired atomically.
+- Removed local checkout and builder home paths from packaged desktop runtimes. Updated the available Qwen model list.
+
 ## v5.5.0 — 2026-11-09
 
 - Added project memory shared across agent backends and task checkouts. Agents receive a bounded index at startup and can recall, create and remove individual Markdown entries; the new Memory page lets people manage the same entries.
