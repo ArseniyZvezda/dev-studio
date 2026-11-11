@@ -131,7 +131,7 @@ async function boot() {
   await splash.loadFile(path.join(__dirname, 'splash.html'), { query: { message: messages.loading } });
   splash.show();
   if (!await startBackend()) return;
-  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 600,
+  window = new BrowserWindow({ width: 1600, height: 1000, minWidth: 900, minHeight: 600,
     title: productName, show: false, frame: false, backgroundColor: '#14161b', icon: appIcon,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },

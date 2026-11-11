@@ -2031,6 +2031,44 @@ export interface MemoryWrite {
   expected_updated_at?: string | null
 }
 
+/** One thing an agent runtime remembers on its own, as the entry an import would write. */
+export interface AgentMemoryCandidate {
+  /** What an import names it by; stable while the runtime's file does not change. */
+  id: string
+  backend: string
+  /** The entry name it would be saved under — settled by the backend, unique in a listing. */
+  name: string
+  description: string
+  content: string
+  /** The file it was read from, home written as `~`. */
+  source: string
+  /** `project` — recorded for this project; `global` — the runtime's memory of everything. */
+  scope: 'project' | 'global'
+  /** The runtime's own label (`feedback`, `project`, `user`…), when it has one. */
+  kind: string | null
+  /** Whether a `global` one mentions this project; always true for `project`. */
+  related: boolean
+  /** The text was longer than an entry may be and was cut. */
+  truncated: boolean
+  /** `same`: an entry of that name already says this. `differs`: the name is taken by other text. */
+  state: 'new' | 'same' | 'differs'
+}
+
+export interface AgentMemorySource {
+  backend: string
+  /** Where it was looked for, shown when nothing was found. */
+  locations: string[]
+  candidates: AgentMemoryCandidate[]
+  /** The list was cut at the backend's limit. */
+  truncated: boolean
+}
+
+export interface AgentMemoryImportResult {
+  imported: string[]
+  skipped: { id: string; name: string; reason: 'gone' | 'same' | 'exists' | 'error'; error?: string }[]
+  memory: MemoryOverview
+}
+
 // ---------------------------------------------------------------- automations (§6.5)
 
 export type AutomationTrigger =

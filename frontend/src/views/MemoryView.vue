@@ -10,12 +10,13 @@
  * editor saves conditionally: an entry an agent changed since it was opened is not written over
  * without asking.
  */
-import { AlertTriangle, Brain, FolderOpen, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, Brain, Download, FolderOpen, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 
 import { ApiError, api } from '@/api/client'
-import type { MemoryEntry, MemoryEntryDetail } from '@/api/types'
+import type { AgentMemoryImportResult, MemoryEntry, MemoryEntryDetail } from '@/api/types'
 import ConfirmDialog from '@/components/explorer/ConfirmDialog.vue'
+import MemoryImportDialog from '@/components/memory/MemoryImportDialog.vue'
 import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -109,6 +110,17 @@ function commitCap(): void {
   if (!capValid.value) return
   const value = Number(capDraft.value)
   if (value !== overview.value?.index_chars) void saveSharing({ memory_index_chars: value })
+}
+
+// ---------------------------------------------------------------- importing from agents
+
+const importing = ref(false)
+/** What the last import did, said under the header until the page is left. */
+const notice = ref<string | null>(null)
+
+function onImported(result: AgentMemoryImportResult): void {
+  store.adopt(result.memory)
+  notice.value = result.imported.length ? t('memory.import.done', { count: result.imported.length }) : null
 }
 
 // ---------------------------------------------------------------- creating
@@ -357,6 +369,8 @@ async function reveal(path: string): Promise<void> {
       {{ error ?? store.error }}
     </p>
 
+    <p v-else-if="notice" class="bg-accent-soft px-pane py-1 text-primary">{{ notice }}</p>
+
     <div class="max-w-3xl space-y-6 p-pane">
       <LoadingBars v-if="store.loading && !overview" />
 
@@ -445,12 +459,21 @@ async function reveal(path: string): Promise<void> {
         <section class="vxs-enter">
           <div class="mb-2 flex items-center justify-between">
             <h2 class="font-medium">{{ t('memory.list.title') }}</h2>
-            <button
-              class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover"
-              @click="startCreate"
-            >
-              <Plus class="size-3.5" /> {{ t('memory.create.button') }}
-            </button>
+            <div class="flex gap-2">
+              <button
+                class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover"
+                :title="t('memory.import.buttonTitle')"
+                @click="importing = true"
+              >
+                <Download class="size-3.5" /> {{ t('memory.import.button') }}
+              </button>
+              <button
+                class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover"
+                @click="startCreate"
+              >
+                <Plus class="size-3.5" /> {{ t('memory.create.button') }}
+              </button>
+            </div>
           </div>
 
           <form
@@ -708,6 +731,13 @@ async function reveal(path: string): Promise<void> {
         </section>
       </template>
     </div>
+
+    <MemoryImportDialog
+      v-if="importing"
+      :folder="folder"
+      @imported="onImported"
+      @close="importing = false"
+    />
 
     <ConfirmDialog
       v-if="deleting"

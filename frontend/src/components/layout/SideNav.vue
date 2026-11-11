@@ -20,6 +20,7 @@ import {
   FolderCog,
   GitBranch,
   GraduationCap,
+  Info,
   Loader2,
   MessageCircle,
   Clapperboard,
@@ -37,6 +38,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
 
+import AboutDialog from '@/components/project/AboutDialog.vue'
 import ChangelogDialog from '@/components/project/ChangelogDialog.vue'
 import UpdateDialog from '@/components/project/UpdateDialog.vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
@@ -70,6 +72,7 @@ const vcs = useVcsStore()
 const updates = useUpdatesStore()
 const search = useSearchStore()
 const showingChangelog = ref(false)
+const showingAbout = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   statusTimer = setInterval(() => {
@@ -400,6 +403,11 @@ const vcsLine = computed(() =>
           <Settings class="size-4 shrink-0" />
           <span class="rail-label">{{ t('nav.section.settings') }}</span>
         </RouterLink>
+        <!-- Last, under Settings: who makes the Studio and on what terms. -->
+        <button class="nav-link w-full" :title="t('nav.about.title')" @click="showingAbout = true">
+          <Info class="size-4 shrink-0" />
+          <span class="rail-label truncate">{{ t('nav.about.label') }}</span>
+        </button>
         <div class="rail-status">
           <div
             v-for="backend in agentBackends"
@@ -444,6 +452,7 @@ const vcsLine = computed(() =>
   </div>
 
   <ChangelogDialog v-if="showingChangelog" @close="showingChangelog = false" />
+  <AboutDialog v-if="showingAbout" @close="showingAbout = false" />
   <UpdateDialog v-if="updates.dialogOpen" @close="updates.dialogOpen = false" />
 </template>
 
