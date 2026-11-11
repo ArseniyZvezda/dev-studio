@@ -1123,6 +1123,61 @@ async def test_write_paths_cannot_change_during_a_run(teams: AppContext, wait_fo
     assert changed.write_paths == ["src/b.py"]
 
 
+async def test_executor_rescopes_its_running_task_unless_paths_are_held(
+    teams: AppContext, wait_for,
+) -> None:
+    gates, _ = await _hold_dev_runs(teams, "held_rescope")
+    async with teams.db.session() as session:
+        dev = await session.get(TeamMember, DEV)
+        dev.solo_mode = False
+        session.add(dev)
+    mine = await _dev_task(teams, "Writer", write_paths=["src/a.py"])
+    other = await _dev_task(teams, "Artist", write_paths=["assets/*"])
+    late = await _dev_task(teams, "Late writer", write_paths=["src/gen/out.py"])
+
+    async def started(task):
+        return task.id in gates
+
+    for task in (mine, other):
+        await release(teams, task.id)
+        await _wait_until(lambda task=task: started(task))
+
+    # Inside another running task's directory: refused, and nothing changes.
+    with pytest.raises(ValueError, match=teams.teams.display_id(other)):
+        await teams.teams.update_task(
+            mine.id, {"write_paths": ["src/a.py", "assets/hero.vox"]}, actor_id=DEV,
+        )
+    assert (await load(teams, mine.id)).write_paths == ["src/a.py"]
+
+    # Free paths, a directory among them: taken at once, mid-run.
+    updated = await teams.teams.update_task(
+        mine.id, {"write_paths": ["src/a.py", "src/gen/*"]}, actor_id=DEV,
+    )
+    assert updated.write_paths == ["src/a.py", "src/gen/*"]
+    await release(teams, late.id)
+
+    async def queued():
+        return bool(await _queued_entries(teams, late.id))
+
+    await _wait_until(queued)
+    [waiting] = await _queued_entries(teams, late.id)
+    assert waiting.data["blocking_task"] == teams.teams.display_id(mine)
+    # Not yet in a session, so even its own assignee cannot move a queued task's scope.
+    with pytest.raises(ValueError):
+        await teams.teams.update_task(late.id, {"write_paths": []}, actor_id=DEV)
+
+    # Giving the directory back lets the queued task in (once an agent slot is free).
+    _let_go(gates, other.id)
+    await wait_for(other.id, timeout=20)
+    assert late.id not in gates
+    await teams.teams.update_task(mine.id, {"write_paths": ["src/a.py"]}, actor_id=DEV)
+    await _wait_until(lambda: started(late))
+    for task in (mine, late):
+        _let_go(gates, task.id)
+        await wait_for(task.id, timeout=20)
+    assert not teams.teams._path_locks._held and not teams.teams._run_writes
+
+
 async def test_old_tasks_gain_empty_write_paths_without_inferring_brief(teams: AppContext) -> None:
     from sqlalchemy import text
 
@@ -4986,3 +5041,191 @@ async def test_telemetry_updates_one_row_and_drops_command_payload(teams: AppCon
     assert len(rows) == 2
     assert {r.text: r.data for r in rows} == {
         "thinking_tokens": {"estimated_tokens": 4}, "commands_changed": {"command_count": 2}}
+
+
+# ------------------------------------------------------------------ notes to a running session (§10.8)
+
+
+async def test_a_note_written_during_a_run_is_delivered_before_it_is_called_finished(
+    teams: AppContext, wait_for
+) -> None:
+    """A backend that cannot be handed text mid-turn finishes its turn, and the note opens
+    one more in the same session — the task does not reach review without it."""
+    gates, prompts = await _hold_dev_runs(teams, "held_for_a_note")
+    task = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t", brief="do the thing", auto_start=True
+    )
+    await release(teams, task.id)
+    await _wait_until(lambda: _running(teams, task.id))
+    await _wait_until(lambda: _async(len(prompts) == 1))
+
+    note = await teams.teams.add_note(task.id, "use the new API")
+    assert note.data["delivery"] == "queued"
+    assert len(prompts) == 1 and teams.jobs.is_running(task.id), "nothing was interrupted"
+
+    _let_go(gates, task.id)
+    await wait_for(task.id, timeout=20)
+    assert len(prompts) == 2
+    assert prompts[1].startswith("The user sent you this while you were working.")
+    assert prompts[1].endswith("use the new API")
+    assert (await load(teams, task.id)).status == TaskStatus.NEEDS_REVIEW
+    async with teams.db.session() as session:
+        stored = await session.get(AgentMessage, note.id)
+    assert stored.data["delivery"] == "delivered"
+
+    # And it was delivered once: the resume after this one must not carry it again.
+    await release(teams, task.id)
+    await wait_for(task.id, timeout=20)
+    assert "use the new API" not in prompts[2]
+
+
+async def test_a_note_a_stopped_run_never_took_rides_the_next_resume(
+    teams: AppContext, wait_for
+) -> None:
+    gates, prompts = await _hold_dev_runs(teams, "held_then_stopped")
+    task = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t", brief="do the thing", auto_start=True
+    )
+    await release(teams, task.id)
+    await _wait_until(lambda: _running(teams, task.id))
+    await _wait_until(lambda: _async(len(prompts) == 1))
+    note = await teams.teams.add_note(task.id, "mind the tests")
+    await teams.teams.cancel_task(task.id)
+    await wait_for(task.id, timeout=20)
+    async with teams.db.session() as session:
+        assert (await session.get(AgentMessage, note.id)).data["delivery"] == "queued"
+
+    _let_go(gates, task.id)
+    await teams.teams.start_task(task.id)
+    await wait_for(task.id, timeout=20)
+    assert "mind the tests" in prompts[1], "carried like any note written between runs"
+
+
+async def test_an_agents_own_note_is_not_handed_back_to_it(teams: AppContext, wait_for) -> None:
+    gates, prompts = await _hold_dev_runs(teams, "held_noting_itself")
+    task = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="t", brief="do the thing", auto_start=True
+    )
+    await release(teams, task.id)
+    await _wait_until(lambda: _running(teams, task.id))
+    await _wait_until(lambda: _async(len(prompts) == 1))
+    note = await teams.teams.add_note(task.id, "the collider is off by 2", author_id=DEV)
+    assert "delivery" not in note.data
+    _let_go(gates, task.id)
+    await wait_for(task.id, timeout=20)
+    assert len(prompts) == 1
+
+
+async def _async(value: bool) -> bool:
+    return value
+
+
+async def _run_with_inbox(
+    monkeypatch, turns: list[list[Any]], *, receipt_timeout: float | None = None
+) -> tuple[list[AgentEvent], list[Any], Any, list[str]]:
+    """Run the Claude backend against a CLI that echoes a mid-run message when told to.
+
+    ``turns`` is one list of frames per ``receive_response`` call. ``"echo"`` among them is
+    the CLI's replay of the message the run was sent mid-way, under the uuid it was sent
+    with — which the fake waits to have been sent before it goes on, as the real one would.
+    """
+    from voxarium_studio.teams.backends.base import Inbox, QueuedMessage
+
+    module, _, seen = _fake_sdk([])
+    frames: list[dict[str, Any]] = []
+    arrived = asyncio.Event()
+
+    class EchoingClient:
+        def __init__(self, options: Any) -> None:
+            seen.append(options)
+
+        async def __aenter__(self) -> "EchoingClient":
+            return self
+
+        async def __aexit__(self, *exc: Any) -> bool:
+            return False
+
+        async def query(self, prompt: Any) -> None:
+            if isinstance(prompt, str):
+                return
+            async for frame in prompt:
+                frames.append(frame)
+                arrived.set()
+
+        async def receive_response(self):
+            for frame in turns.pop(0) if turns else []:
+                if isinstance(frame, _Silence):
+                    await asyncio.sleep(3600)
+                if frame == "echo":
+                    await asyncio.wait_for(arrived.wait(), 5)
+                    frame = _UserMessage()
+                    frame.content = frames[-1]["message"]["content"]
+                    frame.uuid = frames[-1]["uuid"]
+                yield frame
+                if isinstance(frame, _ResultMessage):
+                    return
+
+    module.ClaudeSDKClient = EchoingClient
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", module)
+    monkeypatch.setattr(claude_code.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    if receipt_timeout is not None:
+        monkeypatch.setattr(claude_code, "_RECEIPT_TIMEOUT", receipt_timeout)
+    claude_code._option_fields.cache_clear()
+
+    delivered: list[str] = []
+
+    async def on_delivered(items):
+        delivered.extend(item.id for item in items)
+
+    inbox = Inbox(preamble="While you worked:\n\n{message}", on_delivered=on_delivered)
+    inbox.put(QueuedMessage(id="m1", text="use the blue one"))
+    request = AgentRunRequest(
+        member=TeamMember(team_id=TEAM, name="Dev", role_title="Developer"),
+        task=TeamTask(team_id=TEAM, title="t", brief="b"),
+        workdir=Path("."),
+        prompt="the brief",
+        system_prompt="you are a member",
+        inbox=inbox,
+    )
+    events = [event async for event in claude_code.ClaudeCodeBackend().run(request)]
+    claude_code._option_fields.cache_clear()
+    assert "replay-user-messages" in seen[0].extra_args, "without the echo there is no receipt"
+    return events, frames, inbox, delivered
+
+
+async def test_claude_is_sent_a_waiting_message_and_its_echo_is_the_receipt(monkeypatch) -> None:
+    """§10.8, the common case: the CLI folds the message into the running turn after the
+    tool call in flight and echoes it — one result, and that result ends the run."""
+    events, frames, inbox, delivered = await _run_with_inbox(
+        monkeypatch, [["echo", _ResultMessage("Done, in blue.")]]
+    )
+    (frame,) = frames
+    assert frame["message"]["content"] == "While you worked:\n\nuse the blue one"
+    assert delivered == ["m1"] and not len(inbox) and not inbox.unacknowledged
+    (result,) = [event for event in events if event.kind == "result"]
+    assert result.is_final and not result.data["continued"]
+    assert not any(event.kind == "tool_result" for event in events), "the echo is not an event"
+
+
+async def test_a_result_with_a_message_still_unread_does_not_end_the_claude_run(monkeypatch) -> None:
+    """A turn with no tool call left ends first; the CLI then opens another on the message.
+    The first result is a turn's, not the run's — reading stops at the second."""
+    events, _, inbox, delivered = await _run_with_inbox(
+        monkeypatch, [[_ResultMessage("First.")], ["echo", _ResultMessage("Second, in blue.")]]
+    )
+    first, second = [event for event in events if event.kind == "result"]
+    assert first.data["continued"] and not first.is_final and first.data["pending_messages"] == 1
+    assert second.is_final and second.text == "Second, in blue."
+    assert delivered == ["m1"]
+    assert not any(event.kind == "continued" for event in events), "nothing delegated to announce"
+
+
+async def test_a_message_claude_never_echoes_goes_back_to_waiting(monkeypatch) -> None:
+    """The CLI went quiet with the message unread: the run ends, the message is not called
+    delivered, and it waits in the inbox for the caller to send as the next turn."""
+    events, _, inbox, delivered = await _run_with_inbox(
+        monkeypatch, [[_ResultMessage("First.")], [_Silence()]], receipt_timeout=0.05
+    )
+    assert [event.kind for event in events if event.kind == "result"] == ["result"]
+    assert delivered == [] and len(inbox) == 1 and not inbox.unacknowledged

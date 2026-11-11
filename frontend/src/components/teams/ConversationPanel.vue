@@ -13,6 +13,7 @@ import { useResizeObserver } from '@vueuse/core'
 import {
   ArrowDown,
   Brain,
+  Clock,
   FilePen,
   FileText,
   GitCommitHorizontal,
@@ -46,6 +47,7 @@ import {
   historyReason,
   isDelegatedWork,
   isFileEdit,
+  isQueued,
   isSkillCall,
   liveLine,
   tailLine,
@@ -384,6 +386,14 @@ useResizeObserver(transcript, () => {
               :style="{ background: resultTypeColor(resultTypeOf(block.message)!) }"
             />
             {{ resultTypeLabel(resultTypeOf(block.message)!) }}
+          </span>
+          <!-- Sent while the agent was working and not handed over yet (§10.8). -->
+          <span
+            v-if="isQueued(block.message)"
+            class="inline-flex items-center gap-1 rounded-pill bg-inset px-2 leading-5"
+            :title="t('chat.transcript.queuedHint')"
+          >
+            <Clock class="size-3" /> {{ t('chat.transcript.queued') }}
           </span>
           <span class="ml-auto">{{ formatTime(block.message.created_at) }}</span>
         </p>

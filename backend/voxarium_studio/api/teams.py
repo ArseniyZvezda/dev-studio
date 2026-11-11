@@ -66,7 +66,8 @@ class TaskCreate(BaseModel):
     brief: str = ""
     write_paths: list[str] = Field(default_factory=list, description=(
         "Exact files this task will write, create or delete, including both paths of a "
-        "rename. Paths are relative to the managed project root or absolute. Exclude "
+        "rename. Paths are relative to the managed project root or absolute; ``dir/*`` "
+        "declares everything inside a directory. Exclude "
         "read-only references; an empty list takes no path locks."
     ))
     attachments: list[str] = Field(default_factory=list)
@@ -105,8 +106,9 @@ class TaskUpdate(BaseModel):
     write_paths: list[str] = Field(default_factory=list, description=(
         "Replace the exact files this task will write (§10.5). Include files created "
         "or deleted and both paths of a rename, relative to the managed project root "
-        "or absolute. Exclude read-only references. An empty list clears the path locks; "
-        "this cannot change while the task is running."
+        "or absolute; ``dir/*`` declares everything inside a directory. Exclude read-only "
+        "references. An empty list clears the path locks. While the task is running "
+        "only its executor may change this, and only to paths no other running task holds."
     ))
     attachments: list[str] | None = None
     assignee_id: str | None = None
@@ -1109,7 +1111,8 @@ async def claim_task(
 async def add_note(
     team_id: str, task_id: str, payload: NoteCreate, ctx: Ctx
 ) -> dict[str, Any]:
-    """Append a note to the transcript — an agent assignee sees it on its next resume."""
+    """Append a note to the transcript. An agent assignee sees it on its next resume — or,
+    written while its session is working, at that session's next step (§10.8)."""
     try:
         message = await ctx.teams.add_note(task_id, payload.text, author_id=payload.actor_id)
     except RoutingError as exc:

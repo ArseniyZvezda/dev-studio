@@ -255,6 +255,8 @@ function context(): ChatContext {
 
 // ---- sending
 
+// A message sent while the member is answering is not refused (§10.8): it is queued and
+// reaches them at the next step, so the composer stays live and Stop sits beside Send.
 const running = computed(() => chat.view === 'chat' && chat.activeChat?.is_running === true)
 const canSend = computed(
   () =>
@@ -262,7 +264,6 @@ const canSend = computed(
     !uploadingAttachments.value &&
     !chat.busy &&
     !readOnlyHistory.value &&
-    !running.value &&
     !(chat.view === 'chat' && chat.activeChat?.producer_paused) &&
     (chat.view === 'chat' ? Boolean(chat.activeChatId) : Boolean(chat.newMemberId)),
 )
@@ -590,7 +591,7 @@ onBeforeUnmount(() => {
             </span>
           </p>
 
-          <AttachmentPicker :key="attachmentDraftKey" v-model="attached" :disabled="chat.busy || running" @busy="uploadingAttachments = $event">
+          <AttachmentPicker :key="attachmentDraftKey" v-model="attached" :disabled="chat.busy" @busy="uploadingAttachments = $event">
           <div class="flex items-end gap-2">
             <textarea
               ref="composer"
@@ -609,10 +610,9 @@ onBeforeUnmount(() => {
               <Square class="size-3.5" />
             </button>
             <button
-              v-else
               class="vxs-btn-primary grid size-9 shrink-0 place-items-center disabled:opacity-50"
               :disabled="!canSend"
-              :title="t('chat.composer.send')"
+              :title="running ? t('chat.composer.sendQueued', { name: producerName }) : t('chat.composer.send')"
               @click="submit"
             >
               <Send class="size-4" />

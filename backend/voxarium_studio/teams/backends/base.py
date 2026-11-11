@@ -7,7 +7,9 @@ contract; the registry below is the extension point for others.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -16,11 +18,164 @@ from ...core.config import MAX_MESSAGE_BYTES_DEFAULT, TeamsConfig
 from ...core.prompts import default as _default_prompt
 from ...models.teams import TeamMember, TeamTask
 
+log = logging.getLogger(__name__)
+
 
 def member_run_settings(member: TeamMember, settings: TeamsConfig) -> dict[str, Any]:
     """Resolve shared run settings once, without rewriting stored member overrides (§10.3)."""
     source = member if member.run_settings_override else settings
     return {"permission_mode": source.permission_mode, "max_turns": source.max_turns}
+
+
+#: ``data.delivery`` on the transcript entry of something sent to a session while it was
+#: running (§10.8): ``queued`` until the member has it, ``delivered`` after. Absent on a
+#: message that opened a turn itself — the member had that one from the start.
+QUEUED, DELIVERED = "queued", "delivered"
+
+
+@dataclass(slots=True)
+class QueuedMessage:
+    """One message sent to a session while it was running (§10.8)."""
+
+    id: str
+    """The transcript row it was recorded as, which is how its delivery is marked."""
+
+    text: str
+    """What the member receives — composed by the caller, context and trailers included."""
+
+    images: list[dict[str, Any]] = field(default_factory=list)
+    """Pictures sent with it, in :attr:`AgentRunRequest.images`' shape. A runtime that
+    cannot take an image block ignores them; the text names each file by its path."""
+
+
+class Inbox:
+    """Messages for a session that is busy, delivered at the next opportunity (§10.8).
+
+    The user does not have to wait for a run to end — or stop it — to say something to it.
+    What they send while it works is put here, and reaches the member in one of two ways,
+    neither of which interrupts anything:
+
+    - **Inside the turn**, by a backend whose runtime takes a user message while it is
+      working. Such a backend :meth:`attach`\\ es a sender for as long as it has a live
+      process; every message — those already waiting, and each one put afterwards — is
+      handed to it at once, and counts as delivered when the backend
+      :meth:`acknowledge`\\ s it: the runtime's own word that the model has the text.
+    - **As the next turn**, by the caller. Whatever is still waiting when ``backend.run``
+      returns is sent as a message of its own into the same session before the run is
+      called over.
+
+    So a backend that cannot be steered ignores this entirely and loses nothing: the
+    message arrives one turn later instead of one tool call later.
+
+    A message is in exactly one of three places: *waiting* (``len``), *sent* to a runtime
+    that has not acknowledged it (:attr:`unacknowledged`), or delivered and gone. A sender
+    that fails, and a :meth:`detach` with messages still unacknowledged, put them back to
+    waiting — a message may then reach the model twice in the worst case, never not at all.
+
+    ``closed`` is the caller's promise that nothing put from now on would be delivered.
+    Checking emptiness and closing happen with no ``await`` between them, which is what
+    makes "accepted" and "will be delivered or handed back" the same thing.
+    """
+
+    def __init__(
+        self,
+        *,
+        preamble: str = "",
+        on_delivered: Callable[[list[QueuedMessage]], Awaitable[None]] | None = None,
+    ) -> None:
+        self.preamble = preamble
+        """The ``mid_run_message`` template around the messages, ``{message}`` unfilled."""
+        self.closed = False
+        self._items: list[QueuedMessage] = []
+        self._sent: dict[str, QueuedMessage] = {}
+        self._sender: Callable[[QueuedMessage], Awaitable[None]] | None = None
+        self._sending: set[asyncio.Task[None]] = set()
+        self._on_delivered = on_delivered
+
+    def __len__(self) -> int:
+        """Messages waiting — not handed to any runtime."""
+        return len(self._items)
+
+    @property
+    def unacknowledged(self) -> int:
+        """Messages a runtime was sent and has not said the model received."""
+        return len(self._sent)
+
+    def put(self, message: QueuedMessage) -> None:
+        if self.closed:
+            raise RuntimeError("The session is no longer taking messages")
+        self._items.append(message)
+        self._forward()
+
+    def discard(self, ids: set[str]) -> None:
+        """Forget messages the caller is delivering some other way."""
+        self._items = [item for item in self._items if item.id not in ids]
+
+    # ---- a runtime that takes messages while it works ----
+
+    def attach(self, sender: Callable[[QueuedMessage], Awaitable[None]]) -> None:
+        """Hand every waiting message, and each later one, to ``sender`` as it comes."""
+        self._sender = sender
+        self._forward()
+
+    def detach(self) -> None:
+        """The runtime is gone, or done taking messages. What it never acknowledged waits again."""
+        self._sender = None
+        if self._sent:
+            self._items = [*self._sent.values(), *self._items]
+            self._sent = {}
+
+    def _forward(self) -> None:
+        if self._sender is None or not self._items:
+            return
+        items, self._items = self._items, []
+        for item in items:
+            self._sent[item.id] = item
+            task = asyncio.ensure_future(self._send(self._sender, item))
+            self._sending.add(task)
+            task.add_done_callback(self._sending.discard)
+
+    async def _send(
+        self, sender: Callable[[QueuedMessage], Awaitable[None]], item: QueuedMessage
+    ) -> None:
+        try:
+            await sender(item)
+        except Exception:  # a dead process must cost a retry, not the message
+            log.warning("Could not hand message %s to the running session", item.id, exc_info=True)
+            if self._sent.pop(item.id, None) is not None:
+                self._items.insert(0, item)
+
+    async def acknowledge(self, message_id: str) -> bool:
+        """The runtime says the model has this message. False for one it was not sent."""
+        item = self._sent.pop(message_id, None)
+        if item is None:
+            return False
+        if self._on_delivered is not None:
+            await self._on_delivered([item])
+        return True
+
+    # ---- the caller, between turns ----
+
+    async def take(self) -> list[QueuedMessage]:
+        """Everything waiting, oldest first — taken, and reported as delivered."""
+        items, self._items = self._items, []
+        if items and self._on_delivered is not None:
+            await self._on_delivered(items)
+        return items
+
+    def compose(self, items: list[QueuedMessage]) -> str:
+        """The messages as the one text the member is handed, inside the preamble."""
+        body = "\n\n".join(item.text for item in items)
+        if "{message}" in self.preamble:
+            return self.preamble.replace("{message}", body)
+        return f"{self.preamble}\n\n{body}" if self.preamble else body
+
+    def close(self) -> list[QueuedMessage]:
+        """Stop taking messages; returns what was never delivered (a stopped or failed run)."""
+        self.closed = True
+        self.detach()
+        items, self._items = self._items, []
+        return items
 
 
 @dataclass(slots=True)
@@ -198,6 +353,15 @@ class AgentRunRequest:
     """Allow an interactive team member to initiate delegation at any effort (§10.6).
 
     Task and chat turns opt in. Studio workers and internal one-shot requests work alone.
+    """
+
+    inbox: Inbox | None = None
+    """Messages the user sends while this run is in flight (§10.8), or ``None`` for a run
+    nobody can talk to — a worker, a text-only request.
+
+    Backend-agnostic by intent: a runtime that takes a user message while it works
+    attaches to it, and one that cannot leaves it alone — the caller delivers what is left
+    as the next turn of the same session.
     """
 
     def __post_init__(self) -> None:

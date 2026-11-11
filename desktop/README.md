@@ -54,6 +54,14 @@ if the installation is still in use, without terminating processes.
 standalone Python 3.12 distribution using uv, installs the backend wheel with teams,
 and copies Node/npm from the build machine. Python dependencies are locked in `backend/uv.lock`; npm dependencies are locked too.
 
+The bundled runtime must not name the machine that built it (dev spec §2.7).
+`scripts/strip-build-paths.py` removes the backend's `direct_url.json` and the
+console-script launchers in `python\Scripts` (they embed the build interpreter and
+cannot start anywhere else; `uv.exe` stays), then compiles bytecode with source paths
+relative to the Python directory. Finally it reads every file of the runtime: the build
+fails, listing the files, if one still contains the checkout path or the builder's
+home directory.
+
 ## Develop
 
 Prepare the backend virtual environment as described in the repository README and

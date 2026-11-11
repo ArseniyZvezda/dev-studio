@@ -267,6 +267,8 @@ class TeamTask(SQLModel, table=True):
     write_paths: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     """Exact files this task will write, relative to the managed project or absolute (§10.5).
 
+    ``foo/bar/*`` declares a whole directory — everything inside ``foo/bar``.
+
     Include files created or deleted and both paths of a rename. Reading or referencing
     a file never belongs here. An empty list takes no path locks; the brief is not used
     to infer a write set.

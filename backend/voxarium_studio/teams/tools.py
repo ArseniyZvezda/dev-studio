@@ -234,7 +234,8 @@ def build_toolset(
                     "description": (
                         "Exact file paths this task will write, create or delete, including "
                         "both paths of a rename. Use paths relative to the managed project "
-                        "root or absolute paths; no directories or globs. Never include "
+                        "root or absolute paths. A whole directory is written dir/* "
+                        "(everything inside it); no other globs. Never include "
                         "files only read for context. Omitted or empty means no path locks; "
                         "paths mentioned in the brief do not create locks (§10.5)."
                     ),
@@ -509,9 +510,12 @@ def build_toolset(
                     "description": (
                         "Replace the exact file paths this task will write, create or delete, "
                         "including both paths of a rename. Paths are relative to the managed "
-                        "project root or absolute; no directories or globs. Exclude read-only "
+                        "project root or absolute; a whole directory is written dir/* "
+                        "(everything inside it), no other globs. Exclude read-only "
                         "references. Empty clears the write set and takes no path locks. "
-                        "Cannot change while the task is running (§10.5)."
+                        "While a task is running only its executor may change the list — "
+                        "you, on the task you are working on: it applies at once and is "
+                        "refused if another running task holds one of the paths (§10.5)."
                     ),
                 },
                 "assignee_id": {

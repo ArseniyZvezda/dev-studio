@@ -349,6 +349,14 @@ Producer Mode is active. Speak {language}, then follow the user's language. Mana
         "your last tool call and pick up from where you stopped.",
         required=True,
     ),
+    "mid_run_message": PromptSpec(
+        # Wraps what the user sends while a session is busy (§10.8) — handed over between
+        # two tool calls where the runtime allows it, otherwise as the next turn.
+        "The user sent you this while you were working. Take it into account from here "
+        "on. Do not drop what you are doing unless the message asks you to.\n\n{message}",
+        placeholders=("message",),
+        required=True,
+    ),
     "result_required": PromptSpec(
         # Sent once, to a session that ended without calling `finish_task` (§10.4): the
         # result type is what the reviewer reads first, so a run is asked for it before the
@@ -432,6 +440,7 @@ class AgentPromptsConfig(BaseModel):
     resume_notes: str | None = None
     review_changes: str | None = None
     stall_continue: str | None = None
+    mid_run_message: str | None = None
     result_required: str | None = None
 
     def text(self, key: str, **values: str) -> str:

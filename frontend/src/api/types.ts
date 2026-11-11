@@ -1436,6 +1436,7 @@ export interface AgentPromptsConfig {
   resume_notes: string | null
   review_changes: string | null
   stall_continue: string | null
+  mid_run_message: string | null
   result_required: string | null
 }
 

@@ -61,8 +61,12 @@ from .attachments import AttachmentStore, with_trailer
 from .authoring import ProjectAuthoring
 from .transcript import ALWAYS_KINDS, compact_state, verbose_only
 from .backends.base import (
+    DELIVERED,
+    QUEUED,
     AgentEvent,
     AgentRunRequest,
+    Inbox,
+    QueuedMessage,
     RemoteControl,
     get_backend,
     live_session,
@@ -161,6 +165,9 @@ class TeamOrchestrator:
         self._path_locks = wt.PathLockManager()
         # §10.5: publishing a new write set and taking a run's snapshot are atomic.
         self._write_paths_guards: dict[str, asyncio.Lock] = {}
+        #: Runs whose session may change its own write scope (§10.5): the claims it holds
+        #: in the shared copy, or ``None`` for an isolated checkout, which holds none.
+        self._run_writes: dict[str, list[wt.PathClaim] | None] = {}
         self._temp_locks: dict[str, asyncio.Lock] = {}
         self.subagents = SubagentManager(self)
         self.paused_producer_chats: dict[str, set[str]] = {}
@@ -169,6 +176,10 @@ class TeamOrchestrator:
         A release may wait for a dependency or a Solo slot. It belongs to this pause only:
         a fresh Pause (including project startup) holds the chat's tasks again.
         """
+        self._inboxes: dict[str, Inbox] = {}
+        """Notes written to each task while its run is in flight (§10.8), for the length of
+        it: the session gets them at its next tool boundary or as its next turn, instead of
+        on the resume after this one."""
         self._ending: set[str] = set()
         """Runs in their last lines — locks released, the member's queue being dispatched.
 
@@ -1046,7 +1057,9 @@ class TeamOrchestrator:
         if task.started_at is not None:
             statement = statement.where(AgentMessage.created_at > task.started_at)
         result = await session.exec(statement.order_by(AgentMessage.created_at))
-        return list(result.all())
+        # A note the running session was handed while it worked (§10.8) is newer than
+        # `started_at` and yet not news: sending it again would read as a second request.
+        return [row for row in result.all() if row.data.get("delivery") != DELIVERED]
 
     def _solo_holder_id(self, member: TeamMember) -> str | None:
         """The task a solo-mode member is working on, or ``None`` when they are free — or
@@ -1294,6 +1307,7 @@ class TeamOrchestrator:
 
         fields = dict(fields)  # normalised and consumed below; the caller's patch is theirs
         running = self.jobs.is_running(task_id)
+        rescoping = False
         changes: dict[str, tuple[Any, Any]] = {}
         new_status: TaskStatus | None = None
 
@@ -1315,10 +1329,19 @@ class TeamOrchestrator:
                 fields["write_paths"] = wt.normalize_write_paths(
                     fields["write_paths"], root=self.paths.root,
                 )
-                if self.jobs.is_running(task_id) and fields["write_paths"] != task.write_paths:
+                rescoping = (
+                    self.jobs.is_running(task_id) and fields["write_paths"] != task.write_paths
+                )
+                # §10.5: the one who may move a live write scope is the executor, from inside
+                # its own session — it knows what the work turned out to need. Before the
+                # session exists (queued for paths or a slot) there is nobody to ask.
+                if rescoping and not (
+                    actor_id is not None and actor_id == task.assignee_id
+                    and task_id in self._run_writes
+                ):
                     raise ValueError(
                         "This task is running — stop it before changing write_paths. "
-                        "The active run keeps its declared file locks until it ends."
+                        "Only its executor may change them during the run."
                     )
                 if task.worktree_path and not wt.can_isolate_write_paths(
                     fields["write_paths"], self.paths.root,
@@ -1395,6 +1418,15 @@ class TeamOrchestrator:
                     )
             elif task.archived and landing_status != TaskStatus.DONE:
                 fields["archived"] = False
+
+            # Last, after everything that can still reject the patch: the swap is immediate
+            # and all-or-nothing, and refuses a path another running task holds (§10.5). An
+            # isolated run holds no locks, so there the list simply changes.
+            if rescoping and (held := self._run_writes[task_id]) is not None:
+                self._path_locks.replace(
+                    held, fields["write_paths"], root=self.paths.root,
+                    owner=self.display_id(task),
+                )
 
             for field, value in fields.items():
                 current = getattr(task, field)
@@ -1827,6 +1859,13 @@ class TeamOrchestrator:
         On a task whose assignee is an agent this is also what the note is *for*: the next
         resume carries every note left since the last run as its prompt (`_opening_turn`),
         so a comment written here is how a person steers a session between runs.
+
+        And **during** one (§10.8): a note written while the task's session is working is
+        queued on the run's inbox and reaches it at the next opportunity, without stopping
+        it — between two tool calls where the runtime can take it there, otherwise as the
+        next turn before the run is called finished. Its entry carries ``data.delivery``,
+        ``queued`` until then. A run that is stopped first leaves it queued, and it rides
+        the next resume like any other note.
         """
         if not text.strip():
             raise ValueError("A note needs some text")
@@ -1837,17 +1876,58 @@ class TeamOrchestrator:
             # A note is read back to the agent on the next resume and is part of the task's
             # audit trail, so an entry may not be attributed to someone who cannot act on
             # the task — or to a member id that does not exist at all.
-            if author_id is not None and await session.get(TeamMember, author_id) is None:
+            writer = await session.get(TeamMember, author_id) if author_id is not None else None
+            if author_id is not None and writer is None:
                 raise KeyError(f"Unknown member {author_id!r}")
             await self.check_can_act(session, task=task, actor_id=author_id)
             author = task.assignee_id if author_id is None else author_id
-        return await self.record_message(
+        # Only what a person wrote is a message *to* the session. An agent notes on its own
+        # task through `add_task_note` while it runs, and handing that back to it as
+        # something the user said would have it answering itself.
+        from_person = writer is None or writer.kind == MemberKind.HUMAN
+        inbox = self._inboxes.get(task_id) if from_person else None
+        live = inbox is not None and not inbox.closed
+        message = await self.record_message(
             task_id,
             author,
             role="human" if author_id is not None else "user",
             kind="note",
             text=text,
+            data={"delivery": QUEUED} if live else None,
         )
+        # Checked again, with nothing awaited before the put: a run that closed its inbox
+        # while the note was being stored will not read it, and the note is then simply
+        # one written since the last run — which the next resume carries.
+        if inbox is not None and not inbox.closed:
+            inbox.put(QueuedMessage(id=message.id, text=text.strip()))
+        return message
+
+    async def _mark_notes_delivered(self, items: list[QueuedMessage]) -> None:
+        """The session has these notes now: say so on their entries and to the UI (§10.8)."""
+        ids = [item.id for item in items]
+        async with self.db.session() as session:
+            rows = list((await session.exec(
+                select(AgentMessage).where(AgentMessage.id.in_(ids))  # type: ignore[attr-defined]
+            )).all())
+            for row in rows:
+                # A new dict, not a mutation: the JSON column only notices assignment.
+                row.data = {**row.data, "delivery": DELIVERED}
+                session.add(row)
+        for row in rows:
+            await self.bus.publish(
+                EventType.TEAM_MEMBER_MESSAGE,
+                {
+                    "task_id": row.task_id,
+                    "member_id": row.member_id,
+                    "role": row.role,
+                    "kind": row.kind,
+                    "text": row.text,
+                    "data": row.data,
+                    "id": row.id,
+                    "created_at": row.created_at.isoformat(),
+                },
+                channel=f"team.{row.member_id}.message",
+            )
 
     async def report_result(
         self, task_id: str, *, result_type: str, summary: str, actor_id: str | None = None,
@@ -2235,7 +2315,13 @@ class TeamOrchestrator:
         )
         workdir = launch_root
         worktree_created: Path | None = None
-        locks: list[asyncio.Lock] = []
+        locks: list[wt.PathClaim] = []
+        # Open for the whole run, preparation included: a note written while the session is
+        # still waiting for a path or a slot is one it should start out knowing (§10.8).
+        inbox = self._inboxes[task_id] = Inbox(
+            preamble=self.config.teams.prompts.text("mid_run_message"),
+            on_delivered=self._mark_notes_delivered,
+        )
 
         try:
             can_isolate_writes = wt.can_isolate_write_paths(write_paths, self.paths.root)
@@ -2302,6 +2388,8 @@ class TeamOrchestrator:
                         text=f"Paths are free after {span(waited)} — starting the session.",
                         data={"resource": "path", "waited_s": round(waited, 1)},
                     )
+            # From here the session exists, and its executor may re-declare (§10.5).
+            self._run_writes[task_id] = locks if worktree_created is None else None
 
             backend = get_backend(member.agent_backend)
             # `--agent` is Claude Code's. A backend with no notion of named personas gets
@@ -2413,11 +2501,22 @@ class TeamOrchestrator:
                 + f"\nFor this run, resolve relative write paths from {worktree_created or self.paths.root}, "
                 "regardless of the session working directory. In an isolated checkout this "
                 "maps project-relative declarations to their checkout counterparts."
-                + "\nOnly these files receive coordination locks when this task has no isolated "
+                + "\nAn entry is an exact file, or a directory written as dir/* — everything "
+                "inside it. Only these receive coordination locks when this task has no isolated "
                 "checkout. Read-only references never take locks. Declare files you will create, "
                 "edit, delete or rename, including both rename paths. Do not edit undeclared "
-                "project files: if the write scope must change, report the required paths for "
-                "an update before the next run. Task-private temporary files are separate."
+                "project files: "
+                + (
+                    "if the write scope must change, first replace the list yourself — "
+                    f"update_task on {self.display_id(task)} with the full new write_paths. It "
+                    "takes effect at once unless another running task holds one of the new "
+                    "paths; then nothing changes, so do not write there — work on something "
+                    "else or report the paths you need. "
+                    if toolset is not None else
+                    "if the write scope must change, report the required paths for an update "
+                    "before the next run. "
+                )
+                + "Task-private temporary files are separate."
             )
             # The project's own MCP servers (§10.7) go in first, so a project server that
             # happens to be called `voxarium_studio` cannot displace the Studio's tools — those
@@ -2465,6 +2564,7 @@ class TeamOrchestrator:
                 continue_prompt=self.config.teams.prompts.text("stall_continue"),
                 max_message_bytes=self.config.teams.max_message_bytes,
                 delegated_work_idle_timeout=self.config.teams.delegated_work_idle_timeout,
+                inbox=inbox,
             )
             # §10.4: the Status column lists the servers the Studio handed this run. Recorded
             # here rather than read from the runtime, because only Claude Code and Qwen Code
@@ -2517,6 +2617,12 @@ class TeamOrchestrator:
                 task_id, member_id, role="system", kind="error", text=str(exc)
             )
         finally:
+            # However the run ended. A note it never took stays `queued` on its entry and is
+            # carried by the next resume, as a note written between runs is (§10.8).
+            inbox.close()
+            if self._inboxes.get(task_id) is inbox:
+                self._inboxes.pop(task_id, None)
+            self._run_writes.pop(task_id, None)
             self._path_locks.release(locks)
             # An approval can arrive while the completed run is still compacting. Wait
             # until its backend has stopped before deleting files it may still be using.
@@ -2559,21 +2665,36 @@ class TeamOrchestrator:
         when this run started, so whatever is there now was reported by this run.
         """
         outcome = await self._drain(backend, request, task_id, member_id)
-        if outcome.errored:
-            return outcome.limit
-
-        if (
-            self.config.teams.result_follow_up
-            # §10.4: only ask for a report the session was equipped to submit.
-            # Disabled Studio tools (or a missing SDK) use the plain-text finish prompt.
-            and "mcp__voxarium_studio__finish_task" in request.extra_allowed_tools
-            and (await self._reload(task_id)).result_type is None
-        ):
+        inbox = request.inbox
+        asked = False
+        # One more message into the same session for as long as there is one to send: a
+        # note the user wrote while it worked and the runtime did not take mid-turn (§10.8),
+        # then — once — the request for a result type. Notes first: what the user said may
+        # be exactly what the result depends on.
+        while not outcome.errored:
+            follow_up = ""
+            if (
+                not asked
+                and self.config.teams.result_follow_up
+                # §10.4: only ask for a report the session was equipped to submit.
+                # Disabled Studio tools (or a missing SDK) use the plain-text finish prompt.
+                and "mcp__voxarium_studio__finish_task" in request.extra_allowed_tools
+                and (await self._reload(task_id)).result_type is None
+            ):
+                follow_up = self.config.teams.prompts.text(
+                    "result_required", language=summary_language((await self._reload(task_id)).summary_locale)
+                )
             session_id = (await self._reload(task_id)).agent_session_id
-            follow_up = self.config.teams.prompts.text(
-                "result_required", language=summary_language((await self._reload(task_id)).summary_locale)
-            )
-            if session_id and follow_up:
+            # Nothing is awaited between this test and the close below, so a note the inbox
+            # accepted is one this loop sends.
+            if inbox is not None and len(inbox):
+                notes = await inbox.take()
+                text = inbox.compose(notes)
+                # A backend without resumption has no session to add to, so it gets the
+                # task again with the note under it, as it does for a worker's results.
+                prompt = text if session_id else f"{request.prompt}\n\n{text}"
+            elif follow_up and session_id:
+                asked = True
                 await self.record_message(
                     task_id,
                     member_id,
@@ -2584,22 +2705,27 @@ class TeamOrchestrator:
                         "result type."
                     ),
                 )
-                # The same session, one more message: the pictures and the recovery context
-                # belong to the opening turn and are not sent again.
-                outcome = await self._drain(
-                    backend,
-                    replace(
-                        request,
-                        prompt=follow_up,
-                        images=[],
-                        resume_session_id=session_id,
-                        recovery_prompt="",
-                    ),
-                    task_id,
-                    member_id,
-                )
-                if outcome.errored:
-                    return outcome.limit
+                prompt = follow_up
+            else:
+                if inbox is not None:
+                    inbox.close()
+                break
+            # The same session, one more message: the pictures and the recovery context
+            # belong to the opening turn and are not sent again.
+            outcome = await self._drain(
+                backend,
+                replace(
+                    request,
+                    prompt=prompt,
+                    images=[],
+                    resume_session_id=session_id,
+                    recovery_prompt="",
+                ),
+                task_id,
+                member_id,
+            )
+        if outcome.errored:
+            return outcome.limit
 
         # Work finished — hand it to the manager's review queue (§10.4 step 3).
         # `None` when this run said nothing at all, which leaves the previous run's

@@ -24,7 +24,8 @@ import math
 import os
 import re
 import shutil
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ from .base import (
     AgentBackend,
     AgentEvent,
     AgentRunRequest,
+    Inbox,
+    QueuedMessage,
     RemoteControl,
     RemoteControlUnavailable,
     forget_live_session,
@@ -208,14 +211,16 @@ class _DelegatedWork:
         return shown
 
 
-async def _turn(client: Any, idle_timeout: float) -> AsyncIterator[Any]:
+async def _turn(client: Any, idle_timeout: Callable[[], float]) -> AsyncIterator[Any]:
     """One turn's messages, ending at its result frame — with a bound on total silence.
 
     ``receive_response()`` stops at the first ``ResultMessage`` and waits indefinitely until
     then, which is exactly right while the member is working and exactly wrong once the run
     is only holding the session open for delegated work: nothing else in the Studio would
-    ever end that wait. ``idle_timeout`` of 0 keeps the SDK's own behaviour, which is what a
-    turn the member is actually driving gets.
+    ever end that wait. ``idle_timeout`` answering 0 keeps the SDK's own behaviour, which is
+    what a turn the member is actually driving gets. It is asked before every frame rather
+    than once, because the answer changes inside a turn: a run held for a message the CLI
+    has not echoed is bounded only until the echo arrives (§10.8).
 
     The bound is on **silence between frames**, not on the wait as a whole: a sub-agent
     reports progress as it works, so one that legitimately runs for hours keeps resetting it.
@@ -227,8 +232,9 @@ async def _turn(client: Any, idle_timeout: float) -> AsyncIterator[Any]:
     stream = client.receive_response()
     while True:
         try:
-            if idle_timeout > 0:
-                message = await asyncio.wait_for(stream.__anext__(), idle_timeout)
+            limit = idle_timeout()
+            if limit > 0:
+                message = await asyncio.wait_for(stream.__anext__(), limit)
             else:
                 message = await stream.__anext__()
         except StopAsyncIteration:
@@ -354,6 +360,16 @@ class ClaudeCodeBackend(AgentBackend):
         extra_args: dict[str, str | None] = {}
         if request.agent_name:
             extra_args["agent"] = request.agent_name
+        # What the user says while the session works (§10.8) is sent as it comes — a real
+        # user message into the busy process, which the CLI hands to the model after the
+        # tool call in flight, or as a turn of its own when the turn has no more of them.
+        # `--replay-user-messages` is what makes that safe to do: the CLI echoes each
+        # message, under the uuid it was sent with, at the moment the model receives it.
+        # That echo is the delivery receipt, and the only thing that tells a result frame
+        # that ends the run from one with a queued message still behind it.
+        inbox = None if request.text_only else request.inbox
+        if inbox is not None:
+            extra_args["replay-user-messages"] = None
 
         # Everything that does not change between an attempt and its continuation. `resume`
         # does, so it is applied per attempt inside the loop.
@@ -424,6 +440,20 @@ class ClaudeCodeBackend(AgentBackend):
                         await client.query(_user_message(prompt, images))
                     else:
                         await client.query(prompt)
+                    # From here until this process stops taking them, a message for the
+                    # session goes straight in — those that waited for it to start included.
+                    receipts: dict[str, str] = {}
+                    expecting = False
+                    if inbox is not None:
+                        inbox.attach(_inbox_sender(client, inbox, receipts))
+
+                    def silence_limit() -> float:
+                        # A message the CLI was sent and has not echoed is picked up within
+                        # moments of the turn ending; one that is not was lost with it.
+                        if expecting and inbox is not None and inbox.unacknowledged:
+                            return _RECEIPT_TIMEOUT
+                        return request.delegated_work_idle_timeout if holding else 0.0
+
                     # One pass per **turn**, not per run. A result frame ends a turn, and a
                     # turn is the run's ending only when nothing the member delegated is
                     # still going: Claude Code wakes the session again as each sub-agent or
@@ -432,10 +462,7 @@ class ClaudeCodeBackend(AgentBackend):
                     # subprocess on the way out (§10.3).
                     while True:
                         try:
-                            async for message in _turn(
-                                client,
-                                request.delegated_work_idle_timeout if holding else 0.0,
-                            ):
+                            async for message in _turn(client, silence_limit):
                                 found = getattr(message, "session_id", None)
                                 if found:
                                     session_id = found
@@ -458,6 +485,13 @@ class ClaudeCodeBackend(AgentBackend):
                                     for event in _assistant_events(message, session_id):
                                         yield event
                                 elif isinstance(message, UserMessage):
+                                    receipt = receipts.pop(getattr(message, "uuid", None) or "", None)
+                                    if receipt is not None and inbox is not None:
+                                        # The echo of a message sent mid-run (§10.8): the
+                                        # model has it now. Not an event — the transcript
+                                        # already holds the user's own entry.
+                                        await inbox.acknowledge(receipt)
+                                        continue
                                     for event in _tool_result_events(message, session_id):
                                         yield event
                                 elif isinstance(message, SystemMessage):
@@ -487,13 +521,23 @@ class ClaudeCodeBackend(AgentBackend):
                                     # spent it cannot take the follow-up turn a finishing
                                     # task would wake it for. Holding it open would wait on
                                     # a session that can no longer speak.
-                                    waiting = bool(delegated) and not mid_work
+                                    # A message sent and not yet echoed holds the run
+                                    # open the same way (§10.8): the CLI opens another turn
+                                    # on it, and its result is the one that ends the run.
+                                    unread = inbox.unacknowledged if inbox is not None else 0
+                                    waiting = (bool(delegated) or unread > 0) and not mid_work
+                                    if inbox is not None and not waiting:
+                                        # This process takes no more: what arrives from here
+                                        # waits for the continuation, or for the caller.
+                                        inbox.detach()
                                     # Cost and turns still count — they were spent — but a
                                     # turn that ends neither the work nor the run describes
                                     # neither its outcome nor its summary, and its
                                     # `is_error` is the turn cap rather than a failed run.
                                     data["continued"] = stalled or waiting
                                     data["pending_tasks"] = len(delegated)
+                                    if unread:
+                                        data["pending_messages"] = unread
                                     stall_data = data
                                     yield AgentEvent(
                                         kind="result",
@@ -506,6 +550,12 @@ class ClaudeCodeBackend(AgentBackend):
                             timed_out = True
                         if timed_out or not waiting:
                             break
+                        expecting = True
+                        if not len(delegated):
+                            # Held for a message alone: nothing to say in the transcript,
+                            # the user's own entry is there and turns `delivered` shortly.
+                            waiting = False
+                            continue
                         if not holding:
                             # Said once per attempt rather than on every follow-up turn: the
                             # result cards that follow are the evidence, and the live list of
@@ -532,6 +582,8 @@ class ClaudeCodeBackend(AgentBackend):
                 # go with it — between attempts there is briefly no session to steer, and
                 # offering one that controls nothing is the §10.8 defect in miniature.
                 forget_live_session(request.session_key)
+                if inbox is not None:
+                    inbox.detach()
                 if len(delegated):
                     # The attempt ended with delegated work still outstanding, so the
                     # transcript has to say the run stopped watching — the subprocess dies
@@ -610,6 +662,36 @@ class ClaudeCodeBackend(AgentBackend):
             )
         finally:
             forget_live_session(request.session_key)
+            if inbox is not None:
+                # Cancelled or failed with the process still attached: what it was sent and
+                # never echoed goes back to waiting, for the caller to deliver or keep.
+                inbox.detach()
+
+
+#: Seconds of silence allowed while a message the CLI was sent has not been echoed back
+#: and its turn has ended. The echo normally follows the result frame at once.
+_RECEIPT_TIMEOUT = 120.0
+
+
+def _inbox_sender(client: Any, inbox: Inbox, receipts: dict[str, str]) -> Any:
+    """How a queued message enters a live session: one user message, under a uuid of ours.
+
+    The uuid is what the CLI echoes it back with (``--replay-user-messages``), so the echo
+    can be told from every other user frame in the stream — a tool result, a sub-agent's
+    prompt — and matched to the transcript entry it delivers. Registered **before** the
+    write: the echo can arrive on the reader the moment the line is flushed.
+    """
+
+    async def send(item: QueuedMessage) -> None:
+        receipt = str(uuid.uuid4())
+        receipts[receipt] = item.id
+        try:
+            await client.query(_user_message(inbox.compose([item]), item.images, receipt=receipt))
+        except BaseException:
+            receipts.pop(receipt, None)
+            raise
+
+    return send
 
 
 class _SessionControl:
@@ -675,7 +757,9 @@ class _SessionControl:
         return response if isinstance(response, dict) else {}
 
 
-async def _user_message(prompt: str, images: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+async def _user_message(
+    prompt: str, images: list[dict[str, Any]], *, receipt: str | None = None
+) -> AsyncIterator[dict[str, Any]]:
     """The opening message as content blocks: the text, then each picture as an image block.
 
     ``ClaudeSDKClient.query`` takes either a string or a stream of user-message dicts; the
@@ -701,11 +785,15 @@ async def _user_message(prompt: str, images: list[dict[str, Any]]) -> AsyncItera
                 },
             }
         )
-    yield {
+    message: dict[str, Any] = {
         "type": "user",
-        "message": {"role": "user", "content": content},
+        "message": {"role": "user", "content": content if len(content) > 1 else prompt},
         "parent_tool_use_id": None,
     }
+    if receipt:
+        # Echoed back by `--replay-user-messages` when the model receives it (§10.8).
+        message["uuid"] = receipt
+    yield message
 
 
 #: The four halves of the SDK's ``usage`` dict that are tokens. Cache reads count: they are
