@@ -440,6 +440,27 @@ def test_an_occupied_destination_needs_overwrite(explorer: ExplorerService) -> N
     assert (explorer.paths.root / "Build" / "notes.md").read_text(encoding="utf-8") == "# hello\n"
 
 
+def test_overwriting_the_folder_that_holds_the_source_is_refused(
+    explorer: ExplorerService,
+) -> None:
+    """`Assets/Inner/Assets` sent to the root collides with the `Assets` it lives in.
+
+    Overwrite removes what is at the destination first — here that is the folder holding
+    the source, so the source would be gone before anything was moved or copied.
+    """
+    nested = explorer.paths.root / "Assets" / "Inner" / "Assets"
+    nested.mkdir(parents=True)
+    (nested / "keep.txt").write_text("keep", encoding="utf-8")
+
+    for operation in (explorer.move, explorer.copy):
+        with pytest.raises(PartialOperation) as refused:
+            operation(["Assets/Inner/Assets"], "", overwrite=True)
+        assert isinstance(refused.value.cause, OperationRefused)
+
+    assert (nested / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert (explorer.paths.root / "Assets" / "notes.md").is_file(), "nothing was removed"
+
+
 @pytest.mark.parametrize("destination", ["Assets", "Assets/Textures/High"])
 def test_a_directory_cannot_be_moved_into_itself(
     explorer: ExplorerService, destination: str

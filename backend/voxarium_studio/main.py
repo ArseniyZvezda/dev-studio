@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -152,6 +152,10 @@ def _mount_frontend(app: FastAPI) -> None:
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
         """Serve real files, otherwise hand the route to the SPA router."""
+        if full_path.split("/", 1)[0] in ("api", "ws"):
+            # Not the SPA's to answer: an endpoint this backend does not have is a 404 the
+            # client can read, not a page of HTML with status 200 (§2.5).
+            raise HTTPException(status_code=404, detail=f"Not found: /{full_path}")
         candidate = (directory / full_path).resolve()
         if directory in candidate.parents and candidate.is_file():
             return FileResponse(candidate)

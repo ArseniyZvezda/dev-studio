@@ -94,12 +94,18 @@ def compute_cache_key(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-async def lookup(session, cache_key: str) -> dict[str, Any] | None:
-    """Return memoised outputs, dropping the entry if its output files vanished."""
+async def lookup(
+    session, cache_key: str, *, project_root: Path | None = None
+) -> dict[str, Any] | None:
+    """Return memoised outputs, dropping the entry if its output files vanished.
+
+    ``project_root`` is what a relative output path is relative to — the same frame
+    :func:`_canonical` reads an input path in, and not the server's working directory.
+    """
     entry = await session.get(NodeCacheEntry, cache_key)
     if entry is None:
         return None
-    if not _outputs_still_valid(entry.outputs):
+    if not _outputs_still_valid(entry.outputs, project_root):
         log.debug("Cache entry %s references missing files; discarding", cache_key[:12])
         await session.delete(entry)
         return None
@@ -109,11 +115,14 @@ async def lookup(session, cache_key: str) -> dict[str, Any] | None:
     return dict(entry.outputs)
 
 
-def _outputs_still_valid(outputs: dict[str, Any]) -> bool:
+def _outputs_still_valid(outputs: dict[str, Any], project_root: Path | None = None) -> bool:
     """A cached artifact path is worthless if the file was deleted since."""
     for value in outputs.values():
         if isinstance(value, str) and value.startswith("__voxarium_studio_file__:"):
-            if not Path(value.removeprefix("__voxarium_studio_file__:")).exists():
+            path = Path(value.removeprefix("__voxarium_studio_file__:"))
+            if project_root is not None and not path.is_absolute():
+                path = project_root / path
+            if not path.exists():
                 return False
     return True
 

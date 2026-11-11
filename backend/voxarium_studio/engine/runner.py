@@ -372,6 +372,7 @@ class PipelineRunner:
             for node_id in blocked:
                 await self._set_node_status(run.id, node_id, NodeStatus.SKIPPED)
                 failed.append(node_id)
+                await self._skip_pending(run.id, bodies.get(node_id))
 
             pending = [n for n in runnable if n not in blocked]
             if not pending:
@@ -399,6 +400,7 @@ class PipelineRunner:
                     failed.append(node_id)
                     if error_message is None:
                         error_message = f"{node_id}: {result}"
+                    await self._skip_pending(run.id, bodies.get(node_id))
                 else:
                     outputs_by_node[node_id] = result
 
@@ -480,7 +482,9 @@ class PipelineRunner:
                 schema, inputs, params, project_root=self.paths.root
             )
             async with self.db.session() as session:
-                cached = await node_cache.lookup(session, cache_key)
+                cached = await node_cache.lookup(
+                    session, cache_key, project_root=self.paths.root
+                )
             if cached is not None:
                 await log_fn(f"reusing cached result ({cache_key[:12]})", "stdout")
                 await self._finish_node(
@@ -823,6 +827,28 @@ class PipelineRunner:
                 node_run.status = status
                 node_run.finished_at = utcnow()
                 session.add(node_run)
+
+    async def _skip_pending(self, run_id: str, node_ids: set[str] | None) -> None:
+        """Mark a loop body that will never run as skipped (§8.2).
+
+        An iterating node owns its body: the walk leaves those nodes to it, so when the
+        iterator fails or is itself skipped nothing else ever reaches them. Only the ones
+        still ``pending`` are touched — a body node that already ran in an earlier turn, or
+        failed in this one, keeps the status that says so.
+        """
+        if not node_ids:
+            return
+        async with self.db.session() as session:
+            result = await session.exec(
+                select(NodeRun).where(
+                    NodeRun.run_id == run_id,
+                    NodeRun.node_id.in_(node_ids),  # type: ignore[attr-defined]
+                    NodeRun.status == NodeStatus.PENDING,
+                )
+            )
+            pending = sorted(node_run.node_id for node_run in result.all())
+        for node_id in pending:
+            await self._set_node_status(run_id, node_id, NodeStatus.SKIPPED)
 
     async def _set_node_status(
         self,

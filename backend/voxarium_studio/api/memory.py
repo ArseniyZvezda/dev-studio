@@ -7,6 +7,7 @@ The overview reports them so the page can show what agents are actually sent.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -15,10 +16,16 @@ from sqlmodel import select
 
 from ..core.context import AppContext
 from ..models.teams import TeamMember
+from ..teams.agent_memory import MAX_CANDIDATES, import_candidates
+from ..teams.agent_memory import scan as scan_agent_memory
 from ..teams.memory import MemoryChangedOnDisk, MemoryEntry, render_index
 from .deps import Ctx
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+
+agents_router = APIRouter(prefix="/agent-memory", tags=["memory"])
+"""The backends' own memory, read for import. Not under ``/memory``: every word there is an
+entry's name, and ``import`` is a perfectly good one."""
 
 
 class MemoryWrite(BaseModel):
@@ -66,6 +73,39 @@ async def _overview(ctx: AppContext) -> dict[str, Any]:
         "entries": [_entry_json(entry, authors) for entry in entries],
         "invalid": [item.to_json() for item in invalid],
     }
+
+
+class AgentMemoryPick(BaseModel):
+    id: str
+    replace: bool = False
+    """Write over the entry of that name. Unset, a taken name is skipped and reported."""
+
+
+class AgentMemoryImport(BaseModel):
+    items: list[AgentMemoryPick]
+
+
+@agents_router.get("")
+async def agent_memory(ctx: Ctx) -> dict[str, Any]:
+    """What each backend remembers on its own that could become project memory (§10.12)."""
+    try:
+        sources = await asyncio.to_thread(scan_agent_memory, ctx.paths.root, ctx.memory)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"sources": [source.to_json() for source in sources]}
+
+
+@agents_router.post("/import")
+async def import_agent_memory(payload: AgentMemoryImport, ctx: Ctx) -> dict[str, Any]:
+    if len(payload.items) > MAX_CANDIDATES * 4:
+        raise HTTPException(status_code=400, detail="Too many entries in one import")
+    try:
+        outcome = await import_candidates(
+            ctx.paths.root, ctx.memory, {item.id: item.replace for item in payload.items}
+        )
+        return {**outcome.to_json(), "memory": await _overview(ctx)}
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("")

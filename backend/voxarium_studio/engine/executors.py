@@ -306,26 +306,35 @@ async def _run_python_script(request: ExecutionRequest) -> ExecutionResult:
         del stderr_tail[:-40]
         await request.log(line, stream)
 
-    try:
-        process.stdin.write(payload.encode("utf-8"))
-        await process.stdin.drain()
-    except (BrokenPipeError, ConnectionResetError):
-        log.debug("Node %s closed stdin before the payload was written", request.node_id)
-    finally:
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
-            process.stdin.close()
-
+    # Reading starts before the payload is written. A script that fills its output pipe
+    # before it reads stdin — a noisy import is enough — would otherwise wait for a reader
+    # that is itself waiting for the script to take the payload.
     pumps = asyncio.gather(
         _pump(process.stdout, "stdout", request.log, sentinel_lines, request.progress),
         _pump(process.stderr, "stderr", stderr_log, sentinel_lines, request.progress),
     )
 
+    async def feed_and_wait() -> int:
+        stdin = process.stdin
+        assert stdin is not None
+        try:
+            stdin.write(payload.encode("utf-8"))
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            log.debug("Node %s closed stdin before the payload was written", request.node_id)
+        finally:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+                stdin.close()
+        return await process.wait()
+
+    # One wait for both halves, so the timeout and a cancel cover the hand-over of the
+    # payload as well: either one arriving mid-write still kills the process below.
     timeout = execution.timeout_seconds
     try:
         if timeout:
-            exit_code = await asyncio.wait_for(process.wait(), timeout)
+            exit_code = await asyncio.wait_for(feed_and_wait(), timeout)
         else:
-            exit_code = await process.wait()
+            exit_code = await feed_and_wait()
     except asyncio.TimeoutError as exc:
         with contextlib.suppress(ProcessLookupError, OSError):
             process.kill()

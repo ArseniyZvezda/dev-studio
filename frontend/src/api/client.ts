@@ -60,6 +60,8 @@ import type {
   PluginPage,
   PreviewResult,
   ProjectInfo,
+  AgentMemoryImportResult,
+  AgentMemorySource,
   MemoryEntryDetail,
   MemoryOverview,
   MemoryWrite,
@@ -826,6 +828,11 @@ export const api = {
     request<MemoryEntryDetail>('PUT', `/memory/${encodeURIComponent(name)}`, { body }),
   deleteMemoryEntry: (name: string) =>
     request<MemoryOverview>('DELETE', `/memory/${encodeURIComponent(name)}`),
+  /** What Claude Code, Codex and Qwen Code remember on their own, as entries to import. */
+  agentMemory: () => request<{ sources: AgentMemorySource[] }>('GET', '/agent-memory'),
+  /** Writes the chosen ones; `replace` lets one overwrite the entry already under its name. */
+  importAgentMemory: (items: { id: string; replace: boolean }[]) =>
+    request<AgentMemoryImportResult>('POST', '/agent-memory/import', { body: { items } }),
 
   // ------------------------------------------------------------ automations (§6.5)
   /**

@@ -344,8 +344,9 @@ SUGGESTED_MODELS: list[dict[str, str]] = [
     {"id": "claude-sonnet-4-6", "label": "Sonnet 4.6", "group": "Pinned", "note": ""},
     {"id": "claude-haiku-4-5", "label": "Haiku 4.5", "group": "Pinned",
      "note": "Fastest and cheapest"},
-    {"id": "claude-fable-5-1", "label": "Fable 5.1", "group": "Pinned",
+    {"id": "claude-fable-5-2", "label": "Fable 5.2", "group": "Pinned",
      "note": "Most capable; priced above Opus"},
+    {"id": "claude-fable-5-1", "label": "Fable 5.1", "group": "Pinned", "note": ""},
     {"id": "claude-fable-5", "label": "Fable 5", "group": "Pinned", "note": ""},
 ]
 # Each suggestion names the backend it is for, so the editor offers Claude models to a

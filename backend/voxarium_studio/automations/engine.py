@@ -389,7 +389,9 @@ class AutomationEngine:
             },
             route=f"/explorer?path={first}" if pending[first] != "deleted" else "/explorer",
         )
-        await self.fire(automation, firing)
+        # A task of its own, like every other trigger's firing: this one is no longer
+        # `state.timer`, so run inline it would be a firing `stop()` cannot find to cancel.
+        self._spawn(self.fire(automation, firing), f"automation:{automation.id}")
 
     async def _on_run_ended(self, event: Event) -> None:
         run_id = str(event.data.get("run_id") or "")

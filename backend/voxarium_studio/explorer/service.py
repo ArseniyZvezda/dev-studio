@@ -335,14 +335,15 @@ class ExplorerService:
     def tree(self, relative: str | None = None, *, depth: int = 1) -> dict[str, Any]:
         """One level by default; the UI expands lazily so huge projects stay responsive."""
         root = self.resolve(relative)
+        entries = self.list_dir(relative)
         return {
             "path": self.relative(root) if root != self.paths.root else "",
             "name": root.name,
-            "entries": [entry.to_json() for entry in self.list_dir(relative)],
+            "entries": [entry.to_json() for entry in entries],
             "children": (
                 {
                     entry.path: self.tree(entry.path, depth=depth - 1)
-                    for entry in self.list_dir(relative)
+                    for entry in entries
                     if entry.is_dir
                 }
                 if depth > 1
@@ -556,6 +557,14 @@ class ExplorerService:
         self._guard_operand(target)
         if source == target:
             return self.relative(source)  # A move to where it already is.
+        if target in source.parents:
+            # `a/b/a` into the folder holding the outer `a`: the name collides with a folder
+            # the source is *inside*. Overwriting would remove that folder first, and the
+            # source with it — nothing would be left to move.
+            raise OperationRefused(
+                f"Cannot {verb} {self.relative(source)} over {self.relative(target)}, "
+                "the folder that contains it."
+            )
         if target.exists():
             if not overwrite:
                 raise FileExistsError(f"{self.relative(target)} already exists.")

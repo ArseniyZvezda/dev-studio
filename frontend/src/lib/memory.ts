@@ -3,7 +3,7 @@
  * backend has the final word, so the form can say what is wrong before the request does.
  */
 
-import type { MemoryEntry } from '@/api/types'
+import type { AgentMemoryCandidate, MemoryEntry } from '@/api/types'
 
 export const MEMORY_NAME_MAX = 64
 export const MEMORY_DESCRIPTION_MAX = 300
@@ -41,6 +41,21 @@ export function filterMemory<T extends Pick<MemoryEntry, 'name' | 'description'>
     const text = `${entry.name} ${entry.description}`.toLowerCase()
     return terms.every((term) => text.includes(term))
   })
+}
+
+/**
+ * What the import dialog ticks to begin with: everything new that is about this project. A
+ * runtime's memory of *every* project (Codex's handbook, the global `QWEN.md`) is offered but
+ * left for the reader to pick unless it names this one, and nothing that would replace an
+ * existing entry is ever ticked for them.
+ */
+export function defaultImportSelection(
+  sources: { candidates: Pick<AgentMemoryCandidate, 'id' | 'state' | 'scope' | 'related'>[] }[],
+): string[] {
+  return sources
+    .flatMap((source) => source.candidates)
+    .filter((item) => item.state === 'new' && (item.scope === 'project' || item.related))
+    .map((item) => item.id)
 }
 
 /** A watcher path inside the memory folder — the folder itself counts. */

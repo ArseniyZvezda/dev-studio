@@ -153,6 +153,29 @@ async def test_a_failing_turn_ends_the_loop(ctx: AppContext, wait_for) -> None:
     assert not (ctx.paths.root / "Export/c.txt").exists()
 
 
+async def test_a_loop_that_never_starts_skips_its_body(ctx: AppContext, wait_for) -> None:
+    """The body belongs to the iterating node, so nothing else walks it. When that node is
+    skipped for a failed ancestor its body has to be told as well, or it sits `pending` on
+    a run that has ended."""
+    write(ctx, "Assets/a.txt", "first")
+
+    definition = copy_tree_pipeline().model_dump(mode="json", by_alias=True)
+    definition["nodes"].append(
+        {"id": "source", "type": "core.read_text_file", "params": {"path": "missing.txt"}}
+    )
+    definition["edges"].append(
+        {"from": {"node": "source", "port": "text"}, "to": {"node": "walk", "port": "directory"}}
+    )
+    run = await ctx.runner.start(PipelineDefinition.model_validate(definition))
+    await wait_for(run.id)
+
+    assert (await load_run(ctx, run.id)).status == RunStatus.ERROR
+    nodes = await node_runs(ctx, run.id)
+    assert nodes["source"].status == NodeStatus.ERROR
+    assert {nodes[n].status for n in ("walk", "target", "read", "write")} == {NodeStatus.SKIPPED}
+    assert not (ctx.paths.root / "Export/a.txt").exists()
+
+
 async def test_a_loop_reports_which_item_it_is_on(ctx: AppContext, wait_for) -> None:
     """The iterating node stays `running` for the whole loop and carries the count on the
     ordinary progress channel, so the canvas draws a bar over the files rather than showing

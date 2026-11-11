@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { filterMemory, inMemoryFolder, indexFill, isMemoryName, toMemoryName } from './memory'
+import { defaultImportSelection, filterMemory, inMemoryFolder, indexFill, isMemoryName, toMemoryName } from './memory'
 
 describe('memory names', () => {
   it('accepts what the backend accepts', () => {
@@ -32,6 +32,23 @@ describe('filterMemory', () => {
     expect(filterMemory(entries, 'lufs')).toEqual([entries[1]])
     expect(filterMemory(entries, 'json lufs')).toEqual([])
     expect(filterMemory(entries, '  ')).toBe(entries)
+  })
+})
+
+describe('defaultImportSelection', () => {
+  it('ticks what is new and about this project, and never a replacement', () => {
+    const item = (id: string, state: 'new' | 'same' | 'differs', scope: 'project' | 'global', related = true) => ({
+      id,
+      state,
+      scope,
+      related,
+    })
+    expect(
+      defaultImportSelection([
+        { candidates: [item('a', 'new', 'project'), item('b', 'same', 'project'), item('c', 'differs', 'project')] },
+        { candidates: [item('d', 'new', 'global', false), item('e', 'new', 'global', true)] },
+      ]),
+    ).toEqual(['a', 'e'])
   })
 })
 

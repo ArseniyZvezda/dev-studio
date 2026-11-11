@@ -114,8 +114,13 @@ class WsConnection {
     } catch {
       return
     }
-    if (typeof envelope.seq === 'number' && envelope.seq > this.lastSeq.value) {
-      this.lastSeq.value = envelope.seq
+    if (typeof envelope.seq === 'number') {
+      // A sequence only grows for as long as its bus lives, and `system.hello` carries the
+      // bus's current one. A hello *behind* us is therefore a backend that restarted and is
+      // counting from zero again: keeping the old, higher number would make every later
+      // resume and gap replay ask for events this bus will not reach for a long time.
+      const restarted = envelope.type === 'system.hello' && envelope.seq < this.lastSeq.value
+      if (restarted || envelope.seq > this.lastSeq.value) this.lastSeq.value = envelope.seq
     }
     // The backend evicts the oldest events for a subscriber that falls behind rather
     // than stalling a running pipeline, and then says so. Those events are still in the

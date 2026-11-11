@@ -2508,6 +2508,7 @@ def test_the_member_editor_is_offered_models_and_effort_levels(client) -> None:
     assert "sonnet" in ids, "the aliases the CLI resolves stay on the list"
     assert "claude-opus-5" in ids, "and pinned ids, which a tuned member wants"
     assert "claude-opus-5-5" in ids, "including the newest, which is why the list is kept"
+    assert "claude-fable-5-2" in ids
     claude = [e for e in options["suggested_models"] if e["backend"] == "claude_code"]
     assert {entry["group"] for entry in claude} == {"Aliases", "Pinned"}
     # Other catalogues are tagged for their backend (§10.6). Codex's cache may be empty;

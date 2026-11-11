@@ -151,6 +151,10 @@
       "label": "Changelog",
       "title": "What each release of the Studio changed"
     },
+    "about": {
+      "label": "About",
+      "title": "Who makes the Studio and on what terms"
+    },
     "vcs": "VCS: {name}",
     "agentBackends": {
       "claude_code": "Claude Code",
@@ -2023,6 +2027,50 @@
     "invalid": {
       "title": "Files agents are not shown",
       "revealTitle": "Show in your file manager"
+    },
+    "import": {
+      "button": "Import from agents",
+      "buttonTitle": "Bring in what Claude Code, Codex and Qwen Code remember on their own",
+      "title": "Import from agents’ own memory",
+      "intro": "Claude Code, Codex and Qwen Code each keep a memory of their own that the other runtimes never see. Choose what should become project memory, shown to every agent on the team. The agents’ own files are only read, never changed.",
+      "shared": "Imported entries are written to {folder} and committed with the project — leave out anything personal.",
+      "found": {
+        "one": "{count} entry",
+        "other": "{count} entries"
+      },
+      "selectAll": "Select all new",
+      "selectNone": "Clear",
+      "nothing": "Nothing remembered for this project. Looked in:",
+      "global": "all projects",
+      "globalRelated": "all projects · mentions this one",
+      "same": "already in project memory",
+      "taken": "the name is taken by a different entry",
+      "replaces": "will replace the entry of that name",
+      "text": "Text",
+      "truncated": "too long — will be cut",
+      "listCut": "The list is longer than can be shown; import these and open it again.",
+      "empty": "No agent has remembered anything to import yet.",
+      "replacing": {
+        "one": "{count} existing entry will be replaced.",
+        "other": "{count} existing entries will be replaced."
+      },
+      "confirm": {
+        "one": "Import {count} entry",
+        "other": "Import {count} entries"
+      },
+      "done": {
+        "one": "Imported {count} entry from agents’ memory.",
+        "other": "Imported {count} entries from agents’ memory."
+      },
+      "skipped": {
+        "summary": {
+          "one": "{count} entry was not imported — the reason is on its row.",
+          "other": "{count} entries were not imported — the reason is on each row."
+        },
+        "gone": "No longer in the agent’s memory.",
+        "exists": "An entry of that name appeared meanwhile; tick it again to replace it.",
+        "error": "Could not be written."
+      }
     },
     "usage": {
       "title": "How agents use it",
