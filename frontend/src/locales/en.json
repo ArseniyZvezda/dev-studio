@@ -977,9 +977,9 @@
     },
     "writePaths": {
       "label": "Files to write",
-      "placeholder": "src/player.py\ndocs/design.md",
-      "hint": "One file per line, relative to the managed project root or absolute. Include files to create, change, delete or rename; exclude files used only for reading. Empty means no file locks.",
-      "runningHint": "The write list cannot be changed while this task is running or waiting to start.",
+      "placeholder": "src/player.py\ndocs/design.md\nassets/models/*",
+      "hint": "One file per line, relative to the managed project root or absolute. A whole folder is written as foo/bar/* — everything inside bar. Include files to create, change, delete or rename; exclude files used only for reading. Empty means no file locks.",
+      "runningHint": "While this task is running or waiting to start, only its executor can change the write list — and only to paths no other running task holds.",
       "empty": "No files declared for writing — no file locks."
     },
     "composer": {
@@ -1241,6 +1241,11 @@
       "noLink": "No session link yet",
       "copyLink": "Copy the link",
       "openLink": "Open this session on claude.ai"
+    },
+    "message": {
+      "placeholder": "Message {name} — delivered while it works, without interrupting…",
+      "send": "Send (Enter)",
+      "hint": "The agent gets this at its next step. Stopped first, it rides the next start."
     },
     "review": {
       "commentPlaceholder": "Review comment (required to request changes)",
@@ -2279,7 +2284,8 @@
       "placeholderNobody": "Message the member…",
       "withoutSelection": "Send without the selection",
       "stop": "Stop the reply",
-      "send": "Send (Enter)"
+      "send": "Send (Enter)",
+      "sendQueued": "Send without interrupting (Enter) — {name} gets it at the next step"
     },
     "context": {
       "selection": {
@@ -2305,7 +2311,9 @@
     },
     "transcript": {
       "empty": "Say hello. {name} sees the page you are on, the document you have open and anything you select, and has the same tools as on a task.",
-      "stopped": "Stopped"
+      "stopped": "Stopped",
+      "queued": "Queued",
+      "queuedHint": "Sent while the agent was working. It gets this at its next step, without being interrupted — or with your next message if the run is stopped first."
     },
     "errors": {
       "pickMember": "Pick who to talk to first.",
@@ -2695,6 +2703,10 @@
       "stall_continue": {
         "label": "Continue after a stall",
         "hint": "Opens each automatic continuation of a session that stopped mid-work with its turn budget spent."
+      },
+      "mid_run_message": {
+        "label": "Message to a working session",
+        "hint": "Wraps what you send to a task or a chat while its agent is working: handed over between two tool calls, or as the next turn. {message} is your text."
       },
       "result_required": {
         "label": "Result missing",

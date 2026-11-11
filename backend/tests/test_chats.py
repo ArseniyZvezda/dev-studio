@@ -20,7 +20,6 @@ from voxarium_studio.teams import skill as studio_skill
 from voxarium_studio.teams.backends.base import AgentEvent, AgentRunRequest, register_backend
 from voxarium_studio.teams.chat import (
     MAX_SELECTION_CHARS,
-    ChatBusy,
     UserContext,
     describe_context,
     title_from,
@@ -58,24 +57,53 @@ class GatedBackend:
 
     name = "chat_gate"
     gate = asyncio.Event()
+    requests: list[AgentRunRequest] = []
 
     def is_available(self):
         return True, "stub"
 
     async def run(self, request):
+        GatedBackend.requests.append((request.prompt, request.resume_session_id))
         yield AgentEvent(kind="text", text="thinking…", session_id="gated_sess")
         await GatedBackend.gate.wait()
         yield AgentEvent(kind="result", text="Done.", session_id="gated_sess", is_final=True)
 
 
+class SteerableBackend(GatedBackend):
+    """A runtime that takes a user message while it works (§10.8): it attaches to the run's
+    inbox, and acknowledges whatever it was handed once it is let go."""
+
+    name = "chat_steer"
+    heard: list[str] = []
+
+    async def run(self, request):
+        GatedBackend.requests.append((request.prompt, request.resume_session_id))
+        taken: list[str] = []
+
+        async def take(item):
+            SteerableBackend.heard.append(item.text)
+            taken.append(item.id)
+
+        request.inbox.attach(take)
+        yield AgentEvent(kind="tool_use", text="Read", session_id="gated_sess")
+        await GatedBackend.gate.wait()
+        for message_id in taken:
+            await request.inbox.acknowledge(message_id)
+        request.inbox.detach()
+        yield AgentEvent(kind="result", text="Done.", session_id="gated_sess", is_final=True)
+
+
 register_backend("chat_stub", RecordingBackend)
 register_backend("chat_gate", GatedBackend)
+register_backend("chat_steer", SteerableBackend)
 
 
 @pytest.fixture
 async def chats(ctx: AppContext) -> AppContext:
     RecordingBackend.requests = []
     GatedBackend.gate = asyncio.Event()
+    GatedBackend.requests = []
+    SteerableBackend.heard = []
     async with ctx.db.session() as session:
         for member in (await session.exec(select(TeamMember))).all():
             member.agent_backend = "chat_stub"
@@ -288,20 +316,100 @@ async def test_the_second_message_resumes_the_same_session(chats: AppContext) ->
     assert stored.title == "first", "the title is the first message's and stays"
 
 
-async def test_a_second_message_while_the_member_answers_is_refused(chats: AppContext) -> None:
+async def _use(chats: AppContext, backend: str) -> None:
     async with chats.db.session() as session:
         member = await session.get(TeamMember, DEV)
-        member.agent_backend = "chat_gate"
+        member.agent_backend = backend
         session.add(member)
+
+
+async def _answering() -> None:
+    """Until the turn has reached its backend — a start is scheduled, never immediate."""
+    async with asyncio.timeout(10):
+        while not GatedBackend.requests:
+            await asyncio.sleep(0.01)
+
+
+async def _delivery(chats: AppContext, chat_id: str, text: str) -> str | None:
+    row = next(m for m in await chats.chats.messages(chat_id) if m.role == "user" and m.text == text)
+    return row.data.get("delivery")
+
+
+async def test_a_message_sent_while_the_member_answers_becomes_the_next_turn(
+    chats: AppContext,
+) -> None:
+    """§10.8: nothing is refused and nothing is interrupted. A backend that cannot be
+    handed text mid-turn finishes its turn, and the message opens the next one in the
+    same session — before the chat reads as idle."""
+    await _use(chats, "chat_gate")
+    subscription = chats.bus.subscribe()
     chat = await chats.chats.create_chat(DEV)
     await chats.chats.send(chat.id, "go", UserContext())
-    await asyncio.sleep(0.05)
+    await _answering()
     assert chats.chats.is_running(chat.id)
-    with pytest.raises(ChatBusy):
-        await chats.chats.send(chat.id, "again", UserContext())
+
+    queued = await chats.chats.send(chat.id, "use the blue one", UserContext(page="Tasks"))
+    assert queued.data["delivery"] == "queued"
+    assert len(GatedBackend.requests) == 1, "the turn in flight was not touched"
+    assert await _delivery(chats, chat.id, "use the blue one") == "queued"
+
     GatedBackend.gate.set()
     await turn_done(chats, chat.id)
     assert not chats.chats.is_running(chat.id)
+    assert len(GatedBackend.requests) == 2
+    prompt, resumed = GatedBackend.requests[1]
+    assert resumed == "gated_sess", "the same session, one more message"
+    assert prompt.startswith("The user sent you this while you were working.")
+    assert "- Page: Tasks" in prompt and prompt.endswith("use the blue one")
+    assert await _delivery(chats, chat.id, "use the blue one") == "delivered"
+    await asyncio.sleep(0)
+    said: list[str] = []
+    while True:
+        try:
+            event = subscription._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if event.type == EventType.TEAM_CHAT_MESSAGE and event.data["id"] == queued.id:
+            said.append(event.data["data"]["delivery"])
+    subscription.close()
+    assert said == ["queued", "delivered"], "the UI is told both"
+
+
+async def test_a_steerable_backend_takes_the_message_inside_the_turn(chats: AppContext) -> None:
+    await _use(chats, "chat_steer")
+    chat = await chats.chats.create_chat(DEV)
+    await chats.chats.send(chat.id, "go", UserContext())
+    await _answering()
+    await chats.chats.send(chat.id, "first", UserContext())
+    await chats.chats.send(chat.id, "second", UserContext())
+    GatedBackend.gate.set()
+    await turn_done(chats, chat.id)
+    assert len(GatedBackend.requests) == 1, "taken at the tool boundary, so no turn of its own"
+    first, second = SteerableBackend.heard
+    assert first.endswith("first") and second.endswith("second"), "both, in the order sent"
+    assert await _delivery(chats, chat.id, "first") == "delivered"
+    assert await _delivery(chats, chat.id, "second") == "delivered"
+
+
+async def test_a_message_a_stopped_turn_never_took_goes_out_with_the_next_one(
+    chats: AppContext,
+) -> None:
+    await _use(chats, "chat_gate")
+    chat = await chats.chats.create_chat(DEV)
+    await chats.chats.send(chat.id, "go", UserContext())
+    await _answering()
+    await chats.chats.send(chat.id, "and mind the tests", UserContext())
+    assert await chats.chats.cancel(chat.id)
+    await turn_done(chats, chat.id)
+    assert await _delivery(chats, chat.id, "and mind the tests") == "queued", "not lost, not sent"
+
+    await _use(chats, "chat_stub")
+    await chats.chats.send(chat.id, "carry on", UserContext())
+    await turn_done(chats, chat.id)
+    prompt = RecordingBackend.requests[-1].prompt
+    assert prompt.index("and mind the tests") < prompt.index("carry on")
+    assert await _delivery(chats, chat.id, "and mind the tests") == "delivered"
+    assert len(RecordingBackend.requests) == 1, "once, with the message that opened the turn"
 
 
 async def test_stopping_a_turn_leaves_a_line_in_the_transcript(chats: AppContext) -> None:

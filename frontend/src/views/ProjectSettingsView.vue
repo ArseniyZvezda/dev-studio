@@ -119,7 +119,7 @@ async function saveLaunchRoot() {
  * restart: raising it starts whatever is queued behind the old limit on the spot.
  */
 const MAX_PARALLEL_AGENTS = 16
-const savedParallelAgents = computed(() => config.value?.concurrency.agents ?? 2)
+const savedParallelAgents = computed(() => config.value?.concurrency.agents ?? 8)
 const parallelAgents = ref(savedParallelAgents.value)
 watch(savedParallelAgents, (value) => {
   parallelAgents.value = value

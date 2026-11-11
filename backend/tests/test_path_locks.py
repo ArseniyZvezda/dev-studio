@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from voxarium_studio.teams.worktree import PathLockManager, normalize_write_paths
+from voxarium_studio.teams.worktree import PathBusy, PathLockManager, normalize_write_paths
 
 
 @pytest.mark.parametrize("paths", [
@@ -186,3 +186,88 @@ async def test_interrupted_wait_releases_partial_acquisitions(
             contender.cancel()
         await asyncio.gather(contender, return_exceptions=True)
         manager.release(held)
+
+
+def test_directory_declaration_is_the_only_pattern(tmp_path: Path) -> None:
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "Makefile").write_text("")
+    assert normalize_write_paths([r"assets\*", "new/deep/*", "assets/*"], root=tmp_path) == [
+        "assets/*", "new/deep/*",
+    ]
+    for invalid in (["*"], ["./*"], ["../*"], ["assets/**"], ["assets/*/x.py"], ["Makefile/*"],
+                    ["assets"]):
+        with pytest.raises(ValueError):
+            normalize_write_paths(invalid, root=tmp_path)
+
+
+@pytest.mark.parametrize(("held_paths", "wanted", "blocked_on"), [
+    (["src/ui/*"], ["src/ui/deep/panel.py"], "src/ui/deep/panel.py"),
+    (["src/ui/panel.py"], ["src/ui/*"], "src/ui/*"),
+    (["src/*"], ["src/ui/*"], "src/ui/*"),
+    (["src/ui/*"], ["src/*"], "src/*"),
+    (["src/ui/*"], ["src/ui/*"], "src/ui/*"),
+])
+async def test_directory_claims_cover_everything_inside(
+    tmp_path: Path, held_paths: list[str], wanted: list[str], blocked_on: str,
+) -> None:
+    manager = PathLockManager()
+    held = await manager.acquire(held_paths, root=tmp_path, owner="BT-1")
+    notices = []
+    waiting = asyncio.Event()
+
+    async def on_wait(path, owner):
+        notices.append((path, owner))
+        waiting.set()
+
+    contender = asyncio.create_task(manager.acquire(wanted, root=tmp_path, on_wait=on_wait))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        assert notices == [(blocked_on, "BT-1")]
+        # A sibling that merely shares a name prefix is not inside the directory.
+        siblings = ["srcs/b.py"] if held_paths == ["src/*"] else ["src/ui_legacy/a.py", "srcs/b.py"]
+        free = await asyncio.wait_for(manager.acquire(siblings, root=tmp_path), 1)
+        manager.release(free)
+        manager.release(held)
+        manager.release(await asyncio.wait_for(contender, 1))
+    finally:
+        if not contender.done():
+            contender.cancel()
+        await asyncio.gather(contender, return_exceptions=True)
+        manager.release(held)
+
+
+async def test_a_task_never_blocks_on_its_own_overlapping_claims(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    held = await asyncio.wait_for(
+        manager.acquire(["src/*", "src/a.py", "src/ui/*"], root=tmp_path), 1,
+    )
+    assert len(held) == 3
+    manager.release(held)
+
+
+async def test_replace_swaps_claims_at_once_or_not_at_all(tmp_path: Path) -> None:
+    manager = PathLockManager()
+    mine = await manager.acquire(["src/a.py"], root=tmp_path, owner="BT-1")
+    theirs = await manager.acquire(["assets/*"], root=tmp_path, owner="BT-2")
+
+    with pytest.raises(PathBusy) as refused:
+        manager.replace(mine, ["src/b.py", "assets/hero.vox"], root=tmp_path, owner="BT-1")
+    assert (refused.value.path, refused.value.owner) == ("assets/hero.vox", "BT-2")
+    assert [claim.display for claim in mine] == ["src/a.py"], "a refusal changes nothing"
+    assert mine[0].locked()
+
+    # Keeping a path it already holds is not a conflict with itself.
+    manager.replace(mine, ["src/a.py", "src/gen/*"], root=tmp_path, owner="BT-1")
+    assert sorted(claim.display for claim in mine) == ["src/a.py", "src/gen/*"]
+    with pytest.raises(PathBusy):
+        manager.replace(theirs, ["src/gen/out.py"], root=tmp_path, owner="BT-2")
+
+    # Dropping a path wakes whoever was queued for it.
+    contender = asyncio.create_task(manager.acquire(["src/a.py"], root=tmp_path))
+    await asyncio.sleep(0)
+    assert not contender.done()
+    manager.replace(mine, ["src/gen/*"], root=tmp_path, owner="BT-1")
+    got = await asyncio.wait_for(contender, 1)
+    for claims in (got, mine, theirs):
+        manager.release(claims)
+    assert not manager._held

@@ -21,10 +21,13 @@ What differs, and why:
   changes between one message and the next, and a resumed session has the earlier
   messages in front of it already, so each turn opens with the current page, document
   and selection (the ``chat_context`` template) and then the words.
-- **One turn at a time.** A second message while the member is still answering is refused
-  (:class:`ChatBusy`) rather than queued: the next thing the user says usually depends on
-  the answer they have not got yet, and two subprocesses resuming one session would race
-  each other for it.
+- **One turn at a time, and a message never waits for it.** Two subprocesses resuming one
+  session would race each other for it, so a turn is never started beside a running one —
+  but what the user sends meanwhile is not refused either. It is queued on the turn's
+  :class:`~.backends.base.Inbox` and reaches the member at the next opportunity without
+  stopping anything: between two tool calls where the runtime can take it there, otherwise
+  as the next turn of the same session (§10.8). The transcript row carries
+  ``data.delivery`` — ``queued`` until the member has it, ``delivered`` after.
 
 One chat is one Claude Agent SDK session, resumed turn after turn through
 ``AgentChat.agent_session_id`` (§10.3), which is what makes the member remember what was
@@ -51,7 +54,16 @@ from ..models.base import utcnow
 from ..models.teams import AgentChat, AgentChatMessage, MemberKind, Team, TeamMember
 from ..ws.events import EventType
 from . import skill as studio_skill
-from .backends.base import AgentEvent, AgentRunRequest, get_backend, member_run_settings
+from .backends.base import (
+    DELIVERED,
+    QUEUED,
+    AgentEvent,
+    AgentRunRequest,
+    Inbox,
+    QueuedMessage,
+    get_backend,
+    member_run_settings,
+)
 from .backends.recovery import recovery_prompt
 from .slots import agent_slot
 from .tools import build_toolset
@@ -74,8 +86,13 @@ MAX_SELECTION_CHARS = 8_000
 TITLE_CHARS = 60
 
 
+#: Seconds a message waits for a turn that is already closing before it is refused.
+CLOSING_WAIT = 15.0
+
+
 class ChatBusy(RuntimeError):
-    """The member is still answering the previous message of this chat."""
+    """The chat cannot take this right now — a setting changed mid-turn, or a message
+    that arrived as a turn was closing and could not follow it."""
 
 
 @dataclass(slots=True)
@@ -176,6 +193,8 @@ class ChatService:
         """Chats whose turn is in its ``finally`` — still in the job registry, no longer
         answering. ``is_running`` reads False for them, the way the orchestrator's
         ``_ending`` works for tasks."""
+        self._inboxes: dict[str, Inbox] = {}
+        """What was sent to each chat while its turn runs (§10.8), for the length of it."""
 
     # ---- what the orchestrator owns ----
 
@@ -340,19 +359,26 @@ class ChatService:
             return await self._send(chat_id, text, context, attachments=attachments)
 
     async def _send(self, chat_id: str, text: str, context: UserContext, *, attachments: list[str] | None = None) -> AgentChatMessage:
-        """Record what the user said and start the member's turn on it.
+        """Record what the user said and get it to the member.
 
         The user's own words are stored as they typed them, with the context beside them
         in ``data`` for the UI to show; what the member receives is the two composed
-        through the ``chat_context`` template. Raises ``KeyError`` for an unknown chat,
-        ``ValueError`` for an empty message and :class:`ChatBusy` while a turn is running.
+        through the ``chat_context`` template. An idle chat starts a turn on the message.
+        A chat whose member is still answering queues it instead (§10.8): nothing is
+        interrupted, and the member has it at the next tool boundary or as the next turn.
+        Raises ``KeyError`` for an unknown chat, ``ValueError`` for an empty message and
+        :class:`ChatBusy` only when a closing turn could not be followed.
         """
         body = text.strip()
         records = self.orchestrator.attachments.resolve_uploads(attachments or [])
         if not body and not records:
             raise ValueError("A message needs some text.")
         if self.jobs.is_running(chat_id):
-            raise ChatBusy("The member is still answering — wait for the reply or stop it.")
+            queued = await self._queue(chat_id, body, context, records)
+            if queued is not None:
+                return queued
+            if self.jobs.is_running(chat_id):
+                raise ChatBusy("The member is still answering — wait for the reply or stop it.")
 
         async with self.db.session() as session:
             chat = await session.get(AgentChat, chat_id)
@@ -384,16 +410,7 @@ class ChatService:
         await self.producer.on_user_message(chat, message)
         await self._publish_chat_by_id(chat_id, running=True)
 
-        described = describe_context(
-            context,
-            docs_dir=self.orchestrator.docs.directory,
-            project_root=self.paths.root,
-        )
-        opening = self.config.teams.prompts.text("chat_context", context=described)
-        prompt = f"{opening}\n\n{body}" if opening else body
-
-        from .attachments import with_trailer
-        prompt = with_trailer(prompt, self.orchestrator.attachments.trailer(records))
+        prompt = self._compose(body, context, records)
 
         if chat.producer_mode:
             self.producer.require_resumed(chat_id)
@@ -410,16 +427,142 @@ class ChatService:
         )
         return message
 
+    def _compose(self, body: str, context: UserContext | None, records: list[dict[str, Any]]) -> str:
+        """A user's message as the member receives it: where they are, the words, the files."""
+        from .attachments import with_trailer
+
+        prompt = body
+        if context is not None:
+            described = describe_context(
+                context,
+                docs_dir=self.orchestrator.docs.directory,
+                project_root=self.paths.root,
+            )
+            opening = self.config.teams.prompts.text("chat_context", context=described)
+            prompt = f"{opening}\n\n{body}" if opening else body
+        return with_trailer(prompt, self.orchestrator.attachments.trailer(records))
+
+    # ---- messages sent while the member is busy (§10.8) ----
+
+    def _new_inbox(self, chat_id: str) -> Inbox:
+        inbox = self._inboxes[chat_id] = Inbox(
+            preamble=self.config.teams.prompts.text("mid_run_message"),
+            on_delivered=self._mark_delivered,
+        )
+        return inbox
+
+    async def _queue(
+        self, chat_id: str, body: str, context: UserContext, records: list[dict[str, Any]],
+    ) -> AgentChatMessage | None:
+        """Hand a message to the turn in flight. ``None`` when that turn is over after all.
+
+        A turn that has stopped taking messages is in its last moments — the backend has
+        answered and only bookkeeping is left — so the message waits those out and the
+        caller starts a turn of its own on it, rather than bouncing off a member who has,
+        as far as the user can see, already finished.
+        """
+        inbox = self._inboxes.get(chat_id)
+        if chat_id in self._ending or (inbox is not None and inbox.closed):
+            handle = self.jobs.get(chat_id)
+            if handle is not None and handle.task is not None:
+                with suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(asyncio.shield(handle.task), CLOSING_WAIT)
+            return None
+        async with self.db.session() as session:
+            chat = await session.get(AgentChat, chat_id)
+            if chat is None:
+                raise KeyError(f"No chat {chat_id!r}")
+            member = await session.get(TeamMember, chat.member_id)
+            if member is None or member.kind == MemberKind.HUMAN:
+                raise ValueError("This conversation is read-only because its agent was removed.")
+            if chat.producer_mode:
+                self.producer.require_resumed(chat_id)
+        # Re-read after the awaits above: the turn may have closed while the chat was loaded.
+        inbox = self._inboxes.get(chat_id)
+        if not self.jobs.is_running(chat_id) or (inbox is not None and inbox.closed):
+            return None
+        if inbox is None:
+            # The job is registered and its coroutine has not run a line yet; it adopts this.
+            inbox = self._new_inbox(chat_id)
+        message = AgentChatMessage(
+            chat_id=chat_id,
+            member_id=chat.member_id,
+            role="user",
+            kind="text",
+            text=body,
+            data={"context": context.to_json(), "attachments": records, "delivery": QUEUED},
+        )
+        # Queued before it is stored, with no await between the check above and here, so a
+        # message the inbox accepted is one its turn will deliver or hand back.
+        inbox.put(QueuedMessage(
+            id=message.id,
+            text=self._compose(body, context, records),
+            images=self.orchestrator.attachments.images(records),
+        ))
+        async with self.db.session() as session:
+            session.add(message)
+            stored = await session.get(AgentChat, chat_id)
+            if stored is not None:
+                stored.last_message_at = message.created_at
+                session.add(stored)
+        await self._publish_message(message)
+        await self.producer.on_user_message(chat, message)
+        return message
+
+    async def _mark_delivered(self, items: list[QueuedMessage]) -> None:
+        """The member has these now: say so on their rows, and to whoever is watching."""
+        ids = [item.id for item in items]
+        async with self.db.session() as session:
+            rows = list((await session.exec(
+                select(AgentChatMessage).where(col(AgentChatMessage.id).in_(ids))
+            )).all())
+            for row in rows:
+                # A new dict, not a mutation: the JSON column only notices assignment.
+                row.data = {**row.data, "delivery": DELIVERED}
+                session.add(row)
+        for row in rows:
+            await self._publish_message(row)
+
+    async def _undelivered(self, chat_id: str) -> list[QueuedMessage]:
+        """Messages a stopped or failed turn never got to hand over, oldest first.
+
+        Read from the transcript rather than kept in memory, so they survive the turn —
+        and a restart — and go out with whatever opens the next one. They are recomposed
+        without the place the user was in when they wrote them: that was then.
+        """
+        async with self.db.session() as session:
+            rows = (await session.exec(
+                select(AgentChatMessage)
+                .where(AgentChatMessage.chat_id == chat_id, AgentChatMessage.role == "user")
+                .order_by(col(AgentChatMessage.created_at), col(AgentChatMessage.id))
+            )).all()
+        return [
+            QueuedMessage(
+                id=row.id,
+                text=self._compose(row.text, None, _records(row.data)),
+                images=self.orchestrator.attachments.images(_records(row.data)),
+            )
+            for row in rows
+            if row.data.get("delivery") == QUEUED
+        ]
+
     # ---- the turn ----
 
     async def _run_turn(self, chat_id: str, member_id: str, prompt: str, images: list[dict[str, Any]] | None = None,
                         *, input_at: datetime | None = None,
                         producer_skill_on_resume: bool = False) -> None:
         orchestrator = self.orchestrator
+        # Before the first await, so "the job is running" and "it takes messages" start
+        # together; one a sender opened a moment earlier is adopted rather than replaced.
+        inbox = self._inboxes.get(chat_id)
+        if inbox is None or inbox.closed:
+            inbox = self._new_inbox(chat_id)
         async with self.db.session() as session:
             chat = await session.get(AgentChat, chat_id)
             member = await session.get(TeamMember, member_id)
             if chat is None or member is None:
+                inbox.close()
+                self._inboxes.pop(chat_id, None)
                 return
             team = await session.get(Team, member.team_id)
             reports = await orchestrator._direct_reports(session, member.id)
@@ -545,9 +688,20 @@ class ChatService:
                 continue_prompt=self.config.teams.prompts.text("stall_continue"),
                 max_message_bytes=self.config.teams.max_message_bytes,
                 delegated_work_idle_timeout=self.config.teams.delegated_work_idle_timeout,
+                inbox=inbox,
             )
 
             async with agent_slot(self.jobs, self.record, chat_id, member_id):
+                # What an earlier turn was stopped before delivering goes out with this one
+                # (§10.8). Taken here, with the slot held, so "delivered" is not said of a
+                # turn that was cancelled while it was still waiting to start.
+                earlier = await self._undelivered(chat_id)
+                if earlier:
+                    inbox.discard({item.id for item in earlier})
+                    prompt = "\n\n".join([*(item.text for item in earlier), prompt])
+                    request.prompt = required.prepend(prompt) if not resume_session_id else prompt
+                    request.images = [*(image for item in earlier for image in item.images), *request.images]
+                    await self._mark_delivered(earlier)
                 if chat.producer_mode:
                     await self.producer.compact(chat_id, backend, request)
                     fresh = await self.get_chat(chat_id)
@@ -586,6 +740,29 @@ class ChatService:
                         request.prompt = required.prepend(request.prompt)
                         await self._set_error(chat_id, None)
                         await self._consume(backend, request, chat_id, member_id)
+                # Whatever was sent during the turn and not taken mid-way is the next turn
+                # of the same session (§10.8) — the whole delivery for a backend that cannot
+                # be handed text between tool calls. A turn that failed delivers nothing
+                # more: those messages stay queued and open the next one.
+                while True:
+                    fresh = await self.get_chat(chat_id)
+                    if fresh is None or fresh.error or not len(inbox):
+                        inbox.close()
+                        break
+                    items = await inbox.take()
+                    text = inbox.compose(items)
+                    if fresh.producer_mode:
+                        text = self.config.teams.prompts.text(
+                            "producer_state", state=await self.producer.context(chat_id), prompt=text)
+                    request.resume_session_id = fresh.agent_session_id
+                    request.prompt = text if request.resume_session_id else required.prepend(text)
+                    request.images = [image for item in items for image in item.images]
+                    request.recovery_prompt = (
+                        required.prepend(recovery_prompt(text, await self.messages(chat_id)))
+                        if request.resume_session_id and getattr(backend, "session_recovery", False)
+                        else ""
+                    )
+                    await self._consume(backend, request, chat_id, member_id)
         except asyncio.CancelledError:
             await self.record(
                 chat_id, member_id, role="system", kind="cancelled", text="Stopped."
@@ -599,6 +776,10 @@ class ChatService:
             # Still in the job registry until this coroutine returns, so the event has to
             # say what `is_running` cannot yet: the member is no longer answering.
             self._ending.add(chat_id)
+            # Closed however the turn ended. What it holds stays `queued` on its rows.
+            inbox.close()
+            if self._inboxes.get(chat_id) is inbox:
+                self._inboxes.pop(chat_id, None)
             try:
                 await self.producer.turn_finished(chat_id)
                 await self._publish_chat_by_id(chat_id, running=False)
@@ -745,3 +926,9 @@ class ChatService:
         chat = await self.get_chat(chat_id)
         if chat is not None:
             await self._publish_chat(chat, running=running)
+
+
+def _records(data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The attachment records a stored message carries, read defensively."""
+    records = (data or {}).get("attachments")
+    return [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []

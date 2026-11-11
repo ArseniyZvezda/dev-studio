@@ -64,8 +64,12 @@ nobody, do not try: describe what is needed in your summary and your reviewer wi
   paths for a rename), relative to the managed project root or absolute (§10.5). Declare the
   full list before release; use `[]` for tasks that only read. Never include reference material
   that the task only reads. Shared-copy runs lock only these files, regardless of paths in
-  the title or brief. Directories and globs are unsupported. Use `update_task` to change the
-  list while stopped; a running or queued task keeps its write scope until the run ends.
+  the title or brief. A whole directory is declared as `foo/bar/*` — everything inside
+  `foo/bar`; no other globs. Use `update_task` to change the list while the task is stopped.
+- **Your own running task is the exception:** when the work turns out to need other files, call
+  `update_task` on the task you are working on with the full new `write_paths`. It applies at
+  once, unless another running task holds one of the new paths — then nothing changes and the
+  answer names that task: do not write there. Nobody else can change a running task's list.
 - **It lands in `todo`.** Team Autostart Tasks may release it automatically; otherwise a person
   releases it. The tool reports which happened. Never wait or poll for an unreleased task,
   or assume a queued task has already finished.

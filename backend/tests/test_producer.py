@@ -916,8 +916,9 @@ async def test_shutdown_preserves_an_interrupted_turn_but_user_cancel_does_not(p
     producer.chats.closing = False
     await producer.chats.producer.reconcile()
     assert producer.jobs.is_running(chat.id)
-    with pytest.raises(ChatBusy):
-        await producer.chats.send(chat.id, "Second message", UserContext())
+    # §10.8: a message to a working Producer is queued for it, not refused.
+    queued = await producer.chats.send(chat.id, "Second message", UserContext())
+    assert queued.data["delivery"] == "queued"
     await producer.chats.cancel(chat.id)
     assert (await producer.chats.get_chat(chat.id)).producer_state == "discussing"
     assert not producer.jobs.is_running(chat.id)

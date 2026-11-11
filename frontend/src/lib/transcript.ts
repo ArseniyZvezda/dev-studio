@@ -34,9 +34,24 @@ import { parseUtc, statusLabel } from '@/lib/status'
 import { subagentActivity } from '@/lib/subagents'
 import { resultTypeOf } from '@/lib/task-result'
 
-/** Current telemetry replaces its row; ordinary socket replay never reorders history (§10.4). */
+/**
+ * Whether a message was sent to a session that was busy and has not reached it yet (§10.8).
+ * The backend stores `data.delivery` on such an entry — `queued`, then `delivered`.
+ */
+export function isQueued(message: Pick<TranscriptMessage, 'data'>): boolean {
+  return message.data?.delivery === 'queued'
+}
+
+/**
+ * Current telemetry replaces its row; ordinary socket replay never reorders history (§10.4).
+ * One other entry is published twice: a queued message, again when it is delivered (§10.8).
+ * That one is replaced where it stands — it was said when it was said.
+ */
 export function upsertTranscript<M extends TranscriptMessage>(messages: M[], message: M): M[] {
   const previous = messages.find((entry) => entry.id === message.id)
+  if (previous && isQueued(previous) && message.data?.delivery === 'delivered') {
+    return messages.map((entry) => (entry.id === message.id ? message : entry))
+  }
   const timestamp = (value: string) => value.replace(/(?:Z|\+00:00)$/, '')
   if (previous && (!message.id.startsWith('state_') ||
     timestamp(previous.created_at) >= timestamp(message.created_at))) return messages

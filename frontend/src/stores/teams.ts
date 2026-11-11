@@ -534,6 +534,29 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
+  /**
+   * Say something to a task's session while it works (§10.8). A note, like any other — but
+   * nothing is reloaded for it: the run is live, and its transcript is arriving on the
+   * socket already. The entry comes back `queued` and is replaced when it is delivered.
+   */
+  async function messageTask(taskId: string, text: string): Promise<boolean> {
+    if (!team.value || !text.trim()) return false
+    error.value = null
+    try {
+      const message = await api.addNote(team.value.id, taskId, text.trim())
+      if (openTask.value?.id === taskId) {
+        openTask.value = {
+          ...openTask.value,
+          messages: upsertTranscript(openTask.value.messages, message),
+        }
+      }
+      return true
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    }
+  }
+
   async function cancelCompression(taskId: string): Promise<boolean> {
     if (!team.value || cancellingCompressionTaskId.value) return false
     cancellingCompressionTaskId.value = taskId
@@ -725,6 +748,7 @@ export const useTeamsStore = defineStore('teams', () => {
     deleteTask,
     act,
     cancelCompression,
+    messageTask,
     remoteControl,
     subscribe,
   }

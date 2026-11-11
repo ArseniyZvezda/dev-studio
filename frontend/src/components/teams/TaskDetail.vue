@@ -781,6 +781,33 @@ const resultChoices = computed(() =>
   RESULT_TYPES.map((value) => ({ value, label: resultTypeLabel(value) })),
 )
 
+/**
+ * A message to the session while it works (§10.8): it is not stopped for it — the agent has
+ * the words at its next step. The box is the review comment's, draft and all, because the
+ * two never show together and a thought half-typed when the run ends is usually the review.
+ */
+const canMessage = computed(
+  () => !isHuman.value && props.task.is_running === true && !isCompressing.value,
+)
+const messaging = ref(false)
+
+async function sendMessage() {
+  const text = comment.value.trim()
+  if (!text || messaging.value) return
+  messaging.value = true
+  try {
+    if (await teams.messageTask(props.task.id, text) && comment.value.trim() === text) comment.value = ''
+  } finally {
+    messaging.value = false
+  }
+}
+
+function onMessageKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  void sendMessage()
+}
+
 async function complete() {
   await teams.act(
     'complete',
@@ -1291,6 +1318,26 @@ async function complete() {
             <span class="size-1.5 rounded-full" :style="{ background: resultTypeColor(resultType) }" />
             {{ resultTypeHint(resultType) }}
           </span>
+        </div>
+        <div v-if="canMessage" class="space-y-1">
+          <div class="flex items-end gap-2">
+            <textarea
+              v-model="comment"
+              rows="2"
+              :placeholder="t('taskDetail.message.placeholder', { name: task.assignee?.name ?? '' })"
+              class="block min-h-9 flex-1 resize-y rounded-md border border-line bg-inset px-2 py-1 outline-none focus:border-accent"
+              @keydown="onMessageKeydown"
+            />
+            <button
+              class="vxs-btn-primary grid size-9 shrink-0 place-items-center disabled:opacity-50"
+              :disabled="messaging || !comment.trim()"
+              :title="t('taskDetail.message.send')"
+              @click="sendMessage"
+            >
+              <Send class="size-4" />
+            </button>
+          </div>
+          <p class="text-small text-faint">{{ t('taskDetail.message.hint') }}</p>
         </div>
         <div
           v-if="canReview || canComplete"

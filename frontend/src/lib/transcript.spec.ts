@@ -17,6 +17,7 @@ import {
   transcriptBlocks,
   transcriptRows,
   upsertTranscript,
+  isQueued,
 } from '@/lib/transcript'
 
 let sequence = 0
@@ -529,4 +530,17 @@ it('upserts newer state and ignores old replay without reordering ordinary messa
   expect(feed).toEqual([ordinary, next])
   expect(upsertTranscript(feed, first)).toBe(feed)
   expect(upsertTranscript(feed, ordinary)).toBe(feed)
+})
+
+it('replaces a queued message in place when its delivery arrives, and never the other way', () => {
+  const before = message({ created_at: '2026-11-11T10:00:00' })
+  const queued = message({ role: 'user', kind: 'note', text: 'use the blue one', created_at: '2026-11-11T10:00:01', data: { delivery: 'queued' } })
+  const after = message({ created_at: '2026-11-11T10:00:02' })
+  const delivered = { ...queued, data: { delivery: 'delivered' } }
+  expect(isQueued(queued)).toBe(true)
+  const feed = upsertTranscript([before, queued, after], delivered)
+  expect(feed).toEqual([before, delivered, after])
+  expect(isQueued(feed[1]!)).toBe(false)
+  // The REST answer to the send can land after the socket has already said "delivered".
+  expect(upsertTranscript(feed, queued)).toBe(feed)
 })

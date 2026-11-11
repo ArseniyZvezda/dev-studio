@@ -47,7 +47,7 @@ try {
     # A wheel (not an editable install) includes the SPA, built-in plugins and build stamp.
     $Constraints = Join-Path $BuildRoot 'runtime-requirements.txt'
     Invoke-Checked 'uv' @('export', '--project', 'backend', '--frozen', '--extra', 'teams', '--no-dev', '--no-emit-project', '--no-hashes', '--output-file', $Constraints)
-    Invoke-Checked 'uv' @('pip', 'install', '--python', $BundledPython, '--break-system-packages', '--reinstall-package', 'voxarium-studio', '--compile-bytecode', '--constraint', $Constraints, './backend[teams]')
+    Invoke-Checked 'uv' @('pip', 'install', '--python', $BundledPython, '--break-system-packages', '--reinstall-package', 'voxarium-studio', '--constraint', $Constraints, './backend[teams]')
     Copy-Item run.cmd, run.ps1 -Destination $Runtime
     $NodeDir = Join-Path $Runtime 'node'
     New-Item -ItemType Directory -Force $NodeDir | Out-Null
@@ -63,6 +63,11 @@ try {
     }
     New-Item -ItemType Directory -Force (Join-Path $DesktopRoot 'locales') | Out-Null
     Copy-Item frontend/src/locales/en.json, frontend/src/locales/ru.json -Destination (Join-Path $DesktopRoot 'locales')
+    # The runtime is assembled here and runs elsewhere: drop what records this machine's paths,
+    # compile bytecode against relative ones, and fail if a path is still inside (§2.7).
+    # uv's own --compile-bytecode is not used because it stores absolute source paths.
+    Invoke-Checked $BundledPython @('-I', '-B', (Join-Path $PSScriptRoot 'strip-build-paths.py'), $Runtime, $RepoRoot, $env:USERPROFILE)
     # Verify only the installed runtime, without checkout/PYTHONPATH fallbacks (§2.7).
-    Invoke-Checked $BundledPython @('-I', '-c', 'import json, sys; import voxarium_studio.cli, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; from voxarium_studio.build_info import build_info; assert static_dir(); assert builtin_plugins_dir(); actual = build_info().version; frontend = json.loads((static_dir() / ''studio-version.json'').read_text())[''version'']; assert actual == frontend == sys.argv[1], (actual, frontend, sys.argv[1])', $Release.version)
+    # -B: an import here must not write bytecode behind the step above.
+    Invoke-Checked $BundledPython @('-I', '-B', '-c', 'import json, sys; import voxarium_studio.cli, claude_agent_sdk; from voxarium_studio.main import static_dir; from voxarium_studio.plugins.loader import builtin_plugins_dir; from voxarium_studio.build_info import build_info; assert static_dir(); assert builtin_plugins_dir(); actual = build_info().version; frontend = json.loads((static_dir() / ''studio-version.json'').read_text())[''version'']; assert actual == frontend == sys.argv[1], (actual, frontend, sys.argv[1])', $Release.version)
 } finally { Pop-Location }

@@ -81,7 +81,7 @@ const GROUPS: { title: MessageKey; note: MessageKey; keys: string[] }[] = [
   {
     title: 'agentPrompts.groups.openers.title',
     note: 'agentPrompts.groups.openers.note',
-    keys: ['resume', 'resume_notes', 'review_changes', 'stall_continue', 'result_required', 'task_compact'],
+    keys: ['resume', 'resume_notes', 'review_changes', 'stall_continue', 'mid_run_message', 'result_required', 'task_compact'],
   },
   {
     title: 'agentPrompts.groups.chat.title',
