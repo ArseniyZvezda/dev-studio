@@ -742,7 +742,7 @@ class ProducerService:
                     (history if len(history) <= 96_000 else history[:24_000] +
                      "\n[Middle omitted.]\n" + history[-72_000:])),
             system_prompt=summary_prompt, agent_name=None, mcp_servers={}, extra_allowed_tools=[],
-            plugin_dirs=[], images=[], max_continuations=0,
+            plugin_dirs=[], images=[], max_continuations=0, text_only=True,
         )
         parts: list[str] = []
         fallback = ""

@@ -767,6 +767,7 @@ async def test_compaction_replaces_history_and_continues_with_one_summary(produc
     summary, resumed = ProducerBackend.requests[-2:]
     assert summary.session_key.endswith(":summary")
     assert summary.mcp_servers == {} and not summary.resume_session_id
+    assert summary.text_only
     assert resumed.resume_session_id is None
     assert "Summary: build a small game" in resumed.prompt
     saved = await producer.chats.get_chat(chat.id)

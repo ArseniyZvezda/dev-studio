@@ -550,6 +550,12 @@ def _build_command(
         argv += ["-c", f"features.multi_agent_v2.multi_agent_mode_hint_text={_toml_string(_SUBAGENT_HINT)}"]
 
     argv += ["-c", 'approval_policy="never"']
+    if request.text_only:
+        # §10.6: a summary has no Studio MCP bridge. Codex merges -c tables with
+        # inherited config, so mcp_servers={} or enabled=false alone leaves an old
+        # voxarium_studio entry without command/url and fails with invalid transport.
+        # Replace that whole entry with a valid, disabled transport for this run only.
+        argv += ["-c", 'mcp_servers.voxarium_studio={enabled=false,command=""}']
     sandbox = _SANDBOX_FOR_MODE.get(request.permission_mode, "workspace-write")
     if sandbox == "danger-full-access":
         argv += ["--dangerously-bypass-approvals-and-sandbox"]

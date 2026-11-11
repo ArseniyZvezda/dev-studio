@@ -555,6 +555,14 @@ async def test_no_effort_sends_no_effort(fake: Fake, tmp_path: Path) -> None:
     assert fake.config("features.multi_agent_v2.multi_agent_mode_hint_text") is None
 
 
+async def test_text_only_replaces_inherited_studio_mcp_entry(fake: Fake, tmp_path: Path) -> None:
+    await run(make_request(tmp_path, text_only=True, mcp_servers={}))
+    assert fake.config("mcp_servers.voxarium_studio") == '{enabled=false,command=""}'
+
+    await run(make_request(tmp_path, text_only=False, mcp_servers={}))
+    assert fake.config("mcp_servers.voxarium_studio") is None
+
+
 @pytest.mark.parametrize(("resume", "effort"), [(None, "low"), ("thr_9", None)])
 async def test_proactive_delegation_is_independent_of_effort(
     fake: Fake, tmp_path: Path, resume: str | None, effort: str | None,
