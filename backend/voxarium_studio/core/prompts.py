@@ -50,6 +50,10 @@ SPECS: dict[str, PromptSpec] = {
     # --- who the member is (teams/agents.py) -------------------------------------
     # Baked into `.claude/agents/<member>.md` when the member runs under `--agent`,
     # appended to the run's system prompt otherwise — the same words either way (§10.3).
+    # The base leads the identity block of *every* member — the Producer included — and
+    # the member's Responsibility follows it. Empty by default, so nothing is sent until
+    # the project writes one on the Settings page.
+    "system_prompt_base": PromptSpec(""),
     "identity": PromptSpec(
         'You are {name}, working as {role} on the team "{team}".',
         placeholders=("name", "role", "team"),
@@ -406,6 +410,7 @@ class AgentPromptsConfig(BaseModel):
     ``PUT /api/settings`` like every other nested section.
     """
 
+    system_prompt_base: str | None = None
     identity: str | None = None
     identity_responsibility: str | None = None
     identity_manager: str | None = None

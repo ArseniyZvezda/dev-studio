@@ -35,11 +35,18 @@ if os.environ.get("FAKE_CODEX_EARLY_EXIT"):
     sys.stderr.flush()
     sys.exit(2)
 record = os.environ["FAKE_CODEX_RECORD"]
-stdin = sys.stdin.read() if "-" in sys.argv[1:] else ""
+argv = sys.argv[1:]
+stdin = sys.stdin.read() if "-" in argv else ""
+instructions = None
+for flag, value in zip(argv, argv[1:]):
+    if flag == "-c" and value.startswith("model_instructions_file="):
+        with open(json.loads(value.split("=", 1)[1]), encoding="utf-8") as fh:
+            instructions = fh.read()
 with open(record, "w", encoding="utf-8") as fh:
-    json.dump({"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd()}, fh)
+    json.dump({"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
+               "instructions": instructions}, fh)
 with open(record + ".history", "a", encoding="utf-8") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "stdin": stdin}) + "\\n")
+    fh.write(json.dumps({"argv": argv, "stdin": stdin}) + "\\n")
 with open(record + ".history", encoding="utf-8") as fh:
     attempt = len(fh.readlines())
 if "resume" in sys.argv and attempt <= int(os.environ.get("FAKE_CODEX_BUSY_ATTEMPTS", "0")):
@@ -148,6 +155,11 @@ class Fake:
             if flag == "-c" and value.startswith(f"{key}="):
                 return value[len(key) + 1 :]
         return None
+
+    def instructions(self) -> str | None:
+        """The system prompt as the run's `model_instructions_file` carried it, copied
+        by the fake while the run's scratch directory still existed."""
+        return self.recorded()["instructions"]
 
 
 @pytest.fixture
@@ -496,8 +508,10 @@ async def test_the_command_line_carries_the_run_settings(fake: Fake, tmp_path: P
     assert fake.config("approval_policy") == '"never"'
     assert fake.config("sandbox_mode") == '"workspace-write"'
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-    # The system prompt is layered over Codex's own instructions, as a TOML string.
-    assert fake.config("developer_instructions") == json.dumps("You are Dev, the developer.")
+    # The system prompt replaces Codex's built-in instructions via a per-run file.
+    assert fake.config("developer_instructions") is None
+    assert fake.config("model_instructions_file") is not None
+    assert fake.instructions() == "You are Dev, the developer."
     assert "resume" not in argv
 
 
@@ -655,7 +669,7 @@ async def test_a_resume_opens_the_same_thread(fake: Fake, tmp_path: Path) -> Non
     assert argv[-2:] == ["thr_9", "-"]
     assert recorded["stdin"] == "carry on"
     # The options a resume shares with a first run are still there.
-    assert fake.config("developer_instructions") is not None
+    assert fake.instructions() is not None
 
 
 @pytest.mark.parametrize("error_format", ["stderr", "json"])
@@ -811,17 +825,15 @@ async def test_missing_session_recovery_still_works_after_a_writer_conflict(
     assert len(Path(str(fake.record) + ".history").read_text().splitlines()) == 3
 
 
-async def test_a_system_prompt_too_long_for_the_command_line_rides_the_message(
-    fake: Fake, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_a_long_system_prompt_still_rides_the_instructions_file(
+    fake: Fake, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(codex, "_MAX_COMMAND_LINE", 400)
-    long_prompt = "You are Dev. " * 60
+    """The file has no command-line ceiling: even a long prompt never rides the message."""
+    long_prompt = "You are Dev. " * 600
     events = await run(make_request(tmp_path, system_prompt=long_prompt))
-    assert fake.config("developer_instructions") is None
-    stdin = fake.recorded()["stdin"]
-    assert stdin.startswith("<instructions>\n" + long_prompt.strip())
-    assert stdin.endswith("</instructions>\n\nthe brief")
-    assert any(event.data.get("subtype") == "instructions_in_prompt" for event in events)
+    assert fake.instructions() == long_prompt.strip()
+    assert fake.recorded()["stdin"] == "the brief"
+    assert not any(event.data.get("subtype") == "instructions_in_prompt" for event in events)
 
 
 # ------------------------------------------------------------------ availability
@@ -1034,10 +1046,9 @@ async def test_a_codex_member_runs_a_task_with_its_identity_in_the_prompt(
     kinds = [m.kind for m in messages]
     assert "tool_use" in kinds and "text" in kinds and "result" in kinds
 
-    instructions = fake.config("developer_instructions")
+    instructions = fake.instructions()
     assert instructions is not None
-    prompt = json.loads(instructions)
-    assert dev.name in prompt and "Lower the cooldown." in fake.recorded()["stdin"]
+    assert dev.name in instructions and "Lower the cooldown." in fake.recorded()["stdin"]
 
 
 async def test_studio_task_marks_a_builtin_skill_read(ctx: AppContext, fake: Fake, wait_for) -> None:

@@ -263,7 +263,10 @@ async def test_failed_busy_resume_does_not_account_for_external_writer(
         system_prompt="test",
         resume_session_id="thread-1",
     )
-    events = [event async for event in codex.CodexBackend()._run_once(request)]
+    events = [
+        event
+        async for event in codex.CodexBackend()._run_once(request, tmp_path / "instructions.md")
+    ]
     assert not any(event.data.get("subtype") == "usage_update" for event in events)
     assert events[-1].kind == "result"
     assert events[-1].data["total_tokens"] == 0

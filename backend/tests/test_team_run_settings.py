@@ -116,7 +116,7 @@ def test_codex_and_qwen_use_effective_permissions_not_dormant_member_values(tmp_
         task=TeamTask(team_id=TEAM, title="Inspect"), workdir=tmp_path, prompt="Inspect",
         system_prompt="", permission_mode="plan", max_turns=11,
     )
-    _, argv, _ = codex._build_command(["codex"], request)
+    _, argv, _ = codex._build_command(["codex"], request, tmp_path / "instructions.md")
     assert 'sandbox_mode="read-only"' in argv
     assert "--dangerously-bypass-approvals-and-sandbox" not in argv
     argv, _, _ = qwen._command(["qwen"], request, tmp_path / "mcp.json")

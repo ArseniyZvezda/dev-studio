@@ -1408,6 +1408,7 @@ export interface VcsConfig {
  * back to its default. The defaults themselves come from `GET /api/settings/prompts`.
  */
 export interface AgentPromptsConfig {
+  system_prompt_base: string | null
   identity: string | null
   identity_responsibility: string | null
   identity_manager: string | null

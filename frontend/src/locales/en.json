@@ -2668,9 +2668,13 @@
       }
     },
     "fragments": {
+      "system_prompt_base": {
+        "label": "System Prompt Base",
+        "hint": "Common text sent at the very beginning of every agent’s system prompt, before their Responsibility. Leave empty to send nothing."
+      },
       "identity": {
         "label": "Introduction",
-        "hint": "The first line of every member’s instructions: their name, role and team."
+        "hint": "The line that introduces every member: their name, role and team."
       },
       "identity_responsibility": {
         "label": "Responsibility",

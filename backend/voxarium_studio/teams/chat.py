@@ -617,8 +617,9 @@ class ChatService:
                     member.model if not chat.agent_backend or chat.agent_backend == member.agent_backend else ""),
             })
             backend = get_backend(runtime_member.agent_backend)
-            # `None` for a backend without named personas, so the identity stays in the
-            # system prompt — the same rule a task run applies (§10.6).
+            # `None` for a backend without named personas. The identity travels in the
+            # system prompt on every backend — full replacement discards a definition's
+            # prompt — the same rule a task run applies (§10.6).
             agent_name = (
                 orchestrator._resolve_agent(
                     member=member,
@@ -667,7 +668,6 @@ class ChatService:
                                      has_tools=toolset is not None),
                 prompts=self.config.teams.prompts,
                 code_graph=code_graph_file(workdir),
-                include_identity=agent_name is None,
                 chat=True,
                 skills=member_skills.found,
             )

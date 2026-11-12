@@ -3094,7 +3094,9 @@ async def test_a_run_hands_the_session_its_members_agent(teams: AppContext, wait
     await wait_for(task.id, timeout=20)
 
     assert seen[0].agent_name == DESIGNER_AGENT
-    assert "You are Marina" not in seen[0].system_prompt, "the identity is in the definition"
+    assert "You are Marina" in seen[0].system_prompt, (
+        "full replacement discards the definition's prompt, so the identity travels here"
+    )
     assert "shared documents" in seen[0].system_prompt, "what only this run knows still is"
 
 

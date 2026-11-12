@@ -2410,8 +2410,10 @@ class TeamOrchestrator:
             })
             backend = get_backend(run_backend)
             # `--agent` is Claude Code's. A backend with no notion of named personas gets
-            # `None`, and the system prompt then carries the member's identity itself —
-            # the one-or-the-other rule `AgentRunRequest.agent_name` promises (§10.6).
+            # `None`. Since full replacement (2026-11-12) the system prompt carries the
+            # member's identity on *every* backend — Claude's `--system-prompt` discards
+            # the definition's prompt — so the name now only selects the definition's
+            # non-prompt effects and keeps the file fresh (§10.3, §10.6).
             agent_name = (
                 self._resolve_agent(
                     member=member,
@@ -2506,9 +2508,6 @@ class TeamOrchestrator:
                 prompts=self.config.teams.prompts,
                 code_graph=code_graph_file(launch_root),
                 language=summary_language(task.summary_locale),
-                # The identity is in the agent definition when there is one; repeating it
-                # here would send the same paragraph twice in one system prompt.
-                include_identity=agent_name is None,
                 skills=member_skills.found,
             )
             # §10.5: every run, including resumed sessions, sees the current write contract.
@@ -4072,25 +4071,24 @@ def _build_system_prompt(
     memory: str | None = None,
     temp_dir: Path | None = None,
     code_graph: Path | None = None,
-    include_identity: bool = True,
     chat: bool = False,
     skills: Sequence[Skill] = (),
     language: str = summary_language(None),
 ) -> str:
-    """What this *run* has to tell the agent, appended onto the stock claude_code preset.
+    """What this *run* tells the agent, as the session's whole system prompt (§10.3).
 
     Every sentence is a template from ``teams.prompts`` (``core/prompts.py``), resolved
     here with what only this run knows — the task id, the checkout, the docs directory.
     This function decides *which* fragments apply; the words are the user's to change on
     the Settings page, and a fragment blanked there is simply not sent.
 
-    ``include_identity`` is what the agent definitions (§10.3) changed here. Who the member
-    is and where they sit in the org chart is derived from the roster alone, so when the
-    session runs under ``--agent`` that half already sits in the definition on disk and only
-    the run-specific half — this checkout, these tools, this working directory — belongs in
-    the append. With no agent to run as, the whole thing is built here as before, which is
-    what keeps a member working when its name is taken or its launch root is outside the
-    project.
+    The identity half — who the member is and where they sit in the org chart — is always
+    part of this prompt. It used to be left out when the session ran under ``--agent``,
+    because the definition on disk carried it; full replacement changed that (2026-11-12).
+    Every backend now sends this prompt as the session's *whole* system prompt, and
+    Claude's ``--system-prompt`` discards the definition's own prompt (verified against
+    the bundled CLI with a captured request), so ``.claude/agents/*.md`` serve the
+    developer's terminal and this prompt is the single carrier for runs.
 
     ``chat`` is a conversation with the member rather than a task (``teams/chat.py``): the
     ``chat_mode`` fragment stands where the task id would, and the closing instruction to
@@ -4105,13 +4103,9 @@ def _build_system_prompt(
     ``memory`` is the project memory index (§10.12) as :func:`memory_prompt` renders it, or
     ``None`` when no memory goes to this run — switched off, or no Studio tools to use it with.
     """
-    lines = (
-        agent_defs.identity_lines(
-            member=member, team=team, manager=manager, reports=reports, peers=peers,
-            prompts=prompts,
-        )
-        if include_identity
-        else []
+    lines = agent_defs.identity_lines(
+        member=member, team=team, manager=manager, reports=reports, peers=peers,
+        prompts=prompts,
     )
 
     def say(key: str, **values: str) -> None:

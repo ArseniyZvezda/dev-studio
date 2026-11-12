@@ -232,7 +232,10 @@ def _command(launcher: list[str], request: AgentRunRequest, config: Path
             str(image["path"]) for image in request.images
         )
     if request.system_prompt:
-        candidate = [*argv, "--append-system-prompt", request.system_prompt]
+        # Full replacement, not an append: the prompt the Studio assembles — System
+        # Prompt Base, Responsibility, identity, run context — is the session's whole
+        # system prompt, and Qwen Code's default one is not sent alongside it.
+        candidate = [*argv, "--system-prompt", request.system_prompt]
         if len(subprocess.list2cmdline(candidate).encode("utf-16-le")) // 2 < 30_000:
             argv = candidate
         else:

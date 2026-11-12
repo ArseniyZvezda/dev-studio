@@ -387,15 +387,13 @@ class ClaudeCodeBackend(AgentBackend):
             model=request.model,
             max_turns=request.max_turns,
             permission_mode=request.permission_mode,
-            # Append onto the stock Claude Code prompt rather than replacing it, so the
-            # member keeps normal coding-agent behaviour. With `--agent` the three compose:
-            # the agent's own prompt, this append, and the preset underneath both — checked
-            # against the bundled CLI, so what is left here is only what the *run* knows.
-            system_prompt={
-                "type": "preset",
-                "preset": "claude_code",
-                "append": request.system_prompt,
-            },
+            # Full replacement (2026-11-12): the Studio-built prompt — System Prompt
+            # Base, Responsibility, identity, run context — is the session's *whole*
+            # system prompt; the stock Claude Code preset is no longer sent underneath.
+            # Checked against the bundled CLI with a captured request: `--system-prompt`
+            # also discards a `--agent` definition's own prompt, which is why the run's
+            # prompt now always carries the identity itself (orchestrator/chat side).
+            system_prompt=request.system_prompt,
             extra_args=extra_args,
             **extra,
         )

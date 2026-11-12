@@ -15,6 +15,8 @@ from fastapi.testclient import TestClient
 from voxarium_studio.core.config import load_config, save_config
 from voxarium_studio.core.paths import ProjectPaths
 from voxarium_studio.core.prompts import SPECS, AgentPromptsConfig, fill
+from voxarium_studio.models.teams import TeamMember
+from voxarium_studio.teams.agents import identity_lines
 
 # ------------------------------------------------------------------ resolution
 
@@ -41,6 +43,26 @@ def test_blanking_an_optional_fragment_removes_it() -> None:
     prompts = AgentPromptsConfig(studio_skill="", docs_location="   ")
     assert prompts.text("studio_skill", skill="voxarium_studio:studio") == ""
     assert prompts.text("docs_location", docs_dir="somewhere") == ""
+
+
+def test_the_base_leads_the_identity_block_and_responsibility_follows() -> None:
+    """The System Prompt Base is the shared opening of every member's identity block,
+    and the member's Responsibility is appended right after it (§10.3)."""
+    member = TeamMember(team_id="team", name="Marina", role_title="Game Designer",
+                        responsibility="Levels and narrative.")
+
+    def lines(prompts: AgentPromptsConfig) -> list[str]:
+        return identity_lines(member=member, team=None, manager=None, reports=[],
+                              peers=[], prompts=prompts)
+
+    built = lines(AgentPromptsConfig(system_prompt_base="Common rules for everyone."))
+    assert built[0] == "Common rules for everyone."
+    assert built[1] == "Levels and narrative."
+    assert built[2].startswith("You are Marina")
+
+    untouched = lines(AgentPromptsConfig())
+    assert untouched[0] == "Levels and narrative.", "an unwritten base sends nothing"
+    assert "Common rules" not in "\n".join(untouched)
 
 
 def test_blanking_a_required_message_falls_back_to_the_default() -> None:

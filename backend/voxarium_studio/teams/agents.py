@@ -17,10 +17,12 @@ member whose name collides with a hand-written agent falls back to running witho
 ``--agent``, with a note on the task, rather than overwriting somebody's work.
 
 **A member may opt out entirely.** ``TeamMember.agent`` names an existing agent to run as;
-the Studio then writes nothing and only passes the name through. The team context still
-reaches that agent as an appended system prompt, so a borrowed agent gains the org chart
-without losing its own instructions — verified: ``--agent`` and ``--append-system-prompt``
-compose, and the stock Claude Code prompt stays underneath both.
+the Studio then writes nothing and only passes the name through. Since full replacement
+(2026-11-12) the Studio's prompt is the session's *whole* system prompt — Claude's
+``--system-prompt`` discards a ``--agent`` definition's own prompt (checked against the
+bundled CLI with a captured request) — so a borrowed agent contributes its frontmatter's
+non-prompt effects, while the team context and the member's identity reach it in the run's
+system prompt like anywhere else.
 """
 
 from __future__ import annotations
@@ -76,21 +78,24 @@ def identity_lines(
     directory or a checkout that only existed for one run.
 
     The sentences are the ``identity_*`` templates from ``teams.prompts`` (§10.3); only
-    the data between them is the roster's. A line whose data is absent — no manager, no
-    reports — is skipped, and so is one the user blanked in Settings. The built-in
-    Producer's responsibility mirrors its System Prompt (§10.11), which belongs only
-    to an active Producer chat and is resolved there with the chat's language.
+    the data between them is the roster's. The shared ``system_prompt_base`` leads the
+    block for every member and the member's Responsibility follows it; a line whose data
+    is absent — no manager, no reports — is skipped, and so is one the user blanked in
+    Settings. The built-in Producer's responsibility mirrors its System Prompt (§10.11),
+    which belongs only to an active Producer chat and is resolved there with the chat's
+    language.
     """
     candidates = [
+        prompts.text("system_prompt_base"),
+        prompts.text("identity_responsibility", responsibility=member.responsibility)
+        if member.responsibility and not is_producer(member)
+        else "",
         prompts.text(
             "identity",
             name=member.name,
             role=member.role_title,
             team=team.name if team else "this project",
         ),
-        prompts.text("identity_responsibility", responsibility=member.responsibility)
-        if member.responsibility and not is_producer(member)
-        else "",
         prompts.text("identity_manager", manager=describe(manager)) if manager else "",
         prompts.text(
             "identity_reports", reports=", ".join(describe(report) for report in reports)

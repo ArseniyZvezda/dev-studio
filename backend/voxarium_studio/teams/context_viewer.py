@@ -46,8 +46,9 @@ async def _save_request(db, owner_id: str, request: AgentRunRequest, input_at: d
             row.started_at = input_at or utcnow()
             row.partial = bool(request.resume_session_id)
         parts = [] if fresh else [part for part in row.sources if part["category"] != "system"]
-        # Both Codex developer_instructions and Claude's appended system prompt are
-        # supplied again on resume; required materials inside the first user turn stay.
+        # The Studio's system prompt (Codex's model_instructions_file, Claude's and
+        # Qwen's replaced prompt) is supplied again on resume; required materials
+        # inside the first user turn stay.
         # Store raw fields. Only the read path classifies them, so updated readers
         # can inspect earlier dispatches without rewriting either field (§10.4).
         key = "studio.request[" + utcnow().isoformat() + "]"

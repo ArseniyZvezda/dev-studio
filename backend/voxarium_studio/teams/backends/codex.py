@@ -8,12 +8,13 @@ difference — which is what §10.6 promised and what this module exists to chec
 What the request carries that Codex can take, and what it cannot:
 
 - **The prompt and the system prompt.** The prompt goes in on stdin (``-`` as the prompt
-  argument), so a long brief never meets the command-line ceiling. The system prompt is the
-  Studio's *append* — the role, the task id, the working directory — and travels as
-  ``developer_instructions``, Codex's own key for text layered over its stock instructions,
-  which is the same arrangement the Claude backend has with ``append``. When the command
-  line would not fit (Windows stops at 32 K characters), the append is prepended to the
-  stdin prompt instead, under a heading that says what it is.
+  argument), so a long brief never meets the command-line ceiling. The system prompt
+  *replaces* Codex's stock base instructions outright — it travels as
+  ``model_instructions_file``, a per-run scratch file (verified on codex-cli 0.166.0;
+  the file side-steps both TOML escaping of a long text and the Windows command-line
+  limit). Before 2026-11-12 it was ``developer_instructions`` layered over the stock
+  text, with an overflow copy riding the stdin prompt; the Claude and Qwen backends
+  moved to the same full-replacement arrangement.
 - **The model and the effort.** ``-m`` verbatim, unless the member still carries a Claude
   model name (``sonnet`` is the roster default), in which case Codex's own default from
   ``~/.codex/config.toml`` runs and the transcript says so. Effort levels share a vocabulary
@@ -53,6 +54,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 import tomllib
 from collections import deque
@@ -74,10 +76,6 @@ log = logging.getLogger(__name__)
 #: member switched to Codex without a new model would otherwise send ``-m sonnet`` and fail
 #: on the first turn; leaving the flag out runs Codex's configured default instead.
 _CLAUDE_MODEL = re.compile(r"^(claude-|opus|sonnet|haiku|fable|opusplan)", re.I)
-
-#: Where the whole command line stops fitting. Windows' ``CreateProcess`` ceiling is 32 767
-#: characters; the margin covers the launcher and the quoting Python adds around arguments.
-_MAX_COMMAND_LINE = 30_000
 
 # §10.6: replace Codex's effort-dependent delegation rule for Studio task and chat turns.
 _SUBAGENT_HINT = (
@@ -241,6 +239,9 @@ class CodexBackend(AgentBackend):
             yield AgentEvent(kind="error", text=reason, is_final=True)
             return
         started_at = time.monotonic()
+        # One scratch directory for the whole run: busy-resume retries reuse the same
+        # instructions file, so every attempt stays a byte-identical request (§10.6).
+        temporary = Path(tempfile.mkdtemp(prefix="voxarium_studio-codex-"))
         try:
             async with bridge_servers(request.mcp_servers, request.max_message_bytes) as servers:
                 current = replace(request, mcp_servers=servers)
@@ -249,7 +250,7 @@ class CodexBackend(AgentBackend):
                 while True:
                     pending: list[AgentEvent] = []
                     retryable = bool(current.resume_session_id)
-                    async for event in self._run_once(current):
+                    async for event in self._run_once(current, temporary / "instructions.md"):
                         # A failed resume can be recovered only before the turn does work.
                         # Hold its errors until the process exits so the orchestrator does
                         # not mark a successfully recovered task as blocked (§10.6).
@@ -340,14 +341,16 @@ class CodexBackend(AgentBackend):
         except Exception as exc:
             log.exception("Codex setup failed for member %s", request.member.id)
             yield AgentEvent(kind="error", text=f"{type(exc).__name__}: {exc}", is_final=True)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
 
-    async def _run_once(self, request: AgentRunRequest) -> AsyncIterator[AgentEvent]:
+    async def _run_once(
+        self, request: AgentRunRequest, instructions: Path
+    ) -> AsyncIterator[AgentEvent]:
         launcher = _launcher() or []
 
         session_id: str | None = request.resume_session_id
-        notes, argv, stdin_text = _build_command(launcher, request)
-        for note in notes:
-            yield AgentEvent(kind="system", text=note.text, data=note.data, session_id=session_id)
+        notes, argv, stdin_text = _build_command(launcher, request, instructions)
 
         started_at = time.monotonic()
         process: asyncio.subprocess.Process | None = None
@@ -356,6 +359,10 @@ class CodexBackend(AgentBackend):
         frame_task: asyncio.Task[Any] | None = None
         usage = _RolloutUsage(codex_home())
         try:
+            # Inside the try: a cancellation at this first yield must still reach the
+            # finally that removes the scratch directory.
+            for note in notes:
+                yield AgentEvent(kind="system", text=note.text, data=note.data, session_id=session_id)
             if session_id:
                 # Snapshot before the child can append: a resumed session's cumulative
                 # total includes previous Studio runs and must not be billed again.
@@ -513,12 +520,14 @@ class _Note:
 
 
 def _build_command(
-    launcher: list[str], request: AgentRunRequest
+    launcher: list[str], request: AgentRunRequest, instructions: Path
 ) -> tuple[list[_Note], list[str], str]:
     """The argv and the stdin text for one run, with the notes the transcript gets.
 
     Shared settings for the first run and a resume, with each subcommand's own flags:
     ``exec resume`` accepts fewer options than ``exec`` (notably no ``--color``).
+    ``instructions`` is a file path in the run's scratch directory: the system prompt
+    is written there for ``model_instructions_file``.
     """
     notes: list[_Note] = []
     argv = [*launcher, "exec"]
@@ -597,22 +606,11 @@ def _build_command(
     system_prompt = request.system_prompt.strip()
     stdin_text = request.prompt
     if system_prompt:
-        with_instructions = [*argv, "-c", f"developer_instructions={_toml_string(system_prompt)}"]
-        if _command_length(with_instructions) <= _MAX_COMMAND_LINE:
-            argv = with_instructions
-        else:
-            # Too long for the command line, so it rides the prompt. Said in the transcript
-            # because the model then sees it as part of the user's message, not as
-            # instructions layered over its own.
-            stdin_text = f"<instructions>\n{system_prompt}\n</instructions>\n\n{request.prompt}"
-            notes.append(
-                _Note(
-                    "The system prompt was sent inside the message: it is too long for the "
-                    "command line Codex is given its instructions on.",
-                    subtype="instructions_in_prompt",
-                    bytes=len(system_prompt),
-                )
-            )
+        # Full replacement: `model_instructions_file` swaps Codex's built-in base
+        # instructions for the Studio-built prompt (verified on codex-cli 0.166.0).
+        # A file rather than a `-c` string: no command-line ceiling and no escaping.
+        instructions.write_text(system_prompt, encoding="utf-8")
+        argv += ["-c", f"model_instructions_file={_toml_string(str(instructions))}"]
     # Positionals last: the thread to resume, then `-` for "the prompt is on stdin".
     if request.resume_session_id:
         argv += [request.resume_session_id]
@@ -670,11 +668,6 @@ def _toml_array(items: list[str]) -> str:
 
 def _toml_table(items: dict[str, str]) -> str:
     return "{" + ", ".join(f"{_toml_key(k)} = {_toml_string(v)}" for k, v in items.items()) + "}"
-
-
-def _command_length(argv: list[str]) -> int:
-    # Every argument quoted, which is the worst case the launcher has to fit.
-    return sum(len(arg) + 3 for arg in argv)
 
 
 def _child_environment() -> dict[str, str]:

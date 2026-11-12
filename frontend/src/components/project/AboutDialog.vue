@@ -14,7 +14,7 @@ import { t } from '@/i18n'
 const emit = defineEmits<{ close: [] }>()
 
 const PRODUCT_URL = 'https://voxarium.studio/studio/'
-const AUTHOR = { name: 'Voxarium Studio', url: 'https://voxarium.studio/' }
+const AUTHOR = { name: 'Voxarium', url: 'https://voxarium.studio/' }
 const CEO = 'Arseniy Zvezda'
 const CONTRIBUTORS = [{ handle: 'devilast', name: 'Igor Nazarov' }]
 </script>

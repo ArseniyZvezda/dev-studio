@@ -121,6 +121,8 @@ async def test_protocol_translates_identity_tools_usage_and_result(fake, tmp_pat
     record = fake.records()[0]
     assert record["stdin"] == "Бриф & <test>"
     assert "You are Dev." in record["argv"]
+    assert "--system-prompt" in record["argv"], "the Studio prompt replaces Qwen's default"
+    assert "--append-system-prompt" not in record["argv"]
     assert not Path(record["config_path"]).exists()
 
 
@@ -217,7 +219,7 @@ async def test_model_fallback_long_role_and_image_paths(fake, tmp_path):
                   images=[{"path": str(tmp_path / "image.png")}])
     events = await run(req)
     record = fake.records()[0]
-    assert "--model" not in record["argv"] and "--append-system-prompt" not in record["argv"]
+    assert "--model" not in record["argv"] and "--system-prompt" not in record["argv"]
     assert req.system_prompt in record["stdin"] and "image.png" in record["stdin"]
     assert {"model_fallback", "system_prompt_in_message"} <= {
         e.data.get("subtype") for e in events if e.kind == "system"}
