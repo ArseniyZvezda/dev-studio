@@ -4138,6 +4138,11 @@ def _build_system_prompt(
     if memory is not None:
         say("project_memory", entries=memory)
 
+    # §10.3: only a task has subagents — `spawn_subagent` refuses a chat, which has no
+    # task to split — and only with the Studio's tools is there anything to start one with.
+    if has_studio_tools and not chat:
+        say("subagents")
+
     # Absolute, because an isolated checkout starts the session somewhere the CLI's
     # default `graphify-out/graph.json` is not (§9.7): the graph describes the main
     # checkout, which is close enough for a branch of it.

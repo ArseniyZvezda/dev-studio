@@ -1,8 +1,8 @@
 /**
  * Graphify — the code graph the Studio keeps for the project, and when it is rebuilt.
  *
- * Plain ES module loaded at runtime: `vue`, the API client, `action` and `onEvent` come
- * through the factory, and it is one file because the host appends `?token=` to this URL
+ * Plain ES module loaded at runtime: `vue`, the API client, `action`, `onEvent` and the
+ * Studio's own `ModelSelector` come through the factory, and it is one file because the host appends `?token=` to this URL
  * (a relative import from here would resolve without it). Styling goes through the
  * `--vxs-*` properties rather than utility classes, which is what a plugin outside the
  * wheel would have to do.
@@ -52,7 +52,7 @@ const MESSAGES = {
       },
       documentsModel: {
         label: 'Documents model',
-        hint: 'What claude -p reads them with — haiku, sonnet, opus, or a full model id',
+        hint: 'What claude -p reads them with. The default model is haiku; Something else… takes any model id',
       },
       documentsLanguage: {
         label: 'Labels language',
@@ -169,7 +169,7 @@ const MESSAGES = {
       },
       documentsModel: {
         label: 'Модель для документов',
-        hint: 'Модель, которой их читает claude -p: haiku, sonnet, opus или полный идентификатор модели',
+        hint: 'Модель, которой их читает claude -p. Модель по умолчанию — haiku; «Другая…» принимает любой идентификатор',
       },
       documentsLanguage: {
         label: 'Язык меток',
@@ -299,21 +299,18 @@ const TOGGLES = [
   },
 ]
 
-const DOCUMENT_FIELDS = [
-  {
-    key: 'documents_model',
-    label: 'fields.documentsModel.label',
-    hint: 'fields.documentsModel.hint',
-    placeholder: 'haiku',
-  },
-]
+/**
+ * The documents pass runs graphify's `claude-cli` backend — `claude -p` and nothing else — so
+ * the model picker offers Claude Code alone; its models are the Studio's own suggestions.
+ */
+const DOCUMENT_BACKENDS = ['claude_code']
 
 const LANGUAGES = [
   { value: 'source', label: 'fields.documentsLanguage.source' },
   { value: 'english', label: 'fields.documentsLanguage.english' },
 ]
 
-export default function ({ vue, action, onEvent, settings, i18n }) {
+export default function ({ vue, api, action, onEvent, settings, i18n, components }) {
   const { defineComponent, h, computed, onMounted, onBeforeUnmount, ref } = vue
   const t = i18n.translator(MESSAGES)
 
@@ -330,6 +327,8 @@ export default function ({ vue, action, onEvent, settings, i18n }) {
         documents_language: 'source',
       })
       const status = ref(null)
+      /** `api.memberOptions()` — the picker's model list; null until it arrives, or if it fails. */
+      const modelOptions = ref(null)
       const loading = ref(true)
       const saving = ref(false)
       /** When the last save landed — formatted while rendering, in the language on screen. */
@@ -359,6 +358,11 @@ export default function ({ vue, action, onEvent, settings, i18n }) {
         } finally {
           loading.value = false
         }
+        // Without the list the picker still offers the default and a typed id — not worth an error.
+        api.memberOptions().then(
+          (options) => (modelOptions.value = options),
+          () => {},
+        )
         stop = onEvent('plugin.event', (payload) => {
           if (payload && payload.plugin_id === PLUGIN_ID && payload.name === 'index') {
             if (status.value) status.value = { ...status.value, indexer: payload.data }
@@ -563,6 +567,29 @@ export default function ({ vue, action, onEvent, settings, i18n }) {
         h('label', { style: { display: 'flex', gap: 'var(--vxs-space-4)', padding: '6px 0' } }, [
           h('div', { style: { width: '11rem', flexShrink: '0' } }, [h('div', t(spec.label)), faint(t(spec.hint))]),
           input(spec.key, spec.placeholder),
+        ])
+
+      /** The documents model, in the picker members, tasks and chats use; '' is the default. */
+      const modelField = () =>
+        h('div', { style: { display: 'flex', gap: 'var(--vxs-space-4)', alignItems: 'flex-start', padding: '6px 0' } }, [
+          h('div', { style: { width: '11rem', flexShrink: '0' } }, [
+            h('div', t('fields.documentsModel.label')),
+            faint(t('fields.documentsModel.hint')),
+          ]),
+          // A Studio older than `runtime.components` (this file is served from disk, the SPA is
+          // built) gets the plain id field rather than a page that fails to render.
+          !components || !components.ModelSelector
+            ? input('documents_model', 'haiku')
+            : h(components.ModelSelector, {
+                style: { flex: '1', minWidth: '0' },
+                backend: DOCUMENT_BACKENDS[0],
+                model: String(values.value.documents_model ?? ''),
+                options: modelOptions.value,
+                backends: DOCUMENT_BACKENDS,
+                label: t('fields.documentsModel.label'),
+                disabled: saving.value,
+                onChange: (_backend, model) => (values.value = { ...values.value, documents_model: model ?? '' }),
+              }),
         ])
 
       const toggle = (spec) =>
@@ -804,7 +831,7 @@ export default function ({ vue, action, onEvent, settings, i18n }) {
             : card(t('settings.title'), [
                 ...FIELDS.map(field),
                 ...TOGGLES.map(toggle),
-                ...(values.value.documents !== false ? DOCUMENT_FIELDS.map(field) : []),
+                values.value.documents !== false ? modelField() : null,
                 values.value.documents !== false
                   ? h('label', { style: { display: 'flex', gap: 'var(--vxs-space-4)', padding: '6px 0' } }, [
                       h('div', { style: { width: '11rem', flexShrink: '0' } }, [
