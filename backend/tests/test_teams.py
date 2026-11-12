@@ -83,6 +83,19 @@ class StubBackend:
 register_backend("stub", StubBackend)
 
 
+class AlternateTaskBackend(StubBackend):
+    name = "stub_alt"
+    requests: list[AgentRunRequest] = []
+
+    async def run(self, request):
+        self.requests.append(request)
+        async for event in super().run(request):
+            yield event
+
+
+register_backend("stub_alt", AlternateTaskBackend)
+
+
 @pytest.fixture
 async def teams(ctx: AppContext) -> AppContext:
     """Point every agent member at the stub backend and off the git worktree path."""
@@ -107,6 +120,20 @@ async def release(ctx: AppContext, task_id: str) -> TeamTask:
     without waits in `pending` for an explicit `start_task`.
     """
     return await ctx.teams.update_task(task_id, {"status": TaskStatus.PENDING})
+
+
+async def test_task_backend_override_reaches_runtime(teams: AppContext, wait_for) -> None:
+    AlternateTaskBackend.requests.clear()
+    task = await teams.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, title="other backend", brief="work",
+        agent_backend="stub_alt", model="alt-model", auto_start=True,
+    )
+    await release(teams, task.id)
+    await wait_for(task.id)
+    request = AlternateTaskBackend.requests[-1]
+    assert request.member.agent_backend == "stub_alt"
+    assert request.model == "alt-model"
+    assert (await load(teams, task.id)).agent_backend == "stub_alt"
 
 
 # ------------------------------------------------------------------ board-wide release (§10.4)

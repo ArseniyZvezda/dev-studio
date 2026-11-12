@@ -303,12 +303,13 @@ const canReview = computed(() => props.task.status === 'needs_review')
 const runSettings = computed(() => {
   if (isHuman.value) return null
   const member = props.task.assignee ?? teams.memberById.get(props.task.assignee_id) ?? null
-  const model = props.task.model ?? member?.model ?? null
+  const backend = props.task.agent_backend ?? member?.agent_backend ?? 'claude_code'
+  const model = props.task.model ?? (backend === member?.agent_backend ? member?.model : t('chat.defaultModel')) ?? null
   const effort = props.task.effort ?? member?.effort ?? null
-  if (!model && !effort) return null
+  if (!model && !effort && !props.task.agent_backend) return null
   const describe = (m: string | null, e: string | null) =>
     [m, e ? t('taskDetail.runSettings.effort', { effort: e }) : null].filter(Boolean).join(' · ')
-  const overridden = Boolean(props.task.model || props.task.effort)
+  const overridden = Boolean(props.task.agent_backend || props.task.model || props.task.effort)
   // A member the board cannot name is "the member" — a sentence of its own in each language,
   // since a word dropped into the named one would need a case Russian cannot give it.
   const name = member?.name ?? null
@@ -330,7 +331,7 @@ const runSettings = computed(() => {
   return {
     model,
     effort,
-    backend: member?.agent_backend ?? 'claude_code',
+    backend,
     overridden,
     title,
   }
@@ -546,8 +547,9 @@ interface Draft {
   assignee_id: string
   depends_on: string[]
   auto_start: boolean
-  /** Null on either means "the assignee's" — the same value the backend stores (§10.3). */
+  /** Null inherits the assignee's runtime choice (§10.3). */
   model: string | null
+  backend: string | null
   effort: string | null
 }
 
@@ -580,6 +582,7 @@ function draftOf(): Draft {
     depends_on: [...props.task.depends_on],
     auto_start: props.task.auto_start,
     model: props.task.model,
+    backend: props.task.agent_backend ?? null,
     effort: props.task.effort,
   }
 }
@@ -616,9 +619,9 @@ const patch = computed<TaskUpdate>(() => {
   if (current.depends_on.join(' ') !== original.depends_on.join(' '))
     result.depends_on = current.depends_on
   if (current.auto_start !== original.auto_start) result.auto_start = current.auto_start
-  // Null is sent, not omitted: on these two it is the edit — the override is dropped and
-  // the task goes back to the assignee's setting.
+  // Null is sent, not omitted: it drops an override and restores the assignee's setting.
   if (current.model !== original.model) result.model = current.model
+  if (current.backend !== (original.agent_backend ?? null)) result.agent_backend = current.backend
   if (current.effort !== original.effort) result.effort = current.effort
   return result
 })
@@ -1019,6 +1022,7 @@ async function complete() {
 
           <!-- A person has no session, so neither setting would reach anything (§10.2). -->
           <RunOverrides
+            v-model:backend="draft.backend"
             v-model:model="draft.model"
             v-model:effort="draft.effort"
             :member="teams.memberById.get(draft.assignee_id) ?? null"

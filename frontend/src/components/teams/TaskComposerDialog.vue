@@ -47,8 +47,9 @@ const form = ref({
   createdBy: null as string | null,
   dependsOn: [] as string[],
   autoStart: true,
-  /** Null on both: the task runs as its assignee does, which is what almost every one wants. */
+  /** Null overrides: the task runs as its assignee does (§10.3). */
   model: null as string | null,
+  backend: null as string | null,
   effort: null as string | null,
 })
 
@@ -101,6 +102,7 @@ async function submit() {
       dependsOn: form.value.dependsOn,
       autoStart: form.value.autoStart,
       model: form.value.model,
+      agent_backend: form.value.backend,
       effort: form.value.effort,
     })
     emit('close')
@@ -197,6 +199,7 @@ async function submit() {
         <!-- Both default to the assignee's, so the composer stays a title and a brief for
              anyone who has no opinion about either (§10.3). -->
         <RunOverrides
+          v-model:backend="form.backend"
           v-model:model="form.model"
           v-model:effort="form.effort"
           :member="teams.memberById.get(form.assigneeId ?? '') ?? null"

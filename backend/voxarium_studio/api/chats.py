@@ -29,6 +29,11 @@ class ChatCreate(BaseModel):
     locale: Literal["en", "ru"] = "en"
 
 
+class ChatModel(BaseModel):
+    agent_backend: str | None = None
+    model: str | None = None
+
+
 class ChatContextIn(BaseModel):
     """Where the user is in the Studio at the moment they send (``UserContext``)."""
 
@@ -115,6 +120,19 @@ async def get_chat(chat_id: str, ctx: Ctx) -> dict[str, Any]:
     chat = await _chat_or_404(ctx, chat_id)
     messages = await ctx.chats.messages(chat_id)
     return {**chat, "messages": [message.model_dump(mode="json") for message in messages]}
+
+
+@router.patch("/{chat_id}/model")
+async def set_chat_model(chat_id: str, body: ChatModel, ctx: Ctx) -> dict[str, Any]:
+    try:
+        chat = await ctx.chats.set_model(chat_id, body.agent_backend, body.model)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ChatBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return ctx.chats.to_json(chat)
 
 
 async def _retained_chat_context(chat_id: str, ctx: Ctx, view: ContextView) -> tuple[list[dict], dict]:

@@ -330,6 +330,8 @@ class TeamTask(SQLModel, table=True):
     it. Set only while a wait is armed, and cleared when the task moves on.
     """
 
+    agent_backend: str | None = None
+    """Optional runtime override; null follows the assignee (§10.3)."""
     model: str | None = None
     """Run this one task on a model other than the assignee's (§10.3).
 
@@ -502,6 +504,9 @@ class AgentChat(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("chat"), primary_key=True)
     member_id: str = Field(foreign_key="team_member.id", index=True)
+    agent_backend: str | None = None
+    model: str | None = None
+    """Per-chat runtime choice; null follows the member (§10.9)."""
     title: str = ""
     """Taken from the first message when nobody named the chat."""
 

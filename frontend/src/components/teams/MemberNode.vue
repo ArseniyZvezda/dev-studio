@@ -21,14 +21,16 @@
  */
 import { GraduationCap, SlidersHorizontal } from 'lucide-vue-next'
 import { Handle, Position } from '@vue-flow/core'
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { TeamMember } from '@/api/types'
 import MemberMark from '@/components/teams/MemberMark.vue'
+import ModelSelector from '@/components/ui/ModelSelector.vue'
 import { t } from '@/i18n'
 import { skillChips, skillDisplayName } from '@/lib/skills'
 import { statusColor } from '@/lib/status'
 import { useSkillsStore } from '@/stores/skills'
+import { useTeamsStore } from '@/stores/teams'
 
 const props = defineProps<{
   data: {
@@ -46,6 +48,28 @@ const props = defineProps<{
 }>()
 
 const member = computed(() => props.data.member)
+const teams = useTeamsStore()
+const selection = ref({ backend: member.value.agent_backend, model: member.value.model })
+watch(member, value => { if (!pendingModel) selection.value = { backend: value.agent_backend, model: value.model } })
+let modelTimer: ReturnType<typeof setTimeout> | null = null
+let pendingModel: { backend: string; model: string } | null = null
+function setModel(backend: string | null, model: string | null): void {
+  pendingModel = { backend: backend ?? member.value.agent_backend, model: model ?? '' }
+  selection.value = pendingModel
+  if (modelTimer) clearTimeout(modelTimer)
+  modelTimer = setTimeout(() => {
+    const choice = pendingModel
+    pendingModel = null
+    modelTimer = null
+    if (choice) void teams.saveMember(member.value.id, { agent_backend: choice.backend, model: choice.model })
+  }, 500)
+}
+onBeforeUnmount(() => {
+  if (modelTimer) clearTimeout(modelTimer)
+  if (pendingModel) void teams.saveMember(member.value.id, {
+    agent_backend: pendingModel.backend, model: pendingModel.model,
+  })
+})
 const isHuman = computed(() => member.value.kind === 'human')
 const avatar = computed(() => member.value.avatar_color ?? 'var(--vxs-accent)')
 
@@ -138,6 +162,11 @@ const skillsTitle = computed(() =>
       >
         <SlidersHorizontal class="size-3.5" />
       </button>
+    </div>
+
+    <div v-if="!isHuman" class="nodrag border-t border-line-subtle px-2 py-1" @pointerdown.stop @click.stop>
+      <ModelSelector :backend="selection.backend" :model="selection.model" :options="teams.options"
+        :disabled="!data.editing" @change="setModel" />
     </div>
 
     <!-- Only when there are any, like the task load below: an agent with no skills is the

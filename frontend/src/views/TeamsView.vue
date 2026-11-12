@@ -39,6 +39,7 @@ onMounted(async () => {
   skills.subscribe()
   void skills.load()
   await teams.load()
+  void teams.loadOptions()
 })
 
 function openMemberForm() {

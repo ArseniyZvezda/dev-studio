@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -243,6 +244,29 @@ class ChatService:
     async def get_chat(self, chat_id: str) -> AgentChat | None:
         async with self.db.session() as session:
             return await session.get(AgentChat, chat_id)
+
+    async def set_model(self, chat_id: str, backend_name: str | None, model: str | None) -> AgentChat:
+        """Save a chat's runtime choice and start a fresh session when it changes (§10.9)."""
+        from .backends.base import available_backends
+        if backend_name is not None and backend_name not in available_backends():
+            raise ValueError("Unknown agent backend")
+        model = model.strip() if model is not None else None
+        if model and not re.fullmatch(r"[A-Za-z0-9._-]+", model):
+            raise ValueError("A model id may only contain letters, digits, dots, dashes and underscores")
+        async with self.lock(chat_id):
+            if self.is_running(chat_id):
+                raise ChatBusy("Wait for the current turn before changing the model")
+            async with self.db.session() as session:
+                chat = await session.get(AgentChat, chat_id)
+                if chat is None:
+                    raise KeyError(chat_id)
+                if (chat.agent_backend, chat.model) != (backend_name, model):
+                    chat.agent_backend = backend_name
+                    chat.model = model
+                    chat.agent_session_id = None
+                    session.add(chat)
+            await self._publish_chat(chat)
+            return chat
 
     async def messages(self, chat_id: str) -> list[AgentChatMessage]:
         async with self.db.session() as session:
@@ -587,7 +611,12 @@ class ChatService:
                     data={"path": str(workdir)},
                 )
 
-            backend = get_backend(member.agent_backend)
+            runtime_member = member.model_copy(update={
+                "agent_backend": chat.agent_backend or member.agent_backend,
+                "model": chat.model if chat.model is not None else (
+                    member.model if not chat.agent_backend or chat.agent_backend == member.agent_backend else ""),
+            })
+            backend = get_backend(runtime_member.agent_backend)
             # `None` for a backend without named personas, so the identity stays in the
             # system prompt — the same rule a task run applies (§10.6).
             agent_name = (
@@ -658,15 +687,19 @@ class ChatService:
                 if resume_session_id and getattr(backend, "session_recovery", False)
                 else ""
             )
+            # §10.9: a model/backend switch drops the runtime session but keeps the chat.
+            # Rebuild the next turn's context from its saved transcript.
+            fresh_prompt = (required.prepend(recovery_prompt(prompt, await self.messages(chat_id)))
+                            if not resume_session_id and chat.num_turns else required.prepend(prompt))
             request = AgentRunRequest(
-                member=member,
+                member=runtime_member,
                 **member_run_settings(member, self.config.teams),
                 task=None,
                 session_key=chat_id,
                 proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[self.paths.root],
-                prompt=required.prepend(prompt) if not resume_session_id else prompt,
+                prompt=fresh_prompt if not resume_session_id else prompt,
                 images=images or [],
                 system_prompt=system_prompt,
                 agent_name=agent_name,

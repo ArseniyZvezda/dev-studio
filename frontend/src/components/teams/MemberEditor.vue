@@ -29,6 +29,7 @@ import MemberSelect from '@/components/teams/MemberSelect.vue'
 import RequiredContextEditor from '@/components/teams/RequiredContextEditor.vue'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
 import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
+import ModelSelector from '@/components/ui/ModelSelector.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { DEFAULT_EFFORT_SOLVER_WEIGHTS, EFFORT_SOLVER_DIMENSIONS, validEffortSolverWeights } from '@/lib/effort-solver'
@@ -169,13 +170,6 @@ const peers = computed(() =>
 
 const anyoneAllowed = computed(() => draft.value.can_assign_to.includes('*'))
 
-/**
- * The model picker is a list of choices plus an escape hatch, not a whitelist: the backend
- * passes `model` to the CLI verbatim, so a model released after this build has to remain
- * typeable. `CUSTOM_MODEL` is the sentinel for that row.
- */
-const CUSTOM_MODEL = '__custom__'
-
 /** The current backend's models only: a Codex member is offered Codex's catalogue, not
  *  Claude's aliases, and an entry that names no backend is for everyone. */
 const modelChoices = computed(() =>
@@ -195,32 +189,6 @@ const backendHint = computed(() => {
   if (draft.value.agent_backend === 'qwen') return t('teams.editor.qwenHint')
   return ''
 })
-
-/** Grouped in the order the backend sent them, so aliases stay above the pinned ids. */
-const modelGroups = computed(() => {
-  const groups = new Map<string, typeof modelChoices.value>()
-  for (const entry of modelChoices.value) {
-    const existing = groups.get(entry.group)
-    if (existing) existing.push(entry)
-    else groups.set(entry.group, [entry])
-  }
-  return [...groups.entries()]
-})
-
-/** Set only by choosing "Something else"; a model that is simply unlisted implies it. */
-const forcedCustomModel = ref(false)
-const usingCustomModel = computed(
-  () => forcedCustomModel.value || !modelChoices.value.some((m) => m.id === draft.value.model),
-)
-
-function pickModel(value: string): void {
-  if (value === CUSTOM_MODEL) {
-    forcedCustomModel.value = true
-    return
-  }
-  forcedCustomModel.value = false
-  draft.value.model = value
-}
 
 /** What the chosen model means, when the catalogue says something worth repeating. */
 const modelNote = computed(
@@ -405,7 +373,6 @@ watch(
       // be overwritten by this one, which writes one member's settings onto another.
       void flush()
       confirmingRemoval.value = false
-      forcedCustomModel.value = false
       extraTools.value = member.allowed_tools
         .filter((tool) => !(teams.options?.common_tools ?? []).includes(tool))
         .join(', ')
@@ -734,48 +701,9 @@ async function remove() {
           {{ t('teams.editor.agentSection') }}
         </p>
 
-        <div class="flex gap-2">
-          <label class="flex-1">
-            <span class="mb-1 block text-small text-faint">{{ t('teams.editor.backend') }}</span>
-            <select v-model="draft.agent_backend" class="field">
-              <option
-                v-for="(info, name) in options?.agent_backends ?? {}"
-                :key="name"
-                :value="name"
-              >
-                {{ info.available ? name : t('teams.editor.backendUnavailable', { name }) }}
-              </option>
-            </select>
-          </label>
-          <label class="flex-1">
-            <span class="mb-1 block text-small text-faint">{{ t('teams.editor.model') }}</span>
-            <select
-              :value="usingCustomModel ? CUSTOM_MODEL : draft.model"
-              class="field"
-              @change="pickModel(($event.target as HTMLSelectElement).value)"
-            >
-              <optgroup v-for="[group, entries] in modelGroups" :key="group" :label="group">
-                <option v-for="entry in entries" :key="entry.id" :value="entry.id">
-                  {{ entry.label }}
-                </option>
-              </optgroup>
-              <option :value="CUSTOM_MODEL">{{ t('teams.editor.somethingElse') }}</option>
-            </select>
-          </label>
-        </div>
-
-        <label v-if="usingCustomModel" class="block">
-          <span class="mb-1 block text-small text-faint">{{ t('teams.editor.modelId') }}</span>
-          <input
-            v-model="draft.model"
-            class="field font-mono"
-            :placeholder="modelChoices[0]?.id ?? 'claude-opus-5'"
-          />
-          <span class="mt-1 block text-small text-faint">
-            {{ t('teams.editor.modelIdHint') }}
-          </span>
-        </label>
-        <p v-else-if="modelNote" class="text-small text-faint">{{ modelNote }}</p>
+        <ModelSelector class="w-full" :backend="draft.agent_backend" :model="draft.model" :options="options"
+          @change="(backend, model) => { draft.agent_backend = backend ?? draft.agent_backend; draft.model = model ?? '' }" />
+        <p v-if="modelNote" class="text-small text-faint">{{ modelNote }}</p>
         <p
           v-if="
             options?.agent_backends?.[draft.agent_backend] &&

@@ -647,6 +647,7 @@ class TeamOrchestrator:
         created_by: str | None = None,
         depends_on: list[str] | None = None,
         auto_start: bool = False,
+        agent_backend: str | None = None,
         model: str | None = None,
         effort: str | None = None,
         parent_task: TeamTask | None = None,
@@ -771,6 +772,7 @@ class TeamOrchestrator:
                 depends_on=depends_on or [],
                 status=TaskStatus.TODO,
                 auto_start=auto_start and not is_human,
+                agent_backend=agent_backend,
                 model=str(model or "").strip() or None,
                 effort=str(effort or "").strip() or None,
                 delegation_depth=depth,
@@ -1258,6 +1260,7 @@ class TeamOrchestrator:
             "auto_start",
             "resume_on_limit",
             "status",
+            "agent_backend",
             "model",
             "effort",
             "archived",
@@ -1387,9 +1390,13 @@ class TeamOrchestrator:
             # Blank and null are the same wish — "back to the assignee's setting" — and
             # storing the empty string instead of null would make `task.model or
             # member.model` read as an override to a model with no name.
-            for override in ("model", "effort"):
+            for override in ("agent_backend", "model", "effort"):
                 if override in fields:
                     fields[override] = str(fields[override] or "").strip() or None
+            if any(key in fields and fields[key] != getattr(task, key) for key in ("agent_backend", "model")):
+                if running:
+                    raise ValueError("Cancel the running task before changing its model or backend")
+                task.agent_session_id = None
 
             if "depends_on" in fields:
                 fields["depends_on"] = await self._validated_dependencies(
@@ -1579,10 +1586,15 @@ class TeamOrchestrator:
         messages = await self._messages_of(task_id)
         if not compaction.has_dialogue(messages):
             raise ValueError("There is no new dialogue to compress")
+        backend_name = task.agent_backend or member.agent_backend
+        runtime_member = member.model_copy(update={
+            "agent_backend": backend_name,
+            "model": member.model if backend_name == member.agent_backend else "",
+        })
         request = AgentRunRequest(
-            member=member, task=task, workdir=self._recorded_workdir(messages),
+            member=runtime_member, task=task, workdir=self._recorded_workdir(messages),
             **member_run_settings(member, self.config.teams),
-            prompt="", system_prompt="", model=task.model or member.model,
+            prompt="", system_prompt="", model=task.model or runtime_member.model,
             effort=task.effort or member.effort,
             max_message_bytes=self.config.teams.max_message_bytes,
         )
@@ -1590,7 +1602,7 @@ class TeamOrchestrator:
         async def run(_handle: JobHandle) -> None:
             await self._publish_task_changed(task_id)
             async with self.jobs.slot("agents"):
-                await self._compress_context(get_backend(member.agent_backend), request, force=True)
+                await self._compress_context(get_backend(request.member.agent_backend), request, force=True)
 
         if member.id in self.removing_members:
             raise ValueError("This member is being removed. Wait for the team to refresh.")
@@ -2391,7 +2403,12 @@ class TeamOrchestrator:
             # From here the session exists, and its executor may re-declare (§10.5).
             self._run_writes[task_id] = locks if worktree_created is None else None
 
-            backend = get_backend(member.agent_backend)
+            run_backend = task.agent_backend or member.agent_backend
+            runtime_member = member.model_copy(update={
+                "agent_backend": run_backend,
+                "model": member.model if run_backend == member.agent_backend else "",
+            })
+            backend = get_backend(run_backend)
             # `--agent` is Claude Code's. A backend with no notion of named personas gets
             # `None`, and the system prompt then carries the member's identity itself —
             # the one-or-the-other rule `AgentRunRequest.agent_name` promises (§10.6).
@@ -2432,10 +2449,10 @@ class TeamOrchestrator:
             # above is — a service entry, so Verbose — because what a run *was* is worth
             # keeping beside it: the task's field is editable and says only what the next
             # run will use, and the header chip alongside the cost is the visible surface.
-            run_model = task.model or member.model
+            run_model = task.model or (member.model if run_backend == member.agent_backend else "")
             run_effort = task.effort or member.effort
-            if task.model or task.effort:
-                spent = f"model {run_model}"
+            if task.agent_backend or task.model or task.effort:
+                spent = f"backend {run_backend}, model {run_model or 'default'}"
                 if run_effort:
                     spent += f", effort {run_effort}"
                 await self.record_message(
@@ -2444,7 +2461,7 @@ class TeamOrchestrator:
                     role="system",
                     kind="model",
                     text=f"Running this task on {spent} — set on the task, not on {member.name}.",
-                    data={"model": run_model, "effort": run_effort, "source": "task"},
+                    data={"backend": run_backend, "model": run_model, "effort": run_effort, "source": "task"},
                 )
 
             # Resolved per run rather than once per member: a skill is a folder somebody may
@@ -2527,14 +2544,16 @@ class TeamOrchestrator:
                 if resume_session_id and getattr(backend, "session_recovery", False)
                 else ""
             )
+            fresh_prompt = (required.prepend(recovery_prompt(prompt, await self._messages_of(task_id), task))
+                            if not resume_session_id and task.num_turns else required.prepend(prompt))
             request = AgentRunRequest(
-                member=member,
+                member=runtime_member,
                 **member_run_settings(member, self.config.teams),
                 task=task,
                 proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[worktree_created, temp_dir] if worktree_created else [self.paths.root],
-                prompt=required.prepend(prompt) if not resume_session_id else prompt,
+                prompt=fresh_prompt if not resume_session_id else prompt,
                 images=list(images),
                 system_prompt=system_prompt,
                 agent_name=agent_name,

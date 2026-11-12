@@ -622,6 +622,7 @@ export interface TeamTask {
    * Null on both — the usual case — means the member's. A role is configured once for the
    * work it usually does; what varies underneath it is the card.
    */
+  agent_backend?: string | null
   model: string | null
   effort: string | null
   agent_session_id: string | null
@@ -700,6 +701,8 @@ export type ProducerPolicy = 'careful' | 'independent'
 export type ProducerEffortMode = 'agent' | 'auto'
 
 export interface AgentChat {
+  agent_backend?: string | null
+  model?: string | null
   producer_mode?: boolean
   /** Producer workspace chats keep their mode enabled until deletion (§10.11). */
   producer_workspace?: boolean
@@ -852,7 +855,8 @@ export interface TaskCreate {
    * unblocked, or wait for an explicit Start. Creation never starts anything (§10.4).
    */
   auto_start?: boolean
-  /** Overrides for this task alone; omitted or null leaves both to the assignee (§10.3). */
+  /** Runtime overrides for this task alone; omitted or null inherits the assignee (§10.3). */
+  agent_backend?: string | null
   model?: string | null
   effort?: string | null
 }
@@ -883,6 +887,7 @@ export interface TaskUpdate {
   resume_on_limit?: boolean
   status?: TaskStatus
   /** Null clears the override and hands the task back to the assignee's setting. */
+  agent_backend?: string | null
   model?: string | null
   effort?: string | null
   /** `true` is refused on anything but a task in Done; `false` brings one back (§10.4). */

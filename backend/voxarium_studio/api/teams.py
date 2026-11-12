@@ -81,6 +81,7 @@ class TaskCreate(BaseModel):
     explicit Start.
     """
 
+    agent_backend: str | None = None
     model: str | None = None
     effort: str | None = None
     """Run this one task on something other than the assignee's model or effort (§10.3).
@@ -123,6 +124,7 @@ class TaskUpdate(BaseModel):
     """
 
     status: TaskStatus | None = None
+    agent_backend: str | None = None
     model: str | None = None
     effort: str | None = None
     """The task's model and effort overrides (§10.3) — and the two fields here where an
@@ -148,7 +150,7 @@ class TeamUpdate(BaseModel):
 #: The only keys on a task where an explicit null means something. Everything else is
 #: dropped by :func:`update_task`, since a null title or a null assignee is a request to
 #: break the row rather than to clear a field — see the comment there.
-_NULLABLE_TASK_FIELDS = frozenset({"model", "effort"})
+_NULLABLE_TASK_FIELDS = frozenset({"agent_backend", "model", "effort"})
 
 
 class ReviewAction(BaseModel):
@@ -824,6 +826,8 @@ async def delete_member(
 async def create_task(team_id: str, payload: TaskCreate, ctx: Ctx) -> dict[str, Any]:
     """Put a task on the board. It lands in ``todo`` and no session starts (§10.4)."""
     _check_task_overrides({"model": payload.model, "effort": payload.effort})
+    if payload.agent_backend is not None and payload.agent_backend not in available_backends():
+        raise HTTPException(400, "Unknown agent backend")
     try:
         task = await ctx.teams.create_task(
             team_id=team_id,
@@ -836,6 +840,7 @@ async def create_task(team_id: str, payload: TaskCreate, ctx: Ctx) -> dict[str, 
             depends_on=payload.depends_on,
             auto_start=payload.auto_start,
             model=payload.model,
+            agent_backend=payload.agent_backend,
             effort=payload.effort,
             summary_locale=payload.summary_locale,
         )
@@ -988,6 +993,8 @@ async def update_task(
         if value is not None or field in _NULLABLE_TASK_FIELDS
     }
     _check_task_overrides(fields)
+    if fields.get("agent_backend") is not None and fields["agent_backend"] not in available_backends():
+        raise HTTPException(400, "Unknown agent backend")
     async with ctx.db.session() as session:
         task = await session.get(TeamTask, task_id)
         if task is None or task.team_id != team_id:

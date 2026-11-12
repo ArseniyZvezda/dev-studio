@@ -417,6 +417,12 @@ export const useChatStore = defineStore('chat', () => {
     return runAction(undefined, async () => updateExisting(await api.setProducerPolicy(current.id, policy)))
   }
 
+  async function setModel(backend: string | null, model: string | null): Promise<void> {
+    const current = activeChat.value
+    if (!current) return
+    return runAction(undefined, async () => updateExisting(await api.setChatModel(current.id, backend, model)))
+  }
+
   async function setProducerEffortMode(mode: ProducerEffortMode): Promise<void> {
     const current = activeChat.value
     if (!current) return
@@ -531,6 +537,7 @@ export const useChatStore = defineStore('chat', () => {
     stop,
     producerAction,
     setProducerPolicy,
+    setModel,
     setProducerEffortMode,
     setProducerEstimateTaskCost,
     remove,

@@ -461,8 +461,9 @@ export const useTeamsStore = defineStore('teams', () => {
     createdBy?: string | null
     dependsOn?: string[]
     autoStart: boolean
-    /** Overrides for this task alone; null on either leaves it to the assignee (§10.3). */
+    /** Runtime overrides for this task alone; null leaves a field to the assignee (§10.3). */
     model?: string | null
+    agent_backend?: string | null
     effort?: string | null
   }): Promise<void> {
     if (!team.value) return
@@ -479,6 +480,7 @@ export const useTeamsStore = defineStore('teams', () => {
         depends_on: input.dependsOn ?? [],
         auto_start: input.autoStart,
         model: input.model ?? null,
+        agent_backend: input.agent_backend ?? null,
         effort: input.effort ?? null,
       })
       await refreshTeam()

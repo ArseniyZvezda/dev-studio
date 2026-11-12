@@ -540,6 +540,8 @@ export const api = {
   chats: () => request<AgentChat[]>('GET', '/chats'),
   chat: (chatId: string) => request<ChatDetail>('GET', `/chats/${chatId}`),
   createChat: (body: ChatCreate) => request<AgentChat>('POST', '/chats', { body }),
+  setChatModel: (chatId: string, agentBackend: string | null, model: string | null) =>
+    request<AgentChat>('PATCH', `/chats/${chatId}/model`, { body: { agent_backend: agentBackend, model } }),
   useProducerWorkspace: (chatId: string, locale: string) =>
     request<AgentChat>('POST', `/chats/${chatId}/producer/workspace`, { body: { locale } }),
   startProducer: (chatId: string, locale: 'en' | 'ru', policy?: ProducerPolicy, estimateTaskCostUsd?: number, effortMode?: ProducerEffortMode) =>

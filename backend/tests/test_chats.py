@@ -52,6 +52,10 @@ class RecordingBackend:
         )
 
 
+class AlternateBackend(RecordingBackend):
+    name = "chat_alt"
+
+
 class GatedBackend:
     """Holds every turn open until the test lets it go, to catch the chat mid-answer."""
 
@@ -94,6 +98,7 @@ class SteerableBackend(GatedBackend):
 
 
 register_backend("chat_stub", RecordingBackend)
+register_backend("chat_alt", AlternateBackend)
 register_backend("chat_gate", GatedBackend)
 register_backend("chat_steer", SteerableBackend)
 
@@ -240,6 +245,23 @@ async def test_a_message_reaches_the_member_with_the_context_in_front(chats: App
 
     kinds = [(m.role, m.kind) for m in await chats.chats.messages(chat.id)]
     assert kinds == [("user", "text"), ("assistant", "text"), ("system", "result")]
+
+
+async def test_chat_model_switch_uses_selected_backend_and_saved_history(chats: AppContext) -> None:
+    chat = await chats.chats.create_chat(DEV)
+    await chats.chats.send(chat.id, "first question", UserContext())
+    await turn_done(chats, chat.id)
+    changed = await chats.chats.set_model(chat.id, "chat_alt", "alt-model")
+    assert (changed.agent_backend, changed.model, changed.agent_session_id) == (
+        "chat_alt", "alt-model", None,
+    )
+    await chats.chats.send(chat.id, "second question", UserContext())
+    await turn_done(chats, chat.id)
+    request = RecordingBackend.requests[-1]
+    assert request.member.agent_backend == "chat_alt"
+    assert request.model == "alt-model"
+    assert request.resume_session_id is None
+    assert "first question" in request.prompt
 
 
 async def test_a_chat_above_the_project_keeps_the_project_as_a_write_root(chats: AppContext) -> None:
@@ -565,6 +587,12 @@ def test_the_chat_endpoints(client) -> None:
     assert created.status_code == 201, created.text
     chat = created.json()
     assert chat["is_running"] is False and chat["title"] == ""
+
+    chosen = client.patch(f"/api/chats/{chat['id']}/model", json={
+        "agent_backend": "chat_alt", "model": "alt-model",
+    })
+    assert chosen.status_code == 200, chosen.text
+    assert (chosen.json()["agent_backend"], chosen.json()["model"]) == ("chat_alt", "alt-model")
 
     listed = client.get("/api/chats").json()
     assert [entry["id"] for entry in listed] == [chat["id"]]
