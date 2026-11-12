@@ -266,6 +266,9 @@ class QwenBackend(AgentBackend):
     name = "qwen"
     named_agents = False
     session_recovery = True
+    # Qwen Code ignores Studio effort, so a task left on "Auto" is not sent to the
+    # Effort Solver on this backend (§10.3, §10.11).
+    supports_effort = False
 
     def is_available(self) -> tuple[bool, str]:
         if _launcher() is None:

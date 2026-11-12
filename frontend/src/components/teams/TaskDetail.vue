@@ -943,7 +943,7 @@ async function complete() {
             <ModelEffortSlider
               :model-value="runSettings.effort"
               :levels="teams.options?.effort_levels"
-              :default-title="t('teams.editor.effortDefault')"
+              :default-title="t('taskDetail.header.effortSolverAtStart')"
               readonly
             />
           </span>

@@ -189,7 +189,7 @@ function frame(
  * running at that point was **stopped**, not left going. Without this a task resumed after
  * a cut-off run would show the old run's sub-agents as live forever.
  */
-export function subagents(messages: AgentMessage[], persisted: TaskSubagent[] = []): Subagent[] {
+export function subagents(messages: (LifecycleMessage & Pick<AgentMessage, 'created_at'>)[], persisted: TaskSubagent[] = []): Subagent[] {
   const byId = new Map<string, Subagent>()
   const updatedAt = new Map<string, number>()
   // §10.3: durable rows keep the panel and its counters after transcript cleanup. Their

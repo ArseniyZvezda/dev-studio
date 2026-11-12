@@ -23,7 +23,8 @@ const MESSAGES = {
   en: {
     intro:
       'A knowledge graph of the code and the documents: the code from the local AST with no model or key, ' +
-      'the documents read through Claude Code. Search it from the rail (Ctrl+K); agents are told to ' +
+      'the documents read through the agent CLI you choose — Claude Code, Codex or Qwen Code. Search it from the rail ' +
+      '(Ctrl+K); agents are told to ' +
       'query it before grepping — the wording is under Settings → Agent prompts → Code graph.',
     loading: 'Loading…',
     fields: {
@@ -46,13 +47,15 @@ const MESSAGES = {
       documents: {
         label: 'Index the documents too',
         hint:
-          'After the code, a second pass reads the Documents section (.voxarium_studio/docs) through Claude Code on your own ' +
-          'subscription (graphify’s claude-cli backend) into a graph of its own, merged with the code’s for agents and ' +
+          'After the code, a second pass reads the Documents section (.voxarium_studio/docs) through the agent CLI chosen ' +
+          'below (Claude Code, Codex or Qwen Code) on your own subscription into a graph of its own, merged with the code’s for agents and ' +
           'search. Pictures, PDFs, YAML and HTML are left out. Only changed documents are read; the rest come from the cache.',
       },
       documentsModel: {
-        label: 'Documents model',
-        hint: 'What claude -p reads them with. The default model is haiku; Something else… takes any model id',
+        label: 'Documents backend and model',
+        hint:
+          'The agent CLI that reads them and its model. Claude Code defaults to haiku; Codex and Qwen Code use the model ' +
+          'their CLI is configured with. Something else… takes any model id',
       },
       documentsLanguage: {
         label: 'Labels language',
@@ -71,10 +74,13 @@ const MESSAGES = {
       codeHow: 'Local AST — no model, no key',
       documents: 'Documents',
       documentsWhat: 'The Documents section — {dir} — into a graph of its own, then merged with the code’s',
-      documentsReadSource:
-        'Read through Claude Code at {claude}, model {model}; labels in each document’s own language — the rule is {memory}',
-      documentsReadEnglish: 'Read through Claude Code at {claude}, model {model}; labels in English — the rule is {memory}',
-      claudeMissing: 'claude is not on PATH — {hint}. Documents are skipped until it is.',
+      documentsReadSource: 'Read through {backend} at {cli}, model {model}; labels in each document’s own language — {rule}',
+      documentsReadEnglish: 'Read through {backend} at {cli}, model {model}; labels in English — {rule}',
+      defaultModel: 'the CLI’s default model',
+      ruleMemory: 'the rule is {memory}',
+      ruleEndpoint: 'the rule is sent with every request through the Studio’s local endpoint',
+      extraNeeded: 'graphify needs its openai extra: {command}',
+      cliMissing: '{command} is not on PATH — {hint}. Documents are skipped until it is.',
       documentsOff: 'Not indexed — switch it on below.',
       graph: 'Graph',
       merged: 'Code and documents merged — what agents and the search field read',
@@ -118,13 +124,13 @@ const MESSAGES = {
       title: 'Reset the whole index?',
       body:
         'This removes {dir} entirely — the code graph, the documents graph, the merged graph, the manifests and ' +
-        'every cache — and indexes everything again from scratch. Every document is read through Claude Code again, ' +
-        'which costs time and your subscription’s quota. Index now and Rebuild all keep the caches; use those unless ' +
+        'every cache — and indexes everything again from scratch. Every document is read through the chosen agent CLI ' +
+        'again, which costs time and your subscription’s quota. Index now and Rebuild all keep the caches; use those unless ' +
         'the graph is wrong in a way they do not fix.',
       bodyRunning:
         'This removes {dir} entirely — the code graph, the documents graph, the merged graph, the manifests and ' +
-        'every cache — and indexes everything again from scratch. Every document is read through Claude Code again, ' +
-        'which costs time and your subscription’s quota. The indexing running now is stopped first. Index now and ' +
+        'every cache — and indexes everything again from scratch. Every document is read through the chosen agent CLI ' +
+        'again, which costs time and your subscription’s quota. The indexing running now is stopped first. Index now and ' +
         'Rebuild all keep the caches; use those unless the graph is wrong in a way they do not fix.',
       confirm: 'Yes, remove it all and start over',
       cancel: 'Cancel',
@@ -139,7 +145,8 @@ const MESSAGES = {
   ru: {
     intro:
       'Граф знаний по коду и документам: код разбирается локально по AST — без модели и ключа, документы ' +
-      'читаются через Claude Code. Искать по графу можно из боковой панели (Ctrl+K); агентам предписано ' +
+      'читаются через выбранный агентский CLI — Claude Code, Codex или Qwen Code. Искать по графу можно из боковой ' +
+      'панели (Ctrl+K); агентам предписано ' +
       'обращаться к нему, прежде чем искать через grep, — формулировка в разделе Настройки → Промпты агентов → Граф кода.',
     loading: 'Загрузка…',
     fields: {
@@ -162,14 +169,16 @@ const MESSAGES = {
       documents: {
         label: 'Индексировать и документы',
         hint:
-          'После кода второй проход читает раздел «Документы» (.voxarium_studio/docs) через Claude Code по вашей собственной ' +
-          'подписке (бэкенд claude-cli в graphify) и строит из него отдельный граф, который объединяется с графом кода ' +
+          'После кода второй проход читает раздел «Документы» (.voxarium_studio/docs) через агентский CLI, выбранный ниже ' +
+          '(Claude Code, Codex или Qwen Code), по вашей собственной подписке и строит из него отдельный граф, который объединяется с графом кода ' +
           'для агентов и поиска. Картинки, PDF, YAML и HTML пропускаются. Читаются только изменённые документы, ' +
           'остальные берутся из кэша.',
       },
       documentsModel: {
-        label: 'Модель для документов',
-        hint: 'Модель, которой их читает claude -p. Модель по умолчанию — haiku; «Другая…» принимает любой идентификатор',
+        label: 'Бэкенд и модель для документов',
+        hint:
+          'Агентский CLI, который их читает, и его модель. У Claude Code по умолчанию haiku; Codex и Qwen Code берут модель ' +
+          'из настроек своего CLI. «Другая…» принимает любой идентификатор',
       },
       documentsLanguage: {
         label: 'Язык меток',
@@ -188,11 +197,13 @@ const MESSAGES = {
       codeHow: 'Локальный AST — без модели и ключа',
       documents: 'Документы',
       documentsWhat: 'Раздел «Документы» — {dir} — индексируется в отдельный граф, который затем объединяется с графом кода',
-      documentsReadSource:
-        'Читаются через Claude Code ({claude}), модель {model}; метки на языке самого документа — правило записано в {memory}',
-      documentsReadEnglish:
-        'Читаются через Claude Code ({claude}), модель {model}; метки на английском — правило записано в {memory}',
-      claudeMissing: 'claude не найден в PATH — {hint}. Пока его нет, документы пропускаются.',
+      documentsReadSource: 'Читаются через {backend} ({cli}), модель {model}; метки на языке самого документа — {rule}',
+      documentsReadEnglish: 'Читаются через {backend} ({cli}), модель {model}; метки на английском — {rule}',
+      defaultModel: 'по умолчанию из настроек CLI',
+      ruleMemory: 'правило записано в {memory}',
+      ruleEndpoint: 'правило передаётся с каждым запросом через локальный эндпоинт Studio',
+      extraNeeded: 'graphify нужен дополнительный пакет openai: {command}',
+      cliMissing: '{command} не найден в PATH — {hint}. Пока его нет, документы пропускаются.',
       documentsOff: 'Не индексируются — включите ниже.',
       graph: 'Граф',
       merged: 'Код и документы объединены — этот граф читают агенты и поиск',
@@ -245,12 +256,12 @@ const MESSAGES = {
       title: 'Сбросить весь индекс?',
       body:
         'Это полностью удалит {dir} — граф кода, граф документов, объединённый граф, манифесты и все кэши — и ' +
-        'проиндексирует всё с нуля. Каждый документ снова будет прочитан через Claude Code — это займёт время и ' +
+        'проиндексирует всё с нуля. Каждый документ снова будет прочитан через выбранный агентский CLI — это займёт время и ' +
         'израсходует квоту вашей подписки. «Индексировать» и «Перестроить всё» сохраняют кэши — пользуйтесь ими, ' +
         'если только граф не испорчен так, что они этого не исправят.',
       bodyRunning:
         'Это полностью удалит {dir} — граф кода, граф документов, объединённый граф, манифесты и все кэши — и ' +
-        'проиндексирует всё с нуля. Каждый документ снова будет прочитан через Claude Code — это займёт время и ' +
+        'проиндексирует всё с нуля. Каждый документ снова будет прочитан через выбранный агентский CLI — это займёт время и ' +
         'израсходует квоту вашей подписки. Идущая сейчас индексация сначала будет остановлена. «Индексировать» и ' +
         '«Перестроить всё» сохраняют кэши — пользуйтесь ими, если только граф не испорчен так, что они этого не исправят.',
       confirm: 'Да, удалить всё и начать заново',
@@ -300,10 +311,13 @@ const TOGGLES = [
 ]
 
 /**
- * The documents pass runs graphify's `claude-cli` backend — `claude -p` and nothing else — so
- * the model picker offers Claude Code alone; its models are the Studio's own suggestions.
+ * The agent CLIs the documents pass can read through: Claude Code by graphify's own `claude-cli`
+ * backend, Codex and Qwen Code by `--backend openai` against the local OpenAI-compatible endpoint
+ * the Studio runs for the length of the pass. An empty `documents_backend` means Claude Code, so
+ * a config saved before the choice existed keeps its `documents_model` as a Claude model.
  */
-const DOCUMENT_BACKENDS = ['claude_code']
+const DOCUMENT_BACKENDS = ['claude_code', 'codex', 'qwen']
+const BACKEND_LABELS = { claude_code: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code' }
 
 const LANGUAGES = [
   { value: 'source', label: 'fields.documentsLanguage.source' },
@@ -323,6 +337,7 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
         index_on_open: true,
         index_on_task_done: true,
         documents: true,
+        documents_backend: '',
         documents_model: '',
         documents_language: 'source',
       })
@@ -379,6 +394,8 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
         saving.value = true
         error.value = null
         try {
+          // `settings.save` replaces the whole dict, so an empty value left out is a value
+          // cleared: no backend is Claude Code, no model is the backend's default.
           const payload = {}
           for (const [key, value] of Object.entries(values.value)) {
             if (typeof value === 'boolean') payload[key] = value
@@ -569,7 +586,21 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
           input(spec.key, spec.placeholder),
         ])
 
-      /** The documents model, in the picker members, tasks and chats use; '' is the default. */
+      const selectStyle = {
+        flex: '1',
+        minWidth: '0',
+        padding: '4px 8px',
+        borderRadius: 'var(--vxs-radius-md)',
+        border: '1px solid var(--vxs-border)',
+        background: 'var(--vxs-bg-inset)',
+        color: 'var(--vxs-text-primary)',
+      }
+
+      /** The picker emits ('codex', '') on a backend switch, so a Claude model id is not carried over. */
+      const chooseBackend = (backend, model) =>
+        (values.value = { ...values.value, documents_backend: backend || 'claude_code', documents_model: model ?? '' })
+
+      /** The documents backend and model, in the picker members, tasks and chats use; '' is the default. */
       const modelField = () =>
         h('div', { style: { display: 'flex', gap: 'var(--vxs-space-4)', alignItems: 'flex-start', padding: '6px 0' } }, [
           h('div', { style: { width: '11rem', flexShrink: '0' } }, [
@@ -579,16 +610,28 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
           // A Studio older than `runtime.components` (this file is served from disk, the SPA is
           // built) gets the plain id field rather than a page that fails to render.
           !components || !components.ModelSelector
-            ? input('documents_model', 'haiku')
+            ? h('div', { style: { display: 'flex', gap: 'var(--vxs-space-2)', flex: '1', minWidth: '0' } }, [
+                h(
+                  'select',
+                  {
+                    value: values.value.documents_backend || 'claude_code',
+                    disabled: saving.value,
+                    onChange: (event) => chooseBackend(event.target.value, ''),
+                    style: { ...selectStyle, flex: '0 0 auto' },
+                  },
+                  DOCUMENT_BACKENDS.map((id) => h('option', { value: id }, BACKEND_LABELS[id])),
+                ),
+                input('documents_model', (values.value.documents_backend || 'claude_code') === 'claude_code' ? 'haiku' : ''),
+              ])
             : h(components.ModelSelector, {
                 style: { flex: '1', minWidth: '0' },
-                backend: DOCUMENT_BACKENDS[0],
+                backend: values.value.documents_backend || 'claude_code',
                 model: String(values.value.documents_model ?? ''),
                 options: modelOptions.value,
                 backends: DOCUMENT_BACKENDS,
                 label: t('fields.documentsModel.label'),
                 disabled: saving.value,
-                onChange: (_backend, model) => (values.value = { ...values.value, documents_model: model ?? '' }),
+                onChange: chooseBackend,
               }),
         ])
 
@@ -636,19 +679,35 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
         children.push(row(t('index.launchRoot'), [mono(s.launch_root), faint(t('index.launchRootWhere'))]))
         children.push(row(t('index.code'), [mono(s.command.join(' ')), faint(t('index.codeHow'))]))
         if (s.documents) {
+          // An older backend reports Claude Code alone, under `claude` / `claude_hint`.
+          const fresh = 'documents_cli' in s
+          const cli = fresh ? s.documents_cli : s.claude
+          const backendId = s.documents_backend || 'claude_code'
           children.push(
             row(t('index.documents'), [
               mono(s.documents_command.join(' ')),
               faint(t('index.documentsWhat', { dir: s.documents_dir })),
-              s.claude
+              cli
                 ? faint(
                     t(s.documents_language === 'english' ? 'index.documentsReadEnglish' : 'index.documentsReadSource', {
-                      claude: s.claude,
-                      model: s.documents_model,
-                      memory: s.documents_memory,
+                      backend: s.documents_backend_label || BACKEND_LABELS[backendId] || backendId,
+                      cli,
+                      model: s.documents_model || t('index.defaultModel'),
+                      rule:
+                        s.documents_endpoint || !s.documents_memory
+                          ? t('index.ruleEndpoint')
+                          : t('index.ruleMemory', { memory: s.documents_memory }),
                     }),
                   )
-                : h('div', { style: { color: 'var(--vxs-danger)' } }, t('index.claudeMissing', { hint: s.claude_hint })),
+                : h(
+                    'div',
+                    { style: { color: 'var(--vxs-danger)' } },
+                    t('index.cliMissing', {
+                      command: (fresh && s.documents_cli_command) || 'claude',
+                      hint: (fresh ? s.documents_cli_hint : s.claude_hint) || '',
+                    }),
+                  ),
+              s.documents_extra_hint ? faint(t('index.extraNeeded', { command: s.documents_extra_hint })) : null,
             ]),
           )
         } else {
@@ -844,15 +903,7 @@ export default function ({ vue, api, action, onEvent, settings, i18n, components
                           value: values.value.documents_language || 'source',
                           onChange: (event) =>
                             (values.value = { ...values.value, documents_language: event.target.value }),
-                          style: {
-                            flex: '1',
-                            minWidth: '0',
-                            padding: '4px 8px',
-                            borderRadius: 'var(--vxs-radius-md)',
-                            border: '1px solid var(--vxs-border)',
-                            background: 'var(--vxs-bg-inset)',
-                            color: 'var(--vxs-text-primary)',
-                          },
+                          style: selectStyle,
                         },
                         LANGUAGES.map((option) => h('option', { value: option.value }, t(option.label))),
                       ),

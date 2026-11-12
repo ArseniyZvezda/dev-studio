@@ -133,6 +133,17 @@ describe('the transcript widget', () => {
     expect(html).toContain('<option value="verbose"')
     expect(html).not.toContain('value="compact"')
   })
+
+  it('draws the Effort Solver evaluation of an Auto task at its start, outside a chat too', async () => {
+    const evaluation = message({
+      role: 'system', kind: 'effort_solver', text: 'high',
+      data: { scores: { complexity: 6, creativity: 3, depth: 5, coverage: 8 }, effort: 3, effort_level: 'high' },
+    })
+    const html = await renderFeed([evaluation, message({ text: 'Starting.' })], 'default')
+    expect(html).toContain('aria-label="Effort Solver"')
+    expect(html).toContain('Complexity')
+    expect(html).toContain('Starting.')
+  })
 })
 
 describe('the Status column', () => {

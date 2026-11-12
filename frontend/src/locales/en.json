@@ -1013,7 +1013,8 @@
       "model": "Model",
       "effort": "Effort",
       "sameAsMember": "Same as the member",
-      "sameAsMemberValue": "Same as the member ({value})"
+      "sameAsMemberValue": "Same as the member ({value})",
+      "effortSolverAtStart": "Same as the member (Auto): Effort Solver chooses the effort when the task starts"
     },
     "changes": {
       "touched": "Files touched",
@@ -1098,7 +1099,8 @@
       "contextHint": "Input tokens in the latest request, including cached input. The context window capacity is shown when reported by the runtime.",
       "tokensSpent": "Tokens spent: {tokens}",
       "tokensSpentHint": "Total tokens spent on this task across all runs: input, cached input and output. Updates as the runtime reports usage.",
-      "isolatedWorktree": "isolated worktree"
+      "isolatedWorktree": "isolated worktree",
+      "effortSolverAtStart": "Auto: Effort Solver chooses the effort when the task starts"
     },
     "runSettings": {
       "effort": "{effort} effort",
@@ -1456,8 +1458,8 @@
       "maxTurnsOverride": "Max turns Override",
       "inheritedRunSettings": "From Team Settings: {mode} · Max turns: {turns}",
       "effort": "Effort",
-      "effortDefault": "Leave it to the model",
-      "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows whatever the model does by default.",
+      "effortDefault": "Model default in chats; Effort Solver chooses for each task when it starts",
+      "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows the model default in chats; for a task, Effort Solver chooses the effort when the task starts.",
       "soloMode": "Solo Mode — one task at a time",
       "soloModeHint": "A released task waits in Pending while another of this member's tasks is in progress, and starts by itself when that one ends — lowest number first. Off, every released task runs at once.",
       "isolate": "Isolate in a separate checkout",

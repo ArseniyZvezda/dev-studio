@@ -399,7 +399,7 @@ useResizeObserver(transcript, () => {
         <span class="ml-auto shrink-0">{{ formatTime(block.message.created_at) }}</span>
       </p>
 
-      <EffortSolverResult v-else-if="chat && block.message.kind === 'effort_solver'" :data="block.message.data" />
+      <EffortSolverResult v-else-if="block.message.kind === 'effort_solver'" :data="block.message.data" />
       <ProducerCompaction v-else-if="chat && block.message.kind === 'producer_compacted'" :message="block.message" />
 
       <!-- A summary that came with a result type (§10.4) wears its colour: the edge and
