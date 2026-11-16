@@ -4,6 +4,8 @@
  */
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { rendererSession } from '@/session/project-session'
+import { connectDesktopPageState } from '@/desktop/page-state'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/explorer' },
@@ -125,7 +127,8 @@ const routes: RouteRecordRaw[] = [
 ]
 
 export const router = createRouter({
-  history: createWebHistory(),
+  // Absolute built-in and plugin paths remain relative to this immutable base (§5.3.2).
+  history: createWebHistory(rendererSession.routeBase || '/'),
   routes,
 })
 
@@ -139,7 +142,12 @@ export const router = createRouter({
  * replaces rather than pushes, so the credential never reaches session history.
  */
 router.beforeEach((to) => {
+  // A project switch needs a separate renderer; it is not a route in this one (§5.3.3).
+  if (!rendererSession.isLegacy && /^\/p(?:\/|$)/.test(to.path)) return false
   if (to.query.token === undefined) return true
   const { token: _discarded, ...rest } = to.query
   return { path: to.path, query: rest, hash: to.hash, replace: true }
 })
+
+// §5.3.6: main exchanges descriptors with this renderer, not runtime URLs.
+connectDesktopPageState(router, typeof window === 'undefined' ? undefined : window.voxariumTabs)

@@ -62,7 +62,9 @@ from .backends.base import (
     AgentRunRequest,
     Inbox,
     QueuedMessage,
+    RuntimeSessionKey,
     get_backend,
+    runtime_session_owner,
     member_run_settings,
 )
 from .backends.recovery import recovery_prompt
@@ -697,6 +699,8 @@ class ChatService:
                 **member_run_settings(member, self.config.teams),
                 task=None,
                 session_key=chat_id,
+                # §5.3.2: each turn has its own runtime generation; DB identity stays put.
+                runtime_key=RuntimeSessionKey(runtime_session_owner(self.paths.root, "chat", chat_id)),
                 proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[self.paths.root],

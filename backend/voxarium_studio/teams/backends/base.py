@@ -13,9 +13,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from uuid import uuid4
 
 from ...core.config import MAX_MESSAGE_BYTES_DEFAULT, TeamsConfig
 from ...core.prompts import default as _default_prompt
+from ...core.project_scope import canonical_root
 from ...models.teams import TeamMember, TeamTask
 
 log = logging.getLogger(__name__)
@@ -178,6 +180,31 @@ class Inbox:
         return items
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionOwner:
+    """A project-bound task, chat or subagent, independent of saved session IDs (§5.3.2)."""
+
+    project_root: Path
+    owner_kind: str
+    owner_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "project_root", canonical_root(self.project_root))
+
+
+def runtime_session_owner(root: str | Path, kind: str, id: str) -> RuntimeSessionOwner:
+    """Use the managed root, never a task's isolated checkout, for runtime lookup."""
+    return RuntimeSessionOwner(Path(root), kind, id)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionKey:
+    """One run generation; an old run cannot unregister its replacement (§5.3.2)."""
+
+    owner: RuntimeSessionOwner
+    generation: str = field(default_factory=lambda: uuid4().hex)
+
+
 @dataclass(slots=True)
 class AgentRunRequest:
     member: TeamMember
@@ -335,7 +362,7 @@ class AgentRunRequest:
     """
 
     session_key: str = ""
-    """What the live session is registered under while the run lasts (§10.8).
+    """The existing task/chat/subagent ID, unchanged by runtime isolation (§5.3.2).
 
     The task id for a task run, the chat id for a chat — whichever the REST handler that
     wants to steer the session knows the run by. Filled from ``task`` when the caller left
@@ -363,6 +390,14 @@ class AgentRunRequest:
     attaches to it, and one that cannot leaves it alone — the caller delivers what is left
     as the next turn of the same session.
     """
+
+    runtime_key: RuntimeSessionKey | None = None
+    """Explicit project/owner/generation identity supplied by Studio run callers (§5.3.2)."""
+
+    @property
+    def runtime_session_key(self) -> RuntimeSessionKey | str:
+        """Raw IDs remain supported only for direct/legacy adapter callers."""
+        return self.runtime_key if self.runtime_key is not None else self.session_key
 
     def __post_init__(self) -> None:
         # The member is the fallback for both, so a request built without them runs exactly
@@ -466,23 +501,37 @@ class SessionControl(Protocol):
     async def disable_remote_control(self) -> None: ...
 
 
-#: Live sessions, keyed by task id. Written by the backend for the length of one run — the
+#: Live sessions, keyed by project-bound owner. Written for the length of one run — the
 #: registry exists because ``get_backend`` builds a fresh instance per call, so there is no
 #: backend object for a REST handler to find the running session on.
-_LIVE_SESSIONS: dict[str, SessionControl] = {}
+_LIVE_SESSIONS: dict[
+    RuntimeSessionOwner | str, tuple[RuntimeSessionKey | str, SessionControl]
+] = {}
 
 
-def register_live_session(task_id: str, control: SessionControl) -> None:
-    _LIVE_SESSIONS[task_id] = control
+def register_live_session(key: RuntimeSessionKey | str, control: SessionControl) -> None:
+    owner = key.owner if isinstance(key, RuntimeSessionKey) else key
+    _LIVE_SESSIONS[owner] = (key, control)
 
 
-def forget_live_session(task_id: str) -> None:
-    """Must run in a ``finally``: a stale entry offers control of a process that is gone."""
-    _LIVE_SESSIONS.pop(task_id, None)
+def forget_live_session(key: RuntimeSessionKey | str) -> None:
+    """Remove only this generation, not a newer run registered for the same owner."""
+    owner = key.owner if isinstance(key, RuntimeSessionKey) else key
+    current = _LIVE_SESSIONS.get(owner)
+    if current is not None and current[0] == key:
+        _LIVE_SESSIONS.pop(owner, None)
 
 
-def live_session(task_id: str) -> SessionControl | None:
-    return _LIVE_SESSIONS.get(task_id)
+def live_session(owner: RuntimeSessionOwner | str) -> SessionControl | None:
+    """Scoped lookup never falls back to the owner's raw ID (§5.3.2)."""
+    current = _LIVE_SESSIONS.get(owner)
+    return current[1] if current is not None else None
+
+
+def live_session_key(owner: RuntimeSessionOwner | str) -> RuntimeSessionKey | str | None:
+    """Capture the generation for control calls that may outlive their session (§5.3.2)."""
+    current = _LIVE_SESSIONS.get(owner)
+    return current[0] if current is not None else None
 
 
 @runtime_checkable
@@ -504,20 +553,34 @@ class ContextInspector(Protocol):
 
 
 #: Keyed like ``_LIVE_SESSIONS``, but kept after the run: bounded, oldest dropped first.
-_CONTEXT_INSPECTORS: dict[str, ContextInspector] = {}
+_CONTEXT_INSPECTORS: dict[
+    RuntimeSessionOwner | str, tuple[RuntimeSessionKey | str, ContextInspector]
+] = {}
 _MAX_CONTEXT_INSPECTORS = 256
 
 
-def register_context_inspector(key: str, inspector: ContextInspector) -> None:
-    _CONTEXT_INSPECTORS.pop(key, None)
-    _CONTEXT_INSPECTORS[key] = inspector
+def register_context_inspector(key: RuntimeSessionKey | str, inspector: ContextInspector) -> None:
+    owner = key.owner if isinstance(key, RuntimeSessionKey) else key
+    _CONTEXT_INSPECTORS.pop(owner, None)
+    _CONTEXT_INSPECTORS[owner] = (key, inspector)
     while len(_CONTEXT_INSPECTORS) > _MAX_CONTEXT_INSPECTORS:
         _CONTEXT_INSPECTORS.pop(next(iter(_CONTEXT_INSPECTORS)))
 
 
-def context_inspector(key: str, session_id: str | None) -> ContextInspector | None:
+def forget_context_inspector(key: RuntimeSessionKey | str) -> None:
+    """Explicit cleanup must not remove a replacement inspector for this owner."""
+    owner = key.owner if isinstance(key, RuntimeSessionKey) else key
+    current = _CONTEXT_INSPECTORS.get(owner)
+    if current is not None and current[0] == key:
+        _CONTEXT_INSPECTORS.pop(owner, None)
+
+
+def context_inspector(
+    owner: RuntimeSessionOwner | str, session_id: str | None,
+) -> ContextInspector | None:
     """Only for the session the owner is on now: a chat may have moved to another backend."""
-    inspector = _CONTEXT_INSPECTORS.get(key)
+    current = _CONTEXT_INSPECTORS.get(owner)
+    inspector = current[1] if current is not None else None
     if inspector is None or not session_id or inspector.session_id != session_id:
         return None
     return inspector

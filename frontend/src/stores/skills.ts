@@ -17,6 +17,7 @@ import { computed, ref } from 'vue'
 import { api } from '@/api/client'
 import type { SkillEntry, SkillsOverview } from '@/api/types'
 import { inSkillsFolder } from '@/lib/skills'
+import { rendererSession } from '@/session/project-session'
 import { onEvent } from '@/ws/connection'
 
 /** Trailing: a folder copied in is dozens of events, and one re-read after the last is enough. */
@@ -51,7 +52,9 @@ export const useSkillsStore = defineStore('skills', () => {
         const result = await api.skills()
         if (request.started === generation) adopt(result)
       } catch (cause) {
-        error.value = cause instanceof Error ? cause.message : String(cause)
+        if (request.started === generation) {
+          error.value = cause instanceof Error ? cause.message : String(cause)
+        }
       } finally {
         // A newer read may have taken over; only the latest one says when loading is over.
         if (pending === request) {
@@ -81,24 +84,54 @@ export const useSkillsStore = defineStore('skills', () => {
 
   let subscribed = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let recovering: Promise<void> | null = null
+  let recoveryGeneration: number | null = null
+
+  function scheduleLoad(): void {
+    // Invalidate at the event, not after the debounce: an older read cannot cover it.
+    const requested = ++generation
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      if (requested === generation) void load()
+    }, SKILLS_REFRESH_DEBOUNCE_MS)
+  }
 
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+    // §5.3.2: recover only a requested server inventory, never reset the view/editor.
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      if (!overview.value && !pending) return
+      if (timer) clearTimeout(timer)
+      timer = null
+      // Invalidate reads begun before this gap, including an initial load. Remember another
+      // pass if a gap arrives during recovery, but let a newer local adopt/refresh supersede it.
+      recoveryGeneration = ++generation
+      return recovering ??= Promise.resolve().then(async () => {
+        try {
+          while (recoveryGeneration !== null) {
+            const requested = recoveryGeneration
+            recoveryGeneration = null
+            if (requested === generation) await load()
+          }
+        } finally {
+          recovering = null
+        }
+      })
+    })
     onEvent('plugin.changed', () => {
-      if (overview.value) void refresh()
+      if (overview.value || pending) void refresh()
     })
     onEvent('explorer.file_changed', (payload) => {
       // Nobody has asked for the folder yet, so there is nothing on screen to correct.
+      if (!overview.value && !pending) return
       const folder = overview.value?.path
-      if (!folder) return
-      const touched = payload.changes.some((change) => inSkillsFolder(change.path, folder))
+      // Until the initial answer tells us the folder, conservatively cover watcher batches.
+      const touched = !folder || payload.changes.some((change) => inSkillsFolder(change.path, folder))
       if (!touched && !payload.truncated) return
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        timer = null
-        void load()
-      }, SKILLS_REFRESH_DEBOUNCE_MS)
+      scheduleLoad()
     })
   }
 

@@ -1,4 +1,3 @@
-import { upsertTranscript } from '@/lib/transcript'
 /**
  * Team state: the org tree, the task board and the live agent transcript (spec §10.4).
  *
@@ -23,6 +22,7 @@ import type { LifecycleMessage } from '@/lib/subagents'
 import { trackDelegated } from '@/lib/subagents'
 import { tailLine } from '@/lib/transcript'
 import { taskUsage } from '@/lib/task-usage'
+import { mergeTaskConversation } from '@/lib/task-conversation'
 import type {
   AgentMessage,
   TaskResultType,
@@ -36,6 +36,7 @@ import type {
   TeamTask,
 } from '@/api/types'
 import { onEvent } from '@/ws/connection'
+import { rendererSession } from '@/session/project-session'
 
 export interface OrgNode {
   member: TeamMember
@@ -71,6 +72,7 @@ export const useTeamsStore = defineStore('teams', () => {
   const busy = ref(false)
   const compressingTaskId = ref<string | null>(null)
   const cancellingCompressionTaskId = ref<string | null>(null)
+  let teamRevision = 0
 
   /**
    * The last line of each running task's feed, keyed by task id (§10.4).
@@ -238,7 +240,9 @@ export const useTeamsStore = defineStore('teams', () => {
 
   async function refreshTeam(): Promise<void> {
     if (!team.value) return
+    const revision = teamRevision
     const updated = await api.team(team.value.id)
+    if (revision !== teamRevision) return
     teams.value = teams.value.map((candidate) =>
       candidate.id === updated.id ? updated : candidate,
     )
@@ -393,15 +397,44 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
+  let taskRequest = 0
+  let pendingTaskRead: { teamId: string; taskId: string; messages: AgentMessage[] } | null = null
+
   async function selectTask(taskId: string | null): Promise<void> {
     if (!taskId || !team.value) {
+      ++taskRequest
+      pendingTaskRead = null
       openTask.value = null
       return
     }
     // The open task and the member being edited are on different pages now (Tasks and
     // Teams), each with its own rail, so neither closes the other: coming back to Teams
     // after looking at a task should find the editor exactly as it was left.
-    openTask.value = await api.task(team.value.id, taskId)
+    await readTask(team.value.id, taskId)
+  }
+
+  /** §5.3.2: refreshing the old panel must not replace a pending user selection. */
+  async function refreshOpenTask(taskId: string): Promise<void> {
+    const teamId = team.value?.id
+    if (!teamId || openTask.value?.team_id !== teamId || openTask.value.id !== taskId) return
+    // A stays visible until B's detail arrives. Its events own neither B's request
+    // generation nor the live-message buffer accumulated for that selection.
+    if (pendingTaskRead && (pendingTaskRead.teamId !== teamId || pendingTaskRead.taskId !== taskId)) return
+    await readTask(teamId, taskId)
+  }
+
+  async function readTask(teamId: string, taskId: string): Promise<void> {
+    const request = ++taskRequest
+    const read = { teamId, taskId, messages: [] as AgentMessage[] }
+    pendingTaskRead = read
+    try {
+      const detail = await api.task(teamId, taskId)
+      if (request === taskRequest && team.value?.id === teamId) {
+        openTask.value = { ...detail, messages: mergeTaskConversation(detail.messages, read.messages) }
+      }
+    } finally {
+      if (pendingTaskRead === read) pendingTaskRead = null
+    }
   }
 
   /**
@@ -422,7 +455,7 @@ export const useTeamsStore = defineStore('teams', () => {
     try {
       await api.updateTask(team.value.id, taskId, { ...patch, actor_id: actorId })
       await refreshTeam()
-      if (openTask.value?.id === taskId) await selectTask(taskId)
+      if (openTask.value?.id === taskId) await refreshOpenTask(taskId)
       return true
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -525,7 +558,7 @@ export const useTeamsStore = defineStore('teams', () => {
       else if (action === 'note') await api.addNote(teamId, taskId, text, actorId)
       else await api.cancelTask(teamId, taskId)
       await refreshTeam()
-      if (openTask.value?.id === taskId) await selectTask(taskId)
+      if (openTask.value?.id === taskId) await refreshOpenTask(taskId)
       return true
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -545,11 +578,15 @@ export const useTeamsStore = defineStore('teams', () => {
     if (!team.value || !text.trim()) return false
     error.value = null
     try {
-      const message = await api.addNote(team.value.id, taskId, text.trim())
+      const teamId = team.value.id
+      const message = await api.addNote(teamId, taskId, text.trim())
+      if (pendingTaskRead?.teamId === teamId && pendingTaskRead.taskId === taskId) {
+        pendingTaskRead.messages = mergeTaskConversation(pendingTaskRead.messages, [message])
+      }
       if (openTask.value?.id === taskId) {
         openTask.value = {
           ...openTask.value,
-          messages: upsertTranscript(openTask.value.messages, message),
+          messages: mergeTaskConversation(openTask.value.messages, [message]),
         }
       }
       return true
@@ -567,7 +604,7 @@ export const useTeamsStore = defineStore('teams', () => {
       // during that request and must not release its guard prematurely (§10.4).
       await api.cancelTask(team.value.id, taskId)
       await refreshTeam()
-      if (openTask.value?.id === taskId) await selectTask(taskId)
+      if (openTask.value?.id === taskId) await refreshOpenTask(taskId)
       return true
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -594,7 +631,7 @@ export const useTeamsStore = defineStore('teams', () => {
       else await api.disableRemoteControl(team.value.id, taskId)
       // The link lives on the task, so the rail is refetched rather than patched — same
       // reason as a status change: the backend also writes a transcript entry for it.
-      if (openTask.value?.id === taskId) await selectTask(taskId)
+      if (openTask.value?.id === taskId) await refreshOpenTask(taskId)
       return true
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
@@ -604,21 +641,100 @@ export const useTeamsStore = defineStore('teams', () => {
     }
   }
 
+  /** §5.3: recover server data only; selections, editor drafts and attachments stay mounted. */
+  async function resyncData(): Promise<void> {
+    const teamId = team.value?.id
+    const selectedRead = pendingTaskRead?.teamId === teamId ? pendingTaskRead : null
+    const selectedId = selectedRead?.taskId ?? (openTask.value?.team_id === teamId ? openTask.value?.id : undefined)
+    const request = taskRequest
+    const refreshTask = async () => {
+      if (!teamId || !selectedId) return
+      const current = () => request === taskRequest && team.value?.id === teamId &&
+        (openTask.value?.id === selectedId || (selectedRead !== null && pendingTaskRead === selectedRead))
+      try {
+        const fresh = await api.task(teamId, selectedId)
+        if (!current()) return
+        // §5.3.2 / §10.4: keep live arrivals, but never restore history removed by
+        // a compaction missed during the gap (or by a newer summary received mid-read).
+        const messages = mergeTaskConversation(fresh.messages,
+          openTask.value?.id === selectedId ? openTask.value.messages : selectedRead?.messages ?? [])
+        if (openTask.value?.id === selectedId) openTask.value = { ...fresh, messages }
+        // An ordinary detail read may predate this recovery. It must not subsequently
+        // overwrite the recovered compaction with its late snapshot (§5.3.2).
+        if (pendingTaskRead?.teamId === teamId && pendingTaskRead.taskId === selectedId) {
+          pendingTaskRead.messages = mergeTaskConversation(messages, pendingTaskRead.messages)
+        }
+      } catch (cause) {
+        if (current()) throw cause
+      }
+    }
+    const refreshBoard = async () => {
+      const revision = teamRevision
+      const list = await api.teams()
+      if (revision !== teamRevision) { resyncPending = true; return }
+      teams.value = list.map(entry => ({
+        ...entry,
+        tasks: teams.value.find(known => known.id === entry.id)?.tasks ?? [],
+        members: entry.members.map(member =>
+          member.id === editingMemberId.value ? memberById.value.get(member.id) ?? member : member),
+      }))
+      if (!teamId) return
+      const fresh = await api.team(teamId)
+      if (revision !== teamRevision) { resyncPending = true; return }
+      // MemberEditor watches object identity. Do not re-seed the selected editor from REST.
+      const edited = editingMember.value
+      teams.value = teams.value.map(entry => entry.id === teamId ? {
+        ...fresh, members: fresh.members.map(member => member.id === edited?.id ? edited : member),
+      } : entry)
+    }
+    const results = await Promise.allSettled([refreshBoard(), refreshTask()])
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        error.value = result.reason instanceof Error ? result.reason.message : String(result.reason)
+      }
+    }
+  }
+
+  let resyncRequest: Promise<void> | null = null
+  let resyncPending = false
+
+  function resync(): Promise<void> {
+    resyncPending = true
+    resyncRequest ??= Promise.resolve().then(async () => {
+      do {
+        resyncPending = false
+        await resyncData()
+      } while (resyncPending)
+    }).catch(cause => {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    }).finally(() => { resyncRequest = null })
+    return resyncRequest
+  }
+
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
 
+    onEvent('system.dropped', (payload, envelope) => {
+      if (payload.resync && !rendererSession.isLegacy && envelope && rendererSession.matches(envelope)) {
+        void resync()
+      }
+    })
+
     onEvent('team.updated', (payload) => {
+      teamRevision += 1
       teams.value = teams.value.map((entry) => entry.id === payload.team_id
         ? { ...entry, autostart_tasks: payload.autostart_tasks }
         : entry)
     })
 
     onEvent('team.task.created', () => {
+      teamRevision += 1
       void refreshTeam()
     })
 
     onEvent('team.task.status_changed', (payload) => {
+      teamRevision += 1
       // A task that is no longer running has no current action, and the last one it took
       // is history the transcript keeps. Leaving the line behind would have a finished
       // card claiming to be mid-tool-call.
@@ -647,17 +763,19 @@ export const useTeamsStore = defineStore('teams', () => {
       // fetch before — on a first run, none at all; on a resume, the previous run's.
       if (openTask.value?.id === payload.task_id) {
         openTask.value = { ...openTask.value, status: payload.status, error: payload.error }
-        void selectTask(payload.task_id)
+        void refreshOpenTask(payload.task_id)
       }
       void refreshTeam()
     })
 
     onEvent('team.task.updated', (payload) => {
+      teamRevision += 1
       void refreshTeam()
-      if (openTask.value?.id === payload.task_id) void selectTask(payload.task_id)
+      if (openTask.value?.id === payload.task_id) void refreshOpenTask(payload.task_id)
     })
 
     onEvent('team.task.deleted', (payload) => {
+      teamRevision += 1
       delete activity.value[payload.task_id]
       forgetSubagents(payload.task_id)
       if (openTask.value?.id === payload.task_id) openTask.value = null
@@ -675,6 +793,11 @@ export const useTeamsStore = defineStore('teams', () => {
         data: payload.data,
         created_at: payload.created_at,
       }
+      // Also buffer the task being selected: it may not be open yet, or a status
+      // refresh may still be fetching its snapshot while live messages arrive.
+      if (pendingTaskRead?.teamId === team.value?.id && pendingTaskRead?.taskId === payload.task_id) {
+        pendingTaskRead.messages = mergeTaskConversation(pendingTaskRead.messages, [message])
+      }
 
       // Every task's messages arrive here, not just the open one's: this is the only place
       // the board learns that a card it is not showing a transcript for is still moving.
@@ -687,6 +810,7 @@ export const useTeamsStore = defineStore('teams', () => {
 
       // §10.11: session totals must follow tasks even when their transcript is closed.
       if (message.kind === 'system' && message.text === 'usage_update') {
+        teamRevision += 1
         teams.value = teams.value.map(team => ({ ...team, tasks: team.tasks.map(task => {
           if (task.id !== message.task_id) return task
           const usage = taskUsage({ ...task, messages: [message] })
@@ -699,7 +823,7 @@ export const useTeamsStore = defineStore('teams', () => {
       if (openTask.value?.id !== payload.task_id) return
       openTask.value = {
         ...openTask.value,
-        messages: upsertTranscript(openTask.value.messages, message),
+        messages: mergeTaskConversation(openTask.value.messages, [message]),
       }
     })
   }

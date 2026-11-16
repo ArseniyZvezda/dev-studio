@@ -1781,6 +1781,9 @@ export interface StudioChangelog {
 }
 
 export interface ProjectInfo {
+  /** Present only on the immutable project endpoint (§5.3.2). */
+  project_id?: string
+  epoch?: string
   root: string
   name: string
   data_dir: string
@@ -1791,6 +1794,12 @@ export interface ProjectInfo {
   config: AppConfig
   concurrency_limits: Record<string, number>
   counts: { plugins: number; node_types: number; pipelines: number }
+}
+
+/** Runtime descriptor returned by ensure/open, never persisted for restore (§5.3.2). */
+export interface ScopedProjectInfo extends ProjectInfo {
+  project_id: string
+  epoch: string
 }
 
 /** Live counts across every team in a managed project (§5.1). */

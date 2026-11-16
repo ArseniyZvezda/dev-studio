@@ -32,7 +32,7 @@ import TranscriptFold from '@/components/chat/TranscriptFold.vue'
 import MarkdownText from '@/components/ui/MarkdownText.vue'
 import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import { t } from '@/i18n'
-import { toolName, toolSubject } from '@/lib/activity'
+import { oneLine, toolName, toolSubject } from '@/lib/activity'
 import { spawnEffortSolver } from '@/lib/effort-solver'
 import { formatTime, statusColor, statusLabel } from '@/lib/status'
 import { resultTypeColor, resultTypeHint, resultTypeLabel, resultTypeOf } from '@/lib/task-result'
@@ -52,12 +52,14 @@ import {
   isQueued,
   isSkillCall,
   isSubagentSpawn,
+  isTaskCreation,
   liveLine,
   resultsByCall,
   tailLine,
   transcriptBlocks,
 } from '@/lib/transcript'
 import { useVerbosity } from '@/lib/transcript-verbosity'
+import { useChatStore } from '@/stores/chat'
 import { useTeamsStore } from '@/stores/teams'
 
 const props = defineProps<{
@@ -70,9 +72,24 @@ const props = defineProps<{
   chat?: { name: string; running: boolean }
 }>()
 const teams = useTeamsStore()
+const chats = useChatStore()
 const transcript = ref<HTMLElement | null>(null)
 const verbosity = useVerbosity()
-const blocks = computed(() => transcriptBlocks(props.messages, verbosity.value))
+const blocks = computed(() => {
+  // §10.4: keep the durable chat event, but show its scores only inside the matching call.
+  const embeddedTasks = new Set<string>()
+  for (const message of props.messages.filter(isTaskCreation)) {
+    const result = results.value.get(String(message.data?.id ?? ''))
+    if (!result || result.data?.is_error || !spawnEffortSolver(result.text)) continue
+    try {
+      const task = JSON.parse(result.text).task_id
+      if (typeof task === 'string') embeddedTasks.add(task)
+    } catch { /* Legacy text results have no embedded evaluation. */ }
+  }
+  return transcriptBlocks(props.messages.filter(message =>
+    !(message.kind === 'effort_solver' && typeof message.data?.task_id === 'string' &&
+      embeddedTasks.has(message.data.task_id))), verbosity.value)
+})
 /** Every call's result, whatever the level shows — a spawn row reads its evaluation from it. */
 const results = computed(() => resultsByCall(props.messages))
 const live = computed(() => {
@@ -95,7 +112,7 @@ const live = computed(() => {
  * Default starts every fold collapsed, Verbose — which filters nothing — starts them open.
  * Kept by block key, its first message's id, so a block that grows while the reader has it
  * one way stays that way as new calls land in it. Turning the dial or opening another
- * conversation starts every fold where the level puts it again. Spawn blocks bypass this
+ * conversation starts every fold where the level puts it again. Spawn and creation blocks bypass this
  * state: they are permanently expanded so Solver progress is never hidden (§10.4).
  */
 const flipped = ref(new Set<string>())
@@ -128,8 +145,15 @@ function toolNames(block: Extract<TranscriptBlock, { type: 'tools' }>): string {
 const RESULT_CLASS =
   'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-inset px-2 py-1 font-mono text-small'
 
+/** §10.4: use the task's title, never a different identifying argument. */
+function creationTitle(block: Extract<TranscriptBlock, { type: 'tools' }>): string {
+  const input = block.entries.find(entry => isTaskCreation(entry.message))?.message.data?.input
+  const title = input && typeof input === 'object' ? (input as Record<string, unknown>).title : null
+  return typeof title === 'string' && title.trim() ? oneLine(title, 500) : t('taskDetail.transcript.createTask')
+}
+
 /**
- * What Effort Solver decided for each `spawn_subagent` call (§10.3), by the call's message id,
+ * What Effort Solver decided for each spawn or Auto creation (§10.3), by the call's message id,
  * read from the call's result. `pending` while the run is live and nothing has answered — the
  * evaluation runs before the tool returns, so that is exactly when it is being computed. A
  * call whose result is an error or carries no scores (written before they were returned) has
@@ -139,11 +163,13 @@ const evaluations = computed(() => {
   const live = props.chat ? props.chat.running : props.taskStatus === 'in_progress'
   const found = new Map<string, ReturnType<typeof spawnEffortSolver> | 'pending'>()
   for (const message of props.messages) {
-    if (!isSubagentSpawn(message)) continue
+    if (!isSubagentSpawn(message) && !isTaskCreation(message)) continue
     const id = message.data?.id
     const result = typeof id === 'string' ? results.value.get(id) : undefined
     if (!result) {
-      if (live) found.set(message.id, 'pending')
+      // Creation only evaluates in Producer Auto; ordinary creation must not invent work.
+      const auto = chats.chats.find(chat => chat.id === props.conversationId)?.producer_effort_mode === 'auto'
+      if (live && (isSubagentSpawn(message) || auto)) found.set(message.id, 'pending')
       continue
     }
     const evaluation = result.data?.is_error ? null : spawnEffortSolver(result.text)
@@ -246,16 +272,20 @@ useResizeObserver(transcript, () => {
       <TranscriptFold
         v-else-if="block.type === 'tools'"
         :open="isOpen(block.key)"
-        :locked-open="block.spawn"
-        :label="t(block.studio ? 'taskDetail.transcript.studioToolsUsed' : 'taskDetail.transcript.toolsUsed', { count: block.calls })"
+        :locked-open="block.spawn || block.createTask"
+        :label="block.createTask ? '' : t(block.studio ? 'taskDetail.transcript.studioToolsUsed' : 'taskDetail.transcript.toolsUsed', { count: block.calls })"
         :studio="block.studio"
         @toggle="toggle(block.key)"
       >
         <template #icon>
-          <Bot v-if="block.spawn" class="size-3.5 shrink-0 text-violet-400" />
+          <FilePen v-if="block.createTask" class="size-3.5 shrink-0 text-violet-400" data-task-creation />
+          <Bot v-else-if="block.spawn" class="size-3.5 shrink-0 text-violet-400" />
           <Wrench v-else class="size-3.5 shrink-0" :class="block.studio ? 'text-violet-400' : ''" />
         </template>
-        <template #summary>{{ toolNames(block) }}</template>
+        <template #summary>
+          <span v-if="block.createTask" class="font-medium text-primary" :title="creationTitle(block)">{{ creationTitle(block) }}</span>
+          <template v-else>{{ toolNames(block) }}</template>
+        </template>
         <template #meta>{{ lastTime(block) }}</template>
         <div class="space-y-1">
           <template v-for="entry in block.entries" :key="entry.key">
@@ -265,7 +295,7 @@ useResizeObserver(transcript, () => {
               :class="isDelegatedWork(entry.message) ? 'pl-4' : ''"
               :title="toolSubject(entry.message)"
             >
-              <FilePen v-if="isFileEdit(entry.message)" class="size-3 shrink-0 translate-y-0.5" />
+              <FilePen v-if="isFileEdit(entry.message) || isTaskCreation(entry.message)" class="size-3 shrink-0 translate-y-0.5" />
               <Bot
                 v-else-if="isSubagentSpawn(entry.message)"
                 class="size-3 shrink-0 translate-y-0.5 text-violet-400"
@@ -306,13 +336,14 @@ useResizeObserver(transcript, () => {
               v-if="evaluations.get(entry.message.id) === 'pending'"
               class="vxs-task-activity ml-5 text-faint"
             >
-              {{ t('effortSolver.evaluating') }}
+              {{ t(isTaskCreation(entry.message) ? 'effortSolver.evaluatingTask' : 'effortSolver.evaluating') }}
             </p>
             <EffortSolverResult
               v-else-if="evaluations.get(entry.message.id)"
               :data="evaluations.get(entry.message.id) as Record<string, unknown>"
               class="ml-5 max-w-sm"
-              data-spawn-evaluation
+              :data-spawn-evaluation="isSubagentSpawn(entry.message) ? '' : undefined"
+              :data-task-evaluation="isTaskCreation(entry.message) ? '' : undefined"
             />
             <pre
               v-for="result in entry.results"

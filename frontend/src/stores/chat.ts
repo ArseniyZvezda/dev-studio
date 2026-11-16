@@ -18,13 +18,16 @@ import type { AgentChat, AgentChatMessage, ChatContext, ProducerEffortMode } fro
 import { locale, t } from '@/i18n'
 import { parseUtc } from '@/lib/status'
 import { onEvent } from '@/ws/connection'
+import { rendererSession } from '@/session/project-session'
+import { projectStorageKey, readProjectValue, writeProjectValue } from '@/desktop/project-storage'
+import { useSessionStore } from './session'
 
 export type ChatView = 'list' | 'new' | 'chat'
 
 const STATE_KEY = 'voxarium_studio.chat.state'
 const DRAFT_PREFIX = 'voxarium_studio.chat.draft.'
 /** The draft of a chat that does not exist yet — the "new chat" screen's. */
-export const NEW_DRAFT_KEY = `${DRAFT_PREFIX}new`
+const NEW_DRAFT_KEY = `${DRAFT_PREFIX}new`
 
 export interface PopupState {
   open: boolean
@@ -34,14 +37,6 @@ export interface PopupState {
 }
 
 const DEFAULT_STATE: PopupState = { open: false, view: 'list', chatId: null, memberId: null }
-
-function storage(): Storage | null {
-  try {
-    return typeof window === 'undefined' ? null : window.localStorage
-  } catch {
-    return null
-  }
-}
 
 /** The popup as it was left — every field checked, because the store is the browser's. */
 export function readPopupState(raw: string | null): PopupState {
@@ -64,29 +59,19 @@ export function readPopupState(raw: string | null): PopupState {
   }
 }
 
-export function draftKey(view: ChatView, chatId: string | null): string | null {
-  if (view === 'new') return NEW_DRAFT_KEY
-  if (view === 'chat' && chatId) return `${DRAFT_PREFIX}${chatId}`
+/** Only canonical project roots identify durable drafts; runtime handles do not. */
+export function draftKey(root: string | null, view: ChatView, chatId: string | null): string | null {
+  if (view === 'new') return projectStorageKey(root, NEW_DRAFT_KEY)
+  if (view === 'chat' && chatId) return projectStorageKey(root, `${DRAFT_PREFIX}chat.${chatId}`)
   return null
 }
 
-export function readDraft(key: string): string {
-  try {
-    return storage()?.getItem(key) ?? ''
-  } catch {
-    return ''
-  }
+export function readDraft(key: string | null): string {
+  return readProjectValue(key) ?? ''
 }
 
-export function writeDraft(key: string, text: string): void {
-  try {
-    const store = storage()
-    if (!store) return
-    if (text) store.setItem(key, text)
-    else store.removeItem(key)
-  } catch {
-    /* A full or disabled store costs the draft and nothing else. */
-  }
+export function writeDraft(key: string | null, text: string): void {
+  writeProjectValue(key, text || null)
 }
 
 /** Newest activity first — the order the list shows and the backend answers in. */
@@ -108,7 +93,12 @@ function compactedMessages(messages: AgentChatMessage[]): AgentChatMessage[] {
 }
 
 export const useChatStore = defineStore('chat', () => {
-  const initial = readPopupState(storage()?.getItem(STATE_KEY) ?? null)
+  const session = useSessionStore()
+  // App creates this store before bootstrap. Bind once metadata arrives, never to a
+  // mutable selection; old continuations keep their original root (dev spec §5.3.2).
+  const storageRoot = ref<string | null>(null)
+  let restoring = false
+  const initial = { ...DEFAULT_STATE }
 
   // ---- the popup's own state (this browser's)
   const open = ref(initial.open)
@@ -134,6 +124,8 @@ export const useChatStore = defineStore('chat', () => {
   const visibleError = computed(() => error.value ?? actionErrors.value.get(actionKey.value) ?? null)
   /** Chats a member answered in while the popup was not showing them. */
   const unread = ref(new Set<string>())
+  // A delayed list must not resurrect even a previously unknown row deleted over WS.
+  const deletedChats = new Set<string>()
 
   const activeChat = computed(
     () => chats.value.find((chat) => chat.id === activeChatId.value) ?? null,
@@ -143,22 +135,31 @@ export const useChatStore = defineStore('chat', () => {
   )
   const unreadCount = computed(() => unread.value.size)
 
+  const currentDraftKey = computed(() => draftKey(storageRoot.value, view.value, activeChatId.value))
+
+  watch(() => session.project?.root, root => {
+    if (!root || storageRoot.value !== null) return
+    restoring = true
+    storageRoot.value = root
+    // Old keys contain no trustworthy project ownership. Leave them untouched;
+    // neither the first nor a second project may automatically claim their text.
+    const state = readPopupState(readProjectValue(projectStorageKey(root, STATE_KEY)))
+    open.value = state.open
+    view.value = state.view
+    activeChatId.value = state.chatId
+    newMemberId.value = state.memberId
+    restoring = false
+  }, { immediate: true, flush: 'sync' })
+
   watch([open, view, activeChatId, newMemberId], () => {
-    try {
-      storage()?.setItem(
-        STATE_KEY,
-        JSON.stringify({
-          open: open.value,
-          view: view.value,
-          chatId: activeChatId.value,
-          memberId: newMemberId.value,
-        } satisfies PopupState),
-      )
-    } catch {
-      /* The popup still works; it just will not remember. */
-    }
-    // Written as it changes, not on the next tick: a click that closes the popup and a
-    // reload that follows it straight away must agree.
+    if (restoring) return
+    writeProjectValue(projectStorageKey(storageRoot.value, STATE_KEY), JSON.stringify({
+      open: open.value,
+      view: view.value,
+      chatId: activeChatId.value,
+      memberId: newMemberId.value,
+    } satisfies PopupState))
+    // Synchronous: closing and immediately reloading must agree.
   }, { flush: 'sync' })
 
   watch(pageVisible, showing => {
@@ -262,6 +263,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function upsert(chat: AgentChat): void {
+    deletedChats.delete(chat.id)
     const index = chats.value.findIndex((entry) => entry.id === chat.id)
     const next = [...chats.value]
     if (index < 0) next.push(chat)
@@ -440,6 +442,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function remove(chatId: string): Promise<boolean> {
+    const key = draftKey(storageRoot.value, 'chat', chatId)
     return runAction(false, async () => {
       try {
         await api.deleteChat(chatId)
@@ -447,12 +450,13 @@ export const useChatStore = defineStore('chat', () => {
         if (!(cause instanceof ApiError && cause.status === 404)) throw cause
       }
       forget(chatId)
-      writeDraft(`${DRAFT_PREFIX}${chatId}`, '')
+      writeDraft(key, '')
       return true
     }, chatId)
   }
 
   function forget(chatId: string): void {
+    deletedChats.add(chatId)
     chats.value = chats.value.filter((chat) => chat.id !== chatId)
     const rest = { ...messages.value }
     delete rest[chatId]
@@ -489,9 +493,67 @@ export const useChatStore = defineStore('chat', () => {
 
   let subscribed = false
 
+  /** §5.3: gap recovery never navigates, clears a composer or consumes pending attachments. */
+  async function resyncData(): Promise<void> {
+    const chatId = view.value === 'chat' ? activeChatId.value : null
+    const request = openRequest
+    const refreshTranscript = async () => {
+      if (!chatId) return
+      const selected = () => request === openRequest && activeChatId.value === chatId && view.value === 'chat'
+      const previous = chats.value.find(chat => chat.id === chatId)
+      try {
+        const { messages: fetched, ...chat } = await api.chat(chatId)
+        if (!selected()) return
+        if (previous === chats.value.find(entry => entry.id === chatId)) upsert(chat)
+        const merged = (messages.value[chatId] ?? []).reduce(upsertTranscript<AgentChatMessage>, fetched)
+        messages.value = { ...messages.value, [chatId]: compactedMessages(merged) }
+      } catch (cause) {
+        if (selected()) throw cause
+      }
+    }
+    const refreshList = async () => {
+      const previous = new Map(chats.value.map(chat => [chat.id, chat]))
+      const fetched = await api.chats()
+      const current = new Map(chats.value.map(chat => [chat.id, chat]))
+      const next = fetched.filter(chat => !deletedChats.has(chat.id) && (!previous.has(chat.id) || current.has(chat.id)))
+        .map(chat => current.has(chat.id) && current.get(chat.id) !== previous.get(chat.id) ? current.get(chat.id)! : chat)
+      const seen = new Set(next.map(chat => chat.id))
+      // Preserve rows created/updated by live events after the read started, not stale deletions.
+      chats.value = [...next, ...chats.value.filter(chat => !seen.has(chat.id) && previous.get(chat.id) !== chat)].sort(byActivity)
+    }
+    const results = await Promise.allSettled([refreshList(), refreshTranscript()])
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        error.value = result.reason instanceof Error ? result.reason.message : String(result.reason)
+      }
+    }
+  }
+
+  let resyncRequest: Promise<void> | null = null
+  let resyncPending = false
+
+  function resync(): Promise<void> {
+    resyncPending = true
+    resyncRequest ??= Promise.resolve().then(async () => {
+      do {
+        resyncPending = false
+        await resyncData()
+      } while (resyncPending)
+    }).catch(cause => {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    }).finally(() => { resyncRequest = null })
+    return resyncRequest
+  }
+
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+
+    onEvent('system.dropped', (payload, envelope) => {
+      if (payload.resync && !rendererSession.isLegacy && envelope && rendererSession.matches(envelope)) {
+        void resync()
+      }
+    })
 
     onEvent('team.chat.updated', (chat) => upsert(chat))
 
@@ -509,6 +571,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     open,
+    currentDraftKey,
     pageVisible,
     view,
     activeChatId,

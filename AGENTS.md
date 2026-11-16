@@ -47,11 +47,25 @@ the managed project's `.voxarium_studio/` directory, so a project is portable an
 diffable in git. The one file the Studio writes *outside* it is `.mcp.json` at the project
 root — Codex's own MCP server config, shared with the developer's terminal (§10.7).
 
-Which project is open is decided at runtime, not only by `voxarium_studio run <path>`: opening
-another one from the UI builds a second `AppContext` and retires the first
-(`backend/voxarium_studio/core/workspace.py`, §5.1). Two invariants there are load-bearing — the
-replacement starts *before* the incumbent is shut down, and the event bus is carried over
-rather than recreated, because connected browsers are subscribed to that object.
+Which project is open is decided at runtime, not only by `voxarium_studio run <path>`
+(`backend/voxarium_studio/core/workspace.py`, §5.1). VS-03 keeps one resident `AppContext`
+per canonical root until backend shutdown: switching never retires the incumbent, cancels
+its jobs or recreates its agent sessions. A new context starts successfully **before**
+selection changes; failure leaves the previous selection intact, and reopening reuses the
+resident context. Each context has its own local event bus. Only the legacy browser adapter
+keeps a permanent `browser_bus`, forwards the selected project's events and clears replay
+history on a switch without resetting sequence numbers.
+
+The desktop tabs contract (§5.3, VS-20) builds on this, not a rewrite of VS-03: project
+renderers use immutable project-scoped REST/WS/resource bindings; the separate legacy
+single-selection adapter must not rebind or reload desktop tabs. Main owns the unique
+project→tab registry and shell/window lifecycle; shell has no project stores, sockets or
+plugins. A live transfer preserves the same renderer without reload/remount. Closing tabs
+or windows never shuts down contexts; the last window leaves Studio in the tray, whereas
+explicit Quit warns about active work across all resident projects and stops only an owned
+backend. These are implementation requirements, not a claim that desktop tabs already ship.
+All windows share the single backend on :8765; opening/transferring/restoring a tab must
+not launch or restart it. §5.3 is the canonical contract for restore, notifications and scope.
 
 ## Commands
 

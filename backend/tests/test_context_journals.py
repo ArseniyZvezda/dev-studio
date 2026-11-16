@@ -1,5 +1,8 @@
 """Provider journal shapes and native /context accounting, without provider calls."""
+import copy
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -209,21 +212,24 @@ def test_native_fragments_preserve_parent_size_and_exclude_deferred_tools():
     assert (aggregate["source_kind"], aggregate["source_detail"]) == ("sdk_category", "MCP tools")
 
 
-def test_api_only_requests_runtime_on_explicit_post(client, monkeypatch):
+def test_api_only_requests_runtime_on_explicit_post(client, project):
     task = client.post("/api/teams/team_default/tasks", json={"assignee_id": "team_default__dev", "title": "Context", "auto_start": False}).json()
     native = AsyncMock(return_value=native_report())
     control = type("Control", (), {"get_context_usage": native})()
-    monkeypatch.setitem(base._LIVE_SESSIONS, task["id"], control)
+    key = base.RuntimeSessionKey(base.runtime_session_owner(project, "task", task["id"]))
+    base.register_live_session(key, control)
     url = f"/api/teams/team_default/tasks/{task['id']}/context"
-    assert client.get(url).json()["can_inspect"]
-    native.assert_not_called()
-    assert client.post(url.replace("team_default", "wrong-team") + "/inspect").status_code == 404
-    native.assert_not_called()
-    response = client.post(url + "/inspect")
-    assert response.status_code == 200
-    assert response.json()["basis"] == "runtime"
-    native.assert_awaited_once()
-    monkeypatch.delitem(base._LIVE_SESSIONS, task["id"])
+    try:
+        assert client.get(url).json()["can_inspect"]
+        native.assert_not_called()
+        assert client.post(url.replace("team_default", "wrong-team") + "/inspect").status_code == 404
+        native.assert_not_called()
+        response = client.post(url + "/inspect")
+        assert response.status_code == 200
+        assert response.json()["basis"] == "runtime"
+        native.assert_awaited_once()
+    finally:
+        base.forget_live_session(key)
     assert client.post(url + "/inspect").status_code == 409
 
 
@@ -231,3 +237,448 @@ async def test_claude_uses_public_sdk_context_method():
     sdk = type("Client", (), {"get_context_usage": AsyncMock(return_value=native_report())})()
     assert await _SessionControl(sdk).get_context_usage() == native_report()
     sdk.get_context_usage.assert_awaited_once()
+
+
+def _native_message(backend, role, text, *, uuid="first", parent=None):
+    if backend == "codex":
+        return codex_item("message", role=role, content=[{"type": "input_text", "text": text}])
+    field = "parts" if backend == "qwen" else "content"
+    block = {"text": text} if backend == "qwen" else {"type": "text", "text": text}
+    return {"uuid": uuid, "parentUuid": parent, "message": {"role": role, field: [block]}}
+
+
+def _write_native(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf8")
+
+
+@pytest.fixture(params=["claude_code", "codex", "qwen"])
+def bound_native(request, tmp_path, monkeypatch):
+    """A provider home, not the developer's actual journal, with two captured turns."""
+    backend = request.param
+    home = tmp_path / "provider"
+    workdir = tmp_path / "external-shared-workdir"
+    workdir.mkdir()
+    sid = "bound-session"
+    token = "a" * 32
+    prompts = (journals.dispatch_marker(token) + "Первый dispatch\r\nexact body\n",
+               journals.dispatch_marker(token) + "Resumed dispatch\nsecond body\n")
+    binding = journals.NativeJournalBinding(
+        project_root=tmp_path / "managed-project", owner_kind="task", owner_id="task-own",
+        workdir=workdir, token=token,
+        dispatches=tuple(journals.dispatch_digest(text) for text in prompts),
+    )
+    if backend == "codex":
+        monkeypatch.setenv("CODEX_HOME", str(home))
+        path = home / "sessions" / "2026" / f"rollout-own-{sid}.jsonl"
+        metadata = {"type": "session_meta", "payload": {"cwd": str(workdir), "id": sid}}
+    else:
+        monkeypatch.setenv("QWEN_RUNTIME_DIR" if backend == "qwen" else "CLAUDE_CONFIG_DIR", str(home))
+        path = home / "projects" / "own" / ("chats" if backend == "qwen" else "") / f"{sid}.jsonl"
+        metadata = {"type": "system", "cwd": str(workdir), "sessionId": sid}
+    rows = [metadata,
+            _native_message(backend, "user", prompts[0]),
+            _native_message(backend, "assistant", "First answer", uuid="answer", parent="first"),
+            _native_message(backend, "user", prompts[1], uuid="resume", parent="answer"),
+            _native_message(backend, "assistant", "Latest answer", uuid="last", parent="resume")]
+    journals._read.cache_clear()
+    yield SimpleNamespace(backend=backend, path=path, sid=sid, binding=binding,
+                          prompts=prompts, rows=rows, metadata=metadata)
+    journals._read.cache_clear()
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_bound_native_accepts_exact_own_genesis_and_resume_with_source_addresses(bound_native, resume):
+    native = bound_native
+    rows = native.rows if resume else native.rows[:3]
+    binding = native.binding if resume else replace(native.binding, dispatches=native.binding.dispatches[:1])
+    _write_native(native.path, rows)
+    # The binding itself supplies cwd; requiring a separate workdir is unnecessary.
+    result = journals.read_session(native.backend, native.sid, binding=binding)
+    assert result is not None
+    expected = [native.prompts[0], "First answer"]
+    if resume:
+        expected += [native.prompts[1], "Latest answer"]
+    assert [part["text"] for part in result.sources] == expected
+    assert result.journal_path == str(native.path.resolve())
+    if native.backend == "codex":
+        origins = [f"response_item[{i}].payload.content[0].text" for i in range(1, len(rows))]
+    else:
+        field = "parts" if native.backend == "qwen" else "content"
+        origins = [f"journal[{i}].message.{field}[0].text" for i in range(1, len(rows))]
+    assert [part["origin"] for part in result.sources] == origins
+
+
+def test_native_workdir_alone_fails_closed_but_unbound_legacy_remains_readable(bound_native):
+    native = bound_native
+    rows = [native.metadata, _native_message(native.backend, "user", "Unmarked legacy prompt")]
+    _write_native(native.path, rows)
+    assert journals.read_session(native.backend, native.sid, workdir=native.binding.workdir) is None
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+    legacy = journals.read_session(native.backend, native.sid)
+    assert legacy is not None
+    assert [part["text"] for part in legacy.sources] == ["Unmarked legacy prompt"]
+    # Neither a warmed unbound cache nor the same cwd grants dispatch ownership.
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("mismatch", ["token", "digest", "latest_dispatch", "workdir"])
+def test_native_cache_isolated_by_binding_even_for_same_file_and_cwd(bound_native, mismatch):
+    native = bound_native
+    _write_native(native.path, native.rows)
+    assert journals.read_session(native.backend, native.sid) is not None
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is not None
+    changes = {
+        "token": {"token": "b" * 32},
+        "digest": {"dispatches": (journals.dispatch_digest("not the dispatched body"),)},
+        "latest_dispatch": {"dispatches": (*native.binding.dispatches, journals.dispatch_digest("missing turn"))},
+        "workdir": {"workdir": native.binding.workdir.parent / "wrong-workdir"},
+    }[mismatch]
+    foreign = replace(native.binding, project_root=native.binding.project_root.parent / "other-project",
+                      owner_kind="chat", owner_id="chat-foreign", **changes)
+    assert journals.read_session(native.backend, native.sid, binding=foreign) is None
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is not None
+
+
+@pytest.mark.parametrize("mutation", ["wrong_token", "wrong_body", "leading_space", "newline", "unknown_prefix"])
+def test_bound_native_requires_exact_genesis_not_marker_substring(bound_native, mutation):
+    native = bound_native
+    prompt = native.prompts[0]
+    prompt = {
+        "wrong_token": prompt.replace("a" * 32, "b" * 32),
+        "wrong_body": prompt + "modified",
+        "leading_space": " " + prompt,
+        "newline": prompt.replace("\r\n", "\n"),
+        "unknown_prefix": "Unrecorded prior input\n" + prompt,
+    }[mutation]
+    rows = [native.metadata, _native_message(native.backend, "user", prompt), *native.rows[2:]]
+    _write_native(native.path, rows)
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("role", ["user", "assistant"])
+def test_bound_native_rejects_unknown_conversation_before_genesis(bound_native, role):
+    native = bound_native
+    prefix = _native_message(native.backend, role, "Unknown earlier conversation", uuid="unknown")
+    _write_native(native.path, [native.metadata, prefix, *native.rows[1:]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("receipt_location", ["assistant", "tool", "metadata"])
+def test_bound_native_does_not_count_nonuser_dispatch_marker_as_receipt(bound_native, receipt_location):
+    native = bound_native
+    if receipt_location == "metadata":
+        receipt = {"type": "diagnostic", "text": native.prompts[1]}
+    elif receipt_location == "assistant":
+        receipt = _native_message(native.backend, "assistant", native.prompts[1], uuid="quoted", parent="answer")
+    elif native.backend == "codex":
+        receipt = codex_item("function_call_output", output=native.prompts[1])
+    elif native.backend == "claude_code":
+        receipt = {"uuid": "quoted", "parentUuid": "answer", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "read", "content": native.prompts[1]}]}}
+    else:
+        receipt = {"uuid": "quoted", "parentUuid": "answer", "message": {"role": "user", "parts": [
+            {"functionResponse": {"name": "read", "response": {"output": native.prompts[1]}}}]}}
+    _write_native(native.path, [*native.rows[:3], receipt])
+    # Genesis is genuine, but the captured resume exists only in quoted output.
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_rejects_missing_latest_captured_dispatch(bound_native):
+    native = bound_native
+    _write_native(native.path, native.rows[:3])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_rejects_modified_resume_with_correct_token(bound_native):
+    native = bound_native
+    altered = _native_message(native.backend, "user", native.prompts[1] + "tampered",
+                              uuid="resume", parent="answer")
+    _write_native(native.path, [*native.rows[:3], altered, native.rows[-1]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_joins_text_blocks_for_digest_without_losing_source_boundaries(bound_native):
+    native = bound_native
+    first = json.loads(json.dumps(native.rows[1]))
+    message = first["payload"] if native.backend == "codex" else first["message"]
+    field = "parts" if native.backend == "qwen" else "content"
+    kind = {} if native.backend == "qwen" else {"type": "input_text" if native.backend == "codex" else "text"}
+    marker = journals.dispatch_marker(native.binding.token)
+    body = native.prompts[0][len(marker):]
+    message[field] = [{**kind, "text": marker}, {**kind, "text": body}]
+    # Non-object JSONL records still consume a source address; they must not shift it.
+    _write_native(native.path, [native.metadata, [], first, *native.rows[2:]])
+    result = journals.read_session(native.backend, native.sid, binding=native.binding)
+    assert result is not None
+    assert [part["text"] for part in result.sources[:2]] == [marker, body]
+    prefix = "response_item[2].payload" if native.backend == "codex" else "journal[2].message"
+    assert [part["origin"] for part in result.sources[:2]] == [
+        f"{prefix}.{field}[0].text", f"{prefix}.{field}[1].text"]
+
+
+def test_bound_native_rejects_explicit_wrong_sid(bound_native):
+    native = bound_native
+    if native.backend == "codex":
+        metadata = {**native.metadata, "payload": {**native.metadata["payload"], "id": "other-session"}}
+    else:
+        metadata = {**native.metadata, "sessionId": "other-session"}
+    _write_native(native.path, [metadata, *native.rows[1:]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("metadata", ["missing", "wrong", "conflicting", "relative"])
+def test_bound_native_requires_consistent_explicit_native_cwd(bound_native, metadata):
+    native = bound_native
+    header = json.loads(json.dumps(native.metadata))
+    target = header["payload"] if native.backend == "codex" else header
+    if metadata == "missing":
+        target.pop("cwd")
+    else:
+        target["cwd"] = "relative-path" if metadata == "relative" else str(native.binding.workdir.parent / "foreign")
+    rows = [native.metadata, header] if metadata == "conflicting" else [header]
+    _write_native(native.path, [*rows, *native.rows[1:]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_rejects_conflicting_explicit_requested_workdir(bound_native):
+    native = bound_native
+    _write_native(native.path, native.rows)
+    assert journals.read_session(native.backend, native.sid, binding=native.binding,
+                                 workdir=native.binding.workdir.parent / "foreign") is None
+
+
+def test_bound_native_rejects_two_proven_candidates_as_ambiguous(bound_native):
+    native = bound_native
+    _write_native(native.path, native.rows)
+    if native.backend == "codex":
+        other = native.path.parent / f"rollout-copy-{native.sid}.jsonl"
+    else:
+        other = native.path.parent.parent / "copy" / native.path.name
+        if native.backend == "qwen":
+            other = native.path.parents[2] / "copy" / "chats" / native.path.name
+    _write_native(other, native.rows)
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_rejects_foreign_receipt_in_raw_abandoned_history(bound_native):
+    native = bound_native
+    foreign = _native_message(native.backend, "user", journals.dispatch_marker("b" * 32) + "Foreign dispatch",
+                              uuid="abandoned", parent="first")
+    rows = [*native.rows[:2], foreign, *native.rows[2:]]
+    _write_native(native.path, rows)
+    # Claude/Qwen reconstruction follows the other branch, not this raw user row.
+    assert journals.read_session(native.backend, native.sid).sources[-1]["text"] == "Latest answer"
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def _native_compaction(backend, messages):
+    if backend == "codex":
+        return {"type": "compacted", "payload": {"replacement_history": [row["payload"] for row in messages]}}
+    if backend == "qwen":
+        return {"uuid": "compact", "parentUuid": "last", "subtype": "chat_compression",
+                "systemPayload": {"compressedHistory": [row["message"] for row in messages]}}
+    return {"uuid": "compact", "parentUuid": "last", "type": "system", "subtype": "compact_boundary"}
+
+
+def test_bound_native_compaction_preserves_proof_and_exact_nested_source_addresses(bound_native):
+    native = bound_native
+    retained = [_native_message(native.backend, "user", "Retained summary")]
+    compact = _native_compaction(native.backend, retained)
+    rows = [*native.rows, compact]
+    if native.backend == "claude_code":
+        rows.append({**_native_message(native.backend, "user", "Retained summary", uuid="summary", parent="compact"),
+                     "isCompactSummary": True})
+        origin = "journal[6].message.content[0].text"
+    elif native.backend == "codex":
+        origin = "compacted[5].payload.replacement_history[0].content[0].text"
+    else:
+        origin = "journal[5].systemPayload.compressedHistory[0].parts[0].text"
+    _write_native(native.path, rows)
+    result = journals.read_session(native.backend, native.sid, binding=native.binding)
+    assert result is not None and result.compacted
+    assert [(part["text"], part["origin"]) for part in result.sources] == [("Retained summary", origin)]
+
+
+def test_bound_native_rejects_foreign_receipt_in_compaction_replacement(bound_native):
+    native = bound_native
+    if native.backend == "claude_code":
+        compact = _native_compaction(native.backend, [])
+        foreign = _native_message(native.backend, "user", journals.dispatch_marker("b" * 32) + "Foreign",
+                                  uuid="summary", parent="compact")
+        rows = [*native.rows, compact, {**foreign, "isCompactSummary": True}]
+    else:
+        foreign = _native_message(native.backend, "user", journals.dispatch_marker("b" * 32) + "Foreign")
+        rows = [*native.rows, _native_compaction(native.backend, [foreign])]
+    _write_native(native.path, rows)
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("bound_native", ["codex", "qwen"], indirect=True)
+def test_bound_native_rejects_rewritten_history_without_raw_genesis(bound_native):
+    native = bound_native
+    _write_native(native.path, [native.metadata, _native_compaction(native.backend, native.rows[1:])])
+    result = journals.read_session(native.backend, native.sid, binding=native.binding)
+    assert result is None  # A replacement history alone cannot prove a fresh genesis.
+
+
+@pytest.mark.parametrize("bound_native", ["codex", "qwen"], indirect=True)
+@pytest.mark.parametrize("role", ["assistant", "tool"])
+def test_nested_compaction_nonuser_marker_cannot_supply_missing_dispatch(bound_native, role):
+    native = bound_native
+    if role == "tool" and native.backend == "codex":
+        quoted = codex_item("function_call_output", output=native.prompts[1])
+    elif role == "tool":
+        quoted = {"message": {"role": "user", "parts": [
+            {"functionResponse": {"name": "read", "response": {"output": native.prompts[1]}}}]}}
+    else:
+        quoted = _native_message(native.backend, role, native.prompts[1])
+    _write_native(native.path, [*native.rows[:3], _native_compaction(native.backend, [quoted])])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_bound_native_rejects_unmarked_primary_user_tail_from_terminal_or_old_client(bound_native):
+    native = bound_native
+    unknown = _native_message(native.backend, "user", "B PRIVATE UNMARKED", uuid="unknown", parent="last")
+    _write_native(native.path, [*native.rows, unknown])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("bound_native", ["codex"], indirect=True)
+def test_codex_sidechain_flag_cannot_hide_a_foreign_dispatch_from_authorization(bound_native):
+    native = bound_native
+    foreign = {**_native_message("codex", "user", journals.dispatch_marker("b" * 32) + "B PRIVATE"),
+               "isSidechain": True}
+    _write_native(native.path, [*native.rows, foreign])
+    assert journals.read_session("codex", native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("role", ["developer", "system"])
+def test_bound_native_keeps_own_conversation_but_never_publishes_unproven_startup_envelopes(bound_native, role):
+    native = bound_native
+    prelude = _native_message(native.backend, role, "UNPROVEN STARTUP PRIVATE", uuid="startup")
+    _write_native(native.path, [native.metadata, prelude, *native.rows[1:]])
+    result = journals.read_session(native.backend, native.sid, binding=native.binding)
+    assert result is not None and result.partial
+    assert [part["text"] for part in result.sources] == [native.prompts[0], "First answer",
+                                                       native.prompts[1], "Latest answer"]
+    assert "UNPROVEN STARTUP PRIVATE" not in str(result.sources)
+    assert "[2]" in result.sources[0]["origin"]  # Original JSONL addresses did not shift.
+
+
+@pytest.mark.parametrize("bound_native", ["claude_code", "qwen"], indirect=True)
+def test_active_branch_must_reach_own_genesis(bound_native):
+    native = bound_native
+    foreign = _native_message(native.backend, "assistant", "B PRIVATE", uuid="foreign", parent=None)
+    _write_native(native.path, [*native.rows, foreign])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("bound_native", ["codex", "qwen"], indirect=True)
+def test_future_text_block_cannot_be_ignored_by_dispatch_digest(bound_native):
+    native = bound_native
+    row = copy.deepcopy(native.rows[1])
+    message = row["payload"] if native.backend == "codex" else row["message"]
+    message["parts" if native.backend == "qwen" else "content"].append({"type": "unknown", "text": "B PRIVATE"})
+    _write_native(native.path, [native.metadata, row, *native.rows[2:]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+def test_unknown_startup_update_after_genesis_is_not_adopted_before_next_receipt(bound_native):
+    native = bound_native
+    if native.backend == "codex":
+        startup = {**native.metadata, "payload": {**native.metadata["payload"], "base_instructions": "B PRIVATE"}}
+    elif native.backend == "claude_code":
+        startup = {"uuid": "startup", "parentUuid": "last", "attachment": {
+            "type": "prompt_snapshot", "systemPrompt": ["B PRIVATE"]}}
+    else:
+        startup = _native_message("qwen", "system", "B PRIVATE", uuid="startup", parent="last")
+    _write_native(native.path, [*native.rows, startup])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("bound_native", ["claude_code", "qwen"], indirect=True)
+def test_diagnostic_message_copy_is_not_a_primary_user_receipt(bound_native):
+    native = bound_native
+    diagnostic = copy.deepcopy(native.rows[1])
+    diagnostic.update({"type": "api-request-blob"} if native.backend == "claude_code"
+                      else {"type": "system", "subtype": "ui_telemetry"})
+    _write_native(native.path, [native.metadata, diagnostic, *native.rows[2:]])
+    assert journals.read_session(native.backend, native.sid, binding=native.binding) is None
+
+
+@pytest.mark.parametrize("bound_native", ["qwen"], indirect=True)
+@pytest.mark.parametrize("envelope", ["system", "user", "assistant", "untyped"])
+@pytest.mark.parametrize("role", [None, "user", "model"])
+def test_qwen_unproven_catalog_snapshot_after_own_genesis_fails_closed(bound_native, envelope, role):
+    native = bound_native
+    binding = replace(native.binding, dispatches=native.binding.dispatches[:1])
+    snapshot = {
+        "uuid": "foreign-resume", "parentUuid": "answer", "sessionId": native.sid,
+        "subtype": "memory_catalog_snapshot", "message": {"parts": [{
+            "text": "B PRIVATE MEMORY CATALOG",
+            "partMetadata": {"qwen-code:memory-catalog-snapshot": True},
+        }]},
+    }
+    if envelope != "untyped":
+        snapshot["type"] = envelope
+    if role is not None:
+        snapshot["message"]["role"] = role
+    rows = [*native.rows[:3], snapshot]  # Own genesis, then resume before foreign user input.
+    _write_native(native.path, rows)
+    assert journals._matches_dispatch(rows, "qwen", binding, native.sid) is None
+    assert journals.read_session("qwen", native.sid, binding=binding) is None
+    # The actual reader exposes this envelope, even with type=system and no role.
+    legacy = journals.read_session("qwen", native.sid)
+    assert legacy.sources[-1]["text"] == "B PRIVATE MEMORY CATALOG"
+    assert legacy.sources[-1]["source_kind"] == "memory_catalog"
+
+
+@pytest.mark.parametrize("bound_native", ["qwen"], indirect=True)
+@pytest.mark.parametrize("compressed", [False, True])
+@pytest.mark.parametrize("role", ["user", "model"])
+def test_qwen_inline_unproven_catalog_is_not_conversation_or_compression_proof(bound_native, compressed, role):
+    native = bound_native
+    catalog = _native_message("qwen", role, "B PRIVATE MEMORY CATALOG", uuid="catalog", parent="last")
+    catalog["message"]["parts"][0]["partMetadata"] = {"qwen-code:memory-catalog-snapshot": True}
+    rows = [*native.rows, _native_compaction("qwen", [catalog]) if compressed else catalog]
+    _write_native(native.path, rows)
+    assert journals._matches_dispatch(rows, "qwen", native.binding, native.sid) is None
+    assert journals.read_session("qwen", native.sid, binding=native.binding) is None
+    assert journals.read_session("qwen", native.sid).sources[-1]["text"] == "B PRIVATE MEMORY CATALOG"
+
+
+@pytest.mark.parametrize("bound_native", ["qwen"], indirect=True)
+def test_qwen_catalog_snapshot_before_genesis_is_omitted_without_shifting_sources(bound_native):
+    native = bound_native
+    snapshot = {"type": "system", "subtype": "memory_catalog_snapshot", "message": {"parts": [{
+        "text": "UNPROVEN STARTUP CATALOG",
+        "partMetadata": {"qwen-code:memory-catalog-snapshot": True},
+    }]}}
+    _write_native(native.path, [native.metadata, snapshot, *native.rows[1:]])
+    result = journals.read_session("qwen", native.sid, binding=native.binding)
+    assert result is not None and result.partial
+    assert [part["text"] for part in result.sources] == [native.prompts[0], "First answer",
+                                                       native.prompts[1], "Latest answer"]
+    assert result.sources[0]["origin"] == "journal[2].message.parts[0].text"
+
+
+@pytest.mark.parametrize("bound_native", ["qwen"], indirect=True)
+@pytest.mark.parametrize("ignored", ["system", "realtime", "code-mode", "snapshot-no-flag", "snapshot-second-part"])
+def test_qwen_ignored_envelopes_do_not_disable_safe_own_journal(bound_native, ignored):
+    native = bound_native
+    diagnostic = _native_message("qwen", "model", "IGNORED PRIVATE", uuid="diagnostic", parent="last")
+    if ignored in {"system", "realtime", "code-mode"}:
+        diagnostic["type"] = "system" if ignored == "system" else "assistant"
+        diagnostic["subtype"] = {"system": "ui_telemetry", "realtime": "realtime_message",
+                                 "code-mode": "code_mode_tool_result"}[ignored]
+    else:
+        diagnostic.update(type="system", subtype="memory_catalog_snapshot")
+        if ignored == "snapshot-second-part":
+            diagnostic["message"]["parts"].append({"text": "IGNORED CATALOG", "partMetadata": {
+                "qwen-code:memory-catalog-snapshot": True}})
+    _write_native(native.path, [*native.rows, diagnostic])
+    result = journals.read_session("qwen", native.sid, binding=native.binding)
+    assert result is not None
+    assert [part["text"] for part in result.sources] == [native.prompts[0], "First answer",
+                                                       native.prompts[1], "Latest answer"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlmodel import select
 
@@ -28,7 +28,7 @@ class RunRequest(BaseModel):
 
 
 @router.get("/node-types")
-async def list_node_types(ctx: Ctx) -> dict[str, Any]:
+async def list_node_types(ctx: Ctx, request: Request) -> dict[str, Any]:
     """Palette data: every node type from built-ins and enabled plugins."""
     schemas = ctx.registry.node_types()
     categories: dict[str, list[str]] = {}
@@ -39,7 +39,10 @@ async def list_node_types(ctx: Ctx) -> dict[str, Any]:
         # Resolved here rather than composed by the client, so the asset URL shape lives
         # in one place alongside pages and previewers.
         payload["ui_component_url"] = (
-            ctx.registry.asset_url(schema.plugin_id, schema.ui_component)
+            ctx.registry.asset_url(
+                schema.plugin_id, schema.ui_component,
+                project_id=request.path_params.get("project_id"),
+            )
             if schema.ui_component
             else None
         )

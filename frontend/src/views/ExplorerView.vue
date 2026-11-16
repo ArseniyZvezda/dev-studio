@@ -23,6 +23,7 @@ import FileTreeNode from '@/components/explorer/FileTreeNode.vue'
 import SidePane from '@/components/layout/SidePane.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import type { EntryKind, FileEntry } from '@/api/types'
+import { setDesktopPageSelector, useDesktopPageTarget } from '@/desktop/page-state'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { basename, useExplorerStore } from '@/stores/explorer'
@@ -46,13 +47,42 @@ const deleting = ref<string[] | null>(null)
 
 const rootEntries = computed(() => explorer.children[''] ?? [])
 
-onMounted(async () => {
+// §5.3: persist the actual preview selection, including closing it. Do not run
+// immediately: the initial deep link must be consumed before an empty store is saved.
+watch(
+  () => explorer.selectedPath,
+  (path) => setDesktopPageSelector('/explorer', 'path', path),
+  { flush: 'sync' },
+)
+
+let initialLoad: Promise<void> = Promise.resolve()
+onMounted(() => { initialLoad = loadPage() })
+async function loadPage() {
   // §9.6: the same debounced `explorer.file_changed` that refreshes the tree refreshes the
   // status, so the colours follow a write without anything asking them to.
   vcs.subscribe()
   void vcs.refresh()
   await explorer.init()
   await revealFromRoute()
+  // A resident store can already have a selection when returning to this page.
+  setDesktopPageSelector('/explorer', 'path', explorer.selectedPath)
+}
+
+useDesktopPageTarget('/explorer', async (page, current) => {
+  await initialLoad
+  current()
+  if (route.path !== '/explorer') return false
+  const wanted = page.query?.path
+  if (!wanted) { explorer.clearSelection(); return true }
+  if (explorer.selectedPath !== wanted) {
+    await explorer.reveal([wanted])
+    current()
+    await explorer.selectPath(wanted)
+  }
+  current()
+  const parent = wanted.split('/').slice(0, -1).join('/')
+  return explorer.selectedPath === wanted && !explorer.error
+    && !!explorer.children[parent]?.some(entry => entry.path === wanted)
 })
 
 // A search hit (§6.1) lands here as `/explorer?path=…`, from any page — including this one.
@@ -74,6 +104,9 @@ async function revealFromRoute(): Promise<void> {
   if (!path) return
   await explorer.reveal([path])
   await explorer.selectPath(path)
+  // Selection may already equal the requested path, so do not rely on the watcher
+  // alone to capture it before the consuming replace removes the URL selector.
+  setDesktopPageSelector('/explorer', 'path', explorer.selectedPath)
   await router.replace({ path: route.path })
 }
 

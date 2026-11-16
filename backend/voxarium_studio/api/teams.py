@@ -33,6 +33,7 @@ from ..teams.backends.base import (
     RemoteControlUnavailable,
     available_backends,
     get_backend,
+    runtime_session_owner,
 )
 from ..teams.orchestrator import DelegationLimitError, RoutingError
 from ..teams.tools import SERVER_NAME
@@ -943,7 +944,8 @@ async def _retained_task_context(team_id: str, task_id: str, ctx: Ctx, view: Con
         messages = list((await session.exec(select(AgentMessage).where(
             AgentMessage.task_id == task_id,
         ).order_by(AgentMessage.created_at, AgentMessage.id))).all())
-    parts, metrics = await read_context(snapshot, messages, member, task.agent_session_id, view)
+    parts, metrics = await read_context(snapshot, messages, member, task.agent_session_id, view,
+                                        project_root=ctx.paths.root)
     return parts, metrics, task.agent_session_id
 
 
@@ -952,7 +954,7 @@ async def get_task_context(team_id: str, task_id: str, ctx: Ctx, view: ContextVi
     from .session_context import inventory_response
 
     parts, metrics, session_id = await _retained_task_context(team_id, task_id, ctx, view)
-    return inventory_response(task_id, parts, metrics, session_id)
+    return inventory_response(runtime_session_owner(ctx.paths.root, "task", task_id), parts, metrics, session_id)
 
 
 @router.get("/{team_id}/tasks/{task_id}/context/fragments/{source_id}")
@@ -974,7 +976,7 @@ async def inspect_task_context(team_id: str, task_id: str, ctx: Ctx) -> dict[str
         task = await session.get(TeamTask, task_id)
         if task is None or task.team_id != team_id:
             raise HTTPException(status_code=404, detail=f"No task {task_id!r}")
-    return await inspect_session(task_id, task.agent_session_id)
+    return await inspect_session(runtime_session_owner(ctx.paths.root, "task", task_id), task.agent_session_id)
 
 
 @router.patch("/{team_id}/tasks/{task_id}")

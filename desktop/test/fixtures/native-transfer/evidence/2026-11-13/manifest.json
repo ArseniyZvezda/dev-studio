@@ -1,0 +1,96 @@
+{
+  "purpose": "VS-21 permanent acceptance evidence; raw logs copied byte-for-byte before TASK-21 cleanup",
+  "archivedAt": "2026-11-13T09:45:12.623Z",
+  "interactiveSource": "TASK-21/run-2026-11-13T09-36-41-904Z-28316",
+  "autoSource": "TASK-21/run-2026-11-13T09-30-48-720Z-2016",
+  "sourceHashNote": "Source fingerprints measured at closing audit, not captured by original launcher at run start.",
+  "files": [
+    {
+      "path": "auto-regression.events.jsonl",
+      "bytes": 225678,
+      "sha256": "19cdd73bca337d491e0c4a42942585ff2d5dc34f0658f55ea905faf594cf50ec"
+    },
+    {
+      "path": "auto-regression.result.json",
+      "bytes": 5762,
+      "sha256": "ad33cde2d8129f4cf909496435893c62128d5c1daa123064ff2732ba23e4c5cc"
+    },
+    {
+      "path": "auto-regression.runtime-source.json",
+      "bytes": 346,
+      "sha256": "0a5f962719c977a2431770b7d526445930dd33b40bb0e3de91869fb70711faac"
+    },
+    {
+      "path": "desktop-tests.log",
+      "bytes": 12994,
+      "sha256": "0f429599241314d5b20c6b1f1dfeaa6c2178a25b7c9c9fc1cc432d623763e1a7"
+    },
+    {
+      "path": "interactive-audit.json",
+      "bytes": 22959,
+      "sha256": "2d1a1f05fca23436bf45d876519fcb229c1ec2c618ff65bb8bea20307ff49e72"
+    },
+    {
+      "path": "interactive.events.jsonl",
+      "bytes": 96675,
+      "sha256": "dc5b40b8c803680e5e670e77cd234072b723104f02b3bdd3ccadd123c3284ab7"
+    },
+    {
+      "path": "interactive.runtime-source.json",
+      "bytes": 367,
+      "sha256": "f0a37ff6955bae19bd9f57d427adefae6b6acd771d2358dfe4e6eb2dee6e1e91"
+    },
+    {
+      "path": "user-confirmation.md",
+      "bytes": 2534,
+      "sha256": "75fed15c6f5f79d9cb64200c1b1b6ddf3394234a8aac6baf3e02403d361611ba"
+    },
+    {
+      "path": "verify-interactive.cjs",
+      "bytes": 5758,
+      "sha256": "57f8c90ba9140cc9426bb24962450dd748e0603194a2b1af23f1a1bb8bc74bed"
+    }
+  ],
+  "sources": [
+    {
+      "path": "desktop/test/native-transfer-spike.cjs",
+      "sha256": "845a473407839ca192e624fa4cc12fd7d58f2f884bc4b92fe03a988b0b24bd68"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/preload.cjs",
+      "sha256": "d09128dba8f80c126e0b2ddc330024564d5df0ac7fdaf3ac917dc26da4c6edde"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/project.html",
+      "sha256": "28005af23d33654ba03413eca2fec669574662c5978c3144aed3f1e2c5ae28bd"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/project.js",
+      "sha256": "53ed96ccf22a90c684845d948e1b16e353616202b9c2481b373e613e80bfd5e2"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/shell.html",
+      "sha256": "f91fe0b22d7ba017ce49f223fcdaca89779a8bf8c2104e8a19b28df9162f59bc"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/shell.js",
+      "sha256": "b5f5b7074c7bcd4deed5b025e774230b7ee7c680c99a21bb39a6ae42c73bf6e0"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/terminal-client.cjs",
+      "sha256": "e79be8437be4ee2486e2bbc6f31baf4dbbf16d1dc04e61aee345d1c0f9694463"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/terminal-input.ps1",
+      "sha256": "96b8dc2bd4dde2a05aeecc1afe8a968305c7854f4d3ad7c726f55975f33588c6"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/terminal-policy.cjs",
+      "sha256": "8f11294ff8941838e62228952df3217135fba0873305d3e9427b73924782856c"
+    },
+    {
+      "path": "desktop/test/fixtures/native-transfer/terminal-regression.cjs",
+      "sha256": "953d647347b7f4b09d89f3827559844dca7a86a7fcb9fbb93a8c96dd711e7088"
+    }
+  ]
+}

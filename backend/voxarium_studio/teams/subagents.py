@@ -19,7 +19,7 @@ from sqlmodel import select
 from ..models.base import utcnow
 from ..models.subagents import SubagentMessage, TaskSubagent
 from ..models.teams import TaskStatus, TeamMember, TeamTask
-from .backends.base import AgentRunRequest, get_backend
+from .backends.base import AgentRunRequest, RuntimeSessionKey, get_backend, runtime_session_owner
 from .effort_solver import EFFORT_SOLVER_ID
 from .effort_solver_runner import EffortSolution, solve_effort
 from .tools import SERVER_NAME, build_toolset
@@ -333,6 +333,8 @@ class SubagentManager:
                 request = replace(
                     run.request, member=member, prompt=prompt, system_prompt=instructions,
                     session_key=row.id, resume_session_id=row.session_id, agent_name=None, images=[],
+                    # §5.3.2: never inherit the parent's runtime address via replace().
+                    runtime_key=RuntimeSessionKey(runtime_session_owner(self.owner.paths.root, "subagent", row.id)),
                     proactive_subagents=False,
                     recovery_prompt=(f"Delegated assignment: {row.description}\nPrevious result: {row.summary}\n\n{prompt}"),
                     model=row.model, effort=row.effort, mcp_servers=servers, extra_allowed_tools=allowed,

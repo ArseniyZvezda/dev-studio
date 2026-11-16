@@ -248,7 +248,7 @@ describe('blocks', () => {
     ]
     const blocks = transcriptBlocks(feed, level) as Tools[]
     expect(blocks.map((block) => [block.studio, block.spawn, block.calls])).toEqual([
-      [false, false, 1], [true, false, 2], [true, true, 1], [true, true, 1],
+      [false, false, 1], [true, false, 1], [true, false, 1], [true, true, 1], [true, true, 1],
       [true, false, 1], [true, true, 1], [false, false, 1],
     ])
     expect(blocks.filter((block) => block.spawn).map((block) => block.key))

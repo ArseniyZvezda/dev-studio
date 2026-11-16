@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
+from typing import Any
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 class EventType(StrEnum):
@@ -129,10 +132,57 @@ class EventType(StrEnum):
     """The Studio was pointed at a different managed project. Every client's view of
     every section is now stale, so this is a reload, not a patch."""
 
+    # App-lifetime desktop stream, independent of renderers and legacy selection (§5.3.6).
+    DESKTOP_NOTIFICATION = "desktop.notification"
+    DESKTOP_PRODUCER_ATTENTION = "desktop.producer_attention"
+
     # Transport-level
     HELLO = "system.hello"
+    """Scoped sockets add project_id/epoch to the envelope and hello data (§5.3.2).
+    The legacy browser adapter retains its original wire shape and sequence space.
+    """
     DROPPED = "system.dropped"
-    """Emitted to a single slow subscriber whose queue overflowed — resync via REST."""
+    """Resync via REST after subscriber overflow; scoped sockets also report replay
+    history gaps or invalid/foreign cursors, only to that socket (§5.3.2).
+    """
 
     PONG = "system.pong"
     """Reply to a client ``ping``. Sent straight down the socket, so it carries no ``seq``."""
+
+
+def desktop_target(value: Any) -> str | None:
+    """Accept only project-relative UI destinations, never a scoped/foreign URL (§5.3.6).
+
+    The root locator is supplied by the registry, not by an automation's payload.
+    Query values may contain file paths, but cannot override project identity.
+    Keep this boundary aligned with desktop/project-events.cjs.
+    """
+    if not isinstance(value, str) or not value.startswith("/"):
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value) or "\\" in value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme or parsed.netloc or parsed.fragment:
+            return None
+        path = unquote(parsed.path)
+        if path != parsed.path or not re.fullmatch(
+            r"/(?:explorer|tasks|producer|teams|chats|documents(?:/graph)?|"
+            r"pipelines(?:/[A-Za-z0-9_-]+)?|automations|vcs|memory|skills|mcp|"
+            r"plugins|project-settings|statistics)", path,
+        ):
+            return None
+        if any(key in {"project_id", "epoch", "root", "project"} for key, _ in parse_qsl(parsed.query)):
+            return None
+    except ValueError:
+        return None
+    return value
+
+
+def producer_needs_reply(chat: dict[str, Any]) -> bool:
+    """The existing lib/producer.ts predicate, not a new attention policy (§10.11)."""
+    return bool(
+        chat.get("producer_mode") and chat.get("producer_started") is not False
+        and not chat.get("producer_paused") and not chat.get("is_running")
+        and chat.get("producer_state") in ("awaiting_user", "awaiting_approval", "discussing")
+    )

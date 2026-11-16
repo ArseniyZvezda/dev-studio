@@ -8,6 +8,7 @@ import ChatWidget from '@/components/chat/ChatWidget.vue'
 import NotificationToasts from './NotificationToasts.vue'
 import SearchPalette from './SearchPalette.vue'
 import SideNav from './SideNav.vue'
+import StudioStatusBar from './StudioStatusBar.vue'
 
 const search = useSearchStore()
 
@@ -34,15 +35,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div class="flex h-full">
-    <SideNav />
-    <main class="vxs-main min-w-0 flex-1 overflow-hidden bg-canvas">
-      <RouterView />
-    </main>
+  <div class="studio-shell">
+    <div class="relative flex min-h-0 min-w-0">
+      <SideNav />
+      <main class="vxs-main min-w-0 flex-1">
+        <!-- §6.1, §7: all routes, including plugin pages, share this surface. -->
+        <div class="vxs-page-surface">
+          <!-- §5.3.2: only changing the pipeline replaces its parameter writer. -->
+          <RouterView v-slot="{ Component, route }">
+            <component :is="Component" :key="route.name === 'pipeline-editor' ? String(route.params.id) : undefined" />
+          </RouterView>
+        </div>
+      </main>
+      <ChatWidget />
+    </div>
+    <StudioStatusBar />
     <SearchPalette v-if="search.open" @close="search.hide()" />
-    <!-- One chat instance serves the popup and the Chats page (§10.9), keeping drafts
-         and uploads alive. It teleports to <body> or to the mounted ChatsView. -->
-    <ChatWidget />
     <!-- What an automation's *notify* action shows, over every section (§6.5). -->
     <NotificationToasts />
   </div>

@@ -68,9 +68,12 @@ from .backends.base import (
     Inbox,
     QueuedMessage,
     RemoteControl,
+    RuntimeSessionKey,
     get_backend,
     live_session,
+    live_session_key,
     member_run_settings,
+    runtime_session_owner,
 )
 from .backends.recovery import recovery_prompt
 from .docs import DocStore
@@ -162,6 +165,8 @@ class TeamOrchestrator:
         #: in the shared copy, or ``None`` for an isolated checkout, which holds none.
         self._run_writes: dict[str, list[wt.PathClaim] | None] = {}
         self._temp_locks: dict[str, asyncio.Lock] = {}
+        # §5.3.2: serialize link persistence/cleanup, never the slow bridge call.
+        self._remote_control_lock = asyncio.Lock()
         self.subagents = SubagentManager(self)
         self.paused_producer_chats: dict[str, set[str]] = {}
         """Paused chat IDs and the tasks explicitly released on the board during each pause (§10.11).
@@ -647,6 +652,7 @@ class TeamOrchestrator:
         attachments: list[str] | None = None,
         producer_chat_id: str | None = None,
         summary_locale: str | None = None,
+        effort_solver_result: dict[str, Any] | None = None,
     ) -> TeamTask:
         """Put a task on someone's board, initially in ``todo`` (§10.4).
 
@@ -664,6 +670,9 @@ class TeamOrchestrator:
 
         ``parent_task`` marks this as one agent delegating to another, which is what the
         depth ceiling is counted against. The user creating a task always starts at 0.
+
+        ``effort_solver_result`` optionally receives the evaluation for the creating
+        tool's result, only after successful creation; it does not request an evaluation.
 
         This is also the only place a ``TeamTask`` row is ever built, which is what makes
         the sequential number (§10.2) assignable exactly once: it is read and written under
@@ -771,6 +780,9 @@ class TeamOrchestrator:
                 delegation_depth=depth,
             )
             session.add(task)
+            if solver_message is not None:
+                # Link the separate chat evaluation to the creating tool's result (§10.11).
+                solver_message.data = {**solver_message.data, "task_id": task.id}
             try:
                 await session.flush()
             except IntegrityError as exc:
@@ -817,7 +829,14 @@ class TeamOrchestrator:
             },
         )
         await self._autostart_todo(task)
-        return await self._reload(task.id)
+        created = await self._reload(task.id)
+        # Only expose a solution after creation has succeeded; ordinary callers keep
+        # receiving a TeamTask, and failed creation never supplies a success card.
+        if effort_solver_result is not None and solver_message is not None:
+            effort_solver_result.update({
+                key: solver_message.data[key] for key in ("scores", "effort", "effort_level")
+            })
+        return created
 
     async def start_task(
         self,
@@ -1586,6 +1605,7 @@ class TeamOrchestrator:
         })
         request = AgentRunRequest(
             member=runtime_member, task=task, workdir=self._recorded_workdir(messages),
+            runtime_key=RuntimeSessionKey(runtime_session_owner(self.paths.root, "task", task_id)),
             **member_run_settings(member, self.config.teams),
             prompt="", system_prompt="", model=task.model or runtime_member.model,
             effort=task.effort or member.effort,
@@ -2160,7 +2180,8 @@ class TeamOrchestrator:
                 raise KeyError(task_id)
             member_id, title = task.assignee_id, task.title
 
-        control = live_session(task_id)
+        owner = runtime_session_owner(self.paths.root, "task", task_id)
+        control, runtime_key = live_session(owner), live_session_key(owner)
         if control is None:
             raise ValueError(
                 "Remote Control attaches to a session that is running, and this task has "
@@ -2170,8 +2191,12 @@ class TeamOrchestrator:
         # Named after the task, so a phone showing several sessions says which is which.
         link = await control.enable_remote_control(name=title[:80] or None)
 
-        async with self.db.session() as session:
+        async with self._remote_control_lock, self.db.session() as session:
             stored = await session.get(TeamTask, task_id)
+            # §5.3.2: the bridge may have answered after this run ended/restarted.
+            # Check after the DB await too; never publish a stale generation's URL.
+            if live_session_key(owner) != runtime_key:
+                raise ValueError("The session changed while connecting Remote Control. Connect again.")
             if stored is not None:
                 stored.remote_control_url = link.session_url
                 session.add(stored)
@@ -2200,10 +2225,11 @@ class TeamOrchestrator:
                 raise KeyError(task_id)
             member_id = task.assignee_id
 
-        control = live_session(task_id)
+        owner = runtime_session_owner(self.paths.root, "task", task_id)
+        control, runtime_key = live_session(owner), live_session_key(owner)
         if control is not None:
             await control.disable_remote_control()
-        if await self._clear_remote_control(task_id):
+        if await self._clear_remote_control(task_id, expected_runtime_key=runtime_key):
             await self.record_message(
                 task_id,
                 member_id,
@@ -2214,10 +2240,17 @@ class TeamOrchestrator:
             )
             await self._publish_task_changed(task_id)
 
-    async def _clear_remote_control(self, task_id: str) -> bool:
+    async def _clear_remote_control(
+        self, task_id: str, *, expected_runtime_key: RuntimeSessionKey | str | None = None,
+    ) -> bool:
         """Drop the stored link. True when there was one — the caller decides what to say."""
-        async with self.db.session() as session:
+        async with self._remote_control_lock, self.db.session() as session:
             task = await session.get(TeamTask, task_id)
+            # Cleanup without an explicit key is for an ended run only. A late
+            # finally or DELETE must not clear a replacement run's link (§5.3.2).
+            owner = runtime_session_owner(self.paths.root, "task", task_id)
+            if live_session_key(owner) != expected_runtime_key:
+                return False
             if task is None or not task.remote_control_url:
                 return False
             task.remote_control_url = None
@@ -2542,6 +2575,11 @@ class TeamOrchestrator:
                 member=runtime_member,
                 **member_run_settings(member, self.config.teams),
                 task=task,
+                # §5.3.2: runtime lookup is project/run-bound, not the copied DB ID
+                # or the workdir (which may be an isolated checkout or launch root).
+                runtime_key=RuntimeSessionKey(
+                    runtime_session_owner(self.paths.root, "task", task_id), run_id,
+                ),
                 proactive_subagents=True,
                 workdir=workdir,
                 writable_roots=[worktree_created, temp_dir] if worktree_created else [self.paths.root],

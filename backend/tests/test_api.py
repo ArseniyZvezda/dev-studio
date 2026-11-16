@@ -429,7 +429,7 @@ def test_the_theme_defaults_are_the_graphite_design(client: TestClient) -> None:
 
     assert (theme["accent"], theme["mono_font"]) == ("#a394e8", "jetbrains")
     assert theme["text_size"] is None, "unset takes the app's own size"
-    assert (theme["sidebar"], theme["font"]) == ("labels", "google-sans")
+    assert (theme["sidebar"], theme["font"]) == ("icons", "google-sans")
     for gone in ("look", "palette", "surfaces", "radius", "density", "reduce_motion"):
         assert gone not in theme, gone
 

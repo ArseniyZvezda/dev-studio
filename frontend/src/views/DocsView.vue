@@ -56,6 +56,8 @@ import DocTreeMenu from "@/components/docs/DocTreeMenu.vue";
 import FolderRenameDialog from "@/components/docs/FolderRenameDialog.vue";
 import SidePane from "@/components/layout/SidePane.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import { useCloseGuard } from "@/desktop/close-barrier";
+import { useDesktopPageTarget } from "@/desktop/page-state";
 import { formatNumber, t, type MessageKey } from "@/i18n";
 import I18nT from "@/i18n/I18nT.vue";
 import { seedUpdate } from "@/lib/collab/seed";
@@ -123,6 +125,54 @@ const joining = ref(false);
 const roomPeers = ref<CollabUser[]>([]);
 /** Bumped by every `bind()`, so an answer that arrives for a superseded one is dropped. */
 let binding = 0;
+
+type CloseSnapshot = {
+  editor: InstanceType<typeof BlockEditor> | null;
+  path: string | undefined;
+  binding: number;
+};
+let preparedClose: CloseSnapshot | null = null;
+
+function canClose(snapshot: CloseSnapshot | null): boolean {
+  return Boolean(
+    snapshot &&
+    snapshot.binding === binding &&
+    snapshot.path === docs.open?.path &&
+    snapshot.editor === editor.value &&
+    !joining.value &&
+    (!docs.open || snapshot.editor !== null) &&
+    !snapshot.editor?.hasPendingWork() &&
+    !docs.dirty &&
+    !docs.saving &&
+    docs.error === null &&
+    docs.saveError === null &&
+    docs.saveState !== "failed"
+  );
+}
+
+/**
+ * A real desktop close waits for Markdown, without leaving the room or tearing down its
+ * editor (dev spec §5.3). Transfer/focus never calls this guard. `settle` only waits: a
+ * failed save still belongs on screen, and a clean open must never become a write (§8.2).
+ */
+useCloseGuard(async () => {
+  preparedClose = null;
+  const snapshot: CloseSnapshot = {
+    editor: editor.value,
+    path: docs.open?.path,
+    binding,
+  };
+  try {
+    snapshot.editor?.flush();
+    await docs.settle();
+    if (!canClose(snapshot)) return false;
+    preparedClose = snapshot;
+    return true;
+  } catch {
+    // Serialization and unexpected save failures must not grant permission to close.
+    return false;
+  }
+}, () => canClose(preparedClose));
 
 /**
  * A different document is a different editor (§7) — and so is the same document in a
@@ -367,7 +417,14 @@ const SAVE_LABELS: Record<SaveState, MessageKey> = {
   failed: "docs.saveState.failed",
 };
 
-onMounted(async () => {
+let initialLoad: Promise<void> = Promise.resolve();
+let alive = true;
+onMounted(() => {
+  initialLoad = initialise();
+  return initialLoad;
+});
+
+async function initialise(): Promise<void> {
   docs.subscribe();
   // §9.6: the tree colours documents by version control status, refreshed by the same
   // debounced `explorer.file_changed` the Explorer uses — an agent's `write_doc` is a file
@@ -375,11 +432,34 @@ onMounted(async () => {
   vcs.subscribe();
   void vcs.refresh();
   await docs.load();
-  if (requestedPath.value) await select(requestedPath.value);
+  if (alive && requestedPath.value && requestedPath.value !== docs.open?.path)
+    await select(requestedPath.value);
+}
+
+// §5.3.6: route resolution is not document readiness. Join the view's actual
+// initial read/selection, without reopening an editor already on the target.
+useDesktopPageTarget("/documents", async (page, current) => {
+  await initialLoad;
+  current();
+  if (!alive) return false;
+  const path = page.query?.path;
+  if (path) {
+    if (pendingSelection?.path === path) await pendingSelection.promise;
+    else if (docs.open?.path !== path) await select(path);
+    current();
+    return alive && docs.open?.path === path && !docs.error;
+  }
+  if (docs.open || pendingSelection) {
+    editor.value?.flush();
+    await docs.select(null);
+    current();
+  }
+  return alive && !docs.open && !docs.error;
 });
 
 // Leaving the view with a pending edit still in the editor would lose it.
 onBeforeUnmount(() => {
+  alive = false;
   editor.value?.flush();
   binding += 1;
   if (retryTimer) clearTimeout(retryTimer);
@@ -407,12 +487,21 @@ watch(
   },
 );
 
-async function select(path: string): Promise<void> {
+let pendingSelection: { path: string; promise: Promise<void> } | null = null;
+function select(path: string): Promise<void> {
+  if (pendingSelection?.path === path) return pendingSelection.promise;
   // The outgoing document is written before the incoming one replaces it (§7).
   editor.value?.flush();
-  await docs.select(path);
-  headings.value = [];
-  activeHeading.value = null;
+  const selection = { path, promise: Promise.resolve() };
+  pendingSelection = selection;
+  selection.promise = docs.select(path).then(() => {
+    if (!alive || pendingSelection !== selection) return;
+    headings.value = [];
+    activeHeading.value = null;
+  }).finally(() => {
+    if (pendingSelection === selection) pendingSelection = null;
+  });
+  return selection.promise;
 }
 
 async function open(path: string) {

@@ -430,7 +430,10 @@ class ClaudeCodeBackend(AgentBackend):
                 async with ClaudeSDKClient(options=options) as client:
                     # Published for exactly as long as the CLI subprocess exists, which is
                     # what `POST …/remote-control` needs a handle on (§10.8).
-                    register_live_session(request.session_key, _SessionControl(client))
+                    # A text-only replace() may inherit its parent's runtime key; neither
+                    # publish nor forget it, so compaction cannot steal the parent (§5.3.2).
+                    if not request.text_only:
+                        register_live_session(request.runtime_session_key, _SessionControl(client))
                     # Only the run's opening message carries pictures: a continuation
                     # resumes a session that has already seen them.
                     images = request.images if continuations == 0 else []
@@ -579,7 +582,8 @@ class ClaudeCodeBackend(AgentBackend):
                 # The subprocess is gone the moment its context exits, so its handle must
                 # go with it — between attempts there is briefly no session to steer, and
                 # offering one that controls nothing is the §10.8 defect in miniature.
-                forget_live_session(request.session_key)
+                if not request.text_only:
+                    forget_live_session(request.runtime_session_key)
                 if inbox is not None:
                     inbox.detach()
                 if len(delegated):
@@ -659,7 +663,8 @@ class ClaudeCodeBackend(AgentBackend):
                 is_final=True,
             )
         finally:
-            forget_live_session(request.session_key)
+            if not request.text_only:
+                forget_live_session(request.runtime_session_key)
             if inbox is not None:
                 # Cancelled or failed with the process still attached: what it was sent and
                 # never echoed goes back to waiting, for the caller to deliver or keep.

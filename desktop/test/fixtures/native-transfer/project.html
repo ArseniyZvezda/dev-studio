@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Live project fixture</title>
+  <style>
+    body { margin: 20px; color: #202c3d; background: #f4f7fb; font: 15px system-ui, sans-serif; }
+    textarea { display: block; width: 95%; height: 180px; margin: 12px 0; font: 14px monospace; }
+    #selection { user-select: text; }
+    #sentinel { overflow-wrap: anywhere; }
+  </style>
+  <script src="project.js" defer></script>
+</head>
+<body>
+  <h1>Live WebContentsView · живой проект</h1>
+  <p id="sentinel"></p>
+  <label for="draft">Unsaved draft / несохранённый текст</label>
+  <textarea id="draft" spellcheck="false"></textarea>
+  <label for="file">Retained File / сохранённый File</label>
+  <input id="file" type="file">
+  <p id="selection">Independent DOM selection survives a live transfer.</p>
+</body>
+</html>

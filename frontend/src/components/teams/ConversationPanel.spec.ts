@@ -7,12 +7,13 @@ import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import type { AgentMessage } from '@/api/types'
+import type { AgentChat, AgentMessage } from '@/api/types'
 import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 import SessionStatus from '@/components/teams/SessionStatus.vue'
 import { setLocale } from '@/i18n'
 import type { Verbosity } from '@/lib/transcript'
 import { useVerbosity } from '@/lib/transcript-verbosity'
+import { useChatStore } from '@/stores/chat'
 
 let sequence = 0
 const message = (overrides: Partial<AgentMessage> = {}): AgentMessage => ({
@@ -91,13 +92,15 @@ describe('the transcript widget', () => {
     } }),
   })
 
-  async function renderFeed(messages: AgentMessage[], level: Verbosity, taskStatus = 'done', chat = false): Promise<string> {
+  async function renderFeed(messages: AgentMessage[], level: Verbosity, taskStatus = 'done', chat = false, auto = false): Promise<string> {
     useVerbosity().value = level
     const app = createSSRApp(ConversationPanel, {
       conversationId: 'task_1', messages, emptyText: 'Nothing yet.', taskStatus,
       ...(chat ? { chat: { name: 'Dev', running: taskStatus === 'in_progress' } } : {}),
     })
-    return renderToString(app.use(createPinia()))
+    const pinia = createPinia()
+    if (auto) useChatStore(pinia).chats = [{ id: 'task_1', producer_effort_mode: 'auto' } as AgentChat]
+    return renderToString(app.use(pinia))
   }
 
   it('draws Studio tools as a violet dashed fold of their own', async () => {
@@ -124,7 +127,7 @@ describe('the transcript widget', () => {
       expect(html.match(/data-transcript-fold/g)).toHaveLength(5)
       expect(html.match(/data-studio-tools/g)).toHaveLength(2)
       expect(html.match(/border-violet-500[/]60/g)).toHaveLength(2)
-      expect(html.match(/Studio tools used: 1/g)).toHaveLength(2)
+      expect(html.match(/Studio tools used: 1/g)).toHaveLength(1)
       expect(html.match(/Tools used: 2/g)).toHaveLength(2)
     }
   })
@@ -136,6 +139,41 @@ describe('the transcript widget', () => {
   const foldHeaders = (html: string) =>
     [...html.matchAll(/data-transcript-fold[^>]*>\s*(<(?:button|div)\b[\s\S]*?<\/(?:button|div)>)/g)]
       .map((match) => match[1]!)
+
+  it.each(surfaces)('gives each creation a titled page-and-pencil block at $level (chat: $chat)', async ({ level, chat }) => {
+    const first = call('mcp__voxarium_studio__create_task', { title: 'First task' }, 'create_a')
+    const second = call('mcp__voxarium_studio__create_task', { title: 'Second task' }, 'create_b')
+    const answer = { ...spawned, data: { tool_use_id: 'create_a' }, text: JSON.stringify({
+      task_id: 'created_a', effort_solver: JSON.parse(spawned.text).effort_solver,
+    }) }
+    const event = message({ kind: 'effort_solver', data: {
+      task_id: 'created_a', ...JSON.parse(spawned.text).effort_solver,
+    } })
+    const html = await renderFeed([first, second, event, answer], level, 'in_progress', chat, true)
+    expect(html.match(/data-task-creation/g)).toHaveLength(2)
+    expect(html.match(/data-task-evaluation/g)).toHaveLength(1)
+    expect(html.match(/aria-label="Effort Solver"/g)).toHaveLength(1)
+    expect(html).toContain('Effort Solver is scoring this task')
+    const headers = foldHeaders(html)
+    expect(headers).toHaveLength(2)
+    expect(headers[0]).toContain('First task')
+    expect(headers[1]).toContain('Second task')
+    expect(headers.every(header => header.startsWith('<div') && header.includes('lucide-file-pen'))).toBe(true)
+  })
+
+  it('does not invent task scoring for Agent mode, stopped calls, errors or legacy answers', async () => {
+    const create = call('mcp__voxarium_studio__create_task', { title: 'Create movement' }, 'create_a')
+    for (const [status, auto, result] of [
+      ['in_progress', false, undefined], ['cancelled', true, undefined],
+      ['in_progress', true, { ...spawned, data: { tool_use_id: 'create_a', is_error: true } }],
+      ['done', true, { ...spawned, text: 'Created VS-01', data: { tool_use_id: 'create_a' } }],
+    ] as const) {
+      const html = await renderFeed([create, ...(result ? [result] : [])], 'default', status, true, auto)
+      expect(html).not.toContain('Effort Solver is scoring')
+      expect(html).not.toContain('data-task-evaluation')
+      expect(foldHeaders(html)[0]).toContain('Create movement')
+    }
+  })
 
   it.each(surfaces)('keeps a completed spawn open at $level (chat: $chat)', async ({ level, chat }) => {
     const html = await renderFeed(studioFeed(spawned), level, 'done', chat)
@@ -178,7 +216,7 @@ describe('the transcript widget', () => {
     }
   })
 
-  it.each(surfaces)('isolates adjacent spawns and leaves create_task collapsible at $level (chat: $chat)', async ({ level, chat }) => {
+  it.each(surfaces)('isolates adjacent spawns and keeps create_task open at $level (chat: $chat)', async ({ level, chat }) => {
     const messages = [
       call('mcp__voxarium_studio__create_task', { title: 'First task' }, 'task_a'),
       call('mcp__voxarium_studio__spawn_subagent', { description: 'First review' }, 'spawn_a'),
@@ -198,10 +236,11 @@ describe('the transcript widget', () => {
     expect(html.match(/data-spawn-evaluation/g)).toHaveLength(2)
     expect(html).not.toContain('Effort Solver is scoring')
     const headers = foldHeaders(html)
-    expect(headers.map((header) => header.startsWith('<div'))).toEqual([false, true, true, false])
+    expect(headers.map((header) => header.startsWith('<div'))).toEqual([true, true, true, true])
     for (const index of [0, 3]) {
-      expect(headers[index]).toContain('aria-expanded="' + (level === 'verbose') + '"')
-      expect(headers[index]).toContain('vxs-chevron')
+      expect(headers[index]).not.toContain('aria-expanded')
+      expect(headers[index]).not.toContain('vxs-chevron')
+      expect(headers[index]).toContain(index === 0 ? 'First task' : 'Second task')
     }
     const first = html.indexOf('First review', html.indexOf('data-subagent-spawn'))
     const second = html.indexOf('Second review', html.indexOf('data-subagent-spawn'))

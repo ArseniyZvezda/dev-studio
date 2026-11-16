@@ -38,6 +38,7 @@ import MemberMark from '@/components/teams/MemberMark.vue'
 import ClampText from '@/components/ui/ClampText.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
+import { useCloseGuard } from '@/desktop/close-barrier'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { describeFiles, filterSkillOptions, skillDisplayName, type SkillPickerScope } from '@/lib/skills'
@@ -47,6 +48,9 @@ const store = useSkillsStore()
 
 const error = ref<string | null>(null)
 const busy = ref<string | null>(null)
+// Busy also covers reads, which may overlap. Track writes independently for close (§5.3).
+let pendingWrites = 0
+let writeRevision = 0
 
 const overview = computed(() => store.overview)
 const skills = computed(() => overview.value?.skills ?? [])
@@ -92,7 +96,8 @@ const nothingHere = computed(
     !skills.value.length &&
     !overview.value?.invalid.length &&
     !overview.value?.missing.length &&
-    !creating.value,
+    !creating.value &&
+    !editor.value,
 )
 
 async function startCreate(): Promise<void> {
@@ -110,16 +115,21 @@ async function create(): Promise<void> {
     error.value = t('skills.create.nameRequired')
     return
   }
+  const sent = { ...draft }
+  writeRevision += 1
+  pendingWrites += 1
   busy.value = '+'
   try {
-    store.adopt(await api.createSkill(name, draft.description))
-    creating.value = false
+    store.adopt(await api.createSkill(name, sent.description))
+    // The form remains editable in flight; a successful old request cannot discard newer typing.
+    if (draft.name === sent.name && draft.description === sent.description) creating.value = false
     error.value = null
     // Straight into its instructions: a new skill is a heading and a placeholder paragraph.
     await openEditor(name)
   } catch (cause) {
     fail(cause)
   } finally {
+    pendingWrites -= 1
     busy.value = null
   }
 }
@@ -130,6 +140,30 @@ async function create(): Promise<void> {
 const editor = ref<{ name: string; detail: SkillDetail; text: string } | null>(null)
 /** Set when a save was refused because the file changed on disk after it was opened. */
 const conflict = ref(false)
+// Background reads must never cancel an explicit request to select another skill.
+let detailRequest = 0
+let openRequest = 0
+
+// §5.3.2: an inventory resync owns server data, not the selected editor or its draft.
+const sourceMissing = computed(
+  () => !!editor.value && !!overview.value && !store.byName.has(editor.value.name),
+)
+const listedSkills = computed(() => {
+  const open = editor.value
+  if (!open) return filteredSkills.value
+  // Keep the selected row in inventory order even when refreshed metadata stops matching
+  // the filters. Appending it would move the live textarea (and can lose focus/selection).
+  const matching = new Set(filteredSkills.value.map((skill) => skill.name))
+  const listed = skills.value.filter((skill) => skill.name === open.name || matching.has(skill.name))
+  // Only a genuinely missing source needs the last-read metadata; never duplicate a live row.
+  return sourceMissing.value ? [...listed, open.detail] : listed
+})
+watch(sourceMissing, (missing) => {
+  if (missing) {
+    detailRequest += 1
+    conflict.value = false
+  }
+}, { flush: 'sync' })
 
 const editorDirty = computed(
   () => !!editor.value && editor.value.text !== editor.value.detail.content,
@@ -140,12 +174,40 @@ function discardEdits(): boolean {
   return window.confirm(t('skills.editor.discardConfirm', { name: editor.value?.name ?? '' }))
 }
 
+// Compare primitives only: close approval never serialises the live editor (§5.3).
+function closeFingerprint() {
+  return [pendingWrites, writeRevision, busy.value, error.value, conflict.value,
+    creating.value, draft.name, draft.description, editor.value?.name, editor.value?.text,
+    editor.value?.detail.content, editor.value?.detail.updated_at, sourceMissing.value,
+    store.byName.get(editor.value?.name ?? '')?.updated_at, openRequest, detailRequest] as const
+}
+let acceptedClose: ReturnType<typeof closeFingerprint> | null = null
+
+useCloseGuard(() => {
+  acceptedClose = null
+  // Fail closed rather than treating a request that has not finished as a successful save.
+  if (pendingWrites || busy.value !== null) return false
+  const createDirty = creating.value && !!(draft.name || draft.description)
+  if ((error.value || conflict.value) && (editorDirty.value || createDirty)) return false
+  if (!discardEdits()) return false
+  if (createDirty && !window.confirm(t('skills.editor.discardConfirm', { name: draft.name.trim() || folder.value }))) return false
+  acceptedClose = closeFingerprint()
+  return true
+}, () => {
+  const current = closeFingerprint()
+  return acceptedClose !== null && !pendingWrites && busy.value === null &&
+    acceptedClose.every((value, index) => Object.is(value, current[index]))
+})
+
 async function openEditor(name: string): Promise<void> {
   if (editor.value?.name === name) return
   if (!discardEdits()) return
+  const request = ++openRequest
+  detailRequest += 1
   busy.value = name
   try {
     const detail = await api.skill(name)
+    if (request !== openRequest) return
     editor.value = { name, detail, text: detail.content }
     conflict.value = false
     error.value = null
@@ -158,25 +220,29 @@ async function openEditor(name: string): Promise<void> {
 
 function closeEditor(): void {
   if (!discardEdits()) return
+  detailRequest += 1
+  openRequest += 1
   editor.value = null
   conflict.value = false
 }
 
 /** `force` is "Keep mine" after a conflict: the write goes through without an expectation. */
 async function save(force = false): Promise<void> {
-  if (editor.value?.detail.source) return
+  if (editor.value?.detail.source || sourceMissing.value) return
   const open = editor.value
   if (!open) return
   const name = open.name
   // What is sent, as it was at the click: typing continues while the request travels.
   const sent = open.text
+  writeRevision += 1
+  pendingWrites += 1
   busy.value = name
   try {
     const detail = await api.saveSkill(name, sent, force ? null : open.detail.updated_at)
     // Adopted only while the editor still shows this skill, and the text only if nothing was
     // typed meanwhile — otherwise the newer typing stays, unsaved, against the new version.
     const current = editor.value
-    if (current?.name === name) {
+    if (current === open && !sourceMissing.value) {
       editor.value = { name, detail, text: current.text === sent ? detail.content : current.text }
     }
     conflict.value = false
@@ -190,6 +256,7 @@ async function save(force = false): Promise<void> {
       fail(cause)
     }
   } finally {
+    pendingWrites -= 1
     busy.value = null
   }
 }
@@ -197,14 +264,19 @@ async function save(force = false): Promise<void> {
 /** "Reload" after a conflict, and what a clean editor does by itself when the file moves. */
 async function reload(): Promise<void> {
   const open = editor.value
-  if (!open) return
+  if (!open || sourceMissing.value) return
+  const request = ++detailRequest
+  const text = open.text
+  const updatedAt = store.byName.get(open.name)?.updated_at
   try {
     const detail = await api.skill(open.name)
-    if (editor.value?.name !== open.name) return
+    // A late read must not replace typing, a different editor, or a source lost during resync.
+    if (request !== detailRequest || editor.value !== open || open.text !== text ||
+        sourceMissing.value || store.byName.get(open.name)?.updated_at !== updatedAt) return
     editor.value = { name: open.name, detail, text: detail.content }
     conflict.value = false
   } catch (cause) {
-    fail(cause)
+    if (request === detailRequest && editor.value === open && !sourceMissing.value) fail(cause)
   }
 }
 
@@ -229,20 +301,6 @@ watch(
     if (Date.parse(updatedAt) <= Date.parse(open.detail.updated_at)) return
     if (editorDirty.value) conflict.value = true
     else void reload()
-  },
-)
-
-// A skill deleted from outside while its editor is open has nothing left to save into — nor
-// does one whose SKILL.md went, leaving a folder that is not a skill any more.
-watch(
-  () => store.overview,
-  (page) => {
-    const open = editor.value
-    if (open && page && !page.skills.some((skill) => skill.name === open.name)) {
-      editor.value = null
-      conflict.value = false
-      error.value = t('skills.editor.deletedOnDisk', { name: open.name, folder: page.path })
-    }
   },
 )
 
@@ -441,7 +499,7 @@ async function reveal(path: string): Promise<void> {
           <p v-if="skills.length && !filteredSkills.length" class="py-3 text-muted">{{ t('skills.noMatches') }}</p>
           <ul class="space-y-2">
             <li
-              v-for="skill in filteredSkills"
+              v-for="skill in listedSkills"
               :key="skill.name"
               class="rounded-lg border bg-surface"
               :class="editor?.name === skill.name ? 'border-accent-border' : 'border-line'"
@@ -505,7 +563,7 @@ async function reveal(path: string): Promise<void> {
                     <FolderOpen class="size-3.5" />
                   </button>
                   <button
-                    v-if="!skill.source"
+                    v-if="!skill.source && !(sourceMissing && editor?.name === skill.name)"
                     class="inline-flex items-center rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
                     :disabled="busy === skill.name"
                     :title="t('skills.list.deleteTitle')"
@@ -524,6 +582,9 @@ async function reveal(path: string): Promise<void> {
                   <span class="font-mono">{{ skill.path }}/SKILL.md</span>
                   <span v-if="editorDirty" class="text-warning">· {{ t('skills.editor.unsaved') }}</span>
                 </p>
+                <p v-if="sourceMissing" role="status" class="text-small text-warning">
+                  {{ t('skills.editor.deletedOnDisk', { name: editor.name, folder }) }}
+                </p>
                 <textarea
                   v-model="editor.text"
                   :readonly="!!skill.source"
@@ -534,7 +595,7 @@ async function reveal(path: string): Promise<void> {
                 />
 
                 <div
-                  v-if="conflict"
+                  v-if="conflict && !sourceMissing"
                   class="flex flex-wrap items-center gap-2 rounded-md bg-warning-soft p-2 text-small text-warning"
                 >
                   <AlertTriangle class="size-3.5 shrink-0" />
@@ -558,7 +619,7 @@ async function reveal(path: string): Promise<void> {
                   <button
                     v-if="!skill.source"
                     class="vxs-btn-primary px-3 py-1 disabled:opacity-50"
-                    :disabled="busy !== null || !editorDirty"
+                    :disabled="busy !== null || !editorDirty || sourceMissing"
                     @click="save()"
                   >
                     {{ t('common.save') }}

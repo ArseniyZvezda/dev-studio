@@ -15,6 +15,7 @@ import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { SyncPeer, SyncStatus, SyncUpdate } from '@/api/types'
+import { rendererSession } from '@/session/project-session'
 import { onEvent } from '@/ws/connection'
 
 export const useSyncStore = defineStore('sync', () => {
@@ -30,8 +31,11 @@ export const useSyncStore = defineStore('sync', () => {
   )
 
   async function load(): Promise<void> {
+    const current = rendererSession.capture()
     try {
-      status.value = await api.sync()
+      const result = await api.sync()
+      current()
+      status.value = result
     } catch {
       // A status that cannot be read is "not syncing", which is what `null` already says.
     }
@@ -47,9 +51,12 @@ export const useSyncStore = defineStore('sync', () => {
 
   /** Save settings and reconnect with them. Throws what the backend refused. */
   async function save(patch: SyncUpdate): Promise<SyncStatus> {
+    const current = rendererSession.capture()
     saving.value = true
     try {
-      status.value = await api.updateSync(patch)
+      const result = await api.updateSync(patch)
+      current()
+      status.value = result
       return status.value
     } finally {
       saving.value = false

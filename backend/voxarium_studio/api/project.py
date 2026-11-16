@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..build_info import build_info, changelog_path
 from ..core.config import (
@@ -34,13 +34,18 @@ from ..core.workspace import (
     ProjectNotInitialised,
     forget_recent,
     load_recent,
+    ensure_project,
     open_project,
+    workspace_activity,
 )
 from ..teams.backends.base import available_backends, get_backend
 from ..vcs import candidate_backends
 from .deps import Ctx
 
 router = APIRouter(tags=["project"])
+# Only project operations are mounted again under an immutable selector (§5.3.3).
+scoped_router = APIRouter(tags=["project"])
+projects_router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 class SettingsUpdate(BaseModel):
@@ -82,6 +87,30 @@ class OpenProjectRequest(BaseModel):
     ``false`` first so it can show what is about to be created, then ``true``."""
 
 
+class EnsureProjectRequest(OpenProjectRequest):
+    # Restore/open must not initialise a directory without explicit confirmation (§5.3.2).
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1)
+    create: bool = False
+
+
+class ProjectThemeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    accent: str = "#a394e8"
+
+
+class ProjectSettingsUpdate(BaseModel):
+    """Project saves cannot silently modify user-wide preferences (§5.2, §5.3.3)."""
+
+    model_config = ConfigDict(extra="forbid")
+    project_name: str | None = None
+    project_code: str | None = None
+    theme: ProjectThemeUpdate | None = None
+    concurrency: ConcurrencyConfig | None = None
+    teams: TeamsConfig | None = None
+    docs: DocsConfig | None = None
+
+
 @router.get("/project")
 async def get_project(ctx: Ctx) -> dict[str, Any]:
     return {
@@ -104,6 +133,15 @@ async def get_project(ctx: Ctx) -> dict[str, Any]:
     }
 
 
+@scoped_router.get("/project")
+async def get_scoped_project(ctx: Ctx, request: Request) -> dict[str, Any]:
+    scope = request.state.project_scope
+    return {
+        **await get_project(ctx), "root": str(scope.root),
+        "project_id": scope.project_id, "epoch": scope.epoch,
+    }
+
+
 @router.get("/project/recent")
 def get_recent_projects() -> list[dict[str, Any]]:
     """Projects this machine has opened before, newest first (§5)."""
@@ -116,6 +154,7 @@ def forget_recent_project(path: str) -> list[dict[str, Any]]:
 
 
 @router.get("/project/task-counts")
+@scoped_router.get("/project/task-counts")
 def get_project_task_counts(ctx: Ctx) -> dict[str, int] | None:
     """The current project's footer summary, across all teams (§5.1)."""
     return read_task_counts(ctx.paths.root)
@@ -162,6 +201,36 @@ async def open_another_project(payload: OpenProjectRequest, request: Request) ->
     return await get_project(ctx)
 
 
+@projects_router.get("/activity")
+async def get_workspace_activity(request: Request, response: Response) -> dict[str, Any]:
+    """App-level read-only quit/updater guard, including projects without tabs (§5.3).
+
+    Deliberately not mounted under a project selector. Keep this async so the
+    synchronous snapshot runs on the owners' event loop, not in a worker thread.
+    The parent API router supplies the same auth/Host/Origin guards as open.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return workspace_activity(request.app.state)
+
+
+@projects_router.post("/open")
+async def ensure_open_project(payload: EnsureProjectRequest, request: Request) -> dict[str, Any]:
+    """Ensure a resident context without touching the legacy browser adapter (§5.3.2)."""
+    try:
+        scope = await ensure_project(request.app.state, payload.path, create=payload.create)
+    except ProjectNotInitialised as exc:
+        raise HTTPException(409, f"{exc} is not a Voxarium Studio project yet.") from exc
+    except ProjectNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, f"Could not open the project: {exc}") from exc
+    metadata = await get_project(scope.ctx)
+    return {
+        **metadata, "root": str(scope.root),
+        "project_id": scope.project_id, "epoch": scope.epoch,
+    }
+
+
 def _checked_launch_root(ctx: AppContext, value: str) -> str:
     """Refuse a launch root that names nothing, before it reaches an agent session.
 
@@ -181,11 +250,13 @@ def _checked_launch_root(ctx: AppContext, value: str) -> str:
 
 
 @router.get("/settings")
+@scoped_router.get("/settings")
 async def get_settings(ctx: Ctx) -> dict[str, Any]:
     return ctx.config.model_dump(mode="json")
 
 
 @router.get("/settings/prompts")
+@scoped_router.get("/settings/prompts")
 async def get_prompt_specs() -> dict[str, Any]:
     """The built-in text behind every line the Studio says to an agent (§10.3, §10.4).
 
@@ -210,6 +281,22 @@ async def update_settings(payload: SettingsUpdate, request: Request, ctx: Ctx) -
         return await _save_settings(payload, ctx)
 
 
+@scoped_router.put("/settings")
+async def update_project_settings(
+    payload: ProjectSettingsUpdate, request: Request, ctx: Ctx,
+) -> dict[str, Any]:
+    async with _settings_lock(request):
+        return await _save_settings(
+            SettingsUpdate.model_validate(payload.model_dump(exclude_unset=True)), ctx,
+            application=ApplicationConfig.from_effective(ctx.config),
+        )
+
+
+@router.get("/settings/application")
+async def get_application_settings() -> dict[str, Any]:
+    return load_application_config().model_dump(mode="json")
+
+
 @router.put("/settings/application")
 async def update_application_settings(
     payload: ApplicationSettingsUpdate, request: Request, ctx: Ctx,
@@ -228,14 +315,16 @@ def _settings_lock(request: Request) -> asyncio.Lock:
     return request.app.state.project_lock
 
 
-async def _save_settings(payload: SettingsUpdate, ctx: AppContext) -> dict[str, Any]:
+async def _save_settings(
+    payload: SettingsUpdate, ctx: AppContext, *, application: ApplicationConfig | None = None,
+) -> dict[str, Any]:
     """Validate the entire patch before touching live state or either file (§5.2).
 
     Nested models merge only explicitly supplied fields. Defaults in a one-field request
     must not reset the rest of the user's preferences or the project's configuration.
     """
     draft = ctx.config.model_copy(deep=True)
-    application = load_application_config()
+    application = application if application is not None else load_application_config()
     project_changed = False
     application_changed = False
     prompts_changed = False
@@ -334,6 +423,7 @@ async def _configure_application(ctx: AppContext, application: ApplicationConfig
 
 
 @router.get("/status")
+@scoped_router.get("/status")
 async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
     """Health plus agent-backend readiness, shown in Settings before a first agent run."""
     backends = {}
@@ -353,10 +443,11 @@ async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
             "reason": reason,
             "active": ctx.vcs is not None and ctx.vcs.id == backend_cls.id,
         }
+    bus = ctx.bus if hasattr(request.state, "project_scope") else request.app.state.browser_bus
     return {
         "database": await ctx.db.healthcheck(),
-        "event_seq": request.app.state.browser_bus.current_seq,
-        "ws_clients": request.app.state.browser_bus.subscriber_count,
+        "event_seq": bus.current_seq,
+        "ws_clients": bus.subscriber_count,
         "jobs": [
             {"id": job.id, "kind": job.kind, "meta": job.meta} for job in ctx.jobs.jobs()
         ],
@@ -366,14 +457,22 @@ async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
 
 
 @router.post("/settings/reload")
+@scoped_router.post("/settings/reload")
 async def reload_everything(request: Request, ctx: Ctx) -> dict[str, Any]:
     """Re-read config.yaml and re-scan plugins, for when files were edited by hand."""
     try:
         async with _settings_lock(request):
+            scoped = hasattr(request.state, "project_scope")
+            application = ApplicationConfig.from_effective(ctx.config) if scoped else None
             ctx.reload_config()
+            if application is not None:
+                # A project reload is not a global-preferences reload (§5.3.3).
+                apply_application_config(ctx.config, application)
+                await ctx.updates.configure(ctx.config.updates)
             # §10.11: hand-edited prompts also refresh the Producer's derived responsibility.
             await ctx.teams.sync_agent_definitions()
-            await _configure_application(ctx, load_application_config())
+            if not scoped:
+                await _configure_application(ctx, load_application_config())
             await ctx.reload_plugins()
             # §16.5: a hand-edited address or space takes effect like any other setting.
             await ctx.sync.reconfigure()

@@ -5,9 +5,6 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { locale, t } from '@/i18n'
 import type { DesktopWindowState } from '@/desktop'
 
-import ProjectSwitcher from '@/components/project/ProjectSwitcher.vue'
-import { useSessionStore } from '@/stores/session'
-const session = useSessionStore()
 const controls = window.voxariumWindow
 const state = ref<DesktopWindowState>({ maximized: false, focused: true })
 watch(locale, value => { void controls?.setLocale?.(value) }, { immediate: true })
@@ -22,8 +19,9 @@ onBeforeUnmount(() => unsubscribe?.())
 
 <template>
   <header class="desktop-titlebar" :class="{ 'is-inactive': !state.focused }">
-    <div v-if="session.project" class="desktop-titlebar__project"><ProjectSwitcher /></div>
-    <span class="desktop-titlebar__title"><img src="/studio-logo.png" alt="" aria-hidden="true" class="mr-1.5 inline-block size-5 align-middle" />{{ t('app.name') }}</span>
+    <img class="desktop-titlebar__logo" :src="'/studio-logo.png'" :alt="t('app.name')" />
+    <div v-if="$slots.project" class="desktop-titlebar__project"><slot name="project" /></div>
+    <slot />
     <div v-if="controls" class="desktop-titlebar__controls">
       <button v-if="controls.minimizeToTray" type="button" :title="t('desktop.minimizeToTray')" :aria-label="t('desktop.minimizeToTray')" @click="controls.minimizeToTray()">
         <PanelBottomClose aria-hidden="true" />
@@ -50,29 +48,15 @@ onBeforeUnmount(() => unsubscribe?.())
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  height: 44px;
+  height: var(--vxs-titlebar-height);
   flex-shrink: 0;
-  background: var(--vxs-bg-surface);
-  border-bottom: 1px solid var(--vxs-border);
   color: var(--vxs-text-muted);
   user-select: none;
   -webkit-app-region: drag;
 }
-.desktop-titlebar__title {
-  position: absolute;
-  inset-inline: 320px 190px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.025em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.is-inactive .desktop-titlebar__title { opacity: 0.55; }
-.desktop-titlebar__controls { display: flex; height: 100%; -webkit-app-region: no-drag; }
+.desktop-titlebar__logo { flex: none; width: 20px; height: 20px; margin: 0 14px; }
+.is-inactive .desktop-titlebar__logo { opacity: 0.55; }
+.desktop-titlebar__controls { margin-left: auto; flex: none; display: flex; height: 100%; -webkit-app-region: no-drag; }
 .desktop-titlebar__controls button {
   display: grid;
   place-items: center;

@@ -1,9 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { registerProducerAttention } = require('../producer-attention.cjs');
+const { registerProducerAttention, createProjectAttention } = require('../producer-attention.cjs');
 
-function fixture(platform = 'win32') {
+function fixture(platform = 'win32', appOwned = false) {
   const window = new EventEmitter();
   const overlays = [], flashes = [];
   const icon = { native: true };
@@ -12,7 +12,7 @@ function fixture(platform = 'win32') {
     webContents: new EventEmitter(), isDestroyed: () => false, isFocused: () => focused,
     setOverlayIcon: (...args) => overlays.push(args), flashFrame: value => flashes.push(value),
   });
-  const attention = registerProducerAttention({ window, icon, description: () => label, platform });
+  const attention = registerProducerAttention({ window, icon, description: () => label, platform, appOwned });
   return { window, icon, attention, overlays, flashes,
     focus: () => { focused = true; window.emit('focus'); },
     translate: () => { label = 'Ожидает ответа'; attention.refresh(); },
@@ -61,4 +61,72 @@ test('foreground attention is passive and other platforms do not call Windows AP
   other.attention.set(false);
   assert.deepEqual(other.overlays, []);
   assert.deepEqual(other.flashes, []);
+});
+
+test('app-owned attention survives shell reload and crash, with disposable listeners', () => {
+  const f = fixture('win32', true);
+  f.attention.set(true);
+  f.window.webContents.emit('did-start-navigation', {}, '/', false, true);
+  f.window.webContents.emit('render-process-gone');
+  assert.equal(f.overlays.at(-1)[0], f.icon);
+  assert.deepEqual(f.flashes, [true]);
+  f.attention.dispose();
+  f.attention.dispose();
+  assert.deepEqual(f.overlays.at(-1), [null, '']);
+  assert.equal(f.window.listenerCount('focus'), 0);
+  assert.equal(f.window.listenerCount('closed'), 0);
+  f.attention.set(true);
+  assert.deepEqual(f.overlays.at(-1), [null, '']);
+  const legacy = fixture();
+  legacy.window.emit('closed');
+  assert.equal(legacy.window.webContents.listenerCount('did-start-navigation'), 0);
+  assert.equal(legacy.window.webContents.listenerCount('render-process-gone'), 0);
+});
+
+test('project attention follows transferred tabs and full snapshots without reflashing', () => {
+  const source = fixture('win32', true), target = fixture('win32', true);
+  const project = { root: 'D:/a', project_id: 'shared', epoch: 'one' };
+  const windows = [{ windowId: 'source', tabIds: ['waiting', 'other'], activeTabId: 'other' },
+    { windowId: 'target', tabIds: [] }];
+  const tabs = [{ tabId: 'waiting', project },
+    { tabId: 'other', project: { ...project, root: 'D:/b' } }];
+  const handles = new Map([['source', source.attention], ['target', target.attention]]);
+  const attention = createProjectAttention({ registry: { snapshot: () => ({ windows, tabs }) },
+    getWindowAttention: id => handles.get(id) });
+  const values = [{ project, waiting: [{ chat_id: 'same-chat', target: { chat_id: 'same-chat' } }] }];
+  attention.replace(values);
+  attention.replace(values);
+  assert.equal(source.overlays.at(-1)[0], source.icon, 'inactive waiting tab contributes');
+  assert.deepEqual(source.flashes, [true]);
+  assert.equal(target.overlays.at(-1)[0], null);
+  windows[0].tabIds = ['other'];
+  windows[1].tabIds = ['waiting'];
+  attention.refresh();
+  assert.equal(source.overlays.at(-1)[0], null);
+  assert.equal(target.overlays.at(-1)[0], target.icon);
+  attention.refresh();
+  assert.equal(target.flashes.filter(Boolean).length, 1);
+  // A new window can be absent from the handle map until main finishes setup.
+  windows.push({ windowId: 'new', tabIds: [] });
+  attention.refresh();
+  attention.replace([]);
+  assert.equal(target.overlays.at(-1)[0], null, 'omitted projects clear the prior full snapshot');
+});
+
+test('equal project/chat IDs never substitute for strict root and epoch identity', () => {
+  const f = fixture('win32', true);
+  const project = { root: 'D:/a', project_id: 'same-id', epoch: 'current' };
+  const attention = createProjectAttention({ registry: { snapshot: () => ({
+    windows: [{ windowId: 'one', tabIds: ['tab'] }], tabs: [{ tabId: 'tab', project }],
+  }) }, getWindowAttention: () => f.attention });
+  const waiting = [{ chat_id: 'same-chat', target: { chat_id: 'same-chat' } }];
+  for (const mismatch of [{ ...project, root: 'D:/b' }, { ...project, epoch: 'old' },
+    { ...project, project_id: 'different-id' }]) {
+    attention.replace([{ project: mismatch, waiting }]);
+    assert.equal(f.overlays.at(-1)[0], null);
+  }
+  attention.replace([{ project: { ...project }, waiting }]);
+  assert.equal(f.overlays.at(-1)[0], f.icon);
+  attention.replace([{ project, waiting: [] }]);
+  assert.equal(f.overlays.at(-1)[0], null);
 });

@@ -172,8 +172,19 @@ wiki.selectNew = (name: string) => {
  * `upload` is a function rather than a value because the extension is built once while the
  * path is a prop: a captured value would keep uploading beside the first document opened.
  */
+let pendingUploads = 0
 const imageDrop: ImageDropOptions = {
-  upload: () => (props.path ? (file: File) => uploadDocAsset(props.path, file) : null),
+  upload: () => (props.path ? async (file: File) => {
+    pendingUploads += 1
+    try {
+      return await uploadDocAsset(props.path, file)
+    } finally {
+      // receiveImageDrop inserts the image/removes its placeholder AFTER this promise
+      // resolves. Keep close blocked through that continuation, not just the HTTP request.
+      // Both the content plugin and the margin drop use this same uploader (§3.4).
+      setTimeout(() => { pendingUploads -= 1 }, 0)
+    }
+  } : null),
   onError: (message) => emit('failed', message),
 }
 
@@ -272,7 +283,18 @@ const editor = useEditor({
     emit('dirty', props.path)
     schedule()
   },
-  onBlur: () => flush(),
+  onBlur: ({ event }) => {
+    // A native window/tab transfer also blurs the editor, but must leave its debounce,
+    // room and renderer untouched (dev spec §5.3). Ordinary focus changes within this
+    // renderer keep their immediate autosave when the next target is known to be local;
+    // a real close uses the page's close guard. A null target can precede the native
+    // document focus change, so hasFocus() alone is not sufficient during reparenting.
+    const owner = editor.value?.view.dom.ownerDocument
+    const next = event.relatedTarget
+    if (!owner?.hasFocus()) return
+    if (!(next instanceof Node) || next.ownerDocument !== owner) return
+    flush()
+  },
   onCreate: () => refreshOutline(),
 })
 
@@ -431,6 +453,18 @@ function flush(): void {
   emit('change', markdown, props.path)
 }
 
+/**
+ * A desktop close must not discard an upload, an undrawn room, or a newer edit that arrived
+ * while the preceding save was in flight (dev spec §5.3). Reading this never writes Markdown.
+ */
+function hasPendingWork(): boolean {
+  if (!editor.value || !rendered || pendingUploads || autosave || unsaved) return true
+  if (!roomAhead) return false
+  // A non-scribe cannot flush somebody else's save. Only allow close once the local file
+  // caught up; the room protocol has no persisted-update acknowledgement to trust instead.
+  return serialize() !== props.source
+}
+
 /** Drop the pending debounce without writing — what an explicit save supersedes. */
 function cancelPending(): void {
   if (autosave) clearTimeout(autosave)
@@ -564,6 +598,7 @@ function elementAt(pos: number): HTMLElement | null {
 
 defineExpose({
   flush,
+  hasPendingWork,
   takeMarkdown,
   /**
    * Throw away what is in the editor and take `source` as it stands — the answer to the

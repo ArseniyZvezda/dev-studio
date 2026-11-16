@@ -88,7 +88,7 @@ class ApplicationThemeConfig(BaseModel):
     mono_font: Literal["cascadia", "jetbrains", "fira", "system"] = "jetbrains"
     """JetBrains Mono by default, because that is what the Graphite design is drawn in: a log
     and a commit are read here, not skimmed."""
-    sidebar: Literal["labels", "icons", "auto"] = "labels"
+    sidebar: Literal["labels", "icons", "auto"] = "icons"
     """The rail: labels beside the icons, icons alone, or icons that widen on hover."""
 
     canvas_grid: Literal["dots", "lines", "none"] = "dots"

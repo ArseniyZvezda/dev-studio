@@ -7,7 +7,7 @@
  * One dial with two detents (Compact was removed on 2026-11-10, by the user's request).
  * **Default** is what was said, with the work around it as folded blocks — each thinking
  * block, and each run of consecutive tool calls as one "Tools used: N" — both drawn
- * collapsed, except permanently open subagent launches (§10.4). **Verbose** filters nothing:
+ * collapsed, except permanently open subagent launches and task creation (§10.4). **Verbose** filters nothing:
  * tool results sit under their calls, the Studio's own system notices are rows, and the
  * same folds are drawn open.
  *
@@ -165,7 +165,7 @@ export interface ToolEntry<M extends TranscriptMessage = TranscriptMessage> {
 export type TranscriptBlock<M extends TranscriptMessage = TranscriptMessage> =
   | { type: 'message'; key: string; message: M }
   | { type: 'thinking'; key: string; message: M }
-  | { type: 'tools'; key: string; entries: ToolEntry<M>[]; calls: number; studio: boolean; spawn: boolean }
+  | { type: 'tools'; key: string; entries: ToolEntry<M>[]; calls: number; studio: boolean; spawn: boolean; createTask: boolean }
 
 /**
  * The last line of the transcript: what was logged most recently, and what the run has
@@ -230,6 +230,11 @@ function isHighlightedStudioCall(message: TranscriptMessage): boolean {
 /** Whether this call started a Studio-managed subagent (§10.3). */
 export function isSubagentSpawn(message: TranscriptMessage): boolean {
   return isStudioCall(message) && bareToolName(message) === 'spawn_subagent'
+}
+
+/** Task creation has its own always-open Solver block (§10.4). */
+export function isTaskCreation(message: TranscriptMessage): boolean {
+  return isStudioCall(message) && bareToolName(message) === 'create_task'
 }
 
 /**
@@ -370,8 +375,8 @@ export function transcriptRows<M extends TranscriptMessage>(
  * A thinking message becomes a thinking block. Consecutive tool calls become one tools
  * block, whatever the tools were — `Bash`, `Grep`, an MCP call, a skill being loaded — so
  * a run that read twelve files between two sentences is one folded line rather than twelve.
- * Studio create_task calls (`studio`) split into violet blocks. Each spawn_subagent gets
- * its own permanently expanded block so its Solver process stays visible (§10.4).
+ * Studio create_task and spawn_subagent calls each get their own permanently expanded
+ * violet block so their Solver process stays visible (§10.4).
  * All other Studio tools join ordinary calls in standard-colour blocks
  * (§10.4; 2026-11-12, at the user's request).
  * At Verbose each call keeps its results under it, matched on the call's id; a result whose
@@ -417,12 +422,17 @@ export function transcriptBlocks<M extends TranscriptMessage>(
     const own = message.kind === 'tool_use' && !isDelegatedWork(message)
     const studio = own && isHighlightedStudioCall(message)
     const spawn = own && isSubagentSpawn(message)
-    if (group !== null && own && (group.studio !== studio || spawn || group.spawn)) {
-      if (group.calls || spawn || group.spawn) group = null
-      else group.studio = studio
+    const createTask = own && isTaskCreation(message)
+    if (group !== null && own && (group.studio !== studio || spawn || group.spawn || createTask || group.createTask)) {
+      if (group.calls) group = null
+      else {
+        group.studio = studio
+        group.spawn = spawn
+        group.createTask = createTask
+      }
     }
     if (group === null) {
-      group = { type: 'tools', key, entries: [], calls: 0, studio, spawn }
+      group = { type: 'tools', key, entries: [], calls: 0, studio, spawn, createTask }
       blocks.push(group)
     }
     const entry: ToolEntry<M> = { key, message, results: [] }

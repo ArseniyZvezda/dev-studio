@@ -1,11 +1,13 @@
 // Native taskbar overlay is durable attention; focusing only stops the flash (§10.11).
-function registerProducerAttention({ window, icon, description, platform = process.platform }) {
+function registerProducerAttention({ window, icon, description, platform = process.platform, appOwned = false }) {
   let waiting = false;
+  let disposed = false;
   const refresh = () => {
-    if (platform !== 'win32' || window.isDestroyed()) return;
+    if (disposed || platform !== 'win32' || window.isDestroyed()) return;
     window.setOverlayIcon(waiting ? icon : null, waiting ? description() : '');
   };
   const set = value => {
+    if (disposed) return;
     const changed = value !== waiting;
     waiting = value;
     refresh();
@@ -13,14 +15,55 @@ function registerProducerAttention({ window, icon, description, platform = proce
     if (!waiting) window.flashFrame(false);
     else if (changed && !window.isFocused()) window.flashFrame(true);
   };
-  window.on('focus', () => {
+  const focus = () => {
     if (platform === 'win32' && !window.isDestroyed()) window.flashFrame(false);
-  });
-  // A new project or renderer must publish its own state; never inherit an old badge.
-  window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+  };
+  const navigate = (_event, _url, inPlace, mainFrame) => {
     if (mainFrame && !inPlace) set(false);
-  });
-  window.webContents.on('render-process-gone', () => set(false));
-  return { set, refresh };
+  };
+  const crashed = () => set(false);
+  const dispose = () => {
+    if (disposed) return;
+    set(false);
+    disposed = true;
+    window.removeListener('focus', focus);
+    window.removeListener('closed', dispose);
+    window.webContents.removeListener('did-start-navigation', navigate);
+    window.webContents.removeListener('render-process-gone', crashed);
+  };
+  window.on('focus', focus);
+  window.once('closed', dispose);
+  // Legacy renderer-owned state resets on replacement. App-owned attention is
+  // independent of the shell renderer's reload/crash lifecycle (§5.3).
+  if (!appOwned) {
+    window.webContents.on('did-start-navigation', navigate);
+    window.webContents.on('render-process-gone', crashed);
+  }
+  return { set, refresh, dispose };
 }
-module.exports = { registerProducerAttention };
+
+// The app receiver supplies full snapshots; registry ownership decides which
+// native window displays them, including inactive tabs and live transfers (§5.3).
+function createProjectAttention({ registry, getWindowAttention }) {
+  let waitingProjects = new Set();
+  const bindingKey = project => {
+    if (!project || !['root', 'project_id', 'epoch'].every(key =>
+      typeof project[key] === 'string' && project[key].length > 0)) return null;
+    return JSON.stringify([project.root, project.project_id, project.epoch]);
+  };
+  const refresh = () => {
+    const snapshot = registry.snapshot();
+    const tabs = new Map(snapshot.tabs.map(tab => [tab.tabId, tab]));
+    for (const window of snapshot.windows) {
+      const waiting = window.tabIds.some(id => waitingProjects.has(bindingKey(tabs.get(id)?.project)));
+      getWindowAttention(window.windowId)?.set(waiting);
+    }
+  };
+  const replace = values => {
+    waitingProjects = new Set(values.filter(value => Array.isArray(value.waiting) && value.waiting.length > 0)
+      .map(value => bindingKey(value.project)).filter(key => key !== null));
+    refresh();
+  };
+  return { replace, refresh };
+}
+module.exports = { registerProducerAttention, createProjectAttention };

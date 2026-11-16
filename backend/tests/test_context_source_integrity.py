@@ -6,6 +6,7 @@ import pytest
 
 from voxarium_studio.api import session_context
 from voxarium_studio.models import AgentMessage, ChatSessionContext, TaskContext
+from voxarium_studio.teams.context_journals import dispatch_digest, read_session
 from voxarium_studio.teams.context_sources import JournalContext, prompt_sources, source
 from voxarium_studio.teams.context_viewer import inventory, native_inventory, present
 
@@ -83,11 +84,11 @@ def test_old_studio_timeline_uses_message_roles_without_inventing_a_system_promp
     assert [(p["category"], p["text"]) for p in view["sources"]] == [("task", "  Hello"), ("history", "Hi")]
 
 
-@pytest.mark.parametrize("backend,marker,wire,category", [
-    ("qwen", "system_prompt_in_message", "Studio instructions:\n  sys  \n\nUser message:\n", "system"),
-    ("codex", "instructions_in_prompt", "<instructions>\nsys\n</instructions>\n\n", "developer"),
+@pytest.mark.parametrize("backend,wire,category", [
+    ("qwen", "Studio instructions:\n  sys  \n\nUser message:\n", "system"),
+    ("codex", "<instructions>\nsys\n</instructions>\n\n", "developer"),
 ])
-async def test_recorded_transport_boundary_uses_only_journal_characters(backend, marker, wire, category, tmp_path, monkeypatch):
+def test_recorded_transport_boundary_uses_only_journal_characters(backend, wire, category, tmp_path, monkeypatch):
     if backend == "codex":
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         path = tmp_path / "sessions" / "rollout-t-session.jsonl"
@@ -98,13 +99,13 @@ async def test_recorded_transport_boundary_uses_only_journal_characters(backend,
         row = {"message": {"role": "user", "parts": [{"text": wire + "user\t "}]}}
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(row), encoding="utf8")
-    snapshot = TaskContext(task_id="task", backend=backend, sources=[source("system", "  sys  ")])
-    notice = AgentMessage(task_id="task", member_id="dev", role="system", kind="system", data={"subtype": marker})
-    parts, _ = await session_context.read_context(snapshot, [notice], None, "session")
+    # This tests the explicit legacy parser, not HTTP authorization. Old snapshots
+    # without an owner receipt must now stay in Studio view (§5.3.2).
+    parts = read_session(backend, "session", studio_system="  sys  ").sources
     assert [(p["category"], p["text"]) for p in parts] == [(category, wire), ("task", "user\t ")]
     assert [p["source_kind"] for p in parts] == ["studio_system", "user_message"]
-    # The same string without the adapter's notice remains an ordinary user field.
-    parts, _ = await session_context.read_context(snapshot, [], None, "session")
+    # Without the captured adapter hint it remains an ordinary user field.
+    parts = read_session(backend, "session").sources
     assert [(p["category"], p["text"]) for p in parts] == [("task", wire + "user\t ")]
     assert parts[0]["source_kind"] == "user_message"
 
@@ -130,14 +131,21 @@ def test_api_keeps_journal_and_studio_capture_separate(client, monkeypatch, owne
     body = " before\r\nafter\t" * 3000
     snapshot.backend = "qwen"
     snapshot.sources = [source("system", body)]
+    snapshot.sources[-1]["runtime_provenance"] = {
+        "version": 2, "project_root": str(client.app.state.ctx.paths.root),
+        "workdir": str(client.app.state.ctx.paths.root), "owner_kind": owner, "owner_id": key,
+        "token": "a" * 32, "dispatches": [dispatch_digest(body)], "generation": "test-generation",
+    }
     journal = JournalContext(sources=[source("task", body, origin="journal[0].message.parts[0].text")])
     async def store():
         async with client.app.state.ctx.db.session() as db:
             db.add(snapshot)
     client.portal.call(store)
-    def read(backend, session_id, *, studio_system):
+    def read(backend, session_id, *, studio_system, binding):
         assert backend == "qwen"
         assert not studio_system
+        assert binding.owner_kind == owner and binding.owner_id == key
+        assert binding.project_root == client.app.state.ctx.paths.root
         return journal
     monkeypatch.setattr(session_context, "read_session", read)
     response = client.get(url).json()

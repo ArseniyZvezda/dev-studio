@@ -26,7 +26,7 @@ export const DEFAULT_THEME: ThemeConfig = {
   text_size: null,
   font: 'google-sans',
   mono_font: 'jetbrains',
-  sidebar: 'labels',
+  sidebar: 'icons',
   canvas_grid: 'dots',
   node_tint: 16,
   status_palette: 'default',

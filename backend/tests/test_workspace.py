@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,12 +15,81 @@ from voxarium_studio.core import browse, demo, workspace
 from voxarium_studio.core.config import load_config
 from voxarium_studio.core.paths import DATA_DIRNAME, HOME_ENV_VAR, ProjectPaths
 from voxarium_studio.core.project import init_project
+from voxarium_studio.core.project_scope import resolve_project
 from voxarium_studio.core.security import AuthSettings
 from voxarium_studio.main import create_app
 from voxarium_studio.models.teams import TaskStatus, TeamMember, TeamTask
 from voxarium_studio.teams.backends.base import AgentEvent, register_backend
 
 # ---------------------------------------------------------------- switching projects
+
+
+async def test_bootstrap_identity_is_immutable_and_initialisation_is_idempotent(ctx) -> None:
+    state = SimpleNamespace(ctx=ctx, project_lock=asyncio.Lock())
+    workspace.initialise_workspace(state)
+    descriptor = await workspace.ensure_project(state, ctx.paths.root)
+    bus = state.browser_bus
+    workspace.initialise_workspace(state)
+    assert resolve_project(state, descriptor.project_id) is descriptor
+    assert state.browser_bus is bus
+    assert len(state.project_contexts) == len(state.project_registry) == 1
+    with pytest.raises(FrozenInstanceError):
+        descriptor.ctx = None
+
+
+def test_a_new_lifespan_does_not_reuse_shutdown_identities(project: Path) -> None:
+    """Epochs also rotate when an embedded host reuses its ASGI app (§5.3.2)."""
+    app = create_app(str(project))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        previous = client.post("/api/projects/open", json={"path": str(project)}).json()
+    assert not app.state.project_contexts
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        current = client.post("/api/projects/open", json={"path": str(project)}).json()
+        assert current["epoch"] != previous["epoch"]
+        assert current["project_id"] != previous["project_id"]
+        assert len(app.state.project_contexts) == 1
+        assert client.get(f"/api/projects/{previous['project_id']}/project").status_code == 404
+
+
+def test_failed_bootstrap_never_publishes_a_project_identity(project: Path, monkeypatch) -> None:
+    from voxarium_studio.core.context import AppContext
+
+    original_start, original_stop = AppContext.startup, AppContext.shutdown
+    stopped = []
+
+    async def fail(ctx):
+        await original_start(ctx)
+        raise OSError("bootstrap failure")
+
+    async def stop(ctx):
+        stopped.append(ctx)
+        await original_stop(ctx)
+
+    monkeypatch.setattr(AppContext, "startup", fail)
+    monkeypatch.setattr(AppContext, "shutdown", stop)
+    app = create_app(str(project))
+    with pytest.raises(OSError, match="bootstrap failure"):
+        with TestClient(app, base_url="http://127.0.0.1"):
+            pytest.fail("Failed bootstrap must not serve requests")
+    assert stopped == [app.state.ctx]
+    assert not hasattr(app.state, "project_registry")
+
+
+def test_bootstrap_keeps_legacy_event_replay_without_early_registry(project: Path, monkeypatch) -> None:
+    from voxarium_studio.core.context import AppContext
+
+    original = AppContext.startup
+    app = create_app(str(project))
+
+    async def start(ctx):
+        assert not hasattr(app.state, "project_registry")
+        await original(ctx)
+        await ctx.bus.publish("test.bootstrap")
+
+    monkeypatch.setattr(AppContext, "startup", start)
+    with TestClient(app, base_url="http://127.0.0.1"):
+        assert app.state.ctx.bus.forward_to is app.state.browser_bus
+        assert any(event.type == "test.bootstrap" for event in app.state.browser_bus.replay(0))
 
 
 def test_open_existing_project_switches_context(client: TestClient, tmp_path: Path) -> None:

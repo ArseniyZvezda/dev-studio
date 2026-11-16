@@ -14,6 +14,7 @@ import type {
   PipelineSummary,
 } from '@/api/types'
 import { onEvent } from '@/ws/connection'
+import { rendererSession } from '@/session/project-session'
 
 /** Stable fallback colours per category, so a plugin that sets none still reads clearly. */
 const CATEGORY_PALETTE = [
@@ -35,6 +36,8 @@ export const usePipelinesStore = defineStore('pipelines', () => {
   const error = ref<string | null>(null)
 
   let subscribed = false
+  let recovering: Promise<void> | null = null
+  let recoveryPending = false
 
   const nodeTypeById = computed(() => {
     const map = new Map<string, NodeTypeSchema>()
@@ -115,6 +118,17 @@ export const usePipelinesStore = defineStore('pipelines', () => {
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+    // §5.3: refresh server-owned palette/list only; the editor owns its draft.
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      recoveryPending = true
+      return recovering ??= Promise.resolve().then(async () => {
+        do {
+          recoveryPending = false
+          await loadList()
+        } while (recoveryPending)
+      }).finally(() => { recovering = null })
+    })
     onEvent('plugin.changed', () => {
       void loadRegistry()
     })

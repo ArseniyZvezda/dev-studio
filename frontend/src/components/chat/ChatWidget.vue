@@ -2,9 +2,8 @@
 /**
  * Chat with a team member — a floating popup or the two-pane Chats page (§10.9).
  *
- * Teleported to `<body>` like every floating thing here, so that no ancestor's overflow or
- * stacking context can position or clip it. Below the dialogs (`z-40` against their `z-50`),
- * so a task opened on the board still covers the chat; above the rail and the page headers.
+ * The floating widget sits beside the routed surface, above the status bar (§6.1).
+ * Docking teleports the same instance into the Chats or Producer page (§10.9).
  *
  * What the member is told with each message is decided here, because only the component
  * sees all three sources: the route (the section, the Explorer's file), the docs store (the
@@ -42,7 +41,8 @@ import {
 import { basename, describeLocation, pageLabelOnScreen, selectedText } from '@/lib/user-context'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import type { UploadedAttachment } from '@/api/client'
-import { draftKey, readDraft, useChatStore, writeDraft } from '@/stores/chat'
+import { useCloseGuard } from '@/desktop/close-barrier'
+import { readDraft, useChatStore, writeDraft } from '@/stores/chat'
 import { useDocsStore } from '@/stores/docs'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -198,7 +198,7 @@ const attached = computed({
   get: () => attachmentDrafts.value[attachmentDraftKey.value] ?? [],
   set: (value: UploadedAttachment[]) => { attachmentDrafts.value[attachmentDraftKey.value] = value },
 })
-const currentDraftKey = computed(() => draftKey(chat.view, chat.activeChatId))
+const currentDraftKey = computed(() => chat.currentDraftKey)
 let pendingSave: ReturnType<typeof setTimeout> | undefined
 
 watch(
@@ -217,6 +217,29 @@ watch(draft, (text) => {
   clearTimeout(pendingSave)
   pendingSave = setTimeout(() => writeDraft(key, text), 250)
 })
+
+// §5.3: a renderer close must drain the existing draft debounce, not send a message
+// or invent a discard prompt. Uploaded composer attachments are only held in memory:
+// retain this renderer until they are sent or explicitly removed (never serialize File).
+function canCloseDraft(): boolean {
+  if (uploadingAttachments.value || chat.busy || chat.error) return false
+  if (Object.values(attachmentDrafts.value).some(entries => entries.length > 0)) return false
+  const key = currentDraftKey.value
+  return key ? readDraft(key) === draft.value : !draft.value
+}
+
+useCloseGuard(async () => {
+  await nextTick()
+  if (uploadingAttachments.value || chat.busy || chat.error) return false
+  if (Object.values(attachmentDrafts.value).some(entries => entries.length > 0)) return false
+  clearTimeout(pendingSave)
+  const key = currentDraftKey.value
+  if (!key) return !draft.value
+  writeDraft(key, draft.value)
+  // Storage helpers deliberately swallow quota/privacy failures while editing; a close
+  // cannot mistake that for durable text. Verify through the same project-bound key.
+  return canCloseDraft()
+}, canCloseDraft)
 
 const draftRows = computed(() => Math.min(6, Math.max(1, draft.value.split('\n').length)))
 
@@ -361,11 +384,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Teleport defer :to="producerPage ? '#producer-chat' : fullscreen ? '#chats-page' : 'body'">
+  <Teleport defer :disabled="!docked" :to="producerPage ? '#producer-chat' : fullscreen ? '#chats-page' : 'body'">
     <div
       ref="root"
       class="vxs-chat"
-      :class="docked ? 'h-full min-h-0' : 'pointer-events-none fixed right-5 bottom-5 z-40 flex flex-col items-end gap-3'"
+      :class="docked ? 'h-full min-h-0' : 'pointer-events-none absolute right-5 bottom-5 z-40 max-h-[calc(100%_-_2.5rem)] flex flex-col items-end gap-3'"
       data-chat-widget
     >
       <!-- `vxs-chat-panel` (`base.css`, the motion section): the popup folds out of the round

@@ -45,7 +45,7 @@ import {
   Unplug,
   X,
 } from 'lucide-vue-next'
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { taskAttachmentUrl, uploadTaskAttachment, api } from '@/api/client'
 import type {
@@ -72,6 +72,8 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import ContextUsageBar from '@/components/ui/ContextUsageBar.vue'
+import { projectStorageKey, readProjectValue, writeProjectValue } from '@/desktop/project-storage'
+import { useCloseGuard } from '@/desktop/close-barrier'
 import { t } from '@/i18n'
 import { dialogEscape } from '@/lib/dialog'
 import {
@@ -94,11 +96,14 @@ import { taskUsage } from '@/lib/task-usage'
 import { writePathsFromText } from '@/lib/task-write-paths'
 import type { TranscriptMessage } from '@/lib/transcript'
 import { useTeamsStore } from '@/stores/teams'
+import { useSessionStore } from '@/stores/session'
 
 const props = defineProps<{ task: TaskDetail; embedded?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 const teams = useTeamsStore()
+// §5.3.2: bootstrap supplies the backend canonical root; never rebind persisted drafts.
+const projectRoot = useSessionStore().project?.root
 // §10.3: read-only effort uses the same installed catalogue as its editor.
 onMounted(() => void teams.loadOptions())
 const comment = ref('')
@@ -115,28 +120,19 @@ const comment = ref('')
  * fill with keys for tasks nobody is reviewing any more.
  */
 const DRAFT_PREFIX = 'voxarium_studio.task.comment.'
-const draftKey = computed(() => `${DRAFT_PREFIX}${props.task.id}`)
+const draftKey = computed(() => projectStorageKey(projectRoot, `${DRAFT_PREFIX}${props.task.id}`))
 
 watch(
   draftKey,
   (key) => {
-    try {
-      comment.value = window.localStorage.getItem(key) ?? ''
-    } catch {
-      comment.value = ''
-    }
+    comment.value = readProjectValue(key) ?? ''
   },
-  { immediate: true },
+  { immediate: true, flush: 'sync' },
 )
 
 watch(comment, (text) => {
-  try {
-    if (text) window.localStorage.setItem(draftKey.value, text)
-    else window.localStorage.removeItem(draftKey.value)
-  } catch {
-    // A disabled or full store costs the draft, never the review itself.
-  }
-})
+  writeProjectValue(draftKey.value, text || null)
+}, { flush: 'sync' })
 
 // ---------------------------------------------------------------- review attachments
 
@@ -148,9 +144,10 @@ watch(comment, (text) => {
  * dialog would have to be found and dropped again.
  */
 const ATTACHMENTS_PREFIX = 'voxarium_studio.task.attachments.'
-const attachmentsKey = computed(() => `${ATTACHMENTS_PREFIX}${props.task.id}`)
+const attachmentsKey = computed(() => projectStorageKey(projectRoot, `${ATTACHMENTS_PREFIX}${props.task.id}`))
 const attachments = ref<TaskAttachment[]>([])
 const uploading = ref(0)
+const briefUploading = ref(false)
 const attachmentError = ref<string | null>(null)
 const filePicker = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
@@ -159,29 +156,28 @@ watch(
   attachmentsKey,
   (key) => {
     attachmentError.value = null
-    try {
-      const raw = window.localStorage.getItem(key)
-      const parsed: unknown = raw ? JSON.parse(raw) : []
-      attachments.value = Array.isArray(parsed) ? parsed.filter(isAttachment) : []
-    } catch {
-      attachments.value = []
-    }
+    attachments.value = readAttachments(key)
   },
-  { immediate: true },
+  { immediate: true, flush: 'sync' },
 )
 
 watch(
   attachments,
   (list) => {
-    try {
-      if (list.length) window.localStorage.setItem(attachmentsKey.value, JSON.stringify(list))
-      else window.localStorage.removeItem(attachmentsKey.value)
-    } catch {
-      // A disabled or full store costs the memory, never the attachment itself.
-    }
+    writeProjectValue(attachmentsKey.value, list.length ? JSON.stringify(list) : null)
   },
-  { deep: true },
+  { deep: true, flush: 'sync' },
 )
+
+function readAttachments(key: string | null): TaskAttachment[] {
+  try {
+    const raw = readProjectValue(key)
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter(isAttachment) : []
+  } catch {
+    return []
+  }
+}
 
 function isAttachment(value: unknown): value is TaskAttachment {
   if (!value || typeof value !== 'object') return false
@@ -202,14 +198,22 @@ function attachmentUrl(name: string): string {
 async function attachFiles(files: Iterable<File>): Promise<void> {
   const teamId = teams.team?.id
   if (!teamId) return
+  const taskId = props.task.id
+  const key = attachmentsKey.value
   attachmentError.value = null
   for (const file of files) {
     uploading.value += 1
     try {
-      const stored = await uploadTaskAttachment(teamId, props.task.id, file)
-      attachments.value = [...attachments.value, stored]
+      const stored = await uploadTaskAttachment(teamId, taskId, file)
+      if (props.task.id === taskId) attachments.value = [...attachments.value, stored]
+      else {
+        // A task switch must not attach a late upload to the newly displayed draft.
+        writeProjectValue(key, JSON.stringify([...readAttachments(key), stored]))
+      }
     } catch (cause) {
-      attachmentError.value = cause instanceof Error ? cause.message : String(cause)
+      if (props.task.id === taskId) {
+        attachmentError.value = cause instanceof Error ? cause.message : String(cause)
+      }
     } finally {
       uploading.value -= 1
     }
@@ -627,6 +631,7 @@ const patch = computed<TaskUpdate>(() => {
 })
 
 const dirty = computed(() => Object.keys(patch.value).length > 0)
+const editSaving = ref(false)
 
 function openEditor() {
   draft.value = draftOf()
@@ -637,9 +642,21 @@ function openEditor() {
 async function saveEdit() {
   // The patch about to go carries the brief as well, so whatever the debounce is holding is
   // superseded rather than sent a second time.
-  cancelBrief()
   if (!dirty.value || !draft.value.title.trim()) return
-  if (await teams.updateTask(props.task.id, patch.value)) editing.value = false
+  const taskId = props.task.id
+  const changes = { ...patch.value }
+  const savedDraft = JSON.stringify(draft.value)
+  cancelBrief()
+  editSaving.value = true
+  try {
+    await briefQueue
+    if (await teams.updateTask(taskId, changes)) {
+      briefFailed.value = false
+      if (props.task.id === taskId && JSON.stringify(draft.value) === savedDraft) editing.value = false
+    }
+  } finally {
+    editSaving.value = false
+  }
 }
 
 /**
@@ -664,7 +681,7 @@ let briefTimer: ReturnType<typeof setTimeout> | null = null
 let briefPending: { taskId: string; brief: string } | null = null
 /** Saves run one at a time: each ends in a refresh, so two in flight can land out of order
  *  and leave the store on the older payload — the same rule `MemberEditor` follows. */
-let briefQueue: Promise<unknown> = Promise.resolve()
+let briefQueue: Promise<boolean> = Promise.resolve(true)
 let briefRunning = 0
 
 const briefSaving = ref(false)
@@ -698,10 +715,15 @@ async function flushBrief(): Promise<void> {
   briefTimer = null
   const job = briefPending
   briefPending = null
-  if (!job) return
+  if (!job) {
+    await briefQueue
+    return
+  }
   briefRunning += 1
   briefSaving.value = true
-  const attempt = briefQueue.then(() => teams.updateTask(job.taskId, { brief: job.brief }))
+  // A failed refresh may reject as well as returning false. Keep the serial queue usable
+  // for the next explicit retry, and report both cases as a failed save.
+  const attempt = briefQueue.then(() => teams.updateTask(job.taskId, { brief: job.brief })).catch(() => false)
   briefQueue = attempt
   try {
     briefFailed.value = (await attempt) === false
@@ -725,6 +747,30 @@ function closeEditor(): void {
   void flushBrief()
   editing.value = false
 }
+
+// §5.3: prepare-close is not Escape/Cancel and must not implicitly discard the fields
+// that require Save. Cancel still uses closeEditor above, preserving its existing UX.
+function canCloseDraft(): boolean {
+  if (briefFailed.value || briefSaving.value || briefPending || briefDirty.value) return false
+  if (teams.busy || teams.error || uploading.value || briefUploading.value || attachmentError.value || messaging.value || editSaving.value) return false
+  if (editing.value && Object.keys(patch.value).some(field => field !== 'brief')) return false
+  // Synchronous revalidation also runs after another form's save/transport awaits.
+  // It must only inspect current drafts and storage, never flush or discard new edits.
+  return (readProjectValue(draftKey.value) ?? '') === comment.value &&
+    JSON.stringify(readAttachments(attachmentsKey.value)) === JSON.stringify(attachments.value)
+}
+
+useCloseGuard(async () => {
+  await nextTick()
+  if (uploading.value || briefUploading.value || attachmentError.value || messaging.value || editSaving.value) return false
+  if (teams.busy && !briefSaving.value) return false
+  if (editing.value && Object.keys(patch.value).some(field => field !== 'brief')) return false
+  await flushBrief()
+  await nextTick()
+  // Comments and review attachment metadata already persist via synchronous watches.
+  // Read back rather than trusting helpers which intentionally swallow storage errors.
+  return canCloseDraft()
+}, canCloseDraft)
 
 // A dialog that is going away still owes whatever the debounce is holding.
 onBeforeUnmount(() => {
@@ -762,15 +808,27 @@ async function reset() {
 async function review(action: 'approve' | 'request-changes') {
   if (action === 'request-changes' && !comment.value.trim()) return
   if (uploading.value) return
+  const taskId = props.task.id
+  const teamId = teams.team?.id
   const names = action === 'request-changes' ? attachments.value.map((entry) => entry.name) : []
-  const sent = await teams.act(action, props.task.id, comment.value.trim(), null, names)
-  if (!sent) return
+  const sent = await teams.act(action, taskId, comment.value.trim(), null, names)
+  if (!sent || props.task.id !== taskId) return
   comment.value = ''
+  const unused = [...attachments.value]
+  attachments.value = []
   if (action === 'request-changes') {
-    attachments.value = []
+    return
   } else {
     // Approved with files still in the box: they were never sent, so take them back.
-    for (const entry of [...attachments.value]) await removeAttachment(entry)
+    if (teamId) {
+      for (const entry of unused) {
+        try {
+          await api.removeTaskAttachment(teamId, taskId, entry.name)
+        } catch {
+          // As with manual removal, an unused file on disk is the lesser cost.
+        }
+      }
+    }
   }
 }
 
@@ -797,9 +855,10 @@ const messaging = ref(false)
 async function sendMessage() {
   const text = comment.value.trim()
   if (!text || messaging.value) return
+  const taskId = props.task.id
   messaging.value = true
   try {
-    if (await teams.messageTask(props.task.id, text) && comment.value.trim() === text) comment.value = ''
+    if (await teams.messageTask(taskId, text) && props.task.id === taskId && comment.value.trim() === text) comment.value = ''
   } finally {
     messaging.value = false
   }
@@ -812,15 +871,16 @@ function onMessageKeydown(event: KeyboardEvent) {
 }
 
 async function complete() {
-  await teams.act(
+  const taskId = props.task.id
+  const sent = await teams.act(
     'complete',
-    props.task.id,
+    taskId,
     comment.value.trim(),
     actorId.value,
     [],
     resultType.value,
   )
-  comment.value = ''
+  if (sent && props.task.id === taskId) comment.value = ''
 }
 </script>
 
@@ -1116,7 +1176,7 @@ async function complete() {
               {{ t('taskDetail.sections.brief') }}
             </p>
             <p class="whitespace-pre-wrap">{{ task.brief || '—' }}</p>
-            <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
+            <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @busy="briefUploading = $event" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
           </section>
 
           <section class="rounded-md bg-inset p-2">

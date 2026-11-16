@@ -1,0 +1,10 @@
+{
+  "sourceExe": "C:\\Users\\AkaSd\\AppData\\Local\\Programs\\Voxarium Studio\\Voxarium Studio.exe",
+  "sha256": "0bd2cb4ca32c5721f18dafd2dacb918995e5213e8730e2e1a4827a37b703820f",
+  "copiedSha256": "0bd2cb4ca32c5721f18dafd2dacb918995e5213e8730e2e1a4827a37b703820f",
+  "argv": [
+    "--run-native",
+    "--interactive"
+  ],
+  "startedAt": "2026-11-13T09:36:42.127Z"
+}

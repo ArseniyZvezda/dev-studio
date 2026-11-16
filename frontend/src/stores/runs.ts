@@ -14,6 +14,7 @@ import { computed, ref } from 'vue'
 import { api } from '@/api/client'
 import type { NodeProgress, NodeStatus, Run, RunDetail } from '@/api/types'
 import { onEvent } from '@/ws/connection'
+import { rendererSession } from '@/session/project-session'
 
 const MAX_LOG_LINES = 2000
 
@@ -70,6 +71,13 @@ export const useRunsStore = defineStore('runs', () => {
   const watchedPipelineId = ref<string | null>(null)
 
   let subscribed = false
+  let recovering: Promise<void> | null = null
+  let recoveryPending = false
+
+  let mutationRevision = 0
+  let runRevision = 0
+  const nodeRevisions = new Map<string, number>()
+  const logReads = new Set<{ runId: string; nodeId: string; live: LogLine[] }>()
 
   const isRunning = computed(
     () =>
@@ -99,8 +107,15 @@ export const useRunsStore = defineStore('runs', () => {
     logs.value = {}
   }
 
-  function applyDetail(detail: RunDetail): void {
-    currentRun.value = detail.run
+  function applyDetail(detail: RunDetail, since = mutationRevision): void {
+    if (runRevision <= since) {
+      currentRun.value = detail.run
+      pausedNodes.value = detail.paused_nodes ?? []
+    }
+    const previousStatus = nodeStatus.value
+    const previousErrors = nodeError.value
+    const previousCache = fromCache.value
+    const previousOutputs = nodeOutputs.value
     const statuses: Record<string, NodeStatus> = {}
     const errors: Record<string, string | null> = {}
     const cached: Record<string, boolean> = {}
@@ -111,6 +126,13 @@ export const useRunsStore = defineStore('runs', () => {
       cached[node.node_id] = node.from_cache
       outputs[node.node_id] = node.outputs
     }
+    for (const [id, revision] of nodeRevisions) {
+      if (revision <= since) continue
+      if (previousStatus[id]) statuses[id] = previousStatus[id]
+      errors[id] = previousErrors[id] ?? null
+      cached[id] = previousCache[id] ?? false
+      outputs[id] = previousOutputs[id] ?? {}
+    }
     nodeStatus.value = statuses
     nodeError.value = errors
     fromCache.value = cached
@@ -120,7 +142,6 @@ export const useRunsStore = defineStore('runs', () => {
     nodeProgress.value = Object.fromEntries(
       Object.entries(nodeProgress.value).filter(([id]) => statuses[id] === 'running'),
     )
-    pausedNodes.value = detail.paused_nodes ?? []
   }
 
   async function openRun(runId: string): Promise<void> {
@@ -129,7 +150,9 @@ export const useRunsStore = defineStore('runs', () => {
       trackedRunId.value = runId
       logs.value = {}
     }
-    applyDetail(await api.run(runId))
+    const revision = mutationRevision
+    const detail = await api.run(runId)
+    if (trackedRunId.value === runId) applyDetail(detail, revision)
   }
 
   async function loadHistory(pipelineId: string): Promise<void> {
@@ -178,19 +201,34 @@ export const useRunsStore = defineStore('runs', () => {
 
   async function fetchNodeLog(nodeId: string): Promise<void> {
     if (!currentRun.value) return
-    const response = await api.nodeLog(currentRun.value.id, nodeId)
-    if (!response.exists) return
-    logs.value = {
-      ...logs.value,
-      [nodeId]: response.text
-        .split('\n')
-        .filter(Boolean)
-        .slice(-MAX_LOG_LINES)
-        .map((line) => ({ stream: 'stdout' as const, line })),
+    const runId = trackedRunId.value
+    if (!runId || currentRun.value.id !== runId) return
+    const reading = { runId, nodeId, live: [] as LogLine[] }
+    logReads.add(reading)
+    try {
+      const response = await api.nodeLog(runId, nodeId)
+      if (!response.exists || trackedRunId.value !== runId) return
+      const snapshot = response.text.split('\n').filter(Boolean).slice(-MAX_LOG_LINES)
+        .map((line) => ({ stream: 'stdout' as const, line }))
+      // The file can already include a prefix of the frames received during this read.
+      // Match that boundary by text (the persisted log has no stream metadata).
+      let overlap = Math.min(snapshot.length, reading.live.length)
+      while (overlap > 0 && !reading.live.slice(0, overlap)
+        .every((entry, index) => entry.line === snapshot[snapshot.length - overlap + index]?.line)) overlap--
+      logs.value = { ...logs.value,
+        [nodeId]: [...snapshot, ...reading.live.slice(overlap)].slice(-MAX_LOG_LINES) }
+    } finally {
+      logReads.delete(reading)
     }
   }
 
   function appendLog(nodeId: string, entry: LogLine): void {
+    for (const reading of logReads) {
+      if (reading.runId === trackedRunId.value && reading.nodeId === nodeId) {
+        reading.live.push(entry)
+        if (reading.live.length > MAX_LOG_LINES) reading.live.shift()
+      }
+    }
     const existing = logs.value[nodeId] ?? []
     const next = existing.length >= MAX_LOG_LINES ? existing.slice(-MAX_LOG_LINES + 1) : existing.slice()
     next.push(entry)
@@ -200,6 +238,26 @@ export const useRunsStore = defineStore('runs', () => {
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+
+    // §5.3: restore only the run this canvas still tracks after each await.
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      recoveryPending = true
+      return recovering ??= Promise.resolve().then(async () => {
+        do {
+          recoveryPending = false
+          const runId = trackedRunId.value
+          if (!runId) return
+          const revision = mutationRevision
+          const detail = await api.run(runId)
+          if (trackedRunId.value !== runId) return
+          applyDetail(detail, revision)
+          await Promise.all(detail.nodes.map((node) => fetchNodeLog(node.node_id)))
+        } while (recoveryPending)
+      }).catch((cause: unknown) => {
+        error.value = cause instanceof Error ? cause.message : String(cause)
+      }).finally(() => { recovering = null })
+    })
 
     onEvent('run.started', (payload) => {
       if (trackedRunId.value === payload.run_id) return
@@ -211,7 +269,11 @@ export const useRunsStore = defineStore('runs', () => {
 
     const finish = (payload: { run_id: string }) => {
       if (trackedRunId.value !== payload.run_id) return
-      void api.run(payload.run_id).then(applyDetail)
+      runRevision = ++mutationRevision
+      const revision = mutationRevision
+      void api.run(payload.run_id).then((detail) => {
+        if (trackedRunId.value === payload.run_id) applyDetail(detail, revision)
+      })
     }
     onEvent('run.completed', finish)
     onEvent('run.failed', finish)
@@ -219,6 +281,7 @@ export const useRunsStore = defineStore('runs', () => {
 
     onEvent('node.status_changed', (payload) => {
       if (trackedRunId.value !== payload.run_id) return
+      nodeRevisions.set(payload.node_id, ++mutationRevision)
       nodeStatus.value = { ...nodeStatus.value, [payload.node_id]: payload.status }
       nodeError.value = { ...nodeError.value, [payload.node_id]: payload.error }
       fromCache.value = { ...fromCache.value, [payload.node_id]: payload.from_cache }
@@ -237,6 +300,7 @@ export const useRunsStore = defineStore('runs', () => {
 
     onEvent('run.paused', (payload) => {
       if (trackedRunId.value !== payload.run_id) return
+      runRevision = ++mutationRevision
       pausedNodes.value = payload.node_ids
       // The run row says `paused` from this moment, and the toolbar reads `currentRun` for
       // which of Run / Cancel / Continue to offer. Patched rather than re-fetched: the REST
@@ -246,12 +310,14 @@ export const useRunsStore = defineStore('runs', () => {
 
     onEvent('run.resumed', (payload) => {
       if (trackedRunId.value !== payload.run_id) return
+      runRevision = ++mutationRevision
       pausedNodes.value = []
       if (currentRun.value) currentRun.value = { ...currentRun.value, status: 'running' }
     })
 
     onEvent('node.progress', (payload) => {
       if (trackedRunId.value !== payload.run_id) return
+      nodeRevisions.set(payload.node_id, ++mutationRevision)
       nodeProgress.value = { ...nodeProgress.value, [payload.node_id]: payload.progress }
     })
 

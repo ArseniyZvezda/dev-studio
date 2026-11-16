@@ -1,0 +1,200 @@
+{
+  "nativeTransfer": "passed",
+  "physicalGestures": "NOT_TESTED",
+  "terminalRegression": [
+    {
+      "label": "stable-strip-and-replay",
+      "passed": true
+    },
+    {
+      "label": "moved-target",
+      "valid": false,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "move-away-and-back",
+      "valid": false,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "resized-target",
+      "valid": false,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "destroyed-target",
+      "valid": false,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "replaced-target",
+      "passed": true,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "queued-show-then-hide",
+      "passed": true
+    },
+    {
+      "label": "queued-show-then-destroy",
+      "passed": true
+    },
+    {
+      "label": "atomic-finish-rechecks-after-prior-validate",
+      "passed": true,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "prepared-then-show-hide-revokes-exemption",
+      "passed": true
+    },
+    {
+      "label": "ordinary-outside-native-backdrop",
+      "passed": true
+    },
+    {
+      "label": "outside-disappeared-no-desktop-fallback",
+      "passed": true,
+      "reason": "window-topology-changed"
+    },
+    {
+      "label": "outside-not-desktop-only-policy",
+      "passed": true,
+      "evidence": "pure-policy"
+    }
+  ],
+  "focus": {
+    "owner": true,
+    "contents": true,
+    "document": true
+  },
+  "baseline": {
+    "label": "baseline",
+    "wcId": 3,
+    "owner": 1,
+    "revision": 0,
+    "snapshot": {
+      "sentinel": "149da4d0-62b7-4312-a192-b1ea089184da",
+      "timeOrigin": 1794562250293,
+      "bootstrap": 1,
+      "nodeSame": true,
+      "fileSame": true,
+      "fileName": "unsaved-fixture.txt",
+      "fileSize": 47,
+      "draft": "Unsaved draft 149da4d0-62b7-4312-a192-b1ea089184da\nRetained line 1\nRetained line 2\nRetained line 3\nRetained line 4\nRetained line 5\nRetained line 6\nRetained line 7\nRetained line 8\nRetained line 9\nRetained line 10\nRetained line 11\nRetained line 12\nRetained line 13\nRetained line 14\nRetained line 15\nRetained line 16\nRetained line 17\nRetained line 18\nRetained line 19\nRetained line 20\nRetained line 21\nRetained line 22\nRetained line 23\nRetained line 24\nRetained line 25\nRetained line 26\nRetained line 27\nRetained line 28\nRetained line 29\nRetained line 30\nRetained line 31\nRetained line 32\nRetained line 33\nRetained line 34\nRetained line 35\nRetained line 36\nRetained line 37\nRetained line 38\nRetained line 39\nRetained line 40",
+      "selectionStart": 8,
+      "selectionEnd": 25,
+      "scrollTop": 48,
+      "activeElement": "draft",
+      "documentFocused": true,
+      "domSelection": {
+        "text": "draft 149da4d0-62",
+        "anchorNodeSame": false,
+        "focusNodeSame": false,
+        "anchorOffset": 7,
+        "focusOffset": 7,
+        "rangeCount": 1
+      },
+      "fileText": "live file 149da4d0-62b7-4312-a192-b1ea089184da\n"
+    },
+    "counters": {
+      "navigation": 1,
+      "destroyed": 0,
+      "bootstrap": 1,
+      "load": 1,
+      "gone": 0
+    },
+    "bounds": {
+      "x": 0,
+      "y": 116,
+      "width": 644,
+      "height": 375
+    },
+    "expectedBounds": {
+      "x": 0,
+      "y": 116,
+      "width": 644,
+      "height": 375
+    },
+    "ownerFocused": true,
+    "contentsFocused": true,
+    "children": [
+      {
+        "id": 1,
+        "ownsView": true
+      },
+      {
+        "id": 2,
+        "ownsView": false
+      }
+    ]
+  },
+  "final": {
+    "label": "final",
+    "wcId": 3,
+    "owner": 1,
+    "revision": 32,
+    "snapshot": {
+      "sentinel": "149da4d0-62b7-4312-a192-b1ea089184da",
+      "timeOrigin": 1794562250293,
+      "bootstrap": 1,
+      "nodeSame": true,
+      "fileSame": true,
+      "fileName": "unsaved-fixture.txt",
+      "fileSize": 47,
+      "draft": "Unsaved draft 149da4d0-62b7-4312-a192-b1ea089184da\nRetained line 1\nRetained line 2\nRetained line 3\nRetained line 4\nRetained line 5\nRetained line 6\nRetained line 7\nRetained line 8\nRetained line 9\nRetained line 10\nRetained line 11\nRetained line 12\nRetained line 13\nRetained line 14\nRetained line 15\nRetained line 16\nRetained line 17\nRetained line 18\nRetained line 19\nRetained line 20\nRetained line 21\nRetained line 22\nRetained line 23\nRetained line 24\nRetained line 25\nRetained line 26\nRetained line 27\nRetained line 28\nRetained line 29\nRetained line 30\nRetained line 31\nRetained line 32\nRetained line 33\nRetained line 34\nRetained line 35\nRetained line 36\nRetained line 37\nRetained line 38\nRetained line 39\nRetained line 40",
+      "selectionStart": 8,
+      "selectionEnd": 25,
+      "scrollTop": 48,
+      "activeElement": "draft",
+      "documentFocused": true,
+      "domSelection": {
+        "text": "draft 149da4d0-62",
+        "anchorNodeSame": false,
+        "focusNodeSame": false,
+        "anchorOffset": 7,
+        "focusOffset": 7,
+        "rangeCount": 1
+      },
+      "fileText": "live file 149da4d0-62b7-4312-a192-b1ea089184da\n"
+    },
+    "counters": {
+      "navigation": 1,
+      "destroyed": 0,
+      "bootstrap": 1,
+      "load": 1,
+      "gone": 0
+    },
+    "bounds": {
+      "x": 0,
+      "y": 116,
+      "width": 644,
+      "height": 375
+    },
+    "expectedBounds": {
+      "x": 0,
+      "y": 116,
+      "width": 644,
+      "height": 375
+    },
+    "ownerFocused": true,
+    "contentsFocused": true,
+    "children": [
+      {
+        "id": 1,
+        "ownsView": true
+      },
+      {
+        "id": 2,
+        "ownsView": false
+      }
+    ]
+  },
+  "counters": {
+    "navigation": 1,
+    "destroyed": 0,
+    "bootstrap": 1,
+    "load": 1,
+    "gone": 0
+  }
+}

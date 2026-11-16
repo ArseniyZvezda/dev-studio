@@ -44,13 +44,19 @@ export interface VoxariumStudioApi {
 export interface PluginRuntime {
   vue: typeof import('vue')
   vueRouter: typeof import('vue-router')
+  /** Captured project router; paths are relative to its /p/{project_id} base. */
+  router: import('vue-router').Router
+  /** API-relative path (/explorer/...), scoped; fetch still needs auth headers. */
+  apiUrl(path: string, query?: Record<string, string | number | boolean | null | undefined>): string
+  /** Plugin-root-relative resource, scoped and authenticated; usable as CSS/image src. */
+  assetUrl(path: string): string
   /**
    * The host's Vue Flow, for a custom node's `Handle`/`Position`. It has to be this one:
    * handles registered from a bundled copy talk to a different store and never connect.
    */
   vueFlow: typeof import('@vue-flow/core')
   api: VoxariumStudioApi
-  /** URL of a project file, without auth — for an `<img src>`, not for `fetch`. */
+  /** URL of a project file, auth included — for an `<img src>`, not for `fetch`. */
   rawFileUrl(path: string): string
   /** Bytes of a project file with the token attached — what a previewer parses. */
   rawFileBytes(path: string): Promise<ArrayBuffer>

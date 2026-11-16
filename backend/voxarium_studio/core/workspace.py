@@ -21,18 +21,21 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 from ..models.base import utcnow
 from ..plugins import envs as plugin_envs
-from ..ws.bus import EventBus
-from ..ws.events import EventType
+from ..ws.bus import Event, EventBus, Subscription
+from ..ws.events import EventType, desktop_target, producer_needs_reply
 from .context import AppContext
 from .demo import ensure_demo_project
 from .paths import ProjectPaths, has_project_data, user_config_dir
+from .project_scope import ProjectDescriptor, canonical_root, resolve_project
 from .task_counts import read_task_counts
 
 log = logging.getLogger(__name__)
@@ -52,25 +55,97 @@ class ProjectNotInitialised(ValueError):
 # ---------------------------------------------------------------- opening a project
 
 
-def initialise_workspace(state: Any) -> None:
-    """Keep project services alive independently of the selected UI project (§5.1)."""
-    state.project_contexts = {state.ctx.paths.root: state.ctx}
-    state.browser_bus = EventBus()
+def initialise_workspace(state: Any, *, browser_bus: EventBus | None = None) -> None:
+    """Register the started bootstrap context and server-wide auth (§5.1, §5.3).
+
+    Call after the initial context's startup succeeds. Repeated calls never rotate
+    runtime ids, discard resident contexts or reset the legacy browser event bus.
+    """
+    if hasattr(state, "project_registry") and state.project_contexts:
+        return
+    if not hasattr(state, "project_lock"):
+        state.project_lock = asyncio.Lock()
+    if not hasattr(state, "auth"):
+        state.auth = state.ctx.auth
+    state.project_epoch = uuid4().hex
+    state.project_registry = {}
+    state.project_roots = {}
+    state.project_contexts = {}
+    state.desktop_events = DesktopEventSource(state)
+    state.browser_bus = browser_bus if browser_bus is not None else EventBus()
     state.ctx.bus.forward_to = state.browser_bus
     state.ctx.work_contexts = lambda: list(state.project_contexts.values())
+    _register_project(state, state.ctx)
+
+
+def _register_project(state: Any, ctx: AppContext) -> ProjectDescriptor:
+    """Publish atomically (no await) after successful startup, under project_lock."""
+    root = canonical_root(ctx.paths.root)
+    descriptor = ProjectDescriptor(uuid4().hex, state.project_epoch, root, ctx)
+    state.project_registry[descriptor.project_id] = descriptor
+    state.project_roots[root] = descriptor
+    # Preserve VS-03's resident-context view for globals and restart guards (§5.2).
+    state.project_contexts[root] = ctx
+    state.desktop_events.attach(descriptor)
+    return descriptor
 
 
 async def shutdown_workspace(state: Any) -> None:
     """Only server shutdown cancels work in every resident project (§5.1)."""
     async with state.project_lock:
+        await state.desktop_events.close()
         contexts = list(state.project_contexts.values())
         results = await asyncio.gather(*(ctx.shutdown() for ctx in contexts), return_exceptions=True)
         state.project_contexts.clear()
+        state.project_registry.clear()
+        state.project_roots.clear()
         # Shared by every project, so stopped here rather than by any one of them (§2.1).
         await plugin_envs.shutdown()
         for result in results:
             if isinstance(result, BaseException):
                 raise result
+
+
+async def _ensure_project_locked(
+    state: Any, root: str | Path, *, create: bool,
+) -> tuple[ProjectDescriptor, bool]:
+    """Common ensure/open internals; caller holds the settings/open project_lock."""
+    if not hasattr(state, "project_registry"):
+        initialise_workspace(state)
+    target = canonical_root(root)
+    if not target.exists():
+        raise ProjectNotFound(f"No such directory: {target}")
+    if not target.is_dir():
+        raise ProjectNotFound(f"Not a directory: {target}")
+
+    existed = has_project_data(target)
+    if not existed and not create:
+        raise ProjectNotInitialised(str(target))
+    resident = state.project_roots.get(target)
+    if resident is not None:
+        return resident, existed
+
+    replacement = AppContext.create(str(target), state.auth)
+    replacement.work_contexts = lambda: list(state.project_contexts.values())
+    try:
+        await replacement.startup()
+    except BaseException:
+        # Never publish a half-started context or mask the original startup failure.
+        try:
+            await replacement.shutdown()
+        except BaseException:
+            log.exception("Could not clean up failed project startup at %s", target)
+        raise
+    return _register_project(state, replacement), existed
+
+
+async def ensure_project(
+    state: Any, root: str | Path, *, create: bool = False,
+) -> ProjectDescriptor:
+    """Start/reuse a project without changing legacy selection or forwarding (§5.3.2)."""
+    async with state.project_lock:
+        descriptor, _ = await _ensure_project_locked(state, root, create=create)
+        return descriptor
 
 
 async def open_project(state: Any, root: str | Path, *, create: bool = True) -> AppContext:
@@ -87,36 +162,14 @@ async def open_project(state: Any, root: str | Path, *, create: bool = True) -> 
     * The browser bus stays alive across switches. Each context keeps a separate local
       bus for its plugins and automations, including while its tasks run in the background.
     """
-    target = ProjectPaths.for_project(root)
-    if not target.root.exists():
-        raise ProjectNotFound(f"No such directory: {target.root}")
-    if not target.root.is_dir():
-        raise ProjectNotFound(f"Not a directory: {target.root}")
-
-    existed = has_project_data(target.root)
-    if not existed and not create:
-        raise ProjectNotInitialised(str(target.root))
-
     lock: asyncio.Lock = state.project_lock
     async with lock:
         current: AppContext = state.ctx
-        if not hasattr(state, "project_contexts"):
-            initialise_workspace(state)
-        if target.root == current.paths.root:
+        descriptor, existed = await _ensure_project_locked(state, root, create=create)
+        replacement = descriptor.ctx
+        if replacement is current:
             record_recent(current.paths.root, project_label(current))
             return current
-
-        replacement = state.project_contexts.get(target.root)
-        if replacement is None:
-            replacement = AppContext.create(str(target.root), current.auth)
-            replacement.work_contexts = lambda: list(state.project_contexts.values())
-            try:
-                await replacement.startup()
-            except BaseException:
-                # Release whatever the half-built context did manage to open.
-                await replacement.shutdown()
-                raise
-            state.project_contexts[target.root] = replacement
         current.bus.forward_to = None
         state.browser_bus.clear_history()
         replacement.bus.forward_to = state.browser_bus
@@ -137,6 +190,303 @@ async def open_project(state: Any, root: str | Path, *, create: bool = True) -> 
 
 def project_label(ctx: AppContext) -> str:
     return ctx.config.project_name or ctx.paths.root.name
+
+
+@dataclass
+class _DesktopWatch:
+    subscription: Subscription
+    task: asyncio.Task[None] | None = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    attention: dict[str, Any] | None = None
+    needs_seed: bool = True
+
+
+class DesktopEventSource:
+    """One app-level adapter over resident buses, not another project registry (§5.3.6).
+
+    The workspace registry remains the only owner of identities/contexts. These watches
+    own only subscriptions and derived Producer attention; no renderer, selection,
+    backend launcher or job lifecycle participates. The small app bus supplies a single
+    replay cursor; local source_seq remains diagnostic and may coincide in A and B.
+    """
+
+    def __init__(self, state: Any) -> None:
+        self.state = state
+        self.bus = EventBus()
+        self._watches: dict[str, _DesktopWatch] = {}
+        self._closed = False
+
+    def attach(self, binding: ProjectDescriptor) -> None:
+        if self._closed or binding.project_id in self._watches:
+            return
+        # Registration is synchronous: not even the first post-open event can fall
+        # between publication of the resident and subscribing. Startup history is
+        # retained too, without changing the context's selected-browser forwarding.
+        watch = _DesktopWatch(binding.ctx.bus.subscribe(since_seq=0))
+        self._watches[binding.project_id] = watch
+        watch.task = asyncio.create_task(self._pump(binding, watch), name="desktop-project-events")
+
+    async def ready(self) -> None:
+        # New residents can be registered while a DB snapshot is read. Include them
+        # before a socket takes its atomic subscription/hello watermark.
+        while pending := [w.ready.wait() for w in self._watches.values() if not w.ready.is_set()]:
+            await asyncio.gather(*pending)
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return [watch.attention for watch in self._watches.values() if watch.attention is not None]
+
+    def unavailable(self) -> list[str]:
+        """Missing/stale snapshots must be reported as a gap, never as known idle."""
+        return [key for key, watch in self._watches.items() if watch.needs_seed]
+
+    def _attention(
+        self, binding: ProjectDescriptor, waiting: dict[str, str], source_seq: int,
+    ) -> dict[str, Any]:
+        return {
+            "project": {
+                "project_id": binding.project_id, "epoch": binding.epoch,
+                "root": str(binding.root),
+                "name": project_label(binding.ctx).strip() or binding.root.name or str(binding.root),
+            },
+            "source_seq": source_seq, "target": "/producer",
+            "waiting": [{"chat_id": key, "target": value} for key, value in sorted(waiting.items())],
+        }
+
+    @staticmethod
+    def _fold(waiting: dict[str, str], event: Event) -> None:
+        data = event.data
+        if event.type == EventType.TEAM_CHAT_UPDATED:
+            chat_id = data.get("id")
+            if isinstance(chat_id, str) and chat_id:
+                if producer_needs_reply(data):
+                    waiting[chat_id] = f"/producer?chat={quote(chat_id, safe='')}"
+                else:
+                    waiting.pop(chat_id, None)
+        elif event.type == EventType.TEAM_CHAT_DELETED:
+            chat_id = data.get("chat_id")
+            if isinstance(chat_id, str):
+                waiting.pop(chat_id, None)
+
+    async def _seed(self, binding: ProjectDescriptor, waiting: dict[str, str]) -> int:
+        bus = binding.ctx.bus
+        # Reconcile the read with events published while SQLite was awaited. On a
+        # retention gap start another read rather than pretending it was complete.
+        for _ in range(3):
+            before = bus.current_seq
+            chats = await binding.ctx.chats.list_chats()
+            if bus.replay_gap(before):
+                continue
+            waiting.clear()
+            for chat in chats:
+                data = binding.ctx.chats.to_json(chat)
+                self._fold(waiting, Event(type=EventType.TEAM_CHAT_UPDATED, data=data))
+            for event in bus.replay(before):
+                self._fold(waiting, event)
+            return bus.current_seq
+        raise RuntimeError("Desktop attention snapshot could not catch up")
+
+    async def _pump(self, binding: ProjectDescriptor, watch: _DesktopWatch) -> None:
+        waiting: dict[str, str] = {}
+        seeded_through = -1
+        loop = asyncio.get_running_loop()
+        retry_at = 0.0
+
+        async def seed() -> None:
+            nonlocal seeded_through
+            seeded_through = await self._seed(binding, waiting)
+            watch.attention = self._attention(binding, waiting, seeded_through)
+            watch.needs_seed = False
+            await self.bus.publish(EventType.DESKTOP_PRODUCER_ATTENTION, watch.attention)
+
+        try:
+            try:
+                await seed()
+            except Exception:
+                log.exception("Could not seed desktop attention at %s", binding.root)
+                retry_at = loop.time() + 1
+                await self.bus.publish(EventType.DROPPED, {"reason": "attention_unavailable", "count": 0})
+            finally:
+                watch.ready.set()
+            while True:
+                if watch.needs_seed and loop.time() >= retry_at:
+                    try:
+                        await seed()
+                    except Exception:
+                        log.debug("Desktop attention retry failed at %s", binding.root, exc_info=True)
+                        retry_at = loop.time() + 1
+                try:
+                    # Retry even on an idle bus, or under continuous unrelated
+                    # events. The timeout belongs to this watch and is cancelled
+                    # with it; no polling task or resident job is started.
+                    if watch.needs_seed:
+                        event = await asyncio.wait_for(
+                            watch.subscription.get(), max(0.001, retry_at - loop.time()),
+                        )
+                    else:
+                        event = await watch.subscription.get()
+                except TimeoutError:
+                    continue
+                count = watch.subscription.take_dropped()
+                if count:
+                    try:
+                        await seed()
+                    except Exception:
+                        watch.needs_seed = True
+                        retry_at = loop.time() + 1
+                        log.exception("Could not recover desktop attention at %s", binding.root)
+                    await self.bus.publish(EventType.DROPPED, {"reason": "source_overflow", "count": count})
+                if event.type == EventType.AUTOMATION_NOTIFICATION:
+                    route = event.data.get("route")
+                    target = desktop_target(route)
+                    if route is not None and target is None:
+                        continue  # A malformed/foreign destination is not made clickable.
+                    source = self._attention(binding, waiting, event.seq)
+                    await self.bus.publish(EventType.DESKTOP_NOTIFICATION, {
+                        "project": source["project"], "source_seq": event.seq, "target": target,
+                        "notification": {key: value for key, value in event.data.items() if key in {
+                            "automation_id", "automation_name", "title", "message", "trigger", "values",
+                        }},
+                    })
+                elif event.seq > seeded_through and event.type in {
+                    EventType.TEAM_CHAT_UPDATED, EventType.TEAM_CHAT_DELETED,
+                }:
+                    before = waiting.copy()
+                    self._fold(waiting, event)
+                    if waiting != before:
+                        watch.attention = self._attention(binding, waiting, event.seq)
+                        await self.bus.publish(EventType.DESKTOP_PRODUCER_ATTENTION, watch.attention)
+        finally:
+            watch.ready.set()
+            watch.subscription.close()
+
+    async def close(self) -> None:
+        """Release event resources only. Closing a receiver never stops resident jobs."""
+        if self._closed:
+            return
+        self._closed = True
+        tasks = []
+        for watch in self._watches.values():
+            watch.subscription.close()
+            if watch.task is not None:
+                watch.task.cancel()
+                tasks.append(watch.task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._watches.clear()
+
+
+# ---------------------------------------------------------------- desktop exit guard
+
+
+def _activity_status(counts: dict[str, int], errors: list[str]) -> str:
+    if any(counts.values()):
+        return "active"
+    return "unknown" if errors else "idle"
+
+
+def _project_activity(descriptor: ProjectDescriptor) -> dict[str, Any]:
+    ctx = descriptor.ctx
+    errors: list[str] = []
+    observed: dict[str, set[str]] = {
+        kind: set() for kind in (
+            "pipeline_runs", "tasks", "chats", "subagents", "other_jobs", "commit_drafts",
+        )
+    }
+    kinds = {
+        "pipeline_run": "pipeline_runs", "agent_task": "tasks",
+        "agent_chat": "chats", "subagent": "subagents",
+    }
+    try:
+        # The engine covers queued/slot-waiting, paused pipelines and finishing
+        # task/chat turns too. Do NOT use their UI is_running predicates: those
+        # intentionally hide _ending while cleanup/child collection is still live.
+        # Retain handles captured before unregister, even if they finish meanwhile.
+        for job in tuple(ctx.jobs.jobs()):
+            observed[kinds.get(job.kind, "other_jobs")].add(job.id)
+    except Exception:
+        errors.append("jobs")
+        log.warning("Could not snapshot project jobs at %s", descriptor.root, exc_info=True)
+    try:
+        # Workers also have a parent-run registry. Union by id rather than counting
+        # them twice; it remains useful while the parent's slot is suspended.
+        for run in tuple(ctx.teams.subagents.runs.values()):
+            for child_id, task in tuple(run.jobs.items()):
+                if not task.done():
+                    observed["subagents"].add(child_id)
+    except Exception:
+        errors.append("subagents")
+        log.warning("Could not snapshot project subagents at %s", descriptor.root, exc_info=True)
+    try:
+        # These model calls deliberately live outside JobEngine (not agent runs).
+        # Usage-limit timers and dormant Producer watches are NOT running work.
+        for task_id, task in tuple(ctx.teams._commit_jobs.items()):
+            if not task.done():
+                observed["commit_drafts"].add(task_id)
+    except Exception:
+        errors.append("commit_drafts")
+        log.warning("Could not snapshot project commit drafts at %s", descriptor.root, exc_info=True)
+    try:
+        name = project_label(ctx)
+    except Exception:
+        name = descriptor.root.name
+        errors.append("name")
+    counts = {kind: len(ids) for kind, ids in observed.items()}
+    return {
+        "project_id": descriptor.project_id, "root": str(descriptor.root), "name": name,
+        "status": _activity_status(counts, errors), "counts": counts, "errors": errors,
+    }
+
+
+def workspace_activity(state: Any) -> dict[str, Any]:
+    """Read-only, conservative exit/updater summary of resident work (§5.3.1 D3).
+
+    Call on the application's event loop: there are no awaits, DB/file reads, context
+    startups or selection changes. Copy the published registry, not recent paths or
+    tabs. Async completions/open/shutdown cannot interleave with this snapshot. It is
+    advisory, NOT a shutdown lock: new work may start after the response. Consumers
+    must use requires_confirmation, including when status is unknown; counts are
+    observed lower bounds when errors is nonempty. An unavailable/empty registry is
+    never proof of idle (e.g. before startup or after shutdown).
+    """
+    errors: list[str] = []
+    projects: list[dict[str, Any]] = []
+    try:
+        # Startup may already have autostart work before publishing its context;
+        # shutdown/settings also hold this lock. Never await it or claim global
+        # idle during a transition. This does not change VS-03's lifecycle.
+        lock = getattr(state, "project_lock", None)
+        if lock is not None and lock.locked():
+            errors.append("project_transition")
+    except Exception:
+        errors.append("project_transition")
+    try:
+        descriptors = tuple(state.project_registry.values())
+        if not descriptors:
+            errors.append("project_registry")
+    except Exception:
+        errors.append("project_registry")
+        log.warning("Could not snapshot resident projects", exc_info=True)
+        descriptors = ()
+    for descriptor in descriptors:
+        try:
+            projects.append(_project_activity(descriptor))
+        except Exception:
+            # One broken context must not hide the rest of the resident registry.
+            projects.append({
+                "project_id": descriptor.project_id, "root": str(descriptor.root),
+                "name": descriptor.root.name, "status": "unknown", "counts": {},
+                "errors": ["context"],
+            })
+            log.warning("Could not snapshot project at %s", descriptor.root, exc_info=True)
+    status = "idle"
+    if errors or any(project["errors"] for project in projects):
+        status = "unknown"
+    if any(project["status"] == "active" for project in projects):
+        status = "active"
+    return {
+        "epoch": getattr(state, "project_epoch", None), "status": status,
+        "requires_confirmation": status != "idle", "projects": projects, "errors": errors,
+    }
 
 
 # ---------------------------------------------------------------- recently opened

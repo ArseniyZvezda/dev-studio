@@ -112,7 +112,7 @@ const style = computed(() => ({ width: `${width.value}px` }))
        pane — it is what actually scrolls. -->
   <aside
     ref="pane"
-    class="vxs-pane flex shrink-0 flex-col overflow-hidden border-r border-pane bg-surface"
+    class="vxs-pane flex shrink-0 flex-col overflow-hidden rounded-lg bg-surface"
     :style="style"
   >
     <!-- Not `vxs-pane`: on a `<header>` that class names a *page* header. This one is the

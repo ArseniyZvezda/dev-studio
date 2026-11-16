@@ -4,12 +4,17 @@ import { onUnmounted, ref } from 'vue'
 import { Paperclip, X } from 'lucide-vue-next'
 import { attachmentUrl, uploadAttachment, type UploadedAttachment } from '@/api/client'
 import { t } from '@/i18n'
+import { useCloseGuard } from '@/desktop/close-barrier'
 
 const props = defineProps<{ modelValue: UploadedAttachment[]; disabled?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [UploadedAttachment[]]; busy: [boolean] }>()
 const input = ref<HTMLInputElement | null>(null)
 const uploading = ref(false)
 const error = ref('')
+// §5.3: busy=false after a rejected upload is not permission to close. Keep the
+// existing retry UX: choosing/pasting/dropping files again clears the previous error.
+const canClose = () => !uploading.value && !error.value
+useCloseGuard(canClose, canClose)
 let disposed = false
 onUnmounted(() => { disposed = true; emit('busy', false) })
 async function add(files: File[]) {

@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { setToken } from '@/api/auth'
 import AppShell from '@/components/layout/AppShell.vue'
 import DesktopTitleBar from '@/components/layout/DesktopTitleBar.vue'
+import { rendererSession } from '@/session/project-session'
+import { connectRendererCloseBarrier } from '@/desktop/close-barrier'
 import RuntimeVersionError from '@/components/layout/RuntimeVersionError.vue'
 import { locale, t } from '@/i18n'
 import { producerNeedsReply } from '@/lib/producer'
 import { useChatStore } from '@/stores/chat'
 import I18nT from '@/i18n/I18nT.vue'
-import { loadPluginPages } from '@/plugin-runtime/loader'
+import { pluginLoader } from '@/plugin-runtime/loader'
 import { useSessionStore } from '@/stores/session'
 
+const ProjectSwitcher = defineAsyncComponent(() => import('@/components/project/ProjectSwitcher.vue'))
 const session = useSessionStore()
+// Subscribe before session.load connects the project socket (§5.3.2).
+const plugins = pluginLoader()
+const stopPlugins = plugins.start()
+// §5.3.5: the project renderer only prepares/ACKs; main owns actual close.
+const closeBarrier = connectRendererCloseBarrier(window.voxariumTabs)
+let disposed = false
 const tokenInput = ref('')
 const chats = useChatStore()
 const producerAttention = computed(() => producerNeedsReply(chats.chats))
@@ -21,15 +30,17 @@ watch([producerAttention, locale], ([waiting]) => {
   void window.voxariumWindow?.setProducerAttention?.(waiting).catch(() => {})
 }, { immediate: true })
 
-onMounted(async () => {
-  await session.load()
-  // Plugin pages extend the nav and the router, so they are fetched as part of
-  // startup rather than lazily when someone happens to open the plugins screen.
-  if (!session.error && !session.versionMismatch) await loadPluginPages()
+onMounted(() => {
   window.addEventListener('focus', checkVersion)
+  void loadSession()
 })
 const checkVersion = () => void session.refreshVersion()
-onBeforeUnmount(() => window.removeEventListener('focus', checkVersion))
+onBeforeUnmount(() => {
+  disposed = true
+  closeBarrier.dispose()
+  stopPlugins()
+  window.removeEventListener('focus', checkVersion)
+})
 watch([() => session.versionMismatch, () => session.backendVersion], ([mismatch], [wasMismatch]) => {
   if (mismatch) void session.recoverVersionMismatch()
   else if (wasMismatch) window.location.reload()
@@ -38,14 +49,32 @@ watch([() => session.versionMismatch, () => session.backendVersion], ([mismatch]
 async function submitToken() {
   if (!tokenInput.value.trim()) return
   setToken(tokenInput.value.trim())
-  await session.load()
-  if (!session.error && !session.versionMismatch) await loadPluginPages()
+  await loadSession()
+}
+
+async function loadSession() {
+  try {
+    await session.load()
+    // Startup, token submission and retry all reconcile the same renderer's pages.
+    if (!disposed && !session.error && !session.needsToken && !session.versionMismatch) await plugins.loadPages()
+  } catch (cause) {
+    // The reactive loader error banner covers startup and background recovery alike.
+    if (!disposed) console.error('Could not load plugin pages', cause)
+  }
+}
+
+function retryPlugins() {
+  void plugins.loadPages().catch(cause => {
+    if (!disposed) console.error('Could not load plugin pages', cause)
+  })
 }
 </script>
 
 <template>
   <div class="flex h-full flex-col">
-    <DesktopTitleBar />
+    <DesktopTitleBar v-if="rendererSession.isLegacy">
+      <template #project><ProjectSwitcher v-if="session.project" /></template>
+    </DesktopTitleBar>
     <div class="min-h-0 flex-1">
   <div v-if="session.loading" class="grid h-full place-items-center text-muted">
     <div class="flex flex-col items-center gap-3">
@@ -87,7 +116,7 @@ async function submitToken() {
       <p class="mb-4 text-muted">{{ session.error }}</p>
       <button
         class="rounded-md border border-line px-3 py-1.5 hover:bg-hover"
-        @click="session.load()"
+        @click="loadSession"
       >
         {{ t('common.retry') }}
       </button>
@@ -95,7 +124,17 @@ async function submitToken() {
   </div>
 
   <RuntimeVersionError v-else-if="session.versionMismatch" />
-  <AppShell v-else />
+  <div v-else class="flex h-full min-h-0 flex-col">
+    <!-- Plugin refresh failures must not remount the shell or discard its drafts. -->
+    <div v-if="plugins.state.error" role="alert" class="flex shrink-0 items-center gap-3 bg-danger-soft px-pane py-2 text-danger">
+      <p class="min-w-0 flex-1">{{ plugins.state.error }}</p>
+      <button type="button" class="shrink-0 rounded-md border border-line px-3 py-1.5 hover:bg-hover disabled:opacity-50"
+        :disabled="plugins.state.loading" @click="retryPlugins">
+        {{ t('common.retry') }}
+      </button>
+    </div>
+    <div class="min-h-0 flex-1"><AppShell /></div>
+  </div>
     </div>
   </div>
 </template>

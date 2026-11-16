@@ -8,8 +8,10 @@ import ProducerControls from '@/components/chat/ProducerControls.vue'
 import ChatHeaderChips from '@/components/chat/ChatHeaderChips.vue'
 import ProducerPlan from '@/components/producer/ProducerPlan.vue'
 import TaskConversation from '@/components/producer/TaskConversation.vue'
+import { useDesktopPageTarget } from '@/desktop/page-state'
 import { t } from '@/i18n'
 import { producerActiveTasks } from '@/lib/producer'
+import { rendererSession } from '@/session/project-session'
 import { useChatStore } from '@/stores/chat'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -67,7 +69,18 @@ async function deleteChat(): Promise<void> {
   }
 }
 
-async function selectChat(id: string): Promise<void> {
+let pendingSelection: { id: string; promise: Promise<void> } | null = null
+function selectChat(id: string): Promise<void> {
+  if (pendingSelection?.id === id) return pendingSelection.promise
+  const selection = { id, promise: Promise.resolve() }
+  pendingSelection = selection
+  selection.promise = openSelectedChat(id).finally(() => {
+    if (pendingSelection === selection) pendingSelection = null
+  })
+  return selection.promise
+}
+
+async function openSelectedChat(id: string): Promise<void> {
   const conversation = conversations.value.find(item => item.id === id)
   if (!conversation) return
   const request = ++selectionRequest
@@ -83,7 +96,7 @@ async function selectChat(id: string): Promise<void> {
     }
   }
   await opening
-  if (!alive || request !== selectionRequest || chat.activeChatId !== id) return
+  if (!alive || request !== selectionRequest || chat.view !== 'chat' || chat.activeChatId !== id || chat.error) return
   if (!await chat.ensureProducerChat(id)) return
   if (!alive || request !== selectionRequest || chat.activeChatId !== id) return
   void router.replace({ path: '/producer', query: { chat: id } })
@@ -96,16 +109,40 @@ function scrollTasks(direction: number): void {
     behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
 }
 
-onMounted(async () => {
+let initialLoad: Promise<void> = Promise.resolve()
+onMounted(() => {
+  initialLoad = initialise()
+  return initialLoad
+})
+
+async function initialise(): Promise<void> {
   teams.subscribe()
   await Promise.all([teams.load(), chat.load()])
   if (!alive) return
-  const requested = typeof route.query.chat === 'string' ? route.query.chat : chat.activeChatId
-  const selected = conversations.value.find(item => item.id === requested) ?? conversations.value[0]
+  const explicit = typeof route.query.chat === 'string'
+  const requested = explicit ? route.query.chat : chat.activeChatId
+  // §5.3.6: an explicit desktop target must never become another conversation.
+  const selected = conversations.value.find(item => item.id === requested)
+    ?? ((!explicit || rendererSession.isLegacy) ? conversations.value[0] : undefined)
   if (selected) await selectChat(selected.id)
+  else if (explicit && !rendererSession.isLegacy) chat.showList()
   else chat.startNew(producer.value?.id)
   if (!alive) return
   loading.value = false
+}
+
+useDesktopPageTarget('/producer', async (page, current) => {
+  await initialLoad
+  current()
+  if (!alive) return false
+  const id = page.query?.chat
+  if (!id) return !loading.value && !teams.error && !chat.error
+  if (!conversations.value.some(item => item.id === id)) return false
+  if (pendingSelection?.id === id) await pendingSelection.promise
+  else if (chat.view !== 'chat' || chat.activeChat?.id !== id || chat.error) await selectChat(id)
+  current()
+  return alive && chat.view === 'chat' && chat.activeChat?.id === id && chat.activeChatId === id
+    && !chat.error && !teams.error
 })
 
 // Keep a newly created Producer conversation addressable and recover if deleted elsewhere.
@@ -116,6 +153,7 @@ watch(() => chat.activeChatId, id => {
 })
 watch(() => chat.view, view => {
   if (!loading.value && !changingChat.value && view === 'list') {
+    if (!rendererSession.isLegacy && typeof route.query.chat === 'string') return
     const next = conversations.value[0]
     if (next) void selectChat(next.id)
     else {
@@ -134,7 +172,7 @@ watch(() => route.query.chat, id => {
     <p v-if="teams.error" class="px-4 py-2 text-danger" role="alert">{{ teams.error }}</p>
     <p v-if="chat.error && chat.view === 'list'" class="px-4 py-2 text-danger" role="alert">{{ chat.error }}</p>
     <div class="producer-workspace min-h-0 flex-1">
-      <section class="producer-pinned flex min-h-0 flex-col border-r border-line bg-surface" :aria-label="t('producerPage.chat')">
+      <section class="producer-pinned flex min-h-0 flex-col overflow-hidden rounded-lg bg-surface" :aria-label="t('producerPage.chat')">
         <ProducerControls v-if="!loading && producer && chat.view === 'chat'" toolbar />
         <header class="shrink-0 border-b border-line">
           <div class="flex h-14 items-center gap-2 px-3">
@@ -183,7 +221,7 @@ watch(() => route.query.chat, id => {
         </div>
         <div v-else ref="strip" class="producer-strip min-h-0 flex-1" tabindex="0" :aria-label="t('producerPage.tasks')">
           <TaskConversation v-for="task in tasks" :key="task.id" :task="task"
-            class="producer-task rounded-lg border border-line bg-surface" />
+            class="producer-task rounded-lg bg-surface" />
         </div>
       </section>
     </div>
@@ -203,7 +241,7 @@ watch(() => route.query.chat, id => {
 }
 @media (max-width: 600px) {
   .producer-workspace { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
-  .producer-pinned { height: 80vh; border-right: 0; border-bottom: 1px solid var(--vxs-border-subtle); }
+  .producer-pinned { height: 80vh; }
   .producer-workspace > section:last-child { height: 65vh; }
 }
 </style>

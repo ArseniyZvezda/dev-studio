@@ -36,7 +36,9 @@ vi.mock('@/api/client', async () => {
 })
 
 /** The event handlers are registered on the app's one socket; nothing here dispatches. */
-const handlers = new Map<string, (payload: unknown) => unknown>()
+const scope = vi.hoisted(() => ({ isLegacy: false, matches: vi.fn(() => true) }))
+vi.mock('@/session/project-session', () => ({ rendererSession: scope }))
+const handlers = new Map<string, (payload: any, envelope?: any) => any>()
 vi.mock('@/ws/connection', () => ({
   onEvent: vi.fn((type: string, handler: (payload: unknown) => unknown) => {
     handlers.set(type, handler)
@@ -72,6 +74,8 @@ const TREE: Record<string, FileEntry[]> = {
 }
 
 beforeEach(() => {
+  scope.isLegacy = false
+  scope.matches.mockReturnValue(true)
   setActivePinia(createPinia())
   handlers.clear()
   for (const stub of Object.values(api)) stub.mockReset()
@@ -475,4 +479,84 @@ describe('where an action aimed at a row lands', () => {
     expect(store.directoryFor('README.md')).toBe('')
     expect(store.directoryFor(null)).toBe('')
   })
+})
+
+
+describe('scoped gap recovery', () => {
+  it('refreshes collapsed caches and removes only selections whose files vanished', async () => {
+    const store = await opened()
+    await store.toggle('Assets')
+    api.tree.mockImplementation(async (path: string) => listing(path, path === 'Assets' ? [] : (TREE[path] ?? [])))
+    api.tree.mockClear()
+    await handlers.get('system.dropped')!({ resync: true }, {})
+    expect(api.tree).toHaveBeenCalledWith('Assets', 1)
+    expect(store.children['Assets']).toEqual([])
+    expect(store.expanded.has('Assets')).toBe(false)
+    expect(store.selectedPath).toBeNull()
+    expect(store.preview).toBeNull()
+  })
+
+  it('coalesces reads without disturbing selection, clipboard or expansion', async () => {
+    const store = await opened()
+    store.selectAllVisible()
+    store.cut(['README.md'])
+    const selection = [...store.selectedPaths]
+    api.tree.mockClear()
+    const gap = handlers.get('system.dropped')!
+    const first = gap({ resync: true }, {})
+    const second = gap({ resync: true }, {})
+    await Promise.all([first, second])
+    expect(api.tree).toHaveBeenCalledTimes(2)
+    expect(store.selectedPaths).toEqual(selection)
+    expect(store.clipboard).toEqual({ mode: 'cut', paths: ['README.md'] })
+    expect([...store.expanded]).toEqual(['', 'Assets'])
+  })
+
+  it('ignores foreign, legacy and non-resync notices', async () => {
+    await opened()
+    api.tree.mockClear()
+    const gap = handlers.get('system.dropped')!
+    await gap({ resync: false }, {})
+    scope.matches.mockReturnValue(false)
+    await gap({ resync: true }, {})
+    scope.matches.mockReturnValue(true)
+    scope.isLegacy = true
+    await gap({ resync: true }, {})
+    expect(api.tree).not.toHaveBeenCalled()
+  })
+
+  it('does not paint a delayed recovery preview over a newly selected file', async () => {
+    const store = await opened()
+    let resolve!: (value: unknown) => void
+    api.preview.mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    const recovery = handlers.get('system.dropped')!({ resync: true }, {})
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+    await store.selectPath('README.md')
+    resolve({ path: 'Assets/hero.png', kind: 'text', text: 'old' })
+    await recovery
+    expect(store.selectedPath).toBe('README.md')
+    expect(store.preview?.path).toBe('README.md')
+  })
+})
+
+it('waits for an existing directory read, then rereads after a mid-recovery gap', async () => {
+  const store = await opened()
+  let resolveOld!: (value: unknown) => void
+  let resolveRecovery!: (value: unknown) => void
+  api.tree.mockImplementationOnce(() => new Promise((done) => { resolveOld = done }))
+  const old = store.loadDirectory('')
+  api.tree.mockImplementation((path: string) => path === ''
+    ? new Promise((done) => { resolveRecovery = done }) : Promise.resolve(listing(path, TREE[path] ?? [])))
+  const gap = handlers.get('system.dropped')!
+  const recovery = gap({ resync: true }, {})
+  await Promise.resolve()
+  expect(resolveRecovery).toBeUndefined()
+  resolveOld(listing('', TREE['']!))
+  await old
+  await vi.waitFor(() => expect(resolveRecovery).toBeTypeOf('function'))
+  api.tree.mockImplementation(async (path: string) => listing(path, path === '' ? [...TREE['']!, file('new.txt')] : TREE[path] ?? []))
+  gap({ resync: true }, {})
+  resolveRecovery(listing('', TREE['']!))
+  await recovery
+  expect(store.children['']?.some((entry) => entry.path === 'new.txt')).toBe(true)
 })

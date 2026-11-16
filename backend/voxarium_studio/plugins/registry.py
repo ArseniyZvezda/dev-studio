@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from ..schemas.nodes import NodeTypeSchema
 from . import envs as plugin_envs
@@ -129,7 +130,9 @@ class SyntaxGrammar:
     aliases: tuple[str, ...] = ()
 
 
-def plugin_asset_url(plugin_id: str, asset: str, root: Path | None = None) -> str:
+def plugin_asset_url(
+    plugin_id: str, asset: str, root: Path | None = None, *, project_id: str | None = None,
+) -> str:
     """URL the SPA dynamically imports a plugin's frontend module from (§9.3).
 
     Given the plugin's root, the file's mtime and size are stamped into a `v=` parameter
@@ -139,7 +142,10 @@ def plugin_asset_url(plugin_id: str, asset: str, root: Path | None = None) -> st
     later can reach back and correct that. A URL it has never seen has nothing to serve
     from cache.
     """
-    url = f"/api/plugins/{plugin_id}/assets/{asset}"
+    # §5.3.2: scope is part of the module's URL identity, not its version stamp.
+    # Keep this per-call: scoped and legacy requests share the same registry.
+    prefix = f"/api/projects/{quote(project_id, safe='')}" if project_id is not None else "/api"
+    url = f"{prefix}/plugins/{quote(plugin_id, safe='')}/assets/{quote(asset, safe='/')}"
     if root is None:
         return url
     try:
@@ -399,11 +405,13 @@ class Registry:
     def plugin(self, plugin_id: str) -> LoadedPlugin | None:
         return self._plugins.get(plugin_id)
 
-    def asset_url(self, plugin_id: str, asset: str) -> str:
+    def asset_url(self, plugin_id: str, asset: str, *, project_id: str | None = None) -> str:
         """`plugin_asset_url` with the plugin's root filled in, so the URL carries its
         version stamp. Everything the SPA imports should come through here."""
         plugin = self.plugin(plugin_id)
-        return plugin_asset_url(plugin_id, asset, plugin.manifest.root if plugin else None)
+        return plugin_asset_url(
+            plugin_id, asset, plugin.manifest.root if plugin else None, project_id=project_id,
+        )
 
     def plugins(self) -> list[LoadedPlugin]:
         return sorted(self._plugins.values(), key=lambda p: p.id)

@@ -34,7 +34,10 @@ class Event:
     channel: str | None = None
     """Optional finer-grained topic, e.g. ``team.mbr_123.message``."""
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(
+        self, *, project_id: str | None = None, epoch: str | None = None
+    ) -> dict[str, Any]:
+        """Serialize with optional transport scope, without changing the event (§5.3.2)."""
         payload: dict[str, Any] = {
             "type": self.type,
             "seq": self.seq,
@@ -43,6 +46,10 @@ class Event:
         }
         if self.channel:
             payload["channel"] = self.channel
+        if project_id is not None:
+            payload["project_id"] = project_id
+        if epoch is not None:
+            payload["epoch"] = epoch
         return payload
 
 
@@ -161,6 +168,20 @@ class EventBus:
 
     def replay(self, since_seq: int) -> Iterable[Event]:
         return [event for event in self._history if event.seq > since_seq]
+
+    def replay_gap(self, since_seq: int) -> str | None:
+        """Explain an incomplete scoped replay (§5.3.2), without subscribing.
+
+        Legacy replay/subscribe remain best-effort. Scoped transports validate
+        their cursor's project and epoch separately before checking this sequence.
+        With no retained history, only the current cursor can resume losslessly.
+        """
+        if since_seq > self._seq:
+            return "cursor_ahead"
+        oldest_seq = self._history[0].seq if self._history else self._seq + 1
+        if since_seq < oldest_seq - 1:
+            return "history_gap"
+        return None
 
     def _unsubscribe(self, subscription: Subscription) -> None:
         self._subscribers.discard(subscription)

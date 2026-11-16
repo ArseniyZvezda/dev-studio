@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Native transfer spike</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #19212b; color: #edf2f7; font: 13px system-ui, sans-serif; }
+    header { padding: 8px; height: 116px; overflow: hidden; }
+    #tab-strip { height: 34px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #65758b; }
+    #tab { padding: 6px 20px; border: 1px solid #8ba4c6; border-radius: 5px 5px 0 0; background: #354d6d; cursor: grab; user-select: none; touch-action: none; }
+    #tab[hidden] { display: none; }
+    #controls { display: flex; gap: 5px; margin: 6px 0; }
+    button { font: inherit; cursor: pointer; }
+    #status { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+  <script src="shell.js" defer></script>
+</head>
+<body>
+  <header>
+    <div id="tab-strip"><div id="tab" hidden role="button" tabindex="0" draggable="false" data-i18n="tab"></div><span id="window-label"></span></div>
+    <nav id="controls">
+      <button data-action="detach" data-i18n="detach"></button>
+      <button data-action="return" data-i18n="return"></button>
+      <button data-action="snapshot" data-i18n="snapshot"></button>
+      <button data-action="fail-target" data-i18n="fail-target"></button>
+      <button data-action="close-target" data-i18n="close-target"></button>
+      <button data-action="quit" data-i18n="quit"></button>
+      <button data-locale="en">EN</button><button data-locale="ru">RU</button>
+    </nav>
+    <p id="status" role="status"></p>
+  </header>
+</body>
+</html>

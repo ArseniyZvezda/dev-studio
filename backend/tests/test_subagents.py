@@ -173,6 +173,10 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert all(req.proactive_subagents for req in parent_requests)
     assert not worker.proactive_subagents
     assert worker.session_key == rows[0].id and worker.session_key != task.id
+    assert parent_request.runtime_key.owner == base.runtime_session_owner(ctx.paths.root, "task", task.id)
+    assert worker.runtime_key.owner == base.runtime_session_owner(ctx.paths.root, "subagent", rows[0].id)
+    assert worker.runtime_key != parent_request.runtime_key
+    assert worker.runtime_key.generation != parent_request.runtime_key.generation
     assert worker.model == "child-model" and worker.member.agent_backend == "test_other_backend"
     # §10.11: another backend's worker gets the solver's effort too, not a model default.
     assert worker.effort == worker.member.effort == rows[0].effort == "medium"

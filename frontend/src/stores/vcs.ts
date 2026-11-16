@@ -34,6 +34,7 @@ import type {
   VcsStatus,
 } from '@/api/types'
 import { t, type MessageKey } from '@/i18n'
+import { rendererSession } from '@/session/project-session'
 import { onEvent } from '@/ws/connection'
 
 /**
@@ -163,6 +164,10 @@ export const useVcsStore = defineStore('vcs', () => {
   let subscribed = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let inFlight: Promise<void> | null = null
+  let statusPending = false
+  let overviewPending: 'load' | 'recover' | null = null
+  let recoveryScheduled = false
+  let settingsRevision = 0
 
   /** How many files changed in the whole working copy — what a commit would record. */
   const changeCount = computed<number>(() => status.value?.changes.length ?? 0)
@@ -226,18 +231,66 @@ export const useVcsStore = defineStore('vcs', () => {
     return dirtyDirs.value.get(path) ?? 0
   }
 
-  async function read(): Promise<void> {
+  /**
+   * One serial reader for load, refresh and gap recovery (§5.3.2). Invalidations during
+   * a subprocess leave one dirty bit, not one continuation/subprocess per event.
+   */
+  async function readPending(): Promise<void> {
     loading.value = true
     try {
-      applyStatus(await api.vcsStatus())
-      error.value = null
-    } catch (cause) {
-      // The last good status stays on screen: a tree half-coloured is better than a tree
-      // that loses its colours because one poll failed.
-      error.value = messageOf(cause)
+      while (statusPending || overviewPending) {
+        const mode = overviewPending
+        const readStatus = statusPending
+        overviewPending = null
+        statusPending = false
+        let failure: string | null = null
+        if (mode) {
+          const revision = settingsRevision
+          try {
+            const assertCurrent = rendererSession.capture()
+            const next = await api.vcs()
+            assertCurrent()
+            if (revision !== settingsRevision) {
+              // A settings response must not be overwritten by an older GET.
+              overviewPending ??= 'recover'
+            } else if (mode === 'recover' && overview.value) {
+              // VcsView seeds its radio/drafts on overview identity changes. Refresh
+              // server data in place: recovery is not a request to reset those forms.
+              Object.assign(overview.value, next)
+            } else {
+              overview.value = next
+            }
+          } catch (cause) {
+            failure = messageOf(cause)
+          }
+        }
+        if (readStatus) {
+          const revision = settingsRevision
+          try {
+            const assertCurrent = rendererSession.capture()
+            const next = await api.vcsStatus()
+            assertCurrent()
+            if (revision === settingsRevision) applyStatus(next)
+            else statusPending = true
+          } catch (cause) {
+            // Keep the last good marks when a subprocess fails.
+            failure = messageOf(cause)
+          }
+        }
+        error.value = failure
+      }
     } finally {
       loading.value = false
     }
+  }
+
+  function requestRead(mode: 'load' | 'recover' | null = null): Promise<void> {
+    statusPending = true
+    // An explicit page load may seed forms; an automatic recovery never downgrades it.
+    if (mode === 'load' || !overviewPending) overviewPending = mode
+    if (inFlight) return inFlight
+    inFlight = readPending().finally(() => { inFlight = null })
+    return inFlight
   }
 
   /**
@@ -249,25 +302,12 @@ export const useVcsStore = defineStore('vcs', () => {
    */
   function refresh(): Promise<void> {
     if (inFlight) return inFlight
-    const run = read().finally(() => {
-      inFlight = null
-    })
-    inFlight = run
-    return run
+    return requestRead()
   }
 
   /** Everything the page needs: which systems exist, and what the working copy holds. */
-  async function load(): Promise<void> {
-    loading.value = true
-    try {
-      overview.value = await api.vcs()
-      error.value = null
-    } catch (cause) {
-      error.value = messageOf(cause)
-    } finally {
-      loading.value = false
-    }
-    await refresh()
+  function load(): Promise<void> {
+    return requestRead('load')
   }
 
   /**
@@ -280,23 +320,27 @@ export const useVcsStore = defineStore('vcs', () => {
    */
   async function updateSettings(patch: VcsSettingsUpdate): Promise<VcsOverview> {
     saving.value = true
+    settingsRevision += 1
     try {
       const next = await api.updateVcs(patch)
       overview.value = next
       return next
     } finally {
+      settingsRevision += 1
       saving.value = false
     }
   }
 
   /** Trailing debounce — one read once the writing stops, however long the burst was. */
-  function schedule(): void {
+  function schedule(recover = false): void {
+    recoveryScheduled ||= recover
     if (timer !== null) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
-      // A read already in flight was started before these events and may answer with a
-      // picture that predates them, so wait for it rather than joining it.
-      void (inFlight ? inFlight.then(refresh) : refresh())
+      const mode = recoveryScheduled ? 'recover' : null
+      recoveryScheduled = false
+      // Mark dirty even if a read is running: that older answer may predate this burst.
+      void requestRead(mode)
     }, REFRESH_DEBOUNCE_MS)
   }
 
@@ -307,7 +351,11 @@ export const useVcsStore = defineStore('vcs', () => {
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
-    onEvent('explorer.file_changed', schedule)
+    onEvent('explorer.file_changed', () => schedule())
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      schedule(true)
+    })
   }
 
   return {

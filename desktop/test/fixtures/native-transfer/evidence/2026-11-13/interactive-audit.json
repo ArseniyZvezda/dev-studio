@@ -1,0 +1,959 @@
+{
+  "source": "desktop/test/fixtures/native-transfer/evidence/2026-11-13/interactive.events.jsonl",
+  "sha256": "dc5b40b8c803680e5e670e77cd234072b723104f02b3bdd3ccadd123c3284ab7",
+  "bytes": 96675,
+  "lines": 199,
+  "range": [
+    "2026-11-13T09:36:43.245Z",
+    "2026-11-13T09:39:10.727Z"
+  ],
+  "counts": {
+    "native-helper": 68,
+    "runtime": 1,
+    "shell-ready": 7,
+    "project:did-start-navigation": 1,
+    "project-bootstrap": 1,
+    "project:did-finish-load": 1,
+    "snapshot": 32,
+    "manual-ready": 1,
+    "command-error": 5,
+    "transfer-commit": 13,
+    "gesture-begin": 15,
+    "terminal-decision": 14,
+    "renderer-release-notice": 14,
+    "terminal-linearized": 9,
+    "shell-closed": 7,
+    "gesture-cancel": 6,
+    "transfer-rollback": 1,
+    "terminal-rejected": 1,
+    "test-end": 1,
+    "project:destroyed": 1
+  },
+  "commitReasons": {
+    "command-detach": 3,
+    "terminal-outside:native-hook": 2,
+    "terminal-strip:native-hook": 7,
+    "command-return": 1
+  },
+  "cancelReasons": {
+    "native-terminal-cancel": 1,
+    "unsupported terminal target": 4,
+    "injected target attach failure": 1
+  },
+  "nativeTerminals": [
+    {
+      "line": 21,
+      "at": "2026-11-13T09:37:20.704Z",
+      "token": "cf601802-927a-46f1-a49a-8cc3d5b6b2d5",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 771,
+        "y": 729
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 26172,
+      "hwnd": "132968"
+    },
+    {
+      "line": 35,
+      "at": "2026-11-13T09:37:22.941Z",
+      "token": "b557aa42-e00d-4315-8433-4ce86815c3bf",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 855,
+        "y": 700
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 26172,
+      "hwnd": "132968"
+    },
+    {
+      "line": 49,
+      "at": "2026-11-13T09:37:30.805Z",
+      "token": "e4d08605-0ef0-425f-88f7-03e0893acc65",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1074,
+        "y": 719
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68106"
+    },
+    {
+      "line": 61,
+      "at": "2026-11-13T09:37:43.745Z",
+      "token": "b80b921e-fc4a-4f28-8fb5-5fbcc0dcb0b0",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1051,
+        "y": 494
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "3213584"
+    },
+    {
+      "line": 73,
+      "at": "2026-11-13T09:37:45.774Z",
+      "token": "91630a87-a4a7-4d94-83c6-74f99a8f87c3",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 752,
+        "y": 142
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68096"
+    },
+    {
+      "line": 95,
+      "at": "2026-11-13T09:38:05.655Z",
+      "token": "bd682d93-bf71-46fc-865e-8fdd11f730cb",
+      "kind": "cancel",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": null
+    },
+    {
+      "line": 100,
+      "at": "2026-11-13T09:38:22.489Z",
+      "token": "df00e475-42cb-4c7e-a1af-d95a4bd0acb4",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1155,
+        "y": 747
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68106"
+    },
+    {
+      "line": 107,
+      "at": "2026-11-13T09:38:24.486Z",
+      "token": "d66248d4-270e-4f04-8731-05f0ce2b9fc5",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1132,
+        "y": 793
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68106"
+    },
+    {
+      "line": 114,
+      "at": "2026-11-13T09:38:26.454Z",
+      "token": "35dcb016-1a36-4f80-b4f9-15216a57dc77",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1101,
+        "y": 712
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68106"
+    },
+    {
+      "line": 135,
+      "at": "2026-11-13T09:38:41.434Z",
+      "token": "5e6ea479-879b-4690-b710-f867ce912ec1",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 913,
+        "y": 380
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68024"
+    },
+    {
+      "line": 147,
+      "at": "2026-11-13T09:38:43.003Z",
+      "token": "129fb153-3148-4629-8694-6416da5ede7d",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1407,
+        "y": 678
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "199186"
+    },
+    {
+      "line": 159,
+      "at": "2026-11-13T09:38:44.478Z",
+      "token": "28411f1b-d6c5-4e01-86bd-c223d50a7c55",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 898,
+        "y": 379
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "68024"
+    },
+    {
+      "line": 171,
+      "at": "2026-11-13T09:38:46.417Z",
+      "token": "8758d737-0695-4571-b369-664f81581ed0",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1422,
+        "y": 656
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "199186"
+    },
+    {
+      "line": 178,
+      "at": "2026-11-13T09:38:48.408Z",
+      "token": "e828da45-56e9-41ee-aa56-6acbea32392a",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1401,
+        "y": 699
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "199186"
+    },
+    {
+      "line": 185,
+      "at": "2026-11-13T09:38:50.561Z",
+      "token": "21edf4b5-069b-4f32-8776-cce26024e1e2",
+      "kind": "up",
+      "provenance": "native-hook",
+      "injected": false,
+      "point": {
+        "x": 1389,
+        "y": 670
+      },
+      "className": "Chrome_WidgetWin_1",
+      "pid": 16680,
+      "hwnd": "199186"
+    }
+  ],
+  "baseline": {
+    "line": 8,
+    "wcId": 3,
+    "owner": 1,
+    "bounds": {
+      "x": 0,
+      "y": 116,
+      "width": 644,
+      "height": 375
+    },
+    "counters": {
+      "navigation": 1,
+      "destroyed": 0,
+      "bootstrap": 1,
+      "load": 1,
+      "gone": 0
+    },
+    "snapshot": {
+      "sentinel": "ee60d2a9-4bae-4775-8d6d-c527734ce7d1",
+      "timeOrigin": 1794562603460.9,
+      "bootstrap": 1,
+      "nodeSame": true,
+      "fileSame": true,
+      "fileName": "unsaved-fixture.txt",
+      "fileSize": 47,
+      "fileText": "a2f0deaf9186bbdfa26c04e9e53e19892baf9a67ab5cd19d307f5c81a380e0d8",
+      "draft": "54a1289d82884a924a29a0d2128c63aaa9b238b0f676974aaefe54e22cf28a30",
+      "selectionStart": 8,
+      "selectionEnd": 25,
+      "scrollTop": 48,
+      "domSelection": {
+        "text": "draft ee60d2a9-4b",
+        "anchorNodeSame": false,
+        "focusNodeSame": false,
+        "anchorOffset": 7,
+        "focusOffset": 7,
+        "rangeCount": 1
+      }
+    }
+  },
+  "baselineDifferences": [],
+  "pairs": [
+    {
+      "before": 15,
+      "after": 16,
+      "label": "commit:command-detach",
+      "from": 1,
+      "to": 3,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 27,
+      "after": 31,
+      "label": "commit:terminal-outside:native-hook",
+      "from": 3,
+      "to": 4,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 41,
+      "after": 45,
+      "label": "commit:terminal-outside:native-hook",
+      "from": 4,
+      "to": 5,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 53,
+      "after": 57,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 5,
+      "to": 4,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 65,
+      "after": 69,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 4,
+      "to": 3,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 77,
+      "after": 81,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 3,
+      "to": 2,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 84,
+      "after": 85,
+      "label": "commit:command-detach",
+      "from": 2,
+      "to": 6,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 87,
+      "after": 88,
+      "label": "commit:command-return",
+      "from": 6,
+      "to": 1,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 118,
+      "after": 120,
+      "label": "rollback:terminal-strip:native-hook",
+      "from": 1,
+      "to": 1,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 130,
+      "after": 131,
+      "label": "commit:command-detach",
+      "from": 1,
+      "to": 7,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 139,
+      "after": 143,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 7,
+      "to": 1,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 151,
+      "after": 155,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 1,
+      "to": 7,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 163,
+      "after": 167,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 7,
+      "to": 1,
+      "stable": true,
+      "focus": true
+    },
+    {
+      "before": 189,
+      "after": 193,
+      "label": "commit:terminal-strip:native-hook",
+      "from": 1,
+      "to": 7,
+      "stable": true,
+      "focus": true
+    }
+  ],
+  "manualSnapshots": [
+    {
+      "line": 10,
+      "at": "2026-11-13T09:36:56.039Z",
+      "owner": 1
+    },
+    {
+      "line": 13,
+      "at": "2026-11-13T09:37:07.611Z",
+      "owner": 1
+    },
+    {
+      "line": 128,
+      "at": "2026-11-13T09:38:37.238Z",
+      "owner": 1
+    }
+  ],
+  "issues": [],
+  "trace": [
+    {
+      "line": 5,
+      "at": "2026-11-13T09:36:43.464Z",
+      "event": "project:did-start-navigation"
+    },
+    {
+      "line": 6,
+      "at": "2026-11-13T09:36:43.520Z",
+      "event": "project-bootstrap"
+    },
+    {
+      "line": 7,
+      "at": "2026-11-13T09:36:43.520Z",
+      "event": "project:did-finish-load"
+    },
+    {
+      "line": 9,
+      "at": "2026-11-13T09:36:43.709Z",
+      "event": "manual-ready"
+    },
+    {
+      "line": 11,
+      "at": "2026-11-13T09:36:57.872Z",
+      "event": "command-error",
+      "reason": "cancel gesture / command from non-owner",
+      "name": "detach"
+    },
+    {
+      "line": 12,
+      "at": "2026-11-13T09:37:01.134Z",
+      "event": "command-error",
+      "reason": "cancel gesture / command from non-owner",
+      "name": "return"
+    },
+    {
+      "line": 17,
+      "at": "2026-11-13T09:37:08.752Z",
+      "event": "transfer-commit",
+      "reason": "command-detach",
+      "source": 1,
+      "target": 3
+    },
+    {
+      "line": 18,
+      "at": "2026-11-13T09:37:10.514Z",
+      "event": "command-error",
+      "reason": "cancel gesture / command from non-owner",
+      "name": "return"
+    },
+    {
+      "line": 19,
+      "at": "2026-11-13T09:37:19.409Z",
+      "event": "gesture-begin",
+      "token": "cf601802-927a-46f1-a49a-8cc3d5b6b2d5",
+      "source": 3
+    },
+    {
+      "line": 22,
+      "at": "2026-11-13T09:37:20.705Z",
+      "event": "terminal-decision",
+      "token": "cf601802-927a-46f1-a49a-8cc3d5b6b2d5",
+      "kind": "detach"
+    },
+    {
+      "line": 30,
+      "at": "2026-11-13T09:37:20.770Z",
+      "event": "terminal-linearized",
+      "token": "cf601802-927a-46f1-a49a-8cc3d5b6b2d5",
+      "kind": "detach"
+    },
+    {
+      "line": 32,
+      "at": "2026-11-13T09:37:20.967Z",
+      "event": "transfer-commit",
+      "reason": "terminal-outside:native-hook",
+      "source": 3,
+      "target": 4
+    },
+    {
+      "line": 33,
+      "at": "2026-11-13T09:37:22.059Z",
+      "event": "gesture-begin",
+      "token": "b557aa42-e00d-4315-8433-4ce86815c3bf",
+      "source": 4
+    },
+    {
+      "line": 36,
+      "at": "2026-11-13T09:37:22.942Z",
+      "event": "terminal-decision",
+      "token": "b557aa42-e00d-4315-8433-4ce86815c3bf",
+      "kind": "detach"
+    },
+    {
+      "line": 44,
+      "at": "2026-11-13T09:37:23.003Z",
+      "event": "terminal-linearized",
+      "token": "b557aa42-e00d-4315-8433-4ce86815c3bf",
+      "kind": "detach"
+    },
+    {
+      "line": 46,
+      "at": "2026-11-13T09:37:23.199Z",
+      "event": "transfer-commit",
+      "reason": "terminal-outside:native-hook",
+      "source": 4,
+      "target": 5
+    },
+    {
+      "line": 47,
+      "at": "2026-11-13T09:37:30.144Z",
+      "event": "gesture-begin",
+      "token": "e4d08605-0ef0-425f-88f7-03e0893acc65",
+      "source": 5
+    },
+    {
+      "line": 50,
+      "at": "2026-11-13T09:37:30.805Z",
+      "event": "terminal-decision",
+      "token": "e4d08605-0ef0-425f-88f7-03e0893acc65",
+      "kind": "strip",
+      "windowId": 4
+    },
+    {
+      "line": 56,
+      "at": "2026-11-13T09:37:30.812Z",
+      "event": "terminal-linearized",
+      "token": "e4d08605-0ef0-425f-88f7-03e0893acc65",
+      "kind": "strip",
+      "windowId": 4
+    },
+    {
+      "line": 58,
+      "at": "2026-11-13T09:37:31.009Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 5,
+      "target": 4
+    },
+    {
+      "line": 59,
+      "at": "2026-11-13T09:37:43.011Z",
+      "event": "gesture-begin",
+      "token": "b80b921e-fc4a-4f28-8fb5-5fbcc0dcb0b0",
+      "source": 4
+    },
+    {
+      "line": 62,
+      "at": "2026-11-13T09:37:43.745Z",
+      "event": "terminal-decision",
+      "token": "b80b921e-fc4a-4f28-8fb5-5fbcc0dcb0b0",
+      "kind": "strip",
+      "windowId": 3
+    },
+    {
+      "line": 68,
+      "at": "2026-11-13T09:37:43.751Z",
+      "event": "terminal-linearized",
+      "token": "b80b921e-fc4a-4f28-8fb5-5fbcc0dcb0b0",
+      "kind": "strip",
+      "windowId": 3
+    },
+    {
+      "line": 70,
+      "at": "2026-11-13T09:37:43.945Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 4,
+      "target": 3
+    },
+    {
+      "line": 71,
+      "at": "2026-11-13T09:37:44.887Z",
+      "event": "gesture-begin",
+      "token": "91630a87-a4a7-4d94-83c6-74f99a8f87c3",
+      "source": 3
+    },
+    {
+      "line": 74,
+      "at": "2026-11-13T09:37:45.774Z",
+      "event": "terminal-decision",
+      "token": "91630a87-a4a7-4d94-83c6-74f99a8f87c3",
+      "kind": "strip",
+      "windowId": 2
+    },
+    {
+      "line": 80,
+      "at": "2026-11-13T09:37:45.780Z",
+      "event": "terminal-linearized",
+      "token": "91630a87-a4a7-4d94-83c6-74f99a8f87c3",
+      "kind": "strip",
+      "windowId": 2
+    },
+    {
+      "line": 82,
+      "at": "2026-11-13T09:37:45.979Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 3,
+      "target": 2
+    },
+    {
+      "line": 86,
+      "at": "2026-11-13T09:37:47.948Z",
+      "event": "transfer-commit",
+      "reason": "command-detach",
+      "source": 2,
+      "target": 6
+    },
+    {
+      "line": 89,
+      "at": "2026-11-13T09:37:49.430Z",
+      "event": "transfer-commit",
+      "reason": "command-return",
+      "source": 6,
+      "target": 1
+    },
+    {
+      "line": 90,
+      "at": "2026-11-13T09:37:51.425Z",
+      "event": "command-error",
+      "reason": "cancel gesture / command from non-owner",
+      "name": "return"
+    },
+    {
+      "line": 91,
+      "at": "2026-11-13T09:37:53.844Z",
+      "event": "command-error",
+      "reason": "cancel gesture / command from non-owner",
+      "name": "return"
+    },
+    {
+      "line": 93,
+      "at": "2026-11-13T09:38:02.716Z",
+      "event": "gesture-begin",
+      "token": "bd682d93-bf71-46fc-865e-8fdd11f730cb",
+      "source": 1
+    },
+    {
+      "line": 96,
+      "at": "2026-11-13T09:38:05.655Z",
+      "event": "gesture-cancel",
+      "token": "bd682d93-bf71-46fc-865e-8fdd11f730cb",
+      "reason": "native-terminal-cancel"
+    },
+    {
+      "line": 98,
+      "at": "2026-11-13T09:38:21.346Z",
+      "event": "gesture-begin",
+      "token": "df00e475-42cb-4c7e-a1af-d95a4bd0acb4",
+      "source": 1
+    },
+    {
+      "line": 101,
+      "at": "2026-11-13T09:38:22.489Z",
+      "event": "terminal-decision",
+      "token": "df00e475-42cb-4c7e-a1af-d95a4bd0acb4",
+      "kind": "cancel"
+    },
+    {
+      "line": 102,
+      "at": "2026-11-13T09:38:22.489Z",
+      "event": "gesture-cancel",
+      "token": "df00e475-42cb-4c7e-a1af-d95a4bd0acb4",
+      "reason": "unsupported terminal target"
+    },
+    {
+      "line": 105,
+      "at": "2026-11-13T09:38:23.877Z",
+      "event": "gesture-begin",
+      "token": "d66248d4-270e-4f04-8731-05f0ce2b9fc5",
+      "source": 1
+    },
+    {
+      "line": 108,
+      "at": "2026-11-13T09:38:24.486Z",
+      "event": "terminal-decision",
+      "token": "d66248d4-270e-4f04-8731-05f0ce2b9fc5",
+      "kind": "cancel"
+    },
+    {
+      "line": 109,
+      "at": "2026-11-13T09:38:24.486Z",
+      "event": "gesture-cancel",
+      "token": "d66248d4-270e-4f04-8731-05f0ce2b9fc5",
+      "reason": "unsupported terminal target"
+    },
+    {
+      "line": 112,
+      "at": "2026-11-13T09:38:25.677Z",
+      "event": "gesture-begin",
+      "token": "35dcb016-1a36-4f80-b4f9-15216a57dc77",
+      "source": 1
+    },
+    {
+      "line": 115,
+      "at": "2026-11-13T09:38:26.454Z",
+      "event": "terminal-decision",
+      "token": "35dcb016-1a36-4f80-b4f9-15216a57dc77",
+      "kind": "strip",
+      "windowId": 4
+    },
+    {
+      "line": 119,
+      "at": "2026-11-13T09:38:26.656Z",
+      "event": "transfer-rollback",
+      "reason": "terminal-strip:native-hook",
+      "source": 1
+    },
+    {
+      "line": 121,
+      "at": "2026-11-13T09:38:26.657Z",
+      "event": "terminal-rejected",
+      "token": "35dcb016-1a36-4f80-b4f9-15216a57dc77",
+      "reason": "injected target attach failure"
+    },
+    {
+      "line": 122,
+      "at": "2026-11-13T09:38:26.657Z",
+      "event": "gesture-cancel",
+      "token": "35dcb016-1a36-4f80-b4f9-15216a57dc77",
+      "reason": "injected target attach failure"
+    },
+    {
+      "line": 132,
+      "at": "2026-11-13T09:38:38.923Z",
+      "event": "transfer-commit",
+      "reason": "command-detach",
+      "source": 1,
+      "target": 7
+    },
+    {
+      "line": 133,
+      "at": "2026-11-13T09:38:40.870Z",
+      "event": "gesture-begin",
+      "token": "5e6ea479-879b-4690-b710-f867ce912ec1",
+      "source": 7
+    },
+    {
+      "line": 136,
+      "at": "2026-11-13T09:38:41.434Z",
+      "event": "terminal-decision",
+      "token": "5e6ea479-879b-4690-b710-f867ce912ec1",
+      "kind": "strip",
+      "windowId": 1
+    },
+    {
+      "line": 142,
+      "at": "2026-11-13T09:38:41.441Z",
+      "event": "terminal-linearized",
+      "token": "5e6ea479-879b-4690-b710-f867ce912ec1",
+      "kind": "strip",
+      "windowId": 1
+    },
+    {
+      "line": 144,
+      "at": "2026-11-13T09:38:41.633Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 7,
+      "target": 1
+    },
+    {
+      "line": 145,
+      "at": "2026-11-13T09:38:42.313Z",
+      "event": "gesture-begin",
+      "token": "129fb153-3148-4629-8694-6416da5ede7d",
+      "source": 1
+    },
+    {
+      "line": 148,
+      "at": "2026-11-13T09:38:43.003Z",
+      "event": "terminal-decision",
+      "token": "129fb153-3148-4629-8694-6416da5ede7d",
+      "kind": "strip",
+      "windowId": 7
+    },
+    {
+      "line": 154,
+      "at": "2026-11-13T09:38:43.009Z",
+      "event": "terminal-linearized",
+      "token": "129fb153-3148-4629-8694-6416da5ede7d",
+      "kind": "strip",
+      "windowId": 7
+    },
+    {
+      "line": 156,
+      "at": "2026-11-13T09:38:43.202Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 1,
+      "target": 7
+    },
+    {
+      "line": 157,
+      "at": "2026-11-13T09:38:43.808Z",
+      "event": "gesture-begin",
+      "token": "28411f1b-d6c5-4e01-86bd-c223d50a7c55",
+      "source": 7
+    },
+    {
+      "line": 160,
+      "at": "2026-11-13T09:38:44.478Z",
+      "event": "terminal-decision",
+      "token": "28411f1b-d6c5-4e01-86bd-c223d50a7c55",
+      "kind": "strip",
+      "windowId": 1
+    },
+    {
+      "line": 166,
+      "at": "2026-11-13T09:38:44.485Z",
+      "event": "terminal-linearized",
+      "token": "28411f1b-d6c5-4e01-86bd-c223d50a7c55",
+      "kind": "strip",
+      "windowId": 1
+    },
+    {
+      "line": 168,
+      "at": "2026-11-13T09:38:44.680Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 7,
+      "target": 1
+    },
+    {
+      "line": 169,
+      "at": "2026-11-13T09:38:45.512Z",
+      "event": "gesture-begin",
+      "token": "8758d737-0695-4571-b369-664f81581ed0",
+      "source": 1
+    },
+    {
+      "line": 172,
+      "at": "2026-11-13T09:38:46.417Z",
+      "event": "terminal-decision",
+      "token": "8758d737-0695-4571-b369-664f81581ed0",
+      "kind": "cancel"
+    },
+    {
+      "line": 173,
+      "at": "2026-11-13T09:38:46.418Z",
+      "event": "gesture-cancel",
+      "token": "8758d737-0695-4571-b369-664f81581ed0",
+      "reason": "unsupported terminal target"
+    },
+    {
+      "line": 176,
+      "at": "2026-11-13T09:38:47.745Z",
+      "event": "gesture-begin",
+      "token": "e828da45-56e9-41ee-aa56-6acbea32392a",
+      "source": 1
+    },
+    {
+      "line": 179,
+      "at": "2026-11-13T09:38:48.408Z",
+      "event": "terminal-decision",
+      "token": "e828da45-56e9-41ee-aa56-6acbea32392a",
+      "kind": "cancel"
+    },
+    {
+      "line": 180,
+      "at": "2026-11-13T09:38:48.408Z",
+      "event": "gesture-cancel",
+      "token": "e828da45-56e9-41ee-aa56-6acbea32392a",
+      "reason": "unsupported terminal target"
+    },
+    {
+      "line": 183,
+      "at": "2026-11-13T09:38:49.777Z",
+      "event": "gesture-begin",
+      "token": "21edf4b5-069b-4f32-8776-cce26024e1e2",
+      "source": 1
+    },
+    {
+      "line": 186,
+      "at": "2026-11-13T09:38:50.561Z",
+      "event": "terminal-decision",
+      "token": "21edf4b5-069b-4f32-8776-cce26024e1e2",
+      "kind": "strip",
+      "windowId": 7
+    },
+    {
+      "line": 192,
+      "at": "2026-11-13T09:38:50.567Z",
+      "event": "terminal-linearized",
+      "token": "21edf4b5-069b-4f32-8776-cce26024e1e2",
+      "kind": "strip",
+      "windowId": 7
+    },
+    {
+      "line": 194,
+      "at": "2026-11-13T09:38:50.761Z",
+      "event": "transfer-commit",
+      "reason": "terminal-strip:native-hook",
+      "source": 1,
+      "target": 7
+    },
+    {
+      "line": 195,
+      "at": "2026-11-13T09:39:10.684Z",
+      "event": "test-end"
+    },
+    {
+      "line": 196,
+      "at": "2026-11-13T09:39:10.687Z",
+      "event": "project:destroyed"
+    }
+  ]
+}

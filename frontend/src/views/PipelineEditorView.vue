@@ -38,6 +38,8 @@ import RunHistory from '@/components/pipeline/RunHistory.vue'
 import NodePalette from '@/components/pipeline/NodePalette.vue'
 import ResizeHandle from '@/components/ui/ResizeHandle.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
+import { useCloseGuard } from '@/desktop/close-barrier'
+import { useDesktopPageTarget } from '@/desktop/page-state'
 import { t } from '@/i18n'
 import {
   edgeId,
@@ -84,6 +86,19 @@ const configWidth = ref(320)
 const dirty = ref(false)
 const saving = ref(false)
 const loadError = ref<string | null>(null)
+let editRevision = 0
+
+function markDirty(): void {
+  editRevision += 1
+  dirty.value = true
+}
+
+// §5.3: use the existing save path, without navigating or tearing down the canvas.
+useCloseGuard(async () => {
+  if (saving.value) return false
+  if (!dirty.value) return true
+  return await save()
+}, () => !dirty.value && !saving.value)
 
 // Vue Flow types custom nodes against its own `NodeProps`, which a plain SFC's inferred
 // props never structurally match; the cast is the documented way to register one.
@@ -125,18 +140,46 @@ const pipelineEdges = computed<PipelineEdge[]>(() =>
   })),
 )
 
-onMounted(async () => {
+let currentLoad: Promise<void> = Promise.resolve()
+let mounted = false
+let loadRevision = 0
+onMounted(() => {
+  mounted = true
   pipelines.subscribe()
   runs.subscribe()
   // Scope adopted runs to this pipeline, so a run started from the CLI for a different
   // one does not repaint this canvas.
-  runs.watchPipeline(props.id)
-  await load()
+  currentLoad = load()
+  return currentLoad
 })
 
-async function load() {
+// The shell normally keys editors by id. Also track a prop update if this view
+// is reused, so an awaited restore cannot confirm the previous definition.
+watch(() => props.id, () => {
+  if (mounted) currentLoad = load()
+}, { flush: 'sync' })
+onBeforeUnmount(() => { mounted = false; loadRevision++ })
+
+useDesktopPageTarget(() => '/pipelines/' + props.id, async (page, current) => {
+  let pending: Promise<void>
+  do {
+    pending = currentLoad
+    await pending
+    current()
+  } while (mounted && pending !== currentLoad)
+  return mounted && page.path === '/pipelines/' + props.id
+    && definition.value?.id === props.id && !loadError.value
+})
+
+async function load(): Promise<void> {
+  const id = props.id
+  const revision = ++loadRevision
+  const current = () => mounted && revision === loadRevision && props.id === id
+  loadError.value = null
+  runs.watchPipeline(id)
   try {
-    const loaded = await pipelines.load(props.id)
+    const loaded = await pipelines.load(id)
+    if (!current()) return
     definition.value = loaded
     // Copied, not aliased: the config panel edits these objects, and `definition` is what
     // a save is diffed against.
@@ -151,13 +194,14 @@ async function load() {
     })
     edges.value = toFlowEdges(loaded)
     dirty.value = false
-    await runs.loadHistory(props.id)
+    await runs.loadHistory(id)
+    if (!current()) return
     // Show the newest run's outcome straight away, so opening a pipeline explains
     // what happened last time rather than showing a blank canvas.
     const latest = runs.history[0]
     if (latest) await runs.openRun(latest.id)
   } catch (cause) {
-    loadError.value = cause instanceof Error ? cause.message : String(cause)
+    if (current()) loadError.value = cause instanceof Error ? cause.message : String(cause)
   }
 }
 
@@ -247,7 +291,7 @@ onConnect((connection) => {
     ),
     edge,
   ]
-  dirty.value = true
+  markDirty()
 })
 
 onNodeClick(({ node }) => {
@@ -296,7 +340,7 @@ function addNode(schema: NodeTypeSchema) {
     },
   ]
   selectedNodeId.value = id
-  dirty.value = true
+  markDirty()
 }
 
 /**
@@ -307,7 +351,7 @@ function addNode(schema: NodeTypeSchema) {
  */
 function onNodesChange(changes: NodeChange[]) {
   if (changes.some((change) => ['position', 'add', 'remove'].includes(change.type))) {
-    dirty.value = true
+    markDirty()
   }
 }
 
@@ -316,7 +360,7 @@ function updateNode(patch: Partial<NodeInstance>) {
   instances.value = instances.value.map((node) =>
     node.id === selectedNodeId.value ? { ...node, ...patch } : node,
   )
-  dirty.value = true
+  markDirty()
 }
 
 /**
@@ -333,7 +377,7 @@ function disconnectPort(portId: string) {
   edges.value = edges.value.filter(
     (edge) => !(edge.target === id && edge.targetHandle === portId),
   )
-  if (edges.value.length !== before) dirty.value = true
+  if (edges.value.length !== before) markDirty()
 }
 
 function removeNode() {
@@ -343,20 +387,25 @@ function removeNode() {
   nodes.value = nodes.value.filter((node) => node.id !== id)
   edges.value = edges.value.filter((edge) => edge.source !== id && edge.target !== id)
   selectedNodeId.value = null
-  dirty.value = true
+  markDirty()
 }
 
-async function save() {
-  if (!definition.value) return
+async function save(): Promise<boolean> {
+  if (!definition.value || saving.value) return false
+  const revision = editRevision
   saving.value = true
   try {
     const viewport = getViewport()
     const next = toDefinition(definition.value, instances.value, nodes.value, edges.value, viewport)
     await pipelines.save(next)
     definition.value = next
-    dirty.value = false
+    // Edits remain possible during the request. Only the revision actually sent is saved.
+    dirty.value = editRevision !== revision
+    loadError.value = null
+    return !dirty.value
   } catch (cause) {
     loadError.value = cause instanceof Error ? cause.message : String(cause)
+    return false
   } finally {
     saving.value = false
   }
@@ -364,7 +413,7 @@ async function save() {
 
 async function run(startNodeId: string | null = null) {
   // Persist first: the backend runs the document on disk, not the canvas in the browser.
-  if (dirty.value) await save()
+  if (saving.value || (dirty.value && !await save())) return
   await runs.start(props.id, { startNodeId })
 }
 
@@ -420,7 +469,7 @@ const withdrawParamWriter = provideNodeParamWriter((nodeId, patch) => {
   instances.value = instances.value.map((node) =>
     node.id === nodeId ? { ...node, params: { ...node.params, ...patch } } : node,
   )
-  dirty.value = true
+  markDirty()
 })
 onBeforeUnmount(withdrawParamWriter)
 </script>

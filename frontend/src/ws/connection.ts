@@ -1,37 +1,28 @@
 /**
- * The app's single WebSocket connection (spec §2.4: one multiplexed channel).
- *
- * The backend broadcasts every event to every client — `channel` on the envelope is a
- * tag, not a subscription — so demultiplexing is our job. This module owns the socket
- * and hands each frame to whichever store registered interest in that event type,
- * which keeps the fan-out in one place instead of scattering `if (msg.type === …)`
- * chains through the stores.
- *
- * Reconnection replays: the bus keeps a ring buffer keyed by `seq`, so reconnecting
- * with `?since_seq=` recovers the events that happened while we were away rather than
- * silently losing a node status change or an agent message.
+ * One multiplexed event channel per renderer (dev spec §2.4, §5.3.2).
+ * Project sockets never follow the legacy browser selection. Their replay position
+ * belongs to (project_id, epoch), not to an unqualified sequence number.
  */
-
 import { ref, shallowRef } from 'vue'
 
 import { withTokenParam } from '@/api/auth'
+import { scopedWsUrl } from '@/api/project-scope'
 import { t } from '@/i18n'
+import { ProjectSession, rendererSession, type ProjectScope } from '@/session/project-session'
 import type { EventEnvelope, EventPayloads, EventType } from './events'
 
 type Handler<T extends EventType> = (data: EventPayloads[T], envelope: EventEnvelope<T>) => void
-
 export type ConnectionState = 'connecting' | 'open' | 'closed'
 
 const RECONNECT_MIN_MS = 500
 const RECONNECT_MAX_MS = 10_000
 const PING_INTERVAL_MS = 25_000
 
-class WsConnection {
+export class WsConnection {
   readonly state = ref<ConnectionState>('closed')
   readonly lastError = shallowRef<string | null>(null)
-  /** Highest `seq` we have processed; the resume point after a drop. */
+  /** Highest delivered sequence in cursorScope, never a different project's cursor. */
   readonly lastSeq = ref<number>(0)
-  /** How many times the backend reported a gap in our stream. Surfaced for diagnostics. */
   readonly gaps = ref<number>(0)
 
   private socket: WebSocket | null = null
@@ -40,61 +31,83 @@ class WsConnection {
   private reconnectTimer: number | null = null
   private pingTimer: number | null = null
   private stopped = false
+  private cursorScope: ProjectScope | null = null
+  private cursorKnown = false
+  private cursorGeneration = -1
+  private socketGeneration = -1
+  private lifetime = 0
+
+  constructor(readonly session: ProjectSession = rendererSession) {}
 
   connect(): void {
-    if (this.socket && this.socket.readyState <= WebSocket.OPEN) return
+    // Validate before creating a socket, including a scoped session not bootstrapped yet.
+    const assertCurrent = this.session.capture()
+    const scope = this.session.scope
+    const scopeChanged = this.cursorGeneration !== this.session.generation
+      || scope?.project_id !== this.cursorScope?.project_id || scope?.epoch !== this.cursorScope?.epoch
+    if (scopeChanged) {
+      this.lastSeq.value = 0
+      this.cursorKnown = false
+      this.cursorScope = scope
+      this.cursorGeneration = this.session.generation
+    }
+    const resume = this.lastSeq.value > 0 || (!this.session.isLegacy && this.cursorKnown)
+    const path = scopedWsUrl(this.session, false, resume ? this.lastSeq.value : undefined)
+    if (this.socket && this.socketGeneration === this.session.generation && this.socket.readyState <= WebSocket.OPEN) return
+    this.disconnect()
     this.stopped = false
     this.state.value = 'connecting'
-
+    const lifetime = ++this.lifetime
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const base = `${scheme}//${window.location.host}/ws`
-    // Resume from where we left off; on a first connect seq 0 means "everything the
-    // buffer still holds", which is exactly what a freshly loaded UI wants.
-    const url = withTokenParam(this.lastSeq.value > 0 ? `${base}?since_seq=${this.lastSeq.value}` : base)
-
-    const socket = new WebSocket(url)
+    const socket = new WebSocket(withTokenParam(`${scheme}//${window.location.host}${path}`))
     this.socket = socket
+    this.socketGeneration = this.session.generation
+    const current = (): boolean => {
+      if (this.stopped || this.socket !== socket || lifetime !== this.lifetime) return false
+      try { assertCurrent(); return true } catch { return false }
+    }
 
     socket.onopen = () => {
+      if (!current()) return
       this.state.value = 'open'
       this.lastError.value = null
       this.reconnectDelay = RECONNECT_MIN_MS
-      this.startPing()
+      this.startPing(socket, current)
     }
-
-    socket.onmessage = (event) => this.dispatch(event.data)
-
-    socket.onerror = () => {
-      this.lastError.value = t('api.ws.error')
-    }
-
+    socket.onmessage = (event) => { if (current()) this.dispatch(event.data) }
+    socket.onerror = () => { if (current()) this.lastError.value = t('api.ws.error') }
     socket.onclose = (event) => {
+      // A delayed close from an abandoned socket cannot close its replacement.
+      if (this.socket !== socket || lifetime !== this.lifetime) return
+      const reconnect = current()
       this.stopPing()
       this.socket = null
       this.state.value = 'closed'
-      // 1008 is the backend's "bad or missing token" — retrying cannot fix that, so
-      // surface it instead of hammering the endpoint.
+      if (!reconnect) return
+      // Policy violations include bad tokens and expired project handles. No fallback.
       if (event.code === 1008) {
-        this.lastError.value = t('api.ws.unauthorised')
+        this.lastError.value = event.reason || t('api.ws.unauthorised')
         return
       }
-      if (!this.stopped) this.scheduleReconnect()
+      this.scheduleReconnect(assertCurrent)
     }
   }
 
   disconnect(): void {
     this.stopped = true
+    this.lifetime += 1
     this.stopPing()
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.socket?.close()
+    const socket = this.socket
     this.socket = null
+    socket?.close()
     this.state.value = 'closed'
   }
 
-  /** Subscribe to one event type. Returns the unsubscribe function. */
+  /** Subscribe to this connection only. Returns the unsubscribe function. */
   on<T extends EventType>(type: T, handler: Handler<T>): () => void {
     let set = this.handlers.get(type)
     if (!set) {
@@ -102,66 +115,75 @@ class WsConnection {
       this.handlers.set(type, set)
     }
     set.add(handler as Handler<EventType>)
-    return () => {
-      set.delete(handler as Handler<EventType>)
-    }
+    return () => { set.delete(handler as Handler<EventType>) }
   }
 
-  private dispatch(raw: string): void {
+  private dispatch(raw: unknown): void {
+    if (typeof raw !== 'string') return
     let envelope: EventEnvelope
-    try {
-      envelope = JSON.parse(raw) as EventEnvelope
-    } catch {
-      return
+    try { envelope = JSON.parse(raw) as EventEnvelope } catch { return }
+    if (!envelope || typeof envelope.type !== 'string' || !envelope.data
+      || typeof envelope.data !== 'object' || !this.session.matches(envelope)) return
+
+    const hello = envelope.type === 'system.hello'
+    if (typeof envelope.seq === 'number' && Number.isSafeInteger(envelope.seq) && envelope.seq >= 0) {
+      this.cursorKnown = true
+      if (hello) {
+        const restarted = envelope.seq < this.lastSeq.value
+        // On resume hello is a watermark BEFORE replay, not an acknowledgement that
+        // those queued events were delivered. Otherwise a second drop loses history.
+        const resumed = (envelope.data as EventPayloads['system.hello']).resumed_from
+        if (this.session.isLegacy || resumed == null || restarted) this.lastSeq.value = envelope.seq
+        if (restarted && !this.session.isLegacy) {
+          this.emit({ type: 'system.dropped', data: { count: 0, resync: true, reason: 'restart' },
+            project_id: envelope.project_id, epoch: envelope.epoch } as EventEnvelope<'system.dropped'>)
+          this.gaps.value += 1
+        }
+      } else {
+        if (!this.session.isLegacy && envelope.seq <= this.lastSeq.value) return
+        if (envelope.seq > this.lastSeq.value) this.lastSeq.value = envelope.seq
+      }
     }
-    if (typeof envelope.seq === 'number') {
-      // A sequence only grows for as long as its bus lives, and `system.hello` carries the
-      // bus's current one. A hello *behind* us is therefore a backend that restarted and is
-      // counting from zero again: keeping the old, higher number would make every later
-      // resume and gap replay ask for events this bus will not reach for a long time.
-      const restarted = envelope.type === 'system.hello' && envelope.seq < this.lastSeq.value
-      if (restarted || envelope.seq > this.lastSeq.value) this.lastSeq.value = envelope.seq
-    }
-    // The backend evicts the oldest events for a subscriber that falls behind rather
-    // than stalling a running pipeline, and then says so. Those events are still in the
-    // bus's ring buffer, so asking for a replay from our last seq closes the gap without
-    // dropping the socket. Done before dispatch so handlers see the recovered frames.
     if (envelope.type === 'system.dropped') {
       this.gaps.value += 1
-      this.requestReplay()
+      // Scoped resync means history is incomplete: notify only this renderer's
+      // subscribers to refetch REST. Replaying an expired cursor in response to the
+      // resulting dropped/resync would cause an endless request/drop loop (§5.3.2).
+      if (this.session.isLegacy || !(envelope.data as EventPayloads['system.dropped']).resync) this.requestReplay()
     }
+    this.emit(envelope)
+  }
+
+  private emit(envelope: EventEnvelope): void {
     const set = this.handlers.get(envelope.type)
     if (!set) return
     for (const handler of set) {
-      try {
-        handler(envelope.data, envelope)
-      } catch (error) {
-        // One misbehaving store must not stop the others from seeing the event.
-        console.error(`Handler for ${envelope.type} threw`, error)
-      }
+      try { handler(envelope.data, envelope) }
+      catch (error) { console.error(`Handler for ${envelope.type} threw`, error) }
     }
   }
 
   private requestReplay(): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify({ action: 'replay', since_seq: this.lastSeq.value }))
+    this.socket.send(JSON.stringify({ action: 'replay', since_seq: this.lastSeq.value, ...this.cursorScope }))
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(assertCurrent: () => void): void {
     if (this.reconnectTimer !== null) return
     const delay = this.reconnectDelay
     this.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS)
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
-      this.connect()
+      try { assertCurrent() } catch { return }
+      if (!this.stopped) this.connect()
     }, delay)
   }
 
-  private startPing(): void {
+  private startPing(socket: WebSocket, current: () => boolean): void {
     this.stopPing()
     this.pingTimer = window.setInterval(() => {
-      if (this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send(JSON.stringify({ action: 'ping' }))
+      if (current() && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: 'ping', ...this.cursorScope }))
       }
     }, PING_INTERVAL_MS)
   }
@@ -176,7 +198,7 @@ class WsConnection {
 
 export const ws = new WsConnection()
 
-/** Sugar for stores: `onEvent('node.log', …)` reads better than `ws.on(…)` at call sites. */
+/** Sugar for the singleton renderer's stores. */
 export function onEvent<T extends EventType>(type: T, handler: Handler<T>): () => void {
   return ws.on(type, handler)
 }

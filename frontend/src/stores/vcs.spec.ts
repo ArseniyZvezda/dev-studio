@@ -1,24 +1,34 @@
 /**
  * The version control store (spec §9.6).
  *
- * Three things are under test, and none is HTTP. The first is the lookup the Explorer
+ * Four things are under test, and none is HTTP. The first is the lookup the Explorer
  * calls once per visible row — exact for a file, ancestor-aware for a directory — because
  * getting that wrong colours the wrong rows and nothing in a screenshot says so. The
  * second is the vocabulary those rows are drawn with (§6.2): now that the tree is the
  * only surface showing a file's state, a kind with no mark is a file with no decoration.
  * The third is how often the backend is asked: a pipeline run writing assets emits file
  * changes in bursts, and each refresh is a status subprocess, so a burst must coalesce
- * into one read and two reads must never run at once.
+ * into one read and two reads must never run at once. The fourth is scoped WS gap
+ * recovery (§5.3.2): server metadata and marks must catch up without reseeding forms.
  *
  * The API is a stub. Pinia needs no DOM, which is what lets this run in the same node
  * environment as the rest of the suite.
  */
 
-import { createPinia, setActivePinia } from 'pinia'
+import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick, reactive, ref, watch } from 'vue'
 
 import { ApiError } from '@/api/client'
 import type { VcsChangeKind, VcsFileChange, VcsInfo, VcsOverview, VcsStatus } from '@/api/types'
+import type { ProjectSession as ProjectSessionType, ProjectScope } from '@/session/project-session'
+import type { EventEnvelope, EventPayloads, EventType } from '@/ws/events'
+
+const session = vi.hoisted(() => ({ current: null as ProjectSessionType | null }))
+vi.mock('@/session/project-session', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/session/project-session')>()
+  return { ...actual, get rendererSession() { return session.current ?? actual.rendererSession } }
+})
 
 const api = {
   vcs: vi.fn(),
@@ -37,16 +47,35 @@ vi.mock('@/api/client', async () => {
 })
 
 /** One socket, owned by the app; the store only subscribes to it. */
-const listeners = new Map<string, (payload: unknown) => void>()
+type EventHandler = (payload: EventPayloads[EventType], envelope: EventEnvelope) => void
+const listeners = new Map<string, EventHandler>()
 vi.mock('@/ws/connection', () => ({
-  onEvent: vi.fn((type: string, handler: (payload: unknown) => void) => {
+  onEvent: vi.fn((type: string, handler: EventHandler) => {
     listeners.set(type, handler)
     return () => listeners.delete(type)
   }),
 }))
 
 const { onEvent } = await import('@/ws/connection')
+const { ProjectSession } = await import('@/session/project-session')
 const { useVcsStore, VCS_MARKS, REFRESH_DEBOUNCE_MS, vcsIndicator } = await import('./vcs')
+
+const PROJECT_SCOPE: ProjectScope = { project_id: 'project_a', epoch: 'epoch_a' }
+
+function emit<T extends EventType>(type: T, data: EventPayloads[T], scope: Partial<ProjectScope> = PROJECT_SCOPE): void {
+  listeners.get(type)?.(data, { type, data, seq: 42, ts: '2026-11-13T00:00:00Z', ...scope })
+}
+
+function gap(scope: Partial<ProjectScope> = PROJECT_SCOPE, resync = true): void {
+  emit('system.dropped', { count: 5, resync, reason: 'history_gap' }, scope)
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<T>((land, fail) => { resolve = land; reject = fail })
+  return { promise, resolve, reject }
+}
 
 function change(path: string, kind: VcsChangeKind = 'modified', staged = false): VcsFileChange {
   return { path, kind, staged, origin: null }
@@ -74,7 +103,12 @@ function overview(): VcsOverview {
       supports_isolation: true,
     },
     configured: 'auto',
-    backends: [],
+    backends: [{
+      id: 'git', name: 'Git', root: 'D:/games/mygame', available: true, reason: '',
+      supports_isolation: true, program: 'git', executable: 'git',
+      settings: { executable: 'git' }, settings_fields: [{ key: 'executable', type: 'path' }],
+      detected: true, active: true,
+    }],
     branch: 'main',
     revision: 'c3fd2b1',
   }
@@ -82,20 +116,26 @@ function overview(): VcsOverview {
 
 /** What the Studio's own watcher emits while a pipeline writes assets. */
 function fileChanged(...paths: string[]): void {
-  listeners.get('explorer.file_changed')?.({
+  emit('explorer.file_changed', {
     changes: paths.map((path) => ({ change: 'modified', path, is_dir: false })),
     truncated: false,
   })
 }
 
+let pinia: Pinia
 beforeEach(() => {
-  setActivePinia(createPinia())
+  pinia = createPinia()
+  setActivePinia(pinia)
+  session.current = new ProjectSession(PROJECT_SCOPE.project_id)
+  session.current.bind(PROJECT_SCOPE)
   listeners.clear()
   vi.mocked(onEvent).mockClear()
   for (const stub of Object.values(api)) stub.mockReset()
 })
 
 afterEach(() => {
+  disposePinia(pinia)
+  vi.clearAllTimers()
   vi.useRealTimers()
 })
 
@@ -297,6 +337,28 @@ describe('what the rail says about version control', () => {
 })
 
 describe('reading the working copy', () => {
+  it('adopts the full overview on an explicit load, including changed settings', async () => {
+    const store = useVcsStore()
+    api.vcs.mockResolvedValueOnce(overview())
+    api.vcsStatus.mockResolvedValue(status([]))
+    await store.load()
+    const firstOverview = store.overview
+    const next: VcsOverview = {
+      ...overview(), configured: 'git', branch: 'another-branch',
+      backends: [{ ...overview().backends[0]!, executable: 'custom-git', settings: { executable: 'custom-git' } }],
+    }
+    api.vcs.mockResolvedValueOnce(next)
+
+    await store.load()
+
+    expect(api.vcs).toHaveBeenCalledTimes(2)
+    expect(api.vcsStatus).toHaveBeenCalledTimes(2)
+    expect(store.overview).not.toBe(firstOverview)
+    expect(store.overview).toEqual(next)
+    expect(store.error).toBeNull()
+    expect(store.loading).toBe(false)
+  })
+
   it('takes "under nothing recognised" as an answer, not an error', async () => {
     // `GET /api/vcs/status` answers 200 with `backend: null` for a project that is not a
     // repository at all — the common case for a new project, and not a failure to report.
@@ -402,7 +464,8 @@ describe('the debounce over file-change events', () => {
     store.subscribe()
     store.subscribe()
 
-    expect(vi.mocked(onEvent)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(onEvent).mock.calls.map(([type]) => type).sort())
+      .toEqual(['explorer.file_changed', 'system.dropped'])
 
     api.vcsStatus.mockResolvedValue(status([]))
     fileChanged('README.md')
@@ -411,18 +474,355 @@ describe('the debounce over file-change events', () => {
   })
 })
 
+describe('recovering the renderer after a scoped WS gap (dev spec §5.3.2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  it('rereads server metadata and restores Explorer marks in the same store without reseeding forms', async () => {
+    const store = useVcsStore()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([change('Content/Old/asset.uasset')]))
+    store.subscribe()
+    await store.load()
+
+    const originalOverview = store.overview
+    // Match VcsView's local state, seed() and non-deep overview watcher. Cards derive
+    // from server backends, but changing them does not itself seed the local drafts.
+    const choice = ref('auto')
+    const settings = reactive<Record<string, string>>({})
+    const seedForm = vi.fn(() => {
+      const data = store.overview
+      if (!data) return
+      choice.value = data.configured
+      for (const backend of data.backends) {
+        for (const field of backend.settings_fields) {
+          const key = `${backend.id}.${field.key}`
+          if (!(key in settings)) settings[key] = backend.settings[field.key] ?? ''
+        }
+      }
+    })
+    const stopForm = watch(() => store.overview, () => seedForm(), { immediate: true })
+    expect(choice.value).toBe('auto')
+    expect(settings['git.executable']).toBe('git')
+    choice.value = 'plastic'
+    settings['git.executable'] = 'D:/draft/git.exe'
+    const recovered: VcsOverview = {
+      ...overview(), configured: 'git', branch: 'recovered', revision: 'new-revision',
+      backends: [{
+        ...overview().backends[0]!, executable: 'D:/server/git.exe',
+        settings: { executable: 'D:/server/git.exe' },
+      }],
+      active: { ...overview().active!, available: false, reason: 'git temporarily missing', supports_isolation: false },
+    }
+    const nextStatus = { ...status([change('Content/New/asset.uasset', 'untracked')]), branch: 'recovered', revision: 'new-revision' }
+    api.vcs.mockResolvedValue(recovered)
+    api.vcsStatus.mockResolvedValue(nextStatus)
+
+    gap()
+    await vi.runAllTimersAsync()
+    await nextTick()
+
+    expect(api.vcs).toHaveBeenCalledTimes(2)
+    expect(api.vcsStatus).toHaveBeenCalledTimes(2)
+    expect(useVcsStore()).toBe(store)
+    expect(store.overview).toBe(originalOverview)
+    expect(store.overview?.configured).toBe('git')
+    expect(store.overview?.backends).toEqual(recovered.backends)
+    expect(store.overview?.backends[0]?.settings.executable).toBe('D:/server/git.exe')
+    expect(store.overview?.active).toEqual(recovered.active)
+    expect(store.overview?.branch).toBe('recovered')
+    expect(store.overview?.revision).toBe('new-revision')
+    expect(seedForm).toHaveBeenCalledTimes(1)
+    expect(choice.value).toBe('plastic')
+    expect(settings['git.executable']).toBe('D:/draft/git.exe')
+    expect(store.status).toEqual(nextStatus)
+    expect(store.kindFor('Content/Old/asset.uasset')).toBeNull()
+    expect(store.dirtyUnder('Content/Old')).toBe(false)
+    expect(store.kindFor('Content/New/asset.uasset')).toBe('untracked')
+    expect(store.changesUnder('Content/New')).toBe(1)
+    expect(store.changesUnder('')).toBe(1)
+    expect(store.error).toBeNull()
+    expect(store.loading).toBe(false)
+    expect(api.updateVcs).not.toHaveBeenCalled()
+    stopForm()
+  })
+
+  it.each([
+    ['another project', { ...PROJECT_SCOPE, project_id: 'project_b' }, true],
+    ['another epoch', { ...PROJECT_SCOPE, epoch: 'epoch_old' }, true],
+    ['legacy envelope', {}, true],
+    ['missing epoch', { project_id: PROJECT_SCOPE.project_id }, true],
+    ['missing project', { epoch: PROJECT_SCOPE.epoch }, true],
+    ['non-resync drop', PROJECT_SCOPE, false],
+  ] as const)('ignores %s', async (_name, scope, resync) => {
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([]))
+
+    gap(scope, resync)
+    await vi.runAllTimersAsync()
+
+    expect(api.vcs).not.toHaveBeenCalled()
+    expect(api.vcsStatus).not.toHaveBeenCalled()
+  })
+
+  it.each(['legacy', 'unbound', 'invalidated'] as const)('does not recover a %s renderer', async (kind) => {
+    if (kind === 'legacy') session.current = new ProjectSession()
+    if (kind === 'unbound') session.current = new ProjectSession(PROJECT_SCOPE.project_id)
+    if (kind === 'invalidated') session.current!.invalidate()
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([]))
+
+    gap(kind === 'legacy' ? {} : PROJECT_SCOPE)
+    gap()
+    await vi.runAllTimersAsync()
+
+    expect(api.vcs).not.toHaveBeenCalled()
+    expect(api.vcsStatus).not.toHaveBeenCalled()
+  })
+
+  it('coalesces repeated gaps and file events into one recovery', async () => {
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([change('Content/new.uasset', 'added')]))
+
+    gap()
+    fileChanged('Content/new.uasset')
+    gap()
+    gap()
+    await vi.runAllTimersAsync()
+
+    expect(api.vcs).toHaveBeenCalledTimes(1)
+    expect(api.vcsStatus).toHaveBeenCalledTimes(1)
+    expect(store.kindFor('Content/new.uasset')).toBe('added')
+  })
+
+  it.each(['refresh', 'load'] as const)('queues one fresh read after status already running in %s', async (action) => {
+    const store = useVcsStore()
+    store.subscribe()
+    const oldStatus = deferred<VcsStatus>()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockReturnValueOnce(oldStatus.promise)
+      .mockResolvedValue(status([change('Content/after-gap.uasset', 'untracked')]))
+    const opening = store[action]()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.vcsStatus).toHaveBeenCalledTimes(1)
+
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    fileChanged('Content/after-gap.uasset')
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    expect(api.vcsStatus, 'no parallel status subprocess while the old one is running').toHaveBeenCalledTimes(1)
+
+    oldStatus.resolve(status([]))
+    await opening
+    await vi.runAllTimersAsync()
+
+    expect(api.vcsStatus).toHaveBeenCalledTimes(2)
+    expect(api.vcs).toHaveBeenCalledTimes(action === 'load' ? 2 : 1)
+    expect(store.kindFor('Content/after-gap.uasset')).toBe('untracked')
+    expect(store.loading).toBe(false)
+  })
+
+  it('does not finish with a pre-gap overview when load was still reading it', async () => {
+    const store = useVcsStore()
+    store.subscribe()
+    const oldOverview = deferred<VcsOverview>()
+    const freshOverview = { ...overview(), branch: 'after-gap', revision: 'after-gap-revision' }
+    api.vcs.mockReturnValueOnce(oldOverview.promise).mockResolvedValue(freshOverview)
+    api.vcsStatus.mockResolvedValue(status([change('Content/new.uasset')]))
+    const opening = store.load()
+
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    oldOverview.resolve(overview())
+    await opening
+    await vi.runAllTimersAsync()
+
+    expect(api.vcs).toHaveBeenCalledTimes(2)
+    expect(store.overview?.branch).toBe('after-gap')
+    expect(store.overview?.revision).toBe('after-gap-revision')
+    expect(store.kindFor('Content/new.uasset')).toBe('modified')
+    expect(store.loading).toBe(false)
+  })
+
+  it('coalesces gaps arriving during recovery into one subsequent recovery', async () => {
+    const store = useVcsStore()
+    store.subscribe()
+    const firstStatus = deferred<VcsStatus>()
+    const firstOverview = deferred<VcsOverview>()
+    api.vcs.mockReturnValueOnce(firstOverview.promise)
+      .mockResolvedValue({ ...overview(), branch: 'latest' })
+    api.vcsStatus.mockReturnValueOnce(firstStatus.promise)
+      .mockResolvedValue(status([change('Content/latest.uasset')]))
+
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    // An implementation can sequence overview before status, but neither may fan out.
+    expect(api.vcs).toHaveBeenCalledTimes(1)
+    expect(api.vcsStatus.mock.calls.length).toBeLessThanOrEqual(1)
+
+    firstOverview.resolve(overview())
+    firstStatus.resolve(status([]))
+    await vi.runAllTimersAsync()
+
+    expect(api.vcs).toHaveBeenCalledTimes(2)
+    expect(api.vcsStatus).toHaveBeenCalledTimes(2)
+    expect(store.overview?.branch).toBe('latest')
+    expect(store.kindFor('Content/latest.uasset')).toBe('modified')
+  })
+
+  it.each(['overview', 'status'] as const)('keeps a settings save that overtakes the recovery %s response', async (pendingRead) => {
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([change('Content/known.uasset')]))
+    await store.load()
+
+    const stale = deferred<VcsOverview | VcsStatus>()
+    const fresh = deferred<VcsOverview | VcsStatus>()
+    const saved: VcsOverview = {
+      ...overview(), configured: 'git', branch: 'saved-branch', revision: 'saved-revision',
+      backends: [{
+        ...overview().backends[0]!, executable: 'D:/saved/git.exe',
+        settings: { executable: 'D:/saved/git.exe' },
+      }],
+    }
+    const latestStatus = {
+      ...status([change('Content/latest.uasset', 'added')]), branch: 'saved-branch', revision: 'saved-revision',
+    }
+    api.vcs.mockResolvedValue(saved)
+    api.vcsStatus.mockResolvedValue(latestStatus)
+    const readApi = pendingRead === 'overview' ? api.vcs : api.vcsStatus
+    readApi.mockReturnValueOnce(stale.promise).mockReturnValueOnce(fresh.promise)
+
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    expect(readApi).toHaveBeenCalledTimes(2)
+
+    api.updateVcs.mockResolvedValue(saved)
+    await store.updateSettings({ settings: { git: { executable: 'D:/saved/git.exe' } } })
+    const savedOverview = store.overview
+    expect(store.overview).toEqual(saved)
+    expect(store.saving).toBe(false)
+
+    stale.resolve(pendingRead === 'overview'
+      ? { ...overview(), configured: 'none', branch: 'stale-branch' }
+      : { ...status([change('Content/stale.uasset', 'deleted')]), branch: 'stale-branch' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Hold the new read so it cannot hide a transient overwrite by the old payload.
+    expect(readApi).toHaveBeenCalledTimes(3)
+    expect(store.overview).toBe(savedOverview)
+    expect(store.overview).toEqual(saved)
+    expect(store.kindFor('Content/stale.uasset')).toBeNull()
+
+    fresh.resolve(pendingRead === 'overview' ? saved : latestStatus)
+    await vi.runAllTimersAsync()
+
+    expect(readApi).toHaveBeenCalledTimes(3)
+    expect(store.overview).toEqual(saved)
+    expect(store.status).toEqual(latestStatus)
+    expect(store.kindFor('Content/known.uasset')).toBeNull()
+    expect(store.kindFor('Content/latest.uasset')).toBe('added')
+    expect(store.error).toBeNull()
+    expect(store.loading).toBe(false)
+  })
+
+  it.each(['overview', 'status'] as const)('does not apply a recovery %s response after session invalidation', async (pendingRead) => {
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([change('Content/known.uasset')]))
+    await store.load()
+    const previousOverview = store.overview
+    const previousStatus = store.status
+    const pending = deferred<VcsOverview | VcsStatus>()
+    const readApi = pendingRead === 'overview' ? api.vcs : api.vcsStatus
+    readApi.mockReturnValueOnce(pending.promise)
+
+    gap()
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS)
+    expect(readApi).toHaveBeenCalledTimes(2)
+    session.current!.invalidate()
+    pending.resolve(pendingRead === 'overview'
+      ? { ...overview(), configured: 'none', backends: [], active: null, branch: 'stale-branch' }
+      : status([change('Content/stale.uasset', 'deleted')]))
+    await vi.runAllTimersAsync()
+
+    expect(store.overview).toBe(previousOverview)
+    expect(store.overview).toEqual(overview())
+    expect(store.status).toBe(previousStatus)
+    expect(store.kindFor('Content/known.uasset')).toBe('modified')
+    expect(store.kindFor('Content/stale.uasset')).toBeNull()
+    expect(store.loading).toBe(false)
+
+    gap()
+    await vi.runAllTimersAsync()
+    expect(readApi).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['overview', 'status'] as const)('can recover after a failed %s read without losing the last good marks', async (failed) => {
+    const store = useVcsStore()
+    store.subscribe()
+    api.vcs.mockResolvedValue(overview())
+    api.vcsStatus.mockResolvedValue(status([change('Content/known.uasset')]))
+    await store.load()
+    const originalOverview = store.overview
+
+    if (failed === 'overview') api.vcs.mockRejectedValueOnce(new ApiError(500, 'overview temporarily unavailable'))
+    else api.vcsStatus.mockRejectedValueOnce(new ApiError(500, 'status temporarily unavailable'))
+    gap()
+    await vi.runAllTimersAsync()
+
+    expect(store.error).toContain(`${failed} temporarily unavailable`)
+    expect(store.loading).toBe(false)
+    expect(store.kindFor('Content/known.uasset')).toBe('modified')
+    expect(store.overview).toBe(originalOverview)
+
+    api.vcs.mockResolvedValue({ ...overview(), branch: 'recovered' })
+    api.vcsStatus.mockResolvedValue(status([change('Content/recovered.uasset', 'added')]))
+    gap()
+    await vi.runAllTimersAsync()
+
+    expect(store.error).toBeNull()
+    expect(store.loading).toBe(false)
+    expect(store.overview?.branch).toBe('recovered')
+    expect(store.kindFor('Content/known.uasset')).toBeNull()
+    expect(store.kindFor('Content/recovered.uasset')).toBe('added')
+  })
+})
+
 describe('writing the settings back', () => {
   it('adopts the merged answer without a second read', async () => {
     // `PUT /api/vcs/settings` merges and answers with the same shape as `GET /api/vcs`.
     const store = useVcsStore()
-    const merged: VcsOverview = { ...overview(), configured: 'git' }
+    const merged: VcsOverview = {
+      ...overview(), configured: 'git',
+      backends: [{ ...overview().backends[0]!, executable: 'custom-git', settings: { executable: 'custom-git' } }],
+    }
     api.updateVcs.mockResolvedValue(merged)
 
-    await store.updateSettings({ backend: 'git' })
+    const result = await store.updateSettings({ backend: 'git' })
 
     expect(api.updateVcs).toHaveBeenCalledWith({ backend: 'git' })
+    expect(result).toEqual(merged)
+    expect(store.overview).toEqual(merged)
     expect(store.overview?.configured).toBe('git')
     expect(api.vcs).not.toHaveBeenCalled()
+    expect(api.vcsStatus).not.toHaveBeenCalled()
     expect(store.saving).toBe(false)
   })
 

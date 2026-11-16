@@ -15,6 +15,11 @@ const feed = updateFeedOptions(process.env);
 process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL ??= '5';
 module.exports = {
   ...metadata.build,
+  // App-level tab controller and the VS-21-derived native terminal helper (§5.3).
+  files: [...metadata.build.files, 'tabs.cjs', 'tabs-ipc.cjs', 'tab-drag.cjs', 'native-terminal.cjs',
+    'session-state.cjs', 'project-events.cjs', 'project-notifications.cjs'],
+  extraResources: [...metadata.build.extraResources,
+    { from: 'native-terminal.ps1', to: 'native-terminal.ps1' }],
   publish: feed ? [feed] : null,
   extraMetadata: { version: release.installerVersion, studioVersion: release.version },
   // Git tags can contain slashes; filenames and latest.yml must use a safe single component.

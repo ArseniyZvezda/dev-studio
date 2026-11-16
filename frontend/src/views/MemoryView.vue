@@ -21,6 +21,7 @@ import CodeCopyButton from '@/components/ui/CodeCopyButton.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
+import { useCloseGuard } from '@/desktop/close-barrier'
 import { formatNumber, t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import {
@@ -44,6 +45,9 @@ const session = useSessionStore()
 
 const error = ref<string | null>(null)
 const busy = ref<string | null>(null)
+// Reads can overlap writes and reset `busy`; a close must still see every unfinished write (§5.3).
+let pendingWrites = 0
+let writeRevision = 0
 
 const overview = computed(() => store.overview)
 const entries = computed(() => overview.value?.entries ?? [])
@@ -69,8 +73,11 @@ function author(entry: MemoryEntry): string {
 const capDraft = ref('')
 watch(
   () => overview.value?.index_chars,
-  (cap) => {
-    if (cap !== undefined) capDraft.value = String(cap)
+  (cap, previous) => {
+    // §5.3.2: server refreshes must not replace an uncommitted local limit.
+    if (cap !== undefined && (previous === undefined || String(capDraft.value) === String(previous))) {
+      capDraft.value = String(cap)
+    }
   },
   { immediate: true },
 )
@@ -86,15 +93,22 @@ const omitted = computed(() =>
 )
 
 async function saveSharing(patch: { memory_enabled?: boolean; memory_index_chars?: number }): Promise<void> {
+  writeRevision += 1
+  pendingWrites += 1
   busy.value = 'settings'
   try {
     const config = await api.updateSettings({ teams: patch })
     if (session.project) session.project = { ...session.project, config }
     await store.refresh()
+    if (patch.memory_index_chars !== undefined &&
+        Number(capDraft.value) === patch.memory_index_chars && overview.value) {
+      capDraft.value = String(overview.value.index_chars)
+    }
     error.value = null
   } catch (cause) {
     fail(cause)
   } finally {
+    pendingWrites -= 1
     busy.value = null
   }
 }
@@ -154,20 +168,26 @@ async function create(): Promise<void> {
     error.value = t('memory.create.nameInvalid')
     return
   }
+  const sent = { ...draft }
+  writeRevision += 1
+  pendingWrites += 1
   busy.value = '+'
   try {
     await api.saveMemoryEntry(name, {
-      description: draft.description,
-      content: draft.content,
+      description: sent.description,
+      content: sent.content,
       create: true,
     })
-    creating.value = false
+    if (draft.name === sent.name && draft.description === sent.description && draft.content === sent.content) {
+      creating.value = false
+    }
     error.value = null
     await store.refresh()
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 409) error.value = t('memory.create.taken', { name })
     else fail(cause)
   } finally {
+    pendingWrites -= 1
     busy.value = null
   }
 }
@@ -182,6 +202,28 @@ const editor = ref<{
   content: string
 } | null>(null)
 const conflict = ref(false)
+let detailRequest = 0
+let openRequest = 0
+
+// §5.3.2: resync owns the inventory, not the selected editor or its drafts.
+const sourceMissing = computed(
+  () => !!editor.value && !!overview.value && !entries.value.some((entry) => entry.name === editor.value?.name),
+)
+const listedEntries = computed(() => {
+  const open = editor.value
+  if (!open) return filtered.value
+  // §5.3.2: changing search metadata must not unmount the live editor. Keep inventory
+  // order too: moving its DOM row past other matches can itself lose focus/selection.
+  const matches = new Set(filtered.value.map((entry) => entry.name))
+  const listed = entries.value.filter((entry) => entry.name === open.name || matches.has(entry.name))
+  return sourceMissing.value ? [...listed, open.detail] : listed
+})
+watch(sourceMissing, (missing) => {
+  if (missing) {
+    detailRequest += 1
+    conflict.value = false
+  }
+}, { flush: 'sync' })
 
 const editorDirty = computed(
   () =>
@@ -195,6 +237,36 @@ function discardEdits(): boolean {
   return window.confirm(t('memory.editor.discardConfirm', { name: editor.value?.name ?? '' }))
 }
 
+// Approval covers exactly these primitive drafts, not edits made while another guard awaits (§5.3).
+function closeFingerprint() {
+  return [pendingWrites, writeRevision, busy.value, error.value, conflict.value,
+    importing.value, capDraft.value, overview.value?.index_chars, creating.value,
+    draft.name, draft.description, draft.content, editor.value?.name, editor.value?.description,
+    editor.value?.content, editor.value?.detail.description, editor.value?.detail.content,
+    editor.value?.detail.updated_at, sourceMissing.value,
+    entries.value.find((entry) => entry.name === editor.value?.name)?.updated_at,
+    openRequest, detailRequest] as const
+}
+let acceptedClose: ReturnType<typeof closeFingerprint> | null = null
+
+useCloseGuard(() => {
+  acceptedClose = null
+  if (pendingWrites || busy.value !== null || importing.value) return false
+  // The limit has its existing change/Enter save UX; do not silently throw away invalid or
+  // uncommitted input, or start a settings write merely because a tab is closing.
+  if (overview.value && Number(capDraft.value) !== overview.value.index_chars) return false
+  const createDirty = creating.value && !!(draft.name || draft.description || draft.content)
+  if ((error.value || conflict.value) && (editorDirty.value || createDirty)) return false
+  if (!discardEdits()) return false
+  if (createDirty && !window.confirm(t('memory.editor.discardConfirm', { name: draft.name.trim() || folder.value }))) return false
+  acceptedClose = closeFingerprint()
+  return true
+}, () => {
+  const current = closeFingerprint()
+  return acceptedClose !== null && !pendingWrites && busy.value === null &&
+    acceptedClose.every((value, index) => Object.is(value, current[index]))
+})
+
 function adoptDetail(detail: MemoryEntryDetail): void {
   editor.value = { name: detail.name, detail, description: detail.description, content: detail.content }
   conflict.value = false
@@ -203,9 +275,13 @@ function adoptDetail(detail: MemoryEntryDetail): void {
 async function openEditor(name: string): Promise<void> {
   if (editor.value?.name === name) return
   if (!discardEdits()) return
+  const request = ++openRequest
+  detailRequest += 1
   busy.value = name
   try {
-    adoptDetail(await api.memoryEntry(name))
+    const detail = await api.memoryEntry(name)
+    if (request !== openRequest) return
+    adoptDetail(detail)
     error.value = null
   } catch (cause) {
     fail(cause)
@@ -224,6 +300,8 @@ function revertEdits(): void {
 
 function closeEditor(): void {
   if (!discardEdits()) return
+  detailRequest += 1
+  openRequest += 1
   editor.value = null
   conflict.value = false
 }
@@ -233,6 +311,8 @@ async function save(force = false): Promise<void> {
   const open = editor.value
   if (!open) return
   const sent = { description: open.description, content: open.content }
+  writeRevision += 1
+  pendingWrites += 1
   busy.value = open.name
   try {
     const detail = await api.saveMemoryEntry(open.name, {
@@ -241,7 +321,7 @@ async function save(force = false): Promise<void> {
     })
     // Typing may have continued while the request travelled: keep it, unsaved, against the new version.
     const current = editor.value
-    if (current?.name === open.name) {
+    if (current === open) {
       editor.value = {
         name: open.name,
         detail,
@@ -260,18 +340,27 @@ async function save(force = false): Promise<void> {
       fail(cause)
     }
   } finally {
+    pendingWrites -= 1
     busy.value = null
   }
 }
 
 async function reload(): Promise<void> {
   const open = editor.value
-  if (!open) return
+  if (!open || sourceMissing.value) return
+  const request = ++detailRequest
+  const description = open.description
+  const content = open.content
+  const updatedAt = entries.value.find((entry) => entry.name === open.name)?.updated_at
   try {
     const detail = await api.memoryEntry(open.name)
-    if (editor.value?.name === open.name) adoptDetail(detail)
+    // A late read cannot discard typing or restore a source lost during resync.
+    if (request !== detailRequest || editor.value !== open || sourceMissing.value ||
+        open.description !== description || open.content !== content ||
+        entries.value.find((entry) => entry.name === open.name)?.updated_at !== updatedAt) return
+    adoptDetail(detail)
   } catch (cause) {
-    fail(cause)
+    if (request === detailRequest && editor.value === open && !sourceMissing.value) fail(cause)
   }
 }
 
@@ -294,19 +383,6 @@ watch(
     if (Date.parse(updatedAt) <= Date.parse(open.detail.updated_at)) return
     if (editorDirty.value) conflict.value = true
     else void reload()
-  },
-)
-
-// …or its `forget` did.
-watch(
-  () => store.overview,
-  (page) => {
-    const open = editor.value
-    if (open && page && !page.entries.some((entry) => entry.name === open.name)) {
-      editor.value = null
-      conflict.value = false
-      error.value = t('memory.editor.deletedOnDisk', { name: open.name })
-    }
   },
 )
 
@@ -555,7 +631,7 @@ async function reveal(path: string): Promise<void> {
 
           <ul class="space-y-2">
             <li
-              v-for="entry in filtered"
+              v-for="entry in listedEntries"
               :key="entry.name"
               class="rounded-lg border bg-surface"
               :class="editor?.name === entry.name ? 'border-accent-border' : 'border-line'"
@@ -604,6 +680,10 @@ async function reveal(path: string): Promise<void> {
                 <p class="flex items-center gap-1.5 text-small text-faint">
                   <span class="font-mono">{{ folder }}/{{ entry.name }}.md</span>
                   <span v-if="editorDirty" class="text-warning">· {{ t('memory.editor.unsaved') }}</span>
+                </p>
+                <p v-if="sourceMissing" class="flex items-center gap-1.5 text-small text-warning" role="status">
+                  <AlertTriangle class="size-3.5 shrink-0" />
+                  {{ t('memory.editor.deletedOnDisk', { name: editor.name }) }}
                 </p>
                 <label class="block">
                   <span class="mb-1 flex justify-between text-small text-muted">
@@ -675,7 +755,7 @@ async function reveal(path: string): Promise<void> {
           </ul>
 
           <EmptyState
-            v-if="!entries.length && !creating"
+            v-if="!entries.length && !creating && !editor"
             :title="t('memory.list.emptyTitle')"
             :hint="t('memory.list.emptyHint')"
           >

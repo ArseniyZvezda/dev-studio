@@ -34,6 +34,7 @@ import { ApiError, api } from '@/api/client'
 import type { EntryKind, FileEntry, PreviewResult, TransferRequest } from '@/api/types'
 import { t } from '@/i18n'
 import { onEvent } from '@/ws/connection'
+import { rendererSession } from '@/session/project-session'
 
 /** How a click changes the selection: plain, `Ctrl+click`, `Shift+click`. */
 export type SelectMode = 'replace' | 'toggle' | 'range'
@@ -119,6 +120,9 @@ export const useExplorerStore = defineStore('explorer', () => {
   const anchorPath = ref<string | null>(null)
 
   let subscribed = false
+  let recovering: Promise<void> | null = null
+  let recoveryPending = false
+  let previewRequest = 0
 
   /**
    * Every row the tree is drawing, in the order it draws them.
@@ -167,8 +171,21 @@ export const useExplorerStore = defineStore('explorer', () => {
     return entryFor(path)?.is_dir ? path : parentOf(path)
   }
 
-  async function loadDirectory(path: string): Promise<void> {
-    if (loadingPaths.value.has(path)) return
+  const directoryReads = new Map<string, Promise<void>>()
+
+  async function loadDirectory(path: string, fresh = false): Promise<void> {
+    const pending = directoryReads.get(path)
+    if (pending) {
+      await pending
+      if (!fresh) return
+      return loadDirectory(path, true)
+    }
+    const reading = readDirectory(path)
+    directoryReads.set(path, reading)
+    try { await reading } finally { directoryReads.delete(path) }
+  }
+
+  async function readDirectory(path: string): Promise<void> {
     loadingPaths.value = new Set(loadingPaths.value).add(path)
     try {
       const tree = await api.tree(path, 1)
@@ -220,18 +237,29 @@ export const useExplorerStore = defineStore('explorer', () => {
     // selection, or a right-click opening the menu, must not collapse the folder underneath
     // what the user is about to act on.
     if (entry.is_dir) {
+      ++previewRequest
+      previewLoading.value = false
       preview.value = null
       return
     }
 
+    await refreshPreview(entry.path)
+  }
+
+  /** Never re-select a row while refreshing its server-owned preview. */
+  async function refreshPreview(path: string): Promise<void> {
+    const request = ++previewRequest
     previewLoading.value = true
     try {
-      preview.value = await api.preview(entry.path)
+      const result = await api.preview(path)
+      if (request === previewRequest && selectedPath.value === path) preview.value = result
     } catch (cause) {
-      preview.value = null
-      error.value = messageOf(cause)
+      if (request === previewRequest && selectedPath.value === path) {
+        preview.value = null
+        error.value = messageOf(cause)
+      }
     } finally {
-      previewLoading.value = false
+      if (request === previewRequest) previewLoading.value = false
     }
   }
 
@@ -246,6 +274,8 @@ export const useExplorerStore = defineStore('explorer', () => {
   }
 
   function clearSelection(): void {
+    ++previewRequest
+    previewLoading.value = false
     selectedPaths.value = []
     selectedPath.value = null
     anchorPath.value = null
@@ -538,6 +568,26 @@ export const useExplorerStore = defineStore('explorer', () => {
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+
+    // §5.3: missed watcher batches invalidate cached visible data, not UI state.
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      recoveryPending = true
+      return recovering ??= Promise.resolve().then(async () => {
+        do {
+          recoveryPending = false
+          // Collapsed directories are cached too: leaving them stale would show old rows
+          // forever on the next expand, which otherwise reuses the cached listing.
+          const targets = [...new Set([...Object.keys(children.value), ...directoryReads.keys()])]
+          await Promise.all(targets.map((path) => loadDirectory(path, true)))
+          pruneAgainst(targets)
+          dropSelection([...new Set([...selectedPaths.value, ...(selectedPath.value ? [selectedPath.value] : [])])]
+            .filter((path) => targets.includes(parentOf(path)) && !entryFor(path)))
+          const path = selectedPath.value
+          if (path && entryFor(path) && !entryFor(path)!.is_dir) await refreshPreview(path)
+        } while (recoveryPending)
+      }).finally(() => { recovering = null })
+    })
 
     onEvent('explorer.file_changed', async (payload) => {
       const dirty = new Set<string>()

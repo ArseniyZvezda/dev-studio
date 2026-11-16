@@ -14,13 +14,23 @@ body,
 }
 
 body {
-  background: var(--vxs-bg-canvas);
+  background-color: var(--vxs-bg-shell);
+  background-image: var(--vxs-shell-gradient);
+  background-repeat: no-repeat;
+  background-position: bottom;
+  background-size: 100% 100%;
   color: var(--vxs-text-primary);
   font-family: var(--vxs-font-sans);
   font-size: var(--vxs-text-size);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overflow: hidden; /* panes scroll individually; the shell itself never does */
+}
+
+/* The project WebContentsView starts below the native header (§5.3.4).
+   Sample the same window-sized gradient as the shell renderer above it. */
+body.desktop-project {
+  background-size: 100% calc(100% + var(--vxs-titlebar-height));
 }
 
 /* A native `<select>`'s list. The preflight makes every select transparent and inherit the
@@ -153,11 +163,14 @@ optgroup {
    Tailwind utilities but does get these. Unlayered, so each wins over the `bg-*` utility
    written beside it.
 
-   The material is lines and a hairline lift (spec §7): a pane is a grey with an edge
-   (`--vxs-pane-border`), and a card is a one-pixel ring over `--vxs-card-fill` with ambient
-   darkness under it. The `border` a component wrote beside the ring goes transparent, or the
-   two stack into a line twice as heavy as the one drawn. The fills are tokens (`tokens.css`),
-   so the light theme restates them there and nothing here needs a light rule. */
+   The outer surface is identified by tone (§7). Dividers inside it and keyboard focus
+   indicators keep their own paint. */
+.studio-shell {
+  display: grid;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+}
 .vxs-rail {
   background: var(--vxs-rail-fill);
 }
@@ -167,42 +180,39 @@ header.vxs-pane {
 }
 
 .vxs-main {
+  min-height: 0;
+  padding: 6px 10px 6px 4px;
   background: var(--vxs-page-fill);
 }
 
-:is(.vxs-card, .vxs-tile) {
-  border-color: transparent;
+.vxs-page-surface {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--vxs-space-2);
+  border-radius: var(--vxs-radius-xl);
+  background: var(--vxs-bg-canvas);
+}
+
+/* Content cards on built-in and plugin pages. Section dividers and form controls
+   inside the cards keep their own borders. */
+.vxs-page-surface :where(.rounded-lg.border:is(.bg-surface, .bg-elevated)) {
+  border-width: 0;
+}
+
+:is(.vxs-card, .vxs-tile, .vxs-sheet) {
+  border-width: 0;
   background: var(--vxs-card-fill);
-  box-shadow:
-    0 0 0 1px var(--vxs-border),
-    var(--vxs-shadow-md);
 }
 
-/* A dialog is the highest thing on the page, so its ambient darkness is the large one. */
-.vxs-card[role='dialog'] {
-  box-shadow:
-    0 0 0 1px var(--vxs-border),
-    var(--vxs-shadow-lg);
-}
+.vxs-card[role='dialog'] { box-shadow: var(--vxs-shadow-lg); }
+.vxs-tile:hover { background: var(--vxs-bg-hover); }
+.vxs-tile.vxs-tile-active { background: var(--vxs-accent-container); }
+.vxs-sheet { background: var(--vxs-sheet-fill); }
 
-/* A board card under the pointer brightens its edge and deepens its shadow (and lifts — the
-   motion section below); the selected one is edged in the accent, since the fill has taken the
-   place of the tint its `bg-accent-soft` used to paint. */
-.vxs-tile:hover {
-  box-shadow:
-    0 0 0 1px var(--vxs-border-strong),
-    var(--vxs-shadow-lift);
-}
-
-.vxs-tile.vxs-tile-active {
-  box-shadow:
-    0 0 0 1px var(--vxs-accent),
-    var(--vxs-shadow-md);
-}
-
-.vxs-sheet {
-  background: var(--vxs-sheet-fill);
-  box-shadow: inset 0 0 0 1px var(--vxs-border);
+/* A card that signals selection with its border also identifies itself by tone. */
+.vxs-page-surface :where(.rounded-lg.border.bg-surface.border-accent-border) {
+  background-color: var(--vxs-accent-container);
 }
 
 /* The switcher: a well of the canvas grey with the checked option raised out of it on its own

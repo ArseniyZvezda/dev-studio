@@ -23,6 +23,7 @@ from .build_info import build_info
 from .core.context import AppContext
 from .core.security import AuthSettings
 from .core.workspace import initialise_workspace, project_label, record_recent, shutdown_workspace
+from .ws.bus import EventBus
 from .ws.routes import router as ws_router
 
 log = logging.getLogger(__name__)
@@ -56,14 +57,28 @@ def create_app(
     async def lifespan(app: FastAPI):
         ctx = AppContext.create(project_root, auth)
         app.state.ctx = ctx
+        # Server policy is independent of either legacy selection or project routing (§5.3).
+        app.state.auth = auth
         # Kept for the restart an update ends in: coming back up without `--dev` would
         # leave the browser on Vite's port talking to a backend that refuses it (§12.1).
         app.state.dev_origins = list(dev_origins or [])
         # Opening another project replaces `app.state.ctx` wholesale; the lock is what
         # stops two clicks on "Open project" from building two contexts over each other.
         app.state.project_lock = asyncio.Lock()
-        initialise_workspace(app.state)
-        await ctx.startup()
+        # Preserve legacy startup-event replay without publishing a project identity
+        # until startup succeeds (§5.1, §5.3.2).
+        browser_bus = EventBus()
+        ctx.bus.forward_to = browser_bus
+        try:
+            await ctx.startup()
+        except BaseException:
+            # No registry identity is published for a failed bootstrap (§5.3.2).
+            try:
+                await ctx.shutdown()
+            except BaseException:
+                log.exception("Could not clean up failed workspace startup")
+            raise
+        initialise_workspace(app.state, browser_bus=browser_bus)
         record_recent(ctx.paths.root, project_label(ctx))
         try:
             yield

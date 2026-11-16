@@ -6,18 +6,22 @@
 import { Blocks, Boxes, Loader2, Power } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { api } from '@/api/client'
 import type { LoadedPlugin } from '@/api/types'
 import ClampText from '@/components/ui/ClampText.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import LoadingBars from '@/components/ui/LoadingBars.vue'
 import { hasMessage, t } from '@/i18n'
-import { resetPluginGrammars } from '@/lib/highlight/grammars'
-import { loadPluginPages } from '@/plugin-runtime/loader'
-import { usePipelinesStore } from '@/stores/pipelines'
-import { onEvent } from '@/ws/connection'
+import { rendererPluginHost } from '@/plugin-runtime'
+import { pluginLoader } from '@/plugin-runtime/loader'
 
-const pipelines = usePipelinesStore()
+const { api, events, session: projectSession } = rendererPluginHost
+const loader = pluginLoader(rendererPluginHost)
+const assertCurrent = projectSession.capture()
+let disposed = false
+function isCurrent(): boolean {
+  if (disposed) return false
+  try { assertCurrent(); return true } catch { return false }
+}
 
 const plugins = ref<LoadedPlugin[]>([])
 const enabledFilter = ref<'all' | 'enabled' | 'disabled'>('all')
@@ -28,8 +32,14 @@ function filterCount(filter: typeof filters[number]): number {
   return plugins.value.filter(plugin => filter === 'all' || plugin.enabled === (filter === 'enabled')).length
 }
 const loading = ref(true)
-const error = ref<string | null>(null)
+const listError = ref<string | null>(null)
+const mutationError = ref<string | null>(null)
+const error = computed(() => mutationError.value ?? listError.value ?? loader.state.error)
 const busyId = ref<string | null>(null)
+let listRequest: Promise<void> | null = null
+let listDirty = false
+let envRevision = 0
+const envUpdates = new Map<string, { revision: number; env: LoadedPlugin['env'] }>()
 
 /** The environment's state in words — `pending` reads differently on a disabled card. */
 function envLabel(plugin: LoadedPlugin): string {
@@ -41,11 +51,28 @@ function envLabel(plugin: LoadedPlugin): string {
 }
 
 // A build starts and ends on its own, so the card follows the backend rather than a click.
-const stopListening = onEvent('plugin.env', ({ plugin }) => {
+const stopEnvironment = events.on('plugin.env', ({ plugin }) => {
+  if (!isCurrent()) return
+  envUpdates.set(plugin.id, { revision: ++envRevision, env: plugin.env })
   const index = plugins.value.findIndex(entry => entry.id === plugin.id)
-  if (index >= 0) plugins.value[index] = plugin
+  // Environment progress must not revive an old enabled/status inventory snapshot.
+  if (index >= 0) plugins.value[index] = { ...plugins.value[index]!, env: plugin.env }
 })
-onBeforeUnmount(stopListening)
+const stopInventory = events.on('plugin.changed', () => {
+  if (!isCurrent()) return
+  envUpdates.clear()
+  refreshList(true)
+})
+const stopResync = events.on('system.dropped', ({ resync }) => {
+  if (resync && isCurrent()) refreshList(true)
+})
+onBeforeUnmount(() => {
+  disposed = true
+  stopEnvironment()
+  stopInventory()
+  stopResync()
+  envUpdates.clear()
+})
 
 /**
  * Where a plugin comes from, in words — `plugins.scope.<scope>`, looked up while rendering so it
@@ -56,36 +83,80 @@ function scopeHint(scope: string): string {
   return hasMessage(key) ? t(key) : scope
 }
 
-onMounted(load)
+onMounted(() => refreshList())
 
-async function load() {
-  loading.value = true
-  try {
-    plugins.value = await api.plugins()
-    error.value = null
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    loading.value = false
+function refreshList(invalidate = false): void {
+  void load(invalidate).catch(cause => {
+    if (isCurrent()) listError.value = cause instanceof Error ? cause.message : String(cause)
+  })
+}
+
+/** Coalesce reads; an inventory event during a read requires one fresh snapshot (§5.3.2). */
+function load(invalidate = false): Promise<void> {
+  if (!isCurrent()) return Promise.resolve()
+  if (listRequest) {
+    if (invalidate) listDirty = true
+    return listRequest
   }
+  listDirty = true
+  loading.value = true
+  listRequest = Promise.resolve().then(async () => {
+    do {
+      if (!isCurrent()) return
+      listDirty = false
+      const revision = envRevision
+      try {
+        const inventory = await api.plugins()
+        if (!isCurrent()) return
+        if (listDirty) continue
+        // An in-flight list must not overwrite newer environment progress events.
+        plugins.value = inventory.map(plugin => {
+          const update = envUpdates.get(plugin.id)
+          return update && update.revision > revision ? { ...plugin, env: update.env } : plugin
+        })
+        listError.value = null
+      } catch (cause) {
+        if (!isCurrent()) return
+        if (listDirty) continue
+        throw cause
+      }
+    } while (listDirty && isCurrent())
+  }).then(() => finishLoad(), cause => finishLoad(cause, true))
+  return listRequest
+}
+
+function finishLoad(cause?: unknown, failed = false): Promise<void> | void {
+  listRequest = null
+  if (!isCurrent()) return
+  // An invalidation may arrive after the loop settles but before this continuation.
+  // Keep all existing callers joined to its replacement, including after an error.
+  if (listDirty) return load()
+  loading.value = false
+  if (failed) throw cause
 }
 
 async function toggle(plugin: LoadedPlugin) {
+  if (busyId.value || !isCurrent()) return
   busyId.value = plugin.id
+  mutationError.value = null
+  let mutated = false
   try {
     await (plugin.enabled ? api.disablePlugin(plugin.id) : api.enablePlugin(plugin.id))
-    await load()
-    // The node palette and the nav both change shape when a plugin toggles.
-    await pipelines.loadRegistry()
-    await loadPluginPages()
-    // So does the set of languages the Explorer can highlight: the grammar list is
-    // cached after its first miss, so without this, enabling `angelscript` leaves `.as`
-    // plain until a reload — which reads as the plugin not working.
-    resetPluginGrammars()
+    mutated = true
+    if (!isCurrent()) return
+    // Only plugin.changed owns runtime invalidation, regardless of HTTP/WS ordering.
+    await loader.waitForRefresh()
+    if (!isCurrent()) return
+    await load(true)
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
+    if (isCurrent()) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (!mutated) mutationError.value = message
+      // Keep runtime failures reactive: a successful later event clears loader.state.error.
+      else if (!loader.state.error) listError.value = message
+    }
   } finally {
-    busyId.value = null
+    if (isCurrent()) busyId.value = null
   }
 }
 </script>
@@ -182,7 +253,7 @@ async function toggle(plugin: LoadedPlugin) {
             <div class="flex shrink-0 gap-2">
               <button
                 class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
-                :disabled="busyId === plugin.id"
+                :disabled="busyId !== null"
                 @click="toggle(plugin)"
               >
                 <Power class="size-3.5" />

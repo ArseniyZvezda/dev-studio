@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -104,7 +104,7 @@ async def get_tree(
 
 
 @router.get("/file")
-async def get_file(ctx: Ctx, path: str = Query(...)) -> dict[str, Any]:
+async def get_file(ctx: Ctx, request: Request, path: str = Query(...)) -> dict[str, Any]:
     try:
         payload = ctx.explorer.preview(path).to_json()
         # The service itself knows nothing about plugins; matching a claimed file type
@@ -114,7 +114,12 @@ async def get_file(ctx: Ctx, path: str = Query(...)) -> dict[str, Any]:
             if payload["kind"] == "directory"
             else ctx.registry.previewer_for(PurePosixPath(payload["path"]).suffix)
         )
-        payload["previewer"] = previewer_json(previewer, ctx.registry) if previewer else None
+        # §5.3.2: the embedded viewer is a later import, so its URL must retain
+        # this request's project even if the legacy browser selects another root.
+        payload["previewer"] = (
+            previewer_json(previewer, ctx.registry, project_id=request.path_params.get("project_id"))
+            if previewer else None
+        )
         if previewer is not None:
             # The service's "no viewer for this type" note is stale once one exists.
             payload["message"] = None

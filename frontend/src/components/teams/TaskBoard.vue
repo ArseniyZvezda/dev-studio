@@ -540,8 +540,8 @@ onBeforeUnmount(() => {
         class="relative min-h-0 flex-1 space-y-2.5 overflow-y-auto p-2.5"
         @before-leave="pinLeaving"
       >
-        <!-- `vxs-tile` is the card's material (`base.css`) — a ring over the card fill, brighter
-             under the pointer — and `vxs-tile-active` edges the selected one in the accent.
+        <!-- `vxs-tile` is the card's material (`base.css`) — a tonal fill, brighter under the
+             pointer, with a separate surface tone for the selected card.
              Rounded like the column itself rather than concentric with it, which on a
              10px-padded column was a 2px corner. A card whose session is live breathes the
              running amber on its edge (`vxs-tile-live`), and one that has just landed in Done

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -29,7 +29,7 @@ async def list_plugins(ctx: Ctx) -> list[dict[str, Any]]:
 
 
 @router.get("/pages")
-async def list_pages(ctx: Ctx) -> list[dict[str, Any]]:
+async def list_pages(ctx: Ctx, request: Request) -> list[dict[str, Any]]:
     """Menu entries contributed by plugins, mounted into the router at runtime (§9.3)."""
     return [
         {
@@ -39,14 +39,18 @@ async def list_pages(ctx: Ctx) -> list[dict[str, Any]]:
             "route": page.route,
             "icon": page.icon,
             "component_url": (
-                ctx.registry.asset_url(page.plugin_id, page.component) if page.component else None
+                ctx.registry.asset_url(
+                    page.plugin_id, page.component, project_id=request.path_params.get("project_id"),
+                ) if page.component else None
             ),
         }
         for page in ctx.registry.pages()
     ]
 
 
-def previewer_json(previewer: FilePreviewer, registry: Registry) -> dict[str, Any]:
+def previewer_json(
+    previewer: FilePreviewer, registry: Registry, *, project_id: str | None = None,
+) -> dict[str, Any]:
     """Wire form of a previewer; also embedded in the Explorer preview payload.
 
     The registry is what stamps the asset's version into `component_url`, so this cannot
@@ -57,17 +61,24 @@ def previewer_json(previewer: FilePreviewer, registry: Registry) -> dict[str, An
         "plugin_id": previewer.plugin_id,
         "label": previewer.label,
         "extensions": list(previewer.extensions),
-        "component_url": registry.asset_url(previewer.plugin_id, previewer.component),
+        "component_url": registry.asset_url(
+            previewer.plugin_id, previewer.component, project_id=project_id,
+        ),
     }
 
 
 @router.get("/previewers")
-async def list_previewers(ctx: Ctx) -> list[dict[str, Any]]:
+async def list_previewers(ctx: Ctx, request: Request) -> list[dict[str, Any]]:
     """File types plugins have claimed in the Explorer preview pane (§6.2)."""
-    return [previewer_json(previewer, ctx.registry) for previewer in ctx.registry.previewers()]
+    return [
+        previewer_json(previewer, ctx.registry, project_id=request.path_params.get("project_id"))
+        for previewer in ctx.registry.previewers()
+    ]
 
 
-def grammar_json(grammar: SyntaxGrammar, registry: Registry) -> dict[str, Any]:
+def grammar_json(
+    grammar: SyntaxGrammar, registry: Registry, *, project_id: str | None = None,
+) -> dict[str, Any]:
     """Wire form of a syntax grammar.
 
     As with a previewer, the registry is what stamps the file's mtime and size into
@@ -81,19 +92,22 @@ def grammar_json(grammar: SyntaxGrammar, registry: Registry) -> dict[str, Any]:
         "extensions": list(grammar.extensions),
         "scope_name": grammar.scope_name,
         "aliases": list(grammar.aliases),
-        "grammar_url": registry.asset_url(grammar.plugin_id, grammar.grammar),
+        "grammar_url": registry.asset_url(grammar.plugin_id, grammar.grammar, project_id=project_id),
     }
 
 
 @router.get("/grammars")
-async def list_grammars(ctx: Ctx) -> list[dict[str, Any]]:
+async def list_grammars(ctx: Ctx, request: Request) -> list[dict[str, Any]]:
     """Languages plugins have taught the Explorer to highlight (§6.2).
 
     The payload names a TextMate grammar and where to fetch it; the frontend hands that
     to Shiki. Two plugins may claim the same suffix — both are listed, and choosing
     between them is the frontend's decision, not the registry's.
     """
-    return [grammar_json(grammar, ctx.registry) for grammar in ctx.registry.grammars()]
+    return [
+        grammar_json(grammar, ctx.registry, project_id=request.path_params.get("project_id"))
+        for grammar in ctx.registry.grammars()
+    ]
 
 
 @router.post("/{plugin_id}/enable")

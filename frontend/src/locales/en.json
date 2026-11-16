@@ -1,6 +1,7 @@
 {
   "effortSolver": {
     "name": "Effort Solver",
+    "evaluatingTask": "Effort Solver is scoring this task…",
     "evaluating": "Effort Solver is scoring this subagent…",
     "weights": "Effort Solver weights",
     "weightsHint": "Higher weights give a criterion more influence. Higher complexity, creativity and depth increase effort; higher coverage reduces it. The result is normalized to 1–5.",
@@ -44,6 +45,20 @@
     "closeFailed": "Setup could not end all Voxarium Studio processes. Close the remaining processes yourself, then click Retry. No application files have been replaced."
   },
   "desktop": {
+    "tabs": {
+      "label": "Project tabs",
+      "open": "Open project",
+      "close": "Close tab",
+      "detach": "Detach into a new window",
+      "reorderHint": "Ctrl+Shift+Left or Right moves the tab. Shift+F10 focuses the detach command.",
+      "empty": "Open a project to get started.",
+      "pending": "Opening project",
+      "error": "The desktop window could not complete this operation. Try again.",
+      "ready": "Ready",
+      "loading": "Loading",
+      "crashed": "Project view unavailable",
+      "closing": "Closing"
+    },
     "backendVersionMismatch": "Version mismatch: interface {frontend}, backend {backend}. Restarting the backend for the selected Studio build…",
     "confirmBackendSwitch": "Studio backend {backend} is already running. Switch to build {frontend}?\n\nThe current project will be kept. Running tasks and pipelines will be stopped. Commit hashes do not indicate which build is newer.",
     "switchBackend": "Switch and restart",
@@ -52,9 +67,22 @@
     "restartProjectUnknown": "Studio could not read the current project for a safe restart. If the server requires a token, provide VOXARIUM_STUDIO_TOKEN before launching the desktop.",
     "backendChanged": "The backend changed during the version check. Open Studio again to recheck it.",
     "updateAccess": "Access to the private GitHub repository is required. Sign in with GitHub CLI (gh auth login), or set GH_TOKEN for your account with read access to the configured update repository, then restart the application.",
-    "installUpdate": "Install the update and restart? Running tasks in this application will be stopped.",
+    "installUpdate": "Install the update and restart Studio?",
+    "ownedShutdown": "Running work in all resident projects, including projects without open tabs, will be stopped.",
+    "independentShutdown": "This backend was started independently. It and its running work will not be stopped.",
+    "stoppedShutdown": "The application's backend has already stopped. Any independently started backend will not be stopped.",
+    "activityFailed": "Studio could not check activity across all resident projects. Nothing was stopped or installed. Try again.",
+    "activityUnknown": "Some project activity could not be determined. Other work may still be running.",
+    "projectActivity": "{project} ({root}): {count} active jobs",
+    "projectActivityUnknown": "{project} ({root}): activity unknown, at least {count} active jobs",
+    "installFailed": "The updater did not complete the restart. Installation was not confirmed. Try again.",
     "installAndRestart": "Install and restart",
     "stopFailed": "The server could not be stopped. Try again.",
+    "sessionFailed": "The desktop session could not be restored or saved.",
+    "sessionPageTimeout": "The project page did not become ready in time.",
+    "sessionPageUnavailable": "The project page is no longer available.",
+    "sessionPageFailed": "The saved project page could not be restored.",
+    "notificationFailed": "The project notification could not be displayed or opened.",
     "minimize": "Minimize",
     "minimizeToTray": "Minimize to system tray",
     "openWindow": "Open Voxarium Studio",
@@ -63,7 +91,7 @@
     "closeWindow": "Close window",
     "startFailed": "Studio could not start. See desktop.log, launcher.log and backend.err.log in the folder below.",
     "portBusy": "Port 8765 is occupied by another application. Close it and try again.",
-    "close": "Quit Studio? Running pipelines and agent tasks will be stopped.",
+    "close": "Quit Studio?",
     "cancel": "Cancel",
     "quit": "Quit",
     "loading": "Loading your workspace…",
@@ -124,6 +152,7 @@
     }
   },
   "nav": {
+    "statusBar": "Studio status",
     "section": {
       "chats": "Chats",
       "explorer": "Explorer",
@@ -1218,6 +1247,7 @@
       "emptyTodo": "No messages yet. Release the task to Pending to hand it to the agent.",
       "emptyAgent": "No messages yet. Start the task to hand it to the agent.",
       "thinking": "Thinking",
+      "createTask": "Create task",
       "studioToolsUsed": "Studio tools used: {count}",
       "toolsUsed": "Tools used: {count}"
     },

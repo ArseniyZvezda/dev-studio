@@ -287,7 +287,7 @@ class QwenBackend(AgentBackend):
         inspector = None
         if request.session_key and not request.text_only:
             inspector = _ContextInspector(request)
-            register_context_inspector(request.session_key, inspector)
+            register_context_inspector(request.runtime_session_key, inspector)
         try:
             async with aclosing(self._run(request)) as events:
                 async for event in events:

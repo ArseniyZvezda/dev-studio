@@ -65,21 +65,34 @@
      the connection dot, a run's progress, the heatmap and the cost line) and icons (the rail's
      per-section tints further down, and a member's own `avatar_color`). That split is what lets
      the chrome be grey and still say what state everything is in. */
-  --vxs-bg-canvas: #111111;
-  --vxs-bg-surface: #181818;
-  --vxs-bg-elevated: #1d1d1d;
-  --vxs-bg-inset: #151515;
-  --vxs-bg-hover: #242424;
-  --vxs-bg-active: #2b2b2b;
+  /* Neutral Material 3 surface roles (§7), shared with extensions through --vxs-* tokens. */
+  --md-sys-color-surface: #131313;
+  --md-sys-color-surface-bright: #323232;
+  --md-sys-color-surface-container-low: #1c1c1c;
+  --md-sys-color-surface-container: #202020;
+  --md-sys-color-surface-container-high: #2a2a2a;
+  --md-sys-color-surface-container-highest: #353535;
+  --md-sys-color-on-surface: #e2e2e2;
+  --md-sys-color-on-surface-variant: #c6c6c6;
+  --md-sys-color-outline: #919191;
+  --md-sys-color-outline-variant: #474747;
+  --md-sys-color-secondary-container: #474747;
+  --md-sys-color-on-secondary-container: #e2e2e2;
+  --vxs-titlebar-height: 44px;
+  --vxs-shell-gradient: linear-gradient(115deg, #2b374f 0%, #3e3145 52%, #233d3e 100%);
+  --vxs-bg-shell: var(--md-sys-color-surface-bright);
+  --vxs-bg-canvas: var(--md-sys-color-surface);
+  --vxs-bg-surface: var(--md-sys-color-surface-container);
+  --vxs-bg-elevated: var(--md-sys-color-surface-container-high);
+  --vxs-bg-inset: var(--md-sys-color-surface-container-low);
+  --vxs-bg-hover: var(--md-sys-color-surface-container-highest);
+  --vxs-bg-active: var(--md-sys-color-secondary-container);
 
-  --vxs-text-primary: #ededed;
-  --vxs-text-secondary: #d4d4d4;
-  --vxs-text-muted: #b4b4b4;
-  /* 4.5:1 on the canvas (4.2 on a surface): the faint step carries captions, timestamps and
-     gutters, so it is held to body contrast on the ground most of them sit on rather than to
-     the border greys it lies between. The canvas drew it at #767676, which measures 4.2:1 —
-     six levels lighter is the smallest step that keeps what its own note promised. */
-  --vxs-text-faint: #7c7c7c;
+  --vxs-text-primary: var(--md-sys-color-on-surface);
+  --vxs-text-secondary: var(--md-sys-color-on-surface-variant);
+  --vxs-text-muted: var(--md-sys-color-on-surface-variant);
+  /* Captions, timestamps and input placeholders use the neutral outline tone. */
+  --vxs-text-faint: var(--md-sys-color-outline);
   /* Lettering on a saturated fill — a Delete in the danger red, an Approve in the success
      green, a member's initials on their colour. White in both modes: the light theme's
      status colours are the darkened ones (5.1:1 and 5.4:1 against white, 3.4–3.5:1 against a
@@ -87,9 +100,9 @@
      (`.vxs-btn-primary` in `base.css`), so nothing grey reads this. */
   --vxs-text-on-accent: var(--vxs-white);
 
-  --vxs-border: #2c2c2c;
-  --vxs-border-subtle: #232323;
-  --vxs-border-strong: #4a4a4a;
+  --vxs-border: var(--md-sys-color-outline-variant);
+  --vxs-border-subtle: var(--md-sys-color-surface-container-highest);
+  --vxs-border-strong: var(--md-sys-color-outline);
 
   /* The seed is overwritten at runtime from config.yaml `theme.accent`, and `--vxs-accent` is
      what gets painted; every accent shade that is still a colour derives from it via
@@ -106,17 +119,17 @@
      canvas draws a selection as one grey step up, and hover is already `--vxs-bg-hover`, so
      the selected step is the active one — a selected row under the pointer must not go
      *darker* than one merely hovered. */
-  --vxs-accent-soft: #2b2b2b;
-  --vxs-accent-border: #3d3d3d;
+  --vxs-accent-soft: var(--md-sys-color-surface-container-highest);
+  --vxs-accent-border: var(--md-sys-color-outline-variant);
   /* The primary button: a grey with a lit edge (`base.css`), not an accent fill — its ground at
      rest, under the pointer and pressed. */
-  --vxs-accent-gradient: linear-gradient(180deg, #2a2a2a, #212121);
-  --vxs-accent-gradient-hover: #2f2f2f;
-  --vxs-accent-gradient-pressed: #262626;
+  --vxs-accent-gradient: var(--md-sys-color-surface-container-high);
+  --vxs-accent-gradient-hover: var(--md-sys-color-surface-container-highest);
+  --vxs-accent-gradient-pressed: var(--md-sys-color-secondary-container);
   /* The tonal container that says "current": the rail's active row and a segmented control's
      checked option. */
-  --vxs-accent-container: #242424;
-  --vxs-text-on-accent-container: #ededed;
+  --vxs-accent-container: var(--md-sys-color-secondary-container);
+  --vxs-text-on-accent-container: var(--md-sys-color-on-secondary-container);
 
   --vxs-success: var(--vxs-green);
   --vxs-warning: var(--vxs-amber);
@@ -205,18 +218,12 @@
   --vxs-card-shadow: var(--vxs-shadow-sm);
   --vxs-column-border: var(--vxs-border-subtle);
 
-  /* The grounds that are not flat. The rail and a page header are a shallow vertical gradient,
-     which is what separates them from a pane at a glance; a card, a board tile and a canvas
-     node are a gradient 5% of a step deep under their ring — enough for an edge to read as a
-     piece of something rather than as a painted outline; a board column sits a step *under*
-     the surface, so the tiles on it are lifted by their ground as well as by their edge; and
-     the page keeps a faint light in its top-left corner, gone by 60% of the way across, so the
-     canvas reads as a lit ground rather than a hole between the panes. */
-  --vxs-rail-fill: linear-gradient(180deg, #1e1e1e 0%, #181818 40%, #161616 100%);
-  --vxs-header-fill: linear-gradient(180deg, #1f1f1f, #181818);
-  --vxs-card-fill: linear-gradient(180deg, #1d1d1d, #181818);
-  --vxs-sheet-fill: #161616;
-  --vxs-page-fill: radial-gradient(120% 90% at 30% 0%, #171717 0%, #111111 60%), #111111;
+  /* The rail shares the shell ground. Raised panels and cards use tonal fills (§7). */
+  --vxs-rail-fill: transparent;
+  --vxs-header-fill: var(--md-sys-color-surface-container);
+  --vxs-card-fill: var(--md-sys-color-surface-container);
+  --vxs-sheet-fill: var(--md-sys-color-surface-container-high);
+  --vxs-page-fill: transparent;
 
   /* How strongly a canvas node's header takes its category colour (`theme.node_tint`). */
   --vxs-node-tint: 16%;
@@ -312,6 +319,8 @@
 /* -------------------------------------------------------------------- light theme */
 [data-theme='light'] {
   color-scheme: light;
+  --vxs-bg-shell: #fafafa;
+  --vxs-shell-gradient: none;
   --vxs-bg-canvas: #f6f6f6;
   --vxs-bg-surface: #ffffff;
   --vxs-bg-elevated: #ffffff;
@@ -369,11 +378,11 @@
 
   --vxs-canvas-dot: #d6d6d6;
 
-  --vxs-rail-fill: linear-gradient(180deg, #ffffff 0%, #fafafa 40%, #f4f4f4 100%);
-  --vxs-header-fill: linear-gradient(180deg, #ffffff, #f7f7f7);
-  --vxs-card-fill: #ffffff;
-  --vxs-sheet-fill: #fbfbfb;
-  --vxs-page-fill: radial-gradient(120% 90% at 30% 0%, #ffffff 0%, #f6f6f6 60%), #f6f6f6;
+  --vxs-rail-fill: transparent;
+  --vxs-header-fill: var(--vxs-bg-surface);
+  --vxs-card-fill: var(--vxs-bg-surface);
+  --vxs-sheet-fill: var(--vxs-bg-elevated);
+  --vxs-page-fill: transparent;
 
   /* One step darker so the tint still reads as itself on white at 16px. */
   --vxs-nav-explorer: #a9701f;

@@ -46,6 +46,7 @@ from voxarium_studio.teams.backends.base import (
     live_session,
     register_backend,
     register_live_session,
+    runtime_session_owner,
 )
 from voxarium_studio.teams.orchestrator import DelegationLimitError, RoutingError
 from voxarium_studio.teams.tools import build_toolset
@@ -3458,12 +3459,14 @@ async def _steerable_task(
             return True, "stub"
 
         async def run(self, request):
-            register_live_session(request.task.id, control)
+            assert request.runtime_key.owner == runtime_session_owner(teams.paths.root, "task", request.task.id)
+            assert request.session_key == request.task.id
+            register_live_session(request.runtime_session_key, control)
             try:
                 await asyncio.sleep(30)
                 yield AgentEvent(kind="result", text="", is_final=True)
             finally:
-                forget_live_session(request.task.id)
+                forget_live_session(request.runtime_session_key)
 
     Steerable.name = name
     register_backend(name, Steerable)
@@ -3480,7 +3483,7 @@ async def _steerable_task(
     # `is_running` goes true at submit, which is earlier than the session existing: the run
     # still has its worktree and status writes to do before the backend is reached.
     for _ in range(200):
-        if live_session(task.id) is not None:
+        if live_session(runtime_session_owner(teams.paths.root, "task", task.id)) is not None:
             break
         await asyncio.sleep(0.05)
     else:

@@ -17,17 +17,67 @@ import * as vue from 'vue'
 import * as vueRouter from 'vue-router'
 import type { Component, ComputedRef } from 'vue'
 
-import { api, rawFileBytes, rawFileUrl } from '@/api/client'
+import { api, createApiClient, rawFileBytes, rawFileUrl } from '@/api/client'
+import { withTokenParam } from '@/api/auth'
+import { scopedApiUrl, type Query } from '@/api/project-scope'
 import type { PreviewResult } from '@/api/types'
 import { createTranslator, locale, type Locale } from '@/i18n'
-import { onEvent } from '@/ws/connection'
+import { onEvent, ws, WsConnection } from '@/ws/connection'
+import { router } from '@/router'
+import { ProjectSession, rendererSession } from '@/session/project-session'
 import ModelSelector from '@/components/ui/ModelSelector.vue'
 
-import { setNodeParams } from './node-params'
+import { captureNodeParamBinding, nodeParamWriterGeneration, setNodeParams, type NodeParamBinding } from './node-params'
+
+/** One host per project renderer, never an ambient selected-project lookup (§5.3.2). */
+export interface PluginHost {
+  readonly session: ProjectSession
+  readonly api: typeof api
+  readonly router: vueRouter.Router
+  readonly events: WsConnection
+}
+
+export function createPluginHost(
+  session: ProjectSession,
+  options: { router: vueRouter.Router; events?: WsConnection },
+): PluginHost {
+  const events = options.events ?? (session === rendererSession ? ws : new WsConnection(session))
+  if (events.session !== session) throw new Error('Plugin event connection has a conflicting project binding')
+  const base = options.router.options.history.base.replace(/\/$/, '')
+  if (base !== session.routeBase) throw new Error('Plugin router has a conflicting project base')
+  return Object.freeze({ session, api: session === rendererSession ? api : createApiClient(session),
+    router: options.router, events })
+}
+
+export const rendererPluginHost = createPluginHost(rendererSession, { router })
+
+/** Validate only host-generated plugin resources, not arbitrary URLs in plugin code. */
+export function pluginResourceUrl(source: string, session: ProjectSession, pluginId?: string): string {
+  session.capture()()
+  const match = source.match(/^\/api(?:\/projects\/([^/]+))?(\/plugins\/([^/]+)\/assets\/[^?#]+)(?:\?([^#]*))?$/)
+  if (!match) throw new Error('Unsupported plugin asset URL; use runtime.assetUrl()')
+  const [, project, path, owner, search] = match
+  if ((session.isLegacy && project !== undefined) || (!session.isLegacy && project !== session.projectId)) {
+    throw new Error('Unscoped legacy or foreign plugin URL is not supported in this renderer; use runtime.assetUrl()')
+  }
+  if (pluginId !== undefined && decodeURIComponent(owner!) !== pluginId) throw new Error('Conflicting plugin asset owner')
+  const params = new URLSearchParams(search)
+  for (const key of ['project_id', 'epoch'] as const) {
+    if (params.getAll(key).some(value => value !== session.scope?.[key])) throw new Error('Conflicting plugin asset scope')
+  }
+  const query = Object.fromEntries(params)
+  return scopedApiUrl(session, path!, query)
+}
 
 export interface PluginRuntime {
   vue: typeof vue
   vueRouter: typeof vueRouter
+  /** The captured project router; routes are relative to its /p/{project_id} base. */
+  router: vueRouter.Router
+  /** API-relative path, with project scope; use auth headers for fetch. */
+  apiUrl: (path: string, query?: Query) => string
+  /** Plugin-root-relative asset path, scoped and authenticated (CSS/images/downloads). */
+  assetUrl: (path: string) => string
   /**
    * The host's Vue Flow. A custom node component needs `Handle`/`Position` to draw its
    * ports, and those must come from the same instance that owns the canvas — a bundled
@@ -88,16 +138,57 @@ export interface PluginRuntime {
   }
 }
 
-export function createRuntime(pluginId: string): PluginRuntime {
+export function createRuntime(
+  pluginId: string,
+  host: PluginHost = rendererPluginHost,
+  assertActive = host.session.capture(),
+  binding: NodeParamBinding = captureNodeParamBinding(host.session),
+  trackCleanup: (cleanup: () => void) => void = () => {},
+): PluginRuntime {
+  const { session, api } = host
+  const guard = () => { assertActive(); session.capture()() }
+  const guardEditor = () => {
+    guard()
+    if (binding.generation !== null && nodeParamWriterGeneration(session) !== binding.generation) {
+      throw new Error('Pipeline editor binding has been replaced')
+    }
+  }
+  const boundRouter = new Proxy(host.router, { get(target, key: keyof vueRouter.Router) {
+    const value = target[key]
+    return typeof value === 'function' ? (...args: unknown[]) => {
+      guard()
+      return (value as (...args: unknown[]) => unknown).apply(target, args)
+    } : value
+  } })
+  // Guard retained callbacks as well as import completions when the registry is replaced.
+  const boundApi = new Proxy(api, { get(target, key: keyof typeof api) {
+    const value = target[key]
+    return typeof value === 'function' ? (...args: unknown[]) => {
+      guard()
+      const result = (value as (...args: unknown[]) => unknown)(...args)
+      return result instanceof Promise ? result.then(value => { guard(); return value }) : result
+    } : value
+  } })
   return {
     vue,
     vueRouter,
     vueFlow,
-    api,
-    rawFileUrl,
-    rawFileBytes,
+    api: boundApi,
+    router: boundRouter,
+    apiUrl: (path, query) => { guard(); return scopedApiUrl(session, path, query) },
+    assetUrl: (path) => {
+      guard()
+      if (!path || path.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(path)) {
+        throw new Error('Plugin asset paths must be plugin-root-relative, not legacy URLs')
+      }
+      return withTokenParam(scopedApiUrl(session, `/plugins/${encodeURIComponent(pluginId)}/assets/${path}`))
+    },
+    rawFileUrl: (path) => { guard(); return api.rawFileUrl(path) },
+    rawFileBytes: async (path) => { guard(); const bytes = await api.rawFileBytes(path); guard(); return bytes },
     filePreviewer: async (path) => {
+      guardEditor()
       const preview = await api.preview(path)
+      guardEditor()
       const previewer = preview.previewer
       if (!previewer) return { preview, component: null }
       // Imported here rather than at the top of the file: `loader.ts` is what turns a plugin
@@ -109,24 +200,35 @@ export function createRuntime(pluginId: string): PluginRuntime {
       // correct: the loader is statically imported by half the app, so it cannot move into a
       // chunk of its own. Splitting the bundle was never the point — breaking the cycle was.
       const { pluginComponent } = await import('./loader')
+      guardEditor()
       return {
         preview,
         component: pluginComponent(
           previewer.component_url,
           previewer.plugin_id,
           `Previewer ${previewer.id}`,
+          host,
+          binding,
         ),
       }
     },
-    setNodeParams,
-    onEvent,
+    setNodeParams: (id, patch) => { guard(); binding.write(id, patch) },
+    onEvent: (type, handler) => {
+      guard()
+      const stop = host.events.on(type, (data, envelope) => {
+        try { guard() } catch { return }
+        handler(data, envelope)
+      })
+      trackCleanup(stop)
+      return stop
+    },
     settings: {
-      get: async () => (await api.pluginSettings(pluginId)).settings,
+      get: async () => (await boundApi.pluginSettings(pluginId)).settings,
       save: async (values) => {
-        await api.savePluginSettings(pluginId, values)
+        await boundApi.savePluginSettings(pluginId, values)
       },
     },
-    action: (id, payload) => api.pluginAction(pluginId, id, payload),
+    action: (id, payload) => boundApi.pluginAction(pluginId, id, payload),
     i18n: { locale, translator: createTranslator },
     components: { ModelSelector },
   }

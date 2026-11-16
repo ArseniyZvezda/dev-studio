@@ -13,11 +13,15 @@ import json
 import re
 from collections.abc import Sequence
 from datetime import datetime
+from pathlib import Path
+from secrets import token_hex
 from typing import Any
 
 from ..models.base import utcnow
 from ..models.task_context import ChatSessionContext, SessionContext, TaskContext
+from ..core.project_scope import canonical_root
 from .backends.base import AgentRunRequest
+from .context_journals import NativeJournalBinding, dispatch_digest, dispatch_marker
 from .context_sources import JournalContext, bounded_detail, count, prompt_sources, source
 
 
@@ -40,6 +44,35 @@ async def _save_request(db, owner_id: str, request: AgentRunRequest, input_at: d
         fresh = (not request.resume_session_id or previous is None
                  or bool(previous.backend and previous.backend != request.member.agent_backend))
         row = previous or (ChatSessionContext(chat_id=owner_id) if is_chat else TaskContext(task_id=owner_id))
+        binding = None
+        if request.runtime_key is not None:
+            owner = request.runtime_key.owner
+            old = captured_runtime_binding(previous, owner.project_root)
+            provenance = previous.sources[-1].get("runtime_provenance", {}) if previous and previous.sources else {}
+            provenance = provenance if isinstance(provenance, dict) else {}
+            # Recovery is reported after the runtime has already sent recovery_prompt.
+            # Do not invent a receipt for that dispatch by mutating a copied request.
+            recovery = fresh and provenance.get("generation") == request.runtime_key.generation
+            if (not recovery and request.member.agent_backend in {"claude_code", "codex", "qwen"}
+                    and owner.owner_kind == ("chat" if is_chat else "task") and owner.owner_id == owner_id):
+                continuing = (not fresh and old is not None and old.owner_kind == owner.owner_kind
+                              and old.owner_id == owner_id and previous.backend == request.member.agent_backend)
+                # A first captured resume cannot prove the session's genesis.
+                # Do not adopt it or add an unusable marker to its input.
+                if not request.resume_session_id or continuing:
+                    token = old.token if continuing else token_hex(16)
+                    marker = dispatch_marker(token)
+                    if not request.prompt.startswith(marker):
+                        request.prompt = marker + request.prompt
+                    dispatches = list(old.dispatches) if continuing else []
+                    digest = dispatch_digest(request.prompt)
+                    if digest not in dispatches:
+                        dispatches.append(digest)
+                    binding = {"version": 2, "project_root": str(owner.project_root),
+                               "workdir": str(canonical_root(request.workdir)),
+                               "owner_kind": owner.owner_kind, "owner_id": owner_id,
+                               "generation": request.runtime_key.generation,
+                               "token": token, "dispatches": dispatches}
         if fresh:
             # On the first captured resume the raw user message is already in the chat
             # transcript. It belongs to this prompt, not to the unsnapshotted history.
@@ -54,11 +87,66 @@ async def _save_request(db, owner_id: str, request: AgentRunRequest, input_at: d
         key = "studio.request[" + utcnow().isoformat() + "]"
         if request.system_prompt:
             parts.insert(0, source("system", request.system_prompt, origin=key + ".system_prompt"))
-        parts.append(source("task", request.prompt, origin=key + ".prompt"))
+        prompt_text = request.prompt
+        if binding is not None:
+            marker = dispatch_marker(binding["token"])
+            # Keep every dispatched byte visible, with honest field slices, while
+            # retaining the original input as its own fragment (§5.3.2, §10.4).
+            parts.append(source("task", marker, origin=key + f".prompt[0:{len(marker)}]"))
+            prompt_text = prompt_text[len(marker):]
+        prompt = source("task", prompt_text, origin=key + (f".prompt[{len(marker)}:]" if binding else ".prompt"))
+        if request.runtime_key is not None:
+            # §5.3.2: provenance is captured dispatch metadata, not prompt text.
+            # Never infer the launch directory from today's project configuration.
+            prompt["runtime_provenance"] = binding or {
+                "version": 1,
+                "project_root": str(request.runtime_key.owner.project_root),
+                "workdir": str(canonical_root(request.workdir)),
+                "generation": request.runtime_key.generation,
+            }
+        parts.append(prompt)
         row.sources = parts
         row.backend = request.member.agent_backend
         row.captured_at = utcnow()
         session.add(row)
+
+
+def captured_runtime_binding(snapshot: SessionContext | None, project_root: Path | None) -> NativeJournalBinding | None:
+    """Return the complete owner-bound receipt from the latest dispatch (§5.3.2).
+
+    Old snapshots and snapshots copied from a different project have no usable
+    binding. Earlier request evidence must not authorize a newer unbound capture.
+    """
+    if snapshot is None or project_root is None or not snapshot.sources:
+        return None
+    provenance = snapshot.sources[-1].get("runtime_provenance")
+    if not isinstance(provenance, dict) or provenance.get("version") != 2:
+        return None
+    try:
+        root, workdir = provenance.get("project_root"), provenance.get("workdir")
+        if not isinstance(root, str) or not isinstance(workdir, str):
+            return None
+        if not Path(root).is_absolute() or not Path(workdir).is_absolute():
+            return None
+        if canonical_root(root) != canonical_root(project_root):
+            return None
+        kind = "task" if isinstance(snapshot, TaskContext) else "chat" if isinstance(snapshot, ChatSessionContext) else None
+        owner_id = snapshot.task_id if kind == "task" else snapshot.chat_id if kind == "chat" else None
+        if not owner_id or provenance.get("owner_kind") != kind or provenance.get("owner_id") != owner_id:
+            return None
+        token, dispatches = provenance.get("token"), provenance.get("dispatches")
+        if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+            return None
+        if (not isinstance(dispatches, list) or not dispatches
+                or any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in dispatches)):
+            return None
+        generation = provenance.get("generation")
+        if not isinstance(generation, str) or not generation:
+            return None
+        return NativeJournalBinding(canonical_root(root), kind, owner_id, canonical_root(workdir),
+                                    token, tuple(dispatches), generation)
+    except (OSError, ValueError, RuntimeError):
+        return None
 
 
 def _snapshot_sources(snapshot: SessionContext) -> list[dict]:

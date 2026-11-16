@@ -29,6 +29,7 @@ lets the stub backends in the smoke tests run without it.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -285,6 +286,7 @@ def build_toolset(
                 is_error=True,
             )
 
+        effort_solver_result: dict[str, Any] = {}
         try:
             created = await orchestrator.create_task(
                 team_id=member.team_id,
@@ -297,6 +299,7 @@ def build_toolset(
                 auto_start=True,
                 parent_task=task,
                 producer_chat_id=chat_id if producer else None,
+                effort_solver_result=effort_solver_result,
             )
         except Exception as exc:  # routing, delegation ceiling, unknown member…
             return _text(f"{type(exc).__name__}: {exc}", is_error=True)
@@ -333,10 +336,19 @@ def build_toolset(
                 "Team Autostart Tasks released it to the agent queue. "
                 f"Current status: {created.status}. Dependencies and Solo Mode still apply."
             )
-        return _text(
+        message = (
             f"Created {orchestrator.display_id(created)} for {who}. {note} "
             "Refer to it by that id when you mention it to anyone."
         )
+        if effort_solver_result:
+            return _text(json.dumps({
+                "task_id": created.id,
+                "display_id": orchestrator.display_id(created),
+                "title": title,
+                "message": message,
+                "effort_solver": effort_solver_result,
+            }, ensure_ascii=False))
+        return _text(message)
 
     @tool(
         "list_tasks",

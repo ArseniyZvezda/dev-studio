@@ -18,14 +18,14 @@ import type {
 } from '@/api/types'
 
 export interface EventPayloads {
-  'system.hello': { project: string; resumed_from: number | null }
+  'system.hello': { project: string; resumed_from: number | null; project_id?: string; epoch?: string }
   'system.pong': Record<string, never>
   /**
    * This client fell behind and the bus evicted events to avoid stalling the producer,
    * so its stream has a gap. Sent only to the subscriber that lost them, and without a
    * `seq` — refetch over REST rather than trusting what is on screen.
    */
-  'system.dropped': { count: number; resync: boolean }
+  'system.dropped': { count: number; resync: boolean; reason?: string }
 
   'run.started': {
     run_id: string
@@ -219,4 +219,7 @@ export interface EventEnvelope<T extends EventType = EventType> {
   ts: string
   data: EventPayloads[T]
   channel?: string
+  /** Present only on project-scoped channels (dev spec §5.3.2). */
+  project_id?: string
+  epoch?: string
 }

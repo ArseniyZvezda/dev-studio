@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -341,6 +342,20 @@ def test_asset_urls_are_built_in_one_place() -> None:
     assert plugin_asset_url("p", "frontend/A.js") == "/api/plugins/p/assets/frontend/A.js"
 
 
+def test_asset_urls_keep_project_identity_and_escape_path_characters(tmp_path: Path) -> None:
+    asset = tmp_path / "frontend" / "A #1%.js"
+    asset.parent.mkdir()
+    asset.write_text("export default 1", encoding="utf-8")
+    legacy = plugin_asset_url("p", "frontend/A #1%.js", tmp_path)
+    scoped = plugin_asset_url("p", "frontend/A #1%.js", tmp_path, project_id="project-A")
+    assert scoped == legacy.replace("/api/", "/api/projects/project-A/", 1)
+    assert "/frontend/A%20%231%25.js?v=" in scoped
+    assert plugin_asset_url("p", "frontend/A?.js").endswith("/frontend/A%3F.js")
+    assert plugin_asset_url("p", "missing.js", project_id="project-B") == (
+        "/api/projects/project-B/plugins/p/assets/missing.js"
+    )
+
+
 def test_asset_urls_carry_a_version_that_moves_with_the_file(tmp_path: Path) -> None:
     """The stamp is the only thing that reliably keeps a browser off a stale module.
 
@@ -427,6 +442,146 @@ def test_a_plugin_may_not_namespace_node_types_under_another_plugin(project: Pat
 # ------------------------------------------------------------------ module isolation
 
 
+def write_lookup_plugin(directory: Path) -> Path:
+    """Same id/version/source in each project; a late lookup must still find its owner."""
+    return write_plugin(
+        directory,
+        {"id": "lookup", "name": "Lookup", "version": "1.0.0",
+         "backend": {"entry": "plugin.py:register"}},
+        {"plugin.py": (
+            "import importlib\n"
+            "SOURCE = 'initial-source'\n"
+            "MARKER = 'unset'\n"
+            "async def lookup(host, payload):\n"
+            "    if payload:\n"
+            "        payload['started'].set()\n"
+            "        await payload['resume'].wait()\n"
+            "    entry = importlib.import_module(__name__)\n"
+            "    return MARKER, entry.MARKER, entry.SOURCE\n"
+            "def register(registry):\n"
+            "    global MARKER\n"
+            "    MARKER = registry.settings['marker']\n"
+            "    registry.add_action('lookup', lookup)\n"
+        )},
+    )
+
+
+@pytest.mark.parametrize("shared_source", [False, True], ids=["project", "global"])
+async def test_same_plugin_id_keeps_late_lookups_project_bound(
+    tmp_path: Path, shared_source: bool,
+) -> None:
+    """§5.3.2: loading B must not replace A in sys.modules, even for a shared install.
+
+    Function globals alone hide the bug: the direct marker remains A while a lazy
+    import by that function's __module__ silently returns B. Keep both registries
+    and delayed handlers live across loads, disable and reload, not just A→B→A.
+    """
+    paths_a = ProjectPaths.for_project(tmp_path / "a")
+    paths_b = ProjectPaths.for_project(tmp_path / "b")
+    root_a = write_lookup_plugin(tmp_path / "installed" if shared_source else paths_a.plugins)
+    root_b = root_a if shared_source else write_lookup_plugin(paths_b.plugins)
+    scope = "global" if shared_source else "project"
+    manifest_a = PluginManifest.from_file(root_a / "plugin.yaml", scope=scope)
+    manifest_b = PluginManifest.from_file(root_b / "plugin.yaml", scope=scope)
+    registry_a = Registry(project_root=paths_a.root)
+    registry_b = Registry(project_root=paths_b.root)
+
+    def config(marker: str) -> AppConfig:
+        return AppConfig(plugins={"lookup": PluginConfig(settings={"marker": marker})})
+
+    assert plugin_loader.load_plugin(registry_a, manifest_a, config=config("A")).status == "loaded"
+    lookup_a = registry_a.action("lookup", "lookup").handler
+    assert await lookup_a(None, {}) == ("A", "A", "initial-source")
+
+    async def delayed_lookup(handler):
+        started, resume = asyncio.Event(), asyncio.Event()
+        task = asyncio.create_task(handler(None, {"started": started, "resume": resume}))
+        await started.wait()
+        return task, resume
+
+    pending_a, resume_a = await delayed_lookup(lookup_a)
+    try:
+        assert plugin_loader.load_plugin(registry_b, manifest_b, config=config("B")).status == "loaded"
+    finally:
+        resume_a.set()
+    assert await pending_a == ("A", "A", "initial-source")
+    lookup_b = registry_b.action("lookup", "lookup").handler
+    assert lookup_a.__module__ != lookup_b.__module__
+    module_b = sys.modules[lookup_b.__module__]
+    assert await lookup_b(None, {}) == ("B", "B", "initial-source")
+
+    pending_b, resume_b = await delayed_lookup(lookup_b)
+    try:
+        registry_a.remove_plugin("lookup")
+        disabled = AppConfig(plugins={"lookup": PluginConfig(enabled=False)})
+        assert plugin_loader.load_plugin(registry_a, manifest_a, config=disabled).status == "disabled"
+        assert registry_a.action("lookup", "lookup") is None
+        assert await lookup_b(None, {}) == ("B", "B", "initial-source")
+
+        # A source edit followed by enable/settings reload must not rebind B, even
+        # when both projects load the very same machine-level plugin directory.
+        entry = root_a / "plugin.py"
+        entry.write_text(entry.read_text(encoding="utf-8").replace(
+            "initial-source", "edited-source-for-A"), encoding="utf-8")
+        registry_a.remove_plugin("lookup")
+        assert plugin_loader.load_plugin(registry_a, manifest_a, config=config("A2")).status == "loaded"
+        assert await registry_a.action("lookup", "lookup").handler(None, {}) == (
+            "A2", "A2", "edited-source-for-A")
+        assert sys.modules[lookup_b.__module__] is module_b
+    finally:
+        resume_b.set()
+    assert await pending_b == ("B", "B", "initial-source")
+
+
+async def test_a_failed_plugin_load_does_not_remove_another_projects_module(tmp_path: Path) -> None:
+    root_a = write_lookup_plugin(ProjectPaths.for_project(tmp_path / "a").plugins)
+    root_b = write_lookup_plugin(ProjectPaths.for_project(tmp_path / "b").plugins)
+    registry_a = Registry(project_root=tmp_path / "a")
+    registry_b = Registry(project_root=tmp_path / "b")
+    config = AppConfig(plugins={"lookup": PluginConfig(settings={"marker": "B"})})
+    assert plugin_loader.load_plugin(
+        registry_b, PluginManifest.from_file(root_b / "plugin.yaml"), config=config,
+    ).status == "loaded"
+    lookup_b = registry_b.action("lookup", "lookup").handler
+    module_b = sys.modules[lookup_b.__module__]
+
+    (root_a / "plugin.py").write_text("raise RuntimeError('broken A')\n", encoding="utf-8")
+    broken = plugin_loader.load_plugin(
+        registry_a, PluginManifest.from_file(root_a / "plugin.yaml"), config=config,
+    )
+    assert broken.status == "error"
+    assert "broken A" in broken.error
+    assert sys.modules.get(lookup_b.__module__) is module_b
+    assert await lookup_b(None, {}) == ("B", "B", "initial-source")
+
+
+async def test_entry_module_names_include_source_and_canonical_project(tmp_path: Path) -> None:
+    """Reloads reuse the private name; a source override does not replace the old source."""
+    root = write_lookup_plugin(tmp_path / "installed")
+    local_root = write_lookup_plugin(ProjectPaths.for_project(tmp_path / "project").plugins)
+    manifest = PluginManifest.from_file(root / "plugin.yaml")
+    registry = Registry(project_root=tmp_path / "project")
+    config = AppConfig(plugins={"lookup": PluginConfig(settings={"marker": "first"})})
+    plugin_loader.load_plugin(registry, manifest, config=config)
+    first = registry.action("lookup", "lookup").handler
+
+    # Different spelling of the same project root is not another namespace.
+    registry = Registry(project_root=tmp_path / "project" / ".." / "project")
+    plugin_loader.load_plugin(registry, manifest, config=config)
+    reloaded = registry.action("lookup", "lookup").handler
+    assert reloaded is not first
+    assert reloaded.__module__ == first.__module__
+
+    config.plugins["lookup"].settings["marker"] = "local"
+    plugin_loader.load_plugin(
+        registry, PluginManifest.from_file(local_root / "plugin.yaml"), config=config,
+    )
+    local = registry.action("lookup", "lookup").handler
+    assert local.__module__ != reloaded.__module__
+    assert await reloaded(None, {}) == ("first", "first", "initial-source")
+    assert await local(None, {}) == ("local", "local", "initial-source")
+
+
 def write_plugin_with_sibling(paths: ProjectPaths, plugin_id: str, marker: str) -> None:
     """A plugin whose entry module imports a sibling — both called `helpers` on purpose."""
     write_plugin(
@@ -478,8 +633,15 @@ def test_a_plugins_modules_do_not_linger_under_a_bare_name(project: Path) -> Non
     plugin_loader.load_all(paths, AppConfig())
 
     assert "helpers" not in sys.modules
-    # The entry module stays, but it was namespaced by plugin id to begin with.
-    assert "voxarium_studio_plugin_alpha" in sys.modules
+    # The entry stays under its project/source name, never a process-global id alias.
+    entry_path = paths.plugins / "alpha" / "plugin.py"
+    entries = [
+        name for name, module in sys.modules.items()
+        if getattr(module, "__file__", None) == str(entry_path)
+    ]
+    assert len(entries) == 1
+    assert entries[0].startswith("voxarium_studio_plugin_alpha_")
+    assert "voxarium_studio_plugin_alpha" not in sys.modules
 
 
 def test_a_module_the_host_already_imported_is_left_alone(project: Path, monkeypatch) -> None:

@@ -14,7 +14,9 @@ from sqlmodel import select
 from voxarium_studio.models.teams import AgentChat, AgentMessage, TaskStatus, TeamMember, TeamTask
 from voxarium_studio.teams.backends import qwen
 from voxarium_studio.api.session_context import inspect_session, inventory_response
-from voxarium_studio.teams.backends.base import AgentRunRequest, context_inspector, get_backend
+from voxarium_studio.teams.backends.base import (
+    AgentRunRequest, RuntimeSessionKey, context_inspector, get_backend, runtime_session_owner,
+)
 from voxarium_studio.teams.chat import UserContext
 from voxarium_studio.teams.context_viewer import qwen_inventory
 from voxarium_studio.teams.tools import build_toolset
@@ -487,11 +489,12 @@ def test_context_report_before_provider_usage_has_no_measured_total():
 
 
 async def test_context_inspection_reopens_the_session_without_a_model_turn(fake, tmp_path, monkeypatch):
+    owner = runtime_session_owner(tmp_path, "chat", "chat-1")
     req = request(tmp_path, session_key="chat-1", mcp_servers={"local": {"command": "test"}},
-                  images=[{"path": "shot.png"}])
+                  images=[{"path": "shot.png"}], runtime_key=RuntimeSessionKey(owner))
     await run(req)
-    assert context_inspector("chat-1", "another-session") is None
-    inspector = context_inspector("chat-1", "qwen-session")
+    assert context_inspector(owner, "another-session") is None
+    inspector = context_inspector(owner, "qwen-session")
     assert inspector.ready
     fake.say(CONTEXT_FRAMES)
     monkeypatch.setenv("QWEN_TEST_ACK", "/context detail")
@@ -516,9 +519,11 @@ async def test_context_inspection_reopens_the_session_without_a_model_turn(fake,
 
 
 async def test_context_inspection_never_wraps_the_command_in_an_oversized_role(fake, tmp_path):
-    await run(request(tmp_path, session_key="chat-2", system_prompt="role" * 10000))
+    owner = runtime_session_owner(tmp_path, "chat", "chat-2")
+    await run(request(tmp_path, session_key="chat-2", system_prompt="role" * 10000,
+                      runtime_key=RuntimeSessionKey(owner)))
     fake.say(CONTEXT_FRAMES)
-    await context_inspector("chat-2", "qwen-session").context_report()
+    await context_inspector(owner, "qwen-session").context_report()
     call = fake.records()[-1]
     assert call["stdin"] == "/context detail" and "--system-prompt" not in call["argv"]
 
@@ -534,10 +539,11 @@ async def test_task_context_is_inspected_through_the_api_path(ctx, fake, wait_fo
                                        brief="Measure", auto_start=True)
     await ctx.teams.update_task(task.id, {"status": TaskStatus.PENDING})
     await wait_for(task.id, timeout=20)
-    assert inventory_response(task.id, [], STUDIO_VIEW, "qwen-session")["can_inspect"]
-    assert not inventory_response(task.id, [], STUDIO_VIEW, "stale-session")["can_inspect"]
+    owner = runtime_session_owner(ctx.paths.root, "task", task.id)
+    assert inventory_response(owner, [], STUDIO_VIEW, "qwen-session")["can_inspect"]
+    assert not inventory_response(owner, [], STUDIO_VIEW, "stale-session")["can_inspect"]
     fake.say(CONTEXT_FRAMES)
-    view = await inspect_session(task.id, "qwen-session")
+    view = await inspect_session(owner, "qwen-session")
     assert view["origin"] == "qwen_runtime" and view["can_inspect"]
     assert view["reported_tokens"] == 24_600
     assert "--resume" in fake.records()[-1]["argv"]

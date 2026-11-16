@@ -13,6 +13,7 @@ as with Blender addons or VS Code extensions.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import logging
 import sys
@@ -21,6 +22,7 @@ from pathlib import Path
 
 from ..core.config import AppConfig
 from ..core.paths import ProjectPaths, user_config_dir
+from ..core.project_scope import canonical_root
 from .api import PluginRegistry
 from .manifest import MANIFEST_FILENAME, PluginManifest
 from .registry import LoadedPlugin, Registry
@@ -97,7 +99,7 @@ def _forget_plugin_modules(manifest: PluginManifest, before: set[str], keep: str
     root = manifest.root.resolve()
     for name in sorted(set(sys.modules) - before):
         if name == keep:
-            continue  # the entry module is already namespaced by plugin id
+            continue  # the entry module is already namespaced by project and source
         module = sys.modules.get(name)
         origin = getattr(module, "__file__", None)
         locations = [origin] if origin else list(getattr(module, "__path__", None) or [])
@@ -105,8 +107,15 @@ def _forget_plugin_modules(manifest: PluginManifest, before: set[str], keep: str
             del sys.modules[name]
 
 
-def _import_entry_module(manifest: PluginManifest, module_file: str):
-    """Import the plugin's entry module under a unique name.
+def _import_entry_module(manifest: PluginManifest, module_file: str, *, project_root: Path):
+    """Import the entry under a project-and-source-bound name (§5.3.2).
+
+    Functions retain their globals after another load, but reflection and delayed
+    ``import_module(__name__)`` consult process-global ``sys.modules``. A plugin id
+    alone therefore aliases resident projects, including built-ins/global installs
+    whose source is shared but whose registration settings and state are not.
+    The private name is stable on reload within the same project/source; do not
+    publish a bare-id alias, which would reintroduce the collision.
 
     The plugin root goes on ``sys.path`` for the duration so intra-plugin imports
     (``from helpers import ...`` style siblings) resolve. Both the path entry and the
@@ -120,7 +129,9 @@ def _import_entry_module(manifest: PluginManifest, module_file: str):
     if not manifest.root == module_path.parent and manifest.root not in module_path.parents:
         raise ValueError(f"Plugin entry {module_path} escapes plugin root {manifest.root}")
 
-    module_name = f"voxarium_studio_plugin_{manifest.id}"
+    identity = "\0".join(str(canonical_root(path)) for path in (project_root, module_path))
+    namespace = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    module_name = f"voxarium_studio_plugin_{manifest.id}_{namespace}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not build an import spec for {module_path}")
@@ -171,7 +182,7 @@ def load_plugin(
     try:
         if manifest.backend and manifest.backend.entry:
             module_file, func_name = manifest.backend.split_entry()
-            module = _import_entry_module(manifest, module_file)
+            module = _import_entry_module(manifest, module_file, project_root=registry.project_root)
             register_fn = getattr(module, func_name, None)
             if register_fn is None:
                 raise AttributeError(

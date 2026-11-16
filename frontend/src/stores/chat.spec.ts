@@ -4,9 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentChat, AgentChatMessage, ChatCreate } from '@/api/types'
 import { ApiError, api } from '@/api/client'
 
-import { NEW_DRAFT_KEY, draftKey, readPopupState, useChatStore } from './chat'
+import { draftKey, readDraft, writeDraft, readPopupState, useChatStore } from './chat'
+import { ref } from 'vue'
+import { projectStorageKey } from '@/desktop/project-storage'
 
-type Handler = (data: unknown) => void
+const ROOT = 'd:/projects/a'
+const project = ref<{ root: string } | null>({ root: ROOT })
+vi.mock('@/stores/session', () => ({ useSessionStore: () => ({ get project() { return project.value } }) }))
+
+type Handler = (data: unknown, envelope?: { project_id?: string; epoch?: string }) => void
 const handlers = new Map<string, Handler>()
 
 vi.mock('@/ws/connection', () => ({
@@ -15,6 +21,12 @@ vi.mock('@/ws/connection', () => ({
     return () => handlers.delete(type)
   },
 }))
+
+const mockSession = vi.hoisted(() => ({
+  isLegacy: true,
+  matches: (scope: { project_id?: string; epoch?: string }) => scope.project_id === 'project_a' && scope.epoch === 'epoch_a',
+}))
+vi.mock('@/session/project-session', () => ({ rendererSession: mockSession }))
 
 const calls: { name: string; args: unknown[] }[] = []
 let nextChatId = 1
@@ -158,11 +170,172 @@ function installStorage(): Map<string, string> {
 const CONTEXT = { page: 'Tasks', route: '/tasks', title: '', document: null, file: null, selection: null }
 
 beforeEach(() => {
+  mockSession.isLegacy = true
+  project.value = { root: ROOT }
   setActivePinia(createPinia())
   handlers.clear()
   calls.length = 0
   listed = []
   nextChatId = 1
+})
+
+describe('scoped gap recovery', () => {
+  const scope = { project_id: 'project_a', epoch: 'epoch_a' }
+  const gap = () => handlers.get('system.dropped')!({ count: 3, resync: true }, scope)
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+
+  it('recovers list and transcript without touching selection, local drafts or attachments', async () => {
+    const storage = installStorage()
+    mockSession.isLegacy = false
+    const row = chatRow({ id: 'selected' })
+    listed = [row]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(row.id)
+    store.show()
+    store.setSelection('Selected source text')
+    storage.set(draftKey(ROOT, 'chat', row.id)!, 'Unsent draft')
+    storage.set(`voxarium_studio.chat.attachments.${row.id}`, '["pending.png"]')
+    const local = new Map(storage)
+    listed = [{ ...row, title: 'Recovered title' }, chatRow({ id: 'missed' })]
+    const fetched = vi.spyOn(api, 'chat').mockResolvedValueOnce({ ...row, title: 'Recovered title',
+      messages: [messageRow(row.id, { id: 'missed-message', text: 'Recovered transcript' })] })
+    try {
+      gap()
+      await settle()
+      expect(store.chats.map(chat => chat.id)).toContain('missed')
+      expect(store.activeMessages.some(message => message.text === 'Recovered transcript')).toBe(true)
+      expect(store.activeChatId).toBe(row.id)
+      expect(store.view).toBe('chat')
+      expect(store.open).toBe(true)
+      expect(store.selection).toBe('Selected source text')
+      expect(storage).toEqual(local)
+    } finally { fetched.mockRestore() }
+  })
+
+  it('ignores an old transcript after navigation, without clearing the new selection', async () => {
+    installStorage()
+    mockSession.isLegacy = false
+    listed = [chatRow({ id: 'old' }), chatRow({ id: 'new' })]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat('old')
+    let resolve!: (detail: Awaited<ReturnType<typeof api.chat>>) => void
+    const fetched = vi.spyOn(api, 'chat').mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    try {
+      gap()
+      await settle()
+      await store.openChat('new')
+      store.setSelection('New selection')
+      resolve({ ...listed[0]!, messages: [messageRow('old', { text: 'Delayed old message' })] })
+      await settle()
+      expect(store.activeChatId).toBe('new')
+      expect(store.activeMessages.some(message => message.text === 'Delayed old message')).toBe(false)
+      expect(store.selection).toBe('New selection')
+    } finally { fetched.mockRestore() }
+  })
+
+  it('retains live messages received during recovery', async () => {
+    installStorage()
+    mockSession.isLegacy = false
+    const row = chatRow({ id: 'active' })
+    listed = [row]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(row.id)
+    let resolve!: (detail: Awaited<ReturnType<typeof api.chat>>) => void
+    const fetched = vi.spyOn(api, 'chat').mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    try {
+      gap()
+      await settle()
+      handlers.get('team.chat.message')!(messageRow(row.id, { id: 'live', text: 'Live message' }))
+      resolve({ ...row, messages: [messageRow(row.id, { id: 'missed' })] })
+      await settle()
+      expect(store.activeMessages.map(message => message.id)).toEqual(['missed', 'cmsg_first', 'live'])
+    } finally { fetched.mockRestore() }
+  })
+
+  it('ignores foreign, obsolete, unscoped and legacy gaps', async () => {
+    installStorage()
+    const store = useChatStore()
+    await store.load()
+    calls.length = 0
+    gap()
+    mockSession.isLegacy = false
+    const handler = handlers.get('system.dropped')!
+    handler({ resync: true }, { ...scope, project_id: 'project_b' })
+    handler({ resync: true }, { ...scope, epoch: 'old' })
+    handler({ resync: true })
+    handler({ resync: false }, scope)
+    await settle()
+    expect(calls).toEqual([])
+  })
+
+  it('does not roll back live metadata or resurrect known and unknown deleted rows', async () => {
+    installStorage()
+    mockSession.isLegacy = false
+    const row = chatRow({ id: 'active', is_running: true })
+    const deleted = chatRow({ id: 'deleted' })
+    const unknown = chatRow({ id: 'previously-unknown' })
+    listed = [row, deleted]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat(row.id)
+    let finishList!: (rows: AgentChat[]) => void
+    let finishTranscript!: (detail: Awaited<ReturnType<typeof api.chat>>) => void
+    const listRead = vi.spyOn(api, 'chats').mockImplementationOnce(() => new Promise(done => { finishList = done }))
+    const transcript = vi.spyOn(api, 'chat').mockImplementationOnce(() => new Promise(done => { finishTranscript = done }))
+    try {
+      gap(); await settle()
+      handlers.get('team.chat.updated')!({ ...row, is_running: false, title: 'Newer title' })
+      for (const chat of [deleted, unknown]) handlers.get('team.chat.deleted')!({ chat_id: chat.id, member_id: 'm' })
+      finishList([row, deleted, unknown])
+      finishTranscript({ ...row, messages: [messageRow(row.id, { id: 'missed' })] })
+      await settle()
+      expect(store.chats.map(chat => chat.id)).toEqual(['active'])
+      expect(store.activeChat).toMatchObject({ title: 'Newer title', is_running: false })
+      expect(store.activeMessages.some(message => message.id === 'missed')).toBe(true)
+    } finally { listRead.mockRestore(); transcript.mockRestore() }
+  })
+
+  it('does not surface an old transcript failure after switching to a new draft', async () => {
+    installStorage()
+    mockSession.isLegacy = false
+    listed = [chatRow({ id: 'old' })]
+    const store = useChatStore()
+    await store.load()
+    await store.openChat('old')
+    let reject!: (cause: Error) => void
+    const fetched = vi.spyOn(api, 'chat').mockImplementationOnce(() => new Promise((_done, fail) => { reject = fail }))
+    try {
+      gap()
+      await settle()
+      store.startNew('another-member')
+      reject(new Error('old selection failed'))
+      await settle()
+      expect(store.view).toBe('new')
+      expect(store.newMemberId).toBe('another-member')
+      expect(store.error).toBeNull()
+    } finally { fetched.mockRestore() }
+  })
+
+  it('coalesces bursts and can recover after a rejected list', async () => {
+    installStorage()
+    mockSession.isLegacy = false
+    const store = useChatStore()
+    await store.load()
+    calls.length = 0
+    const fetched = vi.spyOn(api, 'chats').mockRejectedValueOnce(new Error('offline'))
+    try {
+      gap(); gap(); gap()
+      await settle()
+      expect(fetched).toHaveBeenCalledTimes(1)
+      expect(store.error).toBe('offline')
+      gap()
+      await settle()
+      expect(fetched).toHaveBeenCalledTimes(2)
+    } finally { fetched.mockRestore() }
+  })
 })
 
 describe('readPopupState', () => {
@@ -186,10 +359,94 @@ describe('readPopupState', () => {
 
 describe('draftKey', () => {
   it('is one key per chat, one for the chat not yet opened, and none for the list', () => {
-    expect(draftKey('new', null)).toBe(NEW_DRAFT_KEY)
-    expect(draftKey('chat', 'chat_1')).toBe('voxarium_studio.chat.draft.chat_1')
-    expect(draftKey('chat', null)).toBeNull()
-    expect(draftKey('list', 'chat_1')).toBeNull()
+    expect(draftKey(ROOT, 'new', null)).toBe(projectStorageKey(ROOT, 'voxarium_studio.chat.draft.new'))
+    expect(draftKey(ROOT, 'chat', 'chat_1')).toBe(projectStorageKey(ROOT, 'voxarium_studio.chat.draft.chat.chat_1'))
+    expect(draftKey(ROOT, 'chat', null)).toBeNull()
+    expect(draftKey(ROOT, 'list', 'chat_1')).toBeNull()
+  })
+
+  it('separates copied IDs and new chat from each other and requires a known root', () => {
+    expect(draftKey(ROOT, 'chat', 'copied')).not.toBe(draftKey('d:/projects/b', 'chat', 'copied'))
+    expect(draftKey(ROOT, 'new', null)).not.toBe(draftKey('d:/projects/b', 'new', null))
+    expect(draftKey(ROOT, 'chat', 'new')).not.toBe(draftKey(ROOT, 'new', null))
+    expect(draftKey(null, 'new', null)).toBeNull()
+    expect(draftKey(null, 'chat', 'copied')).toBeNull()
+  })
+})
+
+describe('canonical-root persisted chat state', () => {
+  it('waits for bootstrap and never adopts an unowned legacy popup or new-chat draft', () => {
+    const backing = installStorage()
+    const legacy = '{"open":true,"view":"new","chatId":null,"memberId":"foreign"}'
+    backing.set('voxarium_studio.chat.state', legacy)
+    backing.set('voxarium_studio.chat.draft.new', 'Foreign text')
+    project.value = null
+    const a = useChatStore()
+    a.startNew('before-bootstrap')
+    expect(a.currentDraftKey).toBeNull()
+    expect(backing.size).toBe(2)
+    project.value = { root: ROOT }
+    expect(a.open).toBe(false)
+    expect(a.view).toBe('list')
+    a.startNew('member-a')
+    expect(readDraft(a.currentDraftKey)).toBe('')
+    writeDraft(a.currentDraftKey, 'A only')
+    project.value = { root: 'd:/projects/b' }
+    const b = useChatStore(createPinia())
+    b.startNew('member-b')
+    expect(readDraft(b.currentDraftKey)).toBe('')
+    expect(a.currentDraftKey).toBe(draftKey(ROOT, 'new', null))
+    expect(backing.get('voxarium_studio.chat.state')).toBe(legacy)
+    expect(backing.get('voxarium_studio.chat.draft.new')).toBe('Foreign text')
+  })
+
+  it('restores copied chat IDs and popup selections only from their canonical root', async () => {
+    const backing = installStorage()
+    listed = [chatRow({ id: 'copied', is_running: false })]
+    const a = useChatStore()
+    await a.openChat('copied')
+    a.show()
+    writeDraft(a.currentDraftKey, 'A text')
+    project.value = { root: 'd:/projects/b' }
+    const b = useChatStore(createPinia())
+    expect(b.view).toBe('list')
+    await b.openChat('copied')
+    expect(readDraft(b.currentDraftKey)).toBe('')
+    writeDraft(b.currentDraftKey, 'B text')
+    b.hide()
+    a.hide() // Late UI work in A still uses A's captured root.
+    a.show()
+    expect(JSON.parse(backing.get(projectStorageKey('d:/projects/b', 'voxarium_studio.chat.state')!)!).open).toBe(false)
+    project.value = { root: ROOT }
+    const restored = useChatStore(createPinia())
+    expect(restored.open).toBe(true)
+    expect(restored.activeChatId).toBe('copied')
+    expect(readDraft(restored.currentDraftKey)).toBe('A text')
+    expect(readDraft(b.currentDraftKey)).toBe('B text')
+  })
+
+  it('clears only the originating draft after delayed deletion while B uses a copied ID', async () => {
+    installStorage()
+    listed = [chatRow({ id: 'copied', is_running: false })]
+    const a = useChatStore()
+    await a.load()
+    await a.openChat('copied')
+    const aKey = a.currentDraftKey
+    writeDraft(aKey, 'A text')
+    let deleted!: (result: { chat_id: string; deleted: boolean }) => void
+    const request = vi.spyOn(api, 'deleteChat').mockImplementationOnce(() => new Promise<{ chat_id: string; deleted: boolean }>(resolve => { deleted = resolve }))
+    try {
+      const deleting = a.remove('copied')
+      project.value = { root: 'd:/projects/b' }
+      const b = useChatStore(createPinia())
+      await b.openChat('copied')
+      writeDraft(b.currentDraftKey, 'B text')
+      deleted({ chat_id: 'copied', deleted: true })
+      expect(await deleting).toBe(true)
+      expect(readDraft(aKey)).toBe('')
+      expect(readDraft(b.currentDraftKey)).toBe('B text')
+      expect(b.activeChatId).toBe('copied')
+    } finally { request.mockRestore() }
   })
 })
 
@@ -467,7 +724,7 @@ describe('the chat store', () => {
 
   it('shares an in-flight load until both the chat list and restored transcript are ready', async () => {
     const backing = installStorage()
-    backing.set('voxarium_studio.chat.state', '{"open":false,"view":"chat","chatId":"producer","memberId":null}')
+    backing.set(projectStorageKey(ROOT, 'voxarium_studio.chat.state')!, '{"open":false,"view":"chat","chatId":"producer","memberId":null}')
     const row = chatRow({ id: 'producer' })
     let finishList!: (value: AgentChat[]) => void
     let finishTranscript!: (value: AgentChat & { messages: AgentChatMessage[] }) => void
@@ -629,7 +886,7 @@ describe('the chat store', () => {
 
   it('remembers the popup across a reload, and falls back when its chat is gone', async () => {
     const backing = installStorage()
-    backing.set('voxarium_studio.chat.state', '{"open":true,"view":"chat","chatId":"chat_1","memberId":"m"}')
+    backing.set(projectStorageKey(ROOT, 'voxarium_studio.chat.state')!, '{"open":true,"view":"chat","chatId":"chat_1","memberId":"m"}')
     listed = [chatRow()]
     const store = useChatStore()
     expect(store.open).toBe(true)
@@ -640,11 +897,11 @@ describe('the chat store', () => {
 
     store.hide()
     store.showList()
-    expect(JSON.parse(backing.get('voxarium_studio.chat.state')!)).toMatchObject({ open: false, view: 'list' })
+    expect(JSON.parse(backing.get(projectStorageKey(ROOT, 'voxarium_studio.chat.state')!)!)).toMatchObject({ open: false, view: 'list' })
 
     // A second store, whose remembered chat no longer exists, lands on the list.
     setActivePinia(createPinia())
-    backing.set('voxarium_studio.chat.state', '{"open":true,"view":"chat","chatId":"chat_gone","memberId":null}')
+    backing.set(projectStorageKey(ROOT, 'voxarium_studio.chat.state')!, '{"open":true,"view":"chat","chatId":"chat_gone","memberId":null}')
     listed = []
     const again = useChatStore()
     await again.load()
@@ -718,7 +975,7 @@ describe('the chat store', () => {
     handlers.get('team.chat.message')!(messageRow('chat_b'))
     expect([...store.unread]).toEqual(['chat_b'])
     expect(store.open).toBe(false)
-    expect(JSON.parse(backing.get('voxarium_studio.chat.state')!).open).toBe(false)
+    expect(JSON.parse(backing.get(projectStorageKey(ROOT, 'voxarium_studio.chat.state')!)!).open).toBe(false)
 
     store.pageVisible = false
     handlers.get('team.chat.message')!(messageRow('chat_a'))
@@ -851,14 +1108,14 @@ describe('the chat store', () => {
   it('forgets a chat deleted here or elsewhere', async () => {
     const backing = installStorage()
     listed = [chatRow({ id: 'chat_1' }), chatRow({ id: 'chat_2' })]
-    backing.set('voxarium_studio.chat.draft.chat_1', 'half a thought')
+    backing.set(draftKey(ROOT, 'chat', 'chat_1')!, 'half a thought')
     const store = useChatStore()
     await store.load()
     await store.openChat('chat_1')
     await store.remove('chat_1')
     expect(store.chats.map((chat) => chat.id)).toEqual(['chat_2'])
     expect(store.view).toBe('list')
-    expect(backing.has('voxarium_studio.chat.draft.chat_1')).toBe(false)
+    expect(backing.has(draftKey(ROOT, 'chat', 'chat_1')!)).toBe(false)
 
     await store.openChat('chat_2')
     handlers.get('team.chat.deleted')!({ chat_id: 'chat_2', member_id: 'm' })

@@ -1,11 +1,10 @@
 /**
- * Project-level state: which project the backend has open, its config, and whether we
+ * Project-level state: the renderer's project, its config, and whether we
  * are talking to it successfully. Loaded once at startup, before the router renders
  * anything, so views can assume the project is known.
  *
- * Opening a different project is also here, because it is the one action that invalidates
- * every other store at once — see `openProject` for why that ends in a page reload
- * rather than a fan-out of refreshes.
+ * Scoped renderers keep their immutable ProjectSession (§5.3). Only the legacy browser
+ * adapter can open a different selection and reload every store/plugin route at once.
  */
 
 import { defineStore } from 'pinia'
@@ -15,6 +14,7 @@ import { ApiError, api, recoverRuntime } from '@/api/client'
 import type { ProjectInfo, ProjectTaskCounts, RecentProject, StatusInfo } from '@/api/types'
 import { setLocale, t } from '@/i18n'
 import { FRONTEND_VERSION, waitForBackendVersion } from '@/lib/runtime-version'
+import { rendererSession } from '@/session/project-session'
 import { onEvent, ws } from '@/ws/connection'
 import { useDocsStore } from './docs'
 import { useSyncStore } from './sync'
@@ -42,12 +42,28 @@ export const useSessionStore = defineStore('session', () => {
   const connection = ws.state
 
   let listening = false
+  let reloadScheduled = false
+
+  /** Retire the legacy session before any late HTTP/socket continuation can apply. */
+  function reloadLegacyProject(): void {
+    if (reloadScheduled) return
+    reloadScheduled = true
+    switching.value = true
+    rendererSession.invalidate()
+    ws.disconnect()
+    window.location.reload()
+  }
 
   async function load(): Promise<void> {
     loading.value = true
     error.value = null
     try {
+      const current = rendererSession.capture()
       const info = await api.project()
+      current()
+      // The scoped API bootstraps the immutable identity before returning (§5.3.2).
+      // Never hydrate a renderer with legacy or foreign project metadata.
+      assertProjectBinding(info)
       project.value = info
       needsToken.value = false
       acceptVersion(info)
@@ -56,6 +72,7 @@ export const useSessionStore = defineStore('session', () => {
       if (versionMismatch.value) return
       // The browser cache is only the startup fallback; the user's config wins (§6.4).
       if (info.config?.language) await setLocale(info.config.language)
+      current()
       useThemeStore().hydrate(info.config?.theme)
       const docs = useDocsStore()
       docs.hydrate(info.config?.docs)
@@ -66,8 +83,10 @@ export const useSessionStore = defineStore('session', () => {
       const sync = useSyncStore()
       sync.subscribe()
       await sync.load()
+      current()
       void refreshTaskCounts()
     } catch (cause) {
+      if (reloadScheduled) return
       if (cause instanceof ApiError && cause.isAuthFailure) {
         needsToken.value = true
         error.value = t('project.session.tokenRequired')
@@ -84,12 +103,20 @@ export const useSessionStore = defineStore('session', () => {
     versionChecked.value = true
   }
 
+  function assertProjectBinding(info: ProjectInfo): void {
+    if (!rendererSession.isLegacy && !rendererSession.matches(info)) {
+      throw new Error('Project response does not match the renderer binding')
+    }
+  }
+
   let checkingVersion = false
   async function refreshVersion(): Promise<void> {
     if (checkingVersion) return
     checkingVersion = true
     try {
-      acceptVersion(await api.project())
+      const info = await api.project()
+      assertProjectBinding(info)
+      acceptVersion(info)
     } catch { /* Transport/auth errors do not erase a confirmed version mismatch. */ }
     finally { checkingVersion = false }
   }
@@ -176,6 +203,32 @@ export const useSessionStore = defineStore('session', () => {
     recent.value = await api.forgetRecentProject(path)
   }
 
+  let resyncRequest: Promise<void> | null = null
+  let resyncPending = false
+  function resyncProject(): Promise<void> {
+    resyncPending = true
+    if (resyncRequest) return resyncRequest
+    const refreshMetadata = async () => {
+      const current = rendererSession.capture()
+      const info = await api.project()
+      current()
+      assertProjectBinding(info)
+      project.value = info
+      acceptVersion(info)
+    }
+    // A gap is not a project switch (§5.3.2). Refetch only this session's metadata;
+    // subscribed domain stores own their draft-preserving recovery from the same event.
+    resyncRequest = Promise.resolve().then(async () => {
+      do {
+        resyncPending = false
+        await Promise.allSettled([
+          refreshMetadata(), refreshStatus(), refreshTaskCounts(), useSyncStore().load(),
+        ])
+      } while (resyncPending && !reloadScheduled)
+    }).finally(() => { resyncRequest = null })
+    return resyncRequest
+  }
+
   /**
    * Point the backend at another project and start over against it.
    *
@@ -186,11 +239,17 @@ export const useSessionStore = defineStore('session', () => {
    * the token lives in `localStorage`, so it costs the user nothing.
    */
   async function openProject(path: string, create = true): Promise<void> {
+    // Desktop opening belongs to the future shell, never the legacy selection (§5.3.3).
+    if (!rendererSession.isLegacy) throw new Error('A project renderer cannot change its project binding')
+    if (reloadScheduled) return
     switching.value = true
     try {
       await api.openProject(path, create)
-      window.location.reload()
+      reloadLegacyProject()
     } catch (cause) {
+      // project.opened can arrive before the open HTTP response, invalidating it.
+      // The reload is already committed: neither surface the stale rejection nor undo it.
+      if (reloadScheduled) return
       switching.value = false
       throw cause
     }
@@ -207,10 +266,16 @@ export const useSessionStore = defineStore('session', () => {
       void refreshTaskCounts()
       void refreshVersion()
     })
+    onEvent('system.dropped', (data, envelope) => {
+      if (rendererSession.isLegacy || reloadScheduled || !data.resync) return
+      if (!rendererSession.matches(envelope)) return
+      void resyncProject()
+    })
     onEvent('project.opened', (data) => {
+      // This event describes only legacy browser selection, not desktop activation.
+      if (!rendererSession.isLegacy) return
       if (project.value && data.root === project.value.root) return
-      switching.value = true
-      window.location.reload()
+      reloadLegacyProject()
     })
   }
 

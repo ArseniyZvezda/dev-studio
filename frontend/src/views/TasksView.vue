@@ -21,9 +21,11 @@ import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
 import TaskBoard from '@/components/teams/TaskBoard.vue'
 import TaskComposerDialog from '@/components/teams/TaskComposerDialog.vue'
 import TaskDetail from '@/components/teams/TaskDetail.vue'
+import { setDesktopPageSelector, useDesktopPageTarget } from '@/desktop/page-state'
 import { t } from '@/i18n'
 import { statusLabel } from '@/lib/status'
 import { tokenDirections, type TokenDirections } from '@/lib/token-directions'
+import { rendererSession } from '@/session/project-session'
 import { useSessionStore } from '@/stores/session'
 import { useTeamsStore } from '@/stores/teams'
 
@@ -45,6 +47,21 @@ const router = useRouter()
 /** Who the composer opens pointed at; null while it is closed. The dialog owns the form
  *  itself, and is mounted only while open, so reopening always starts from a blank one. */
 const composerFor = ref<string | null>(null)
+let initialLoadComplete = false
+
+// §5.3: only entity selectors survive a renderer restart, not dialog drafts.
+// Non-immediate watchers leave the initial deep link intact until it is consumed;
+// synchronous flush also records close/selection before a consuming URL replace.
+watch(
+  () => teams.openTask?.id ?? null,
+  (id) => setDesktopPageSelector('/tasks', 'task', id),
+  { flush: 'sync' },
+)
+watch(
+  composerFor,
+  (id) => setDesktopPageSelector('/tasks', 'assign', id),
+  { flush: 'sync' },
+)
 
 /**
  * Whether the Archived column is drawn (§10.4). Off on every visit: the archive exists so
@@ -69,21 +86,52 @@ const backendState = computed(() => {
   return Object.entries(backends).map(([name, info]) => ({ name, ...info }))
 })
 
-onMounted(async () => {
+let initialLoad: Promise<void> = Promise.resolve()
+onMounted(() => { initialLoad = loadPage() })
+async function loadPage() {
   teams.subscribe()
   await teams.load()
   await session.refreshStatus()
+  initialLoadComplete = true
 
+  consumeAssign()
+  openRequestedTask()
+  if (typeof route.query.task !== 'string') {
+    setDesktopPageSelector('/tasks', 'task', teams.openTask?.id ?? null)
+  }
+}
+
+useDesktopPageTarget('/tasks', async (page, current) => {
+  await initialLoad
+  current()
+  if (route.path !== '/tasks') return false
+  const task = page.query?.task, assign = page.query?.assign
+  if (assign && !teams.memberById.has(assign)) return false
+  if (teams.openTask?.id !== task) await teams.selectTask(task ?? null)
+  current()
+  if (task && (teams.openTask?.id !== task || teams.error)) return false
+  composerFor.value = assign ?? null
+  setDesktopPageSelector('/tasks', 'task', task ?? null)
+  setDesktopPageSelector('/tasks', 'assign', assign ?? null)
+  return true
+})
+
+function consumeAssign(): void {
   // Deep link from the org chart. Drop the query afterwards so a reload does not reopen
   // a composer the user already dismissed.
   const requested = route.query.assign
   if (typeof requested === 'string' && teams.memberById.has(requested)) {
     openComposer(requested)
+    setDesktopPageSelector('/tasks', 'assign', composerFor.value)
     const { assign: _consumed, ...rest } = route.query
     void router.replace({ path: route.path, query: rest })
   }
+}
 
-  openRequestedTask()
+// §5.3: restore can target this already-mounted page. Until the initial load
+// finishes, leave the latest query for onMounted to consume against the roster.
+watch(() => route.query.assign, () => {
+  if (!rendererSession.isLegacy && initialLoadComplete) consumeAssign()
 })
 
 /**
@@ -95,7 +143,12 @@ onMounted(async () => {
 function openRequestedTask(): void {
   const wanted = route.query.task
   if (typeof wanted !== 'string') return
-  if (teams.tasks.some((task) => task.id === wanted)) void teams.selectTask(wanted)
+  if (teams.tasks.some((task) => task.id === wanted)) {
+    // Detail loading is asynchronous; preserve the validated consumed target before
+    // scrubbing the URL, then let the actual open-task watcher track UI changes.
+    setDesktopPageSelector('/tasks', 'task', wanted)
+    void teams.selectTask(wanted)
+  }
   const { task: _opened, ...rest } = route.query
   void router.replace({ path: route.path, query: rest })
 }

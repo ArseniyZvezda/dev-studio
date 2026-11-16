@@ -149,7 +149,7 @@ async function confirm() {
   error.value = null
   try {
     // The page reloads on success, so there is no "done" state to render here.
-    await session.openProject(target.path, true)
+    await session.openProject(target.path, !target.is_project)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   }
@@ -158,7 +158,10 @@ async function confirm() {
 async function openRecent(path: string) {
   try {
     selected.value = await api.inspectPath(path)
-    await confirm()
+    // A stale recent entry may now be an ordinary folder: creation requires
+    // the explicit Create and Open button, just like browsing (§5.1).
+    if (selected.value.is_project) await confirm()
+    else if (selected.value.is_dir) await navigate(selected.value.path)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
   }

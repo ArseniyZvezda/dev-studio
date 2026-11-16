@@ -42,6 +42,7 @@ import type {
 import { t } from "@/i18n";
 import { titleOf } from "@/lib/md/title";
 import { onEvent } from "@/ws/connection";
+import { rendererSession } from "@/session/project-session";
 
 export type SaveState = "saved" | "saving" | "dirty" | "failed";
 
@@ -654,25 +655,36 @@ export const useDocsStore = defineStore("docs", () => {
     await select(path);
   }
 
-  /** Resolves once every save already on its way has landed, however it went. */
-  function settle(): Promise<void> {
-    return chain.then(
-      () => undefined,
-      () => undefined,
-    );
+  /**
+   * Wait for saves to drain, including a newer save queued while the first was in flight.
+   * Resolution is not success: callers deciding whether to close must still check dirty,
+   * saving and saveError (dev spec §5.3), without retrying/overwriting a refused save.
+   */
+  async function settle(): Promise<void> {
+    let pending: Promise<unknown>;
+    do {
+      pending = chain;
+      await pending.catch(() => undefined);
+    } while (pending !== chain);
   }
 
+  let documentRequest = 0;
+
   async function select(path: string | null): Promise<void> {
+    const request = ++documentRequest;
     if (!path) {
       closeDocument();
       return;
     }
     error.value = null;
     try {
-      open.value = await api.doc(path);
+      const fresh = await api.doc(path);
+      if (request !== documentRequest) return;
+      open.value = fresh;
       liveTitle.value = open.value.title;
       resetEditState();
     } catch (cause) {
+      if (request !== documentRequest) return;
       error.value = cause instanceof Error ? cause.message : String(cause);
     }
   }
@@ -734,6 +746,7 @@ export const useDocsStore = defineStore("docs", () => {
 
   /** No document open — what is left once the open one was deleted. */
   function closeDocument(): void {
+    documentRequest += 1;
     open.value = null;
     resetEditState();
   }
@@ -847,14 +860,19 @@ export const useDocsStore = defineStore("docs", () => {
   async function overwriteDocument(content: string): Promise<boolean> {
     const document = open.value;
     if (!document) return false;
+    const sent = edits;
     saving.value = true;
     saveError.value = null;
     try {
       const saved = await api.saveDoc(document.path, content);
       if (open.value?.path === saved.path) {
-        open.value = saved;
-        dirty.value = false;
-        staleOnDisk.value = false;
+        // §5.3: an explicit conflict overwrite only saves the revision it sent, just
+        // like autosave. New typing is still owed and must keep the close barrier shut.
+        open.value = edits === sent ? saved : { ...saved, content: open.value.content };
+        if (edits === sent) {
+          dirty.value = false;
+          staleOnDisk.value = false;
+        }
       }
       await load();
       invalidateGraph();
@@ -1085,9 +1103,65 @@ export const useDocsStore = defineStore("docs", () => {
     }, GRAPH_REFRESH_MS);
   }
 
+  /** §5.3: recover a gap without remounting an editor or writing its serialised Markdown. */
+  async function resyncOpen(): Promise<void> {
+    const document = open.value;
+    if (!document || live.value) return;
+    const path = document.path;
+    const request = documentRequest;
+    const generation = edits;
+    const protectedEdit = dirty.value || saving.value;
+    const current = () => documentRequest === request && open.value === document && open.value.path === path && !live.value;
+    const protectedNow = () => protectedEdit || dirty.value || saving.value || edits !== generation;
+    try {
+      const fresh = await api.doc(path);
+      if (!current()) return;
+      const changed = fresh.updated_at !== document.updated_at || fresh.content !== document.content;
+      if (protectedNow()) {
+        if (changed) staleOnDisk.value = true;
+        return;
+      }
+      // Even an identical assignment can reset the editor/cursor. An unchanged read is a no-op.
+      if (!changed) return;
+      open.value = fresh;
+      liveTitle.value = fresh.title;
+    } catch (cause) {
+      if (!current()) return;
+      if (cause instanceof ApiError && cause.status === 404) {
+        if (protectedNow()) staleOnDisk.value = true;
+        else closeDocument();
+      } else error.value = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  let resyncRequest: Promise<void> | null = null;
+  let resyncPending = false;
+
+  function resync(): Promise<void> {
+    resyncPending = true;
+    resyncRequest ??= Promise.resolve().then(async () => {
+      do {
+        resyncPending = false;
+        invalidateGraph();
+        if (graphTimer) clearTimeout(graphTimer);
+        graphTimer = null;
+        await Promise.all([load(), loadFolderStyles(), resyncOpen(), graph.value ? loadGraph() : undefined]);
+      } while (resyncPending);
+    }).catch(cause => {
+      error.value = cause instanceof Error ? cause.message : String(cause);
+    }).finally(() => { resyncRequest = null; });
+    return resyncRequest;
+  }
+
   function subscribe(): void {
     if (subscribed) return;
     subscribed = true;
+
+    onEvent("system.dropped", (payload, envelope) => {
+      if (payload.resync && !rendererSession.isLegacy && envelope && rendererSession.matches(envelope)) {
+        void resync();
+      }
+    });
 
     onEvent("team.doc.changed", (payload) => {
       // Our own write comes back as an event too, and it is not news: reporting it as "this

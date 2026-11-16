@@ -1,0 +1,2216 @@
+{
+  "task": "VS-43",
+  "at": "2026-11-13T13:41:50.215Z",
+  "status": "passed",
+  "mode": "control: fixture URLs precomputed outside render",
+  "transport": "Electron fixture protocol; native import/fetch/CSS/DOM/Shiki; injected envelopes through production WsConnection.dispatch, not network WS or backend E2E; not desktop tabs",
+  "versions": {
+    "node": "24.22.1",
+    "acorn": "8.18.0",
+    "ada": "4.0.0",
+    "amaro": "1.1.11",
+    "ares": "1.34.9",
+    "brotli": "1.2.0",
+    "cldr": "48.0",
+    "icu": "78.2",
+    "llhttp": "9.4.3",
+    "merve": "1.2.2",
+    "modules": "150",
+    "napi": "10",
+    "nbytes": "0.1.4",
+    "ncrypto": "0.0.1",
+    "nghttp2": "1.70.0",
+    "nghttp3": "",
+    "ngtcp2": "",
+    "openssl": "0.0.0",
+    "simdjson": "4.6.11",
+    "simdutf": "7.7.0",
+    "sqlite": "3.53.4",
+    "tz": "2026e",
+    "undici": "7.30.1",
+    "unicode": "17.0",
+    "uv": "1.52.1",
+    "uvwasi": "0.0.23",
+    "v8": "15.6.75.19-electron.0",
+    "zlib": "1.3.2.1-motley",
+    "zstd": "1.6.0",
+    "electron": "45.1.0",
+    "chrome": "156.0.8078.49"
+  },
+  "assertions": [
+    {
+      "name": "Two simultaneous isolated Chromium renderer processes",
+      "passed": true,
+      "details": {
+        "A": 52300,
+        "B": 45500
+      }
+    },
+    {
+      "name": "B page finishes before delayed A native import",
+      "passed": true
+    },
+    {
+      "name": "A/B real DOM computed CSS backgrounds and decoded asset/raw pixels differ",
+      "passed": true,
+      "details": {
+        "A": [
+          {
+            "kind": "fixture-page",
+            "label": "A1",
+            "evaluation": "674dcd5f-3823-4a89-bdbf-162cd94760ce",
+            "color": "rgb(180, 20, 30)",
+            "background": "rgb(250, 220, 220)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "fixture-node",
+            "label": "A1",
+            "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+            "color": "rgb(180, 20, 30)",
+            "background": "rgb(250, 220, 220)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "fixture-previewer",
+            "label": "A1",
+            "evaluation": "324f218c-99aa-49cc-8de9-7f14d9714685",
+            "color": "rgb(180, 20, 30)",
+            "background": "rgb(250, 220, 220)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  180,
+                  20,
+                  30,
+                  255
+                ]
+              }
+            ]
+          }
+        ],
+        "B": [
+          {
+            "kind": "fixture-page",
+            "label": "B1",
+            "evaluation": "41c3791d-0d7a-4f36-a7c8-82e8dd81273b",
+            "color": "rgb(20, 60, 190)",
+            "background": "rgb(220, 230, 250)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "fixture-node",
+            "label": "B1",
+            "evaluation": "25e5b126-3fed-4715-aca0-e263a6b0b41f",
+            "color": "rgb(20, 60, 190)",
+            "background": "rgb(220, 230, 250)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "fixture-previewer",
+            "label": "B1",
+            "evaluation": "4cc88965-34e7-4f70-a13f-b51a5a8be043",
+            "color": "rgb(20, 60, 190)",
+            "background": "rgb(220, 230, 250)",
+            "images": [
+              {
+                "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              },
+              {
+                "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+                "loaded": true,
+                "pixel": [
+                  20,
+                  60,
+                  190,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "VS-41 delayed first pages inventory preserves mounted node/Explorer wrappers",
+      "passed": true
+    },
+    {
+      "name": "Initial node callback remains live after first page inventory",
+      "passed": true
+    },
+    {
+      "name": "A actual node UI click writes captured same-node params",
+      "passed": true
+    },
+    {
+      "name": "A refuses legacy/foreign loader asset URLs",
+      "passed": true
+    },
+    {
+      "name": "A real Oniguruma/Shiki grammar loads",
+      "passed": true,
+      "details": {
+        "language": "same-language",
+        "lines": [
+          [
+            {
+              "text": "ALPHA",
+              "color": "#FF7B72"
+            },
+            {
+              "text": " BETA",
+              "color": "#E6EDF3"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "B actual node UI click writes captured same-node params",
+      "passed": true
+    },
+    {
+      "name": "B refuses legacy/foreign loader asset URLs",
+      "passed": true
+    },
+    {
+      "name": "B real Oniguruma/Shiki grammar loads",
+      "passed": true,
+      "details": {
+        "language": "same-language",
+        "lines": [
+          [
+            {
+              "text": "ALPHA ",
+              "color": "#E6EDF3"
+            },
+            {
+              "text": "BETA",
+              "color": "#FF7B72"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "name": "Equal language id and scope select different real grammar tokens/DOM colors",
+      "passed": true,
+      "details": {
+        "A": [
+          {
+            "text": "ALPHA",
+            "color": "rgb(255, 123, 114)"
+          },
+          {
+            "text": " BETA",
+            "color": "rgb(230, 237, 243)"
+          }
+        ],
+        "B": [
+          {
+            "text": "ALPHA ",
+            "color": "rgb(230, 237, 243)"
+          },
+          {
+            "text": "BETA",
+            "color": "rgb(255, 123, 114)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VS-41 page -> pipeline -> page can open nested previewer",
+      "passed": true
+    },
+    {
+      "name": "Same node id stale editor callback cannot acquire replacement writer",
+      "passed": true
+    },
+    {
+      "name": "VS-41 delayed node nested preview rejects replacement editor",
+      "passed": true
+    },
+    {
+      "name": "Native Chromium import caches identical full URL/module evaluation",
+      "passed": true
+    },
+    {
+      "name": "Native same-URL control retains A1 after transport changes to A2",
+      "passed": true
+    },
+    {
+      "name": "VS-40 retained API writes revoked immediately before REST refresh",
+      "passed": true
+    },
+    {
+      "name": "VS-40 retained node writes revoked immediately",
+      "passed": true
+    },
+    {
+      "name": "Revoked A callbacks issue no HTTP or node writes",
+      "passed": true
+    },
+    {
+      "name": "Equal-stamp lifecycle reload obtains A2 JS via new native generation URL",
+      "passed": true
+    },
+    {
+      "name": "Coalesced repeated plugin.changed converges without unbounded requests",
+      "passed": true
+    },
+    {
+      "name": "Local refresh joins event lifecycle without a second generation reset",
+      "passed": true
+    },
+    {
+      "name": "Same native module URL is fetched only once despite repeated imports",
+      "passed": true
+    },
+    {
+      "name": "Reload A preserves B DOM/component/native module/grammar/writer state",
+      "passed": true
+    },
+    {
+      "name": "VS-40 repeated gap invalidates late native import/factory",
+      "passed": true
+    },
+    {
+      "name": "Gap recovery fetches authoritative project plugin inventory",
+      "passed": true
+    },
+    {
+      "name": "Unchanged ordinary inventory does not remount or reset grammars/editors",
+      "passed": true
+    },
+    {
+      "name": "Production WsConnection rejects foreign scoped envelope",
+      "passed": true
+    },
+    {
+      "name": "VS-40 refresh failure remains observable, not reported as success",
+      "passed": true,
+      "details": {
+        "ok": false,
+        "error": "Plugin routes must be project-relative"
+      }
+    },
+    {
+      "name": "Failed refresh A leaves B untouched",
+      "passed": true
+    },
+    {
+      "name": "VS-40 retry after failed refresh recovers current registry",
+      "passed": true
+    },
+    {
+      "name": "Disable A withdraws page/node/previewer and late response cannot resurrect routes",
+      "passed": true
+    },
+    {
+      "name": "Disabled A cannot highlight removed language",
+      "passed": true
+    },
+    {
+      "name": "Disable A leaves B byte-for-byte identical",
+      "passed": true
+    },
+    {
+      "name": "B event callback/writer still operates after A disable",
+      "passed": true
+    },
+    {
+      "name": "Disabled A subscriptions do not write",
+      "passed": true
+    },
+    {
+      "name": "Recovery after disable reinstalls only current A3 components",
+      "passed": true
+    },
+    {
+      "name": "Every fixture request retained URL scope and token/header authentication",
+      "passed": true,
+      "details": []
+    },
+    {
+      "name": "All node writes target own project and identical node id",
+      "passed": true
+    },
+    {
+      "name": "Native module requests retain equal stamp and generation/token selectors",
+      "passed": true
+    },
+    {
+      "name": "Grammar JSON and registry REST use bearer headers (not query credentials)",
+      "passed": true
+    },
+    {
+      "name": "Native CSS/image assets use scope plus query authentication",
+      "passed": true
+    },
+    {
+      "name": "No uncaught renderer exceptions or unhandled rejections",
+      "passed": true
+    },
+    {
+      "name": "No Chromium/production console errors or unexpected warnings",
+      "passed": true,
+      "details": {
+        "errors": [],
+        "unexpectedWarnings": []
+      }
+    }
+  ],
+  "snapshots": {
+    "initialA": {
+      "id": "A",
+      "elements": [
+        {
+          "kind": "fixture-page",
+          "label": "A1",
+          "evaluation": "674dcd5f-3823-4a89-bdbf-162cd94760ce",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-previewer",
+          "label": "A1",
+          "evaluation": "324f218c-99aa-49cc-8de9-7f14d9714685",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-previewer",
+          "label": "A1",
+          "evaluation": "324f218c-99aa-49cc-8de9-7f14d9714685",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "A1"
+          }
+        },
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "A1"
+          }
+        }
+      ],
+      "grammarGeneration": 0,
+      "nav": [
+        "same-page"
+      ],
+      "loading": false,
+      "error": null,
+      "route": "/same-page",
+      "captures": [
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A1",
+          "evaluation": "324f218c-99aa-49cc-8de9-7f14d9714685",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 2
+        },
+        {
+          "kind": "page",
+          "label": "A1",
+          "evaluation": "674dcd5f-3823-4a89-bdbf-162cd94760ce",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 2
+        },
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        }
+      ],
+      "highlighted": [
+        {
+          "text": "ALPHA",
+          "color": "rgb(255, 123, 114)"
+        },
+        {
+          "text": " BETA",
+          "color": "rgb(230, 237, 243)"
+        }
+      ]
+    },
+    "initialB": {
+      "id": "B",
+      "elements": [
+        {
+          "kind": "fixture-page",
+          "label": "B1",
+          "evaluation": "41c3791d-0d7a-4f36-a7c8-82e8dd81273b",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-node",
+          "label": "B1",
+          "evaluation": "25e5b126-3fed-4715-aca0-e263a6b0b41f",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-previewer",
+          "label": "B1",
+          "evaluation": "4cc88965-34e7-4f70-a13f-b51a5a8be043",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "B1"
+          }
+        }
+      ],
+      "grammarGeneration": 0,
+      "nav": [
+        "same-page"
+      ],
+      "loading": false,
+      "error": null,
+      "route": "/same-page",
+      "captures": [
+        {
+          "kind": "node",
+          "label": "B1",
+          "evaluation": "25e5b126-3fed-4715-aca0-e263a6b0b41f",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "B1",
+          "evaluation": "4cc88965-34e7-4f70-a13f-b51a5a8be043",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "B1",
+          "evaluation": "41c3791d-0d7a-4f36-a7c8-82e8dd81273b",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        }
+      ],
+      "highlighted": [
+        {
+          "text": "ALPHA ",
+          "color": "rgb(230, 237, 243)"
+        },
+        {
+          "text": "BETA",
+          "color": "rgb(255, 123, 114)"
+        }
+      ]
+    },
+    "finalA": {
+      "id": "A",
+      "elements": [
+        {
+          "kind": "fixture-page",
+          "label": "A3",
+          "evaluation": "4f471f59-0c9f-4a5a-9b65-8782028cfd3b",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-node",
+          "label": "A3",
+          "evaluation": "4d2834f3-cd5c-4a0a-93c7-237c056e71c1",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-previewer",
+          "label": "A3",
+          "evaluation": "ab5bd8bd-c5e5-4ef2-bf94-c0d4ad01c782",
+          "color": "rgb(180, 20, 30)",
+          "background": "rgb(250, 220, 220)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                180,
+                20,
+                30,
+                255
+              ]
+            }
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "A1"
+          }
+        },
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "A1"
+          }
+        }
+      ],
+      "grammarGeneration": 5,
+      "nav": [
+        "same-page"
+      ],
+      "loading": false,
+      "error": null,
+      "route": "/same-page",
+      "captures": [
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A1",
+          "evaluation": "324f218c-99aa-49cc-8de9-7f14d9714685",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 2
+        },
+        {
+          "kind": "page",
+          "label": "A1",
+          "evaluation": "674dcd5f-3823-4a89-bdbf-162cd94760ce",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 2
+        },
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A1",
+          "evaluation": "7ad258d1-bf1a-4cc0-89ef-054d1b2cee30",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A2",
+          "evaluation": "d0723f87-31cc-47ef-ba05-6af9cc0aa1e7",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A2",
+          "evaluation": "151fdf17-dc46-4ad5-bb78-5af7b2c4fa39",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "A2",
+          "evaluation": "0493f8bd-2b2a-44cd-baf5-fcc5ed288249",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A2",
+          "evaluation": "3f9d6348-8392-41d4-8461-5b6e54657594",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A2",
+          "evaluation": "78450549-3245-4196-af9f-d68c83e3a155",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "A2",
+          "evaluation": "4de3bea3-e912-46d6-a190-437b3c418322",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A2",
+          "evaluation": "fa8801c1-bc4d-4cd8-96af-34f78f5a8b02",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A2",
+          "evaluation": "40396bc8-5f23-41e9-978c-74bc6fd5bb90",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "A2",
+          "evaluation": "a97b931c-7fa6-4559-9c95-cc9ef2c3fd22",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "A3",
+          "evaluation": "ab5bd8bd-c5e5-4ef2-bf94-c0d4ad01c782",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "node",
+          "label": "A3",
+          "evaluation": "4d2834f3-cd5c-4a0a-93c7-237c056e71c1",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "A3",
+          "evaluation": "4f471f59-0c9f-4a5a-9b65-8782028cfd3b",
+          "source": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        }
+      ],
+      "highlighted": []
+    },
+    "finalB": {
+      "id": "B",
+      "elements": [
+        {
+          "kind": "fixture-page",
+          "label": "B1",
+          "evaluation": "41c3791d-0d7a-4f36-a7c8-82e8dd81273b",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-node",
+          "label": "B1",
+          "evaluation": "25e5b126-3fed-4715-aca0-e263a6b0b41f",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "fixture-previewer",
+          "label": "B1",
+          "evaluation": "4cc88965-34e7-4f70-a13f-b51a5a8be043",
+          "color": "rgb(20, 60, 190)",
+          "background": "rgb(220, 230, 250)",
+          "images": [
+            {
+              "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            },
+            {
+              "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+              "loaded": true,
+              "pixel": [
+                20,
+                60,
+                190,
+                255
+              ]
+            }
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "origin": "B1"
+          }
+        },
+        {
+          "editor": 1,
+          "node": "same-node",
+          "patch": {
+            "event": "B1"
+          }
+        }
+      ],
+      "grammarGeneration": 0,
+      "nav": [
+        "same-page"
+      ],
+      "loading": false,
+      "error": null,
+      "route": "/same-page",
+      "captures": [
+        {
+          "kind": "node",
+          "label": "B1",
+          "evaluation": "25e5b126-3fed-4715-aca0-e263a6b0b41f",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "previewer",
+          "label": "B1",
+          "evaluation": "4cc88965-34e7-4f70-a13f-b51a5a8be043",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        },
+        {
+          "kind": "page",
+          "label": "B1",
+          "evaluation": "41c3791d-0d7a-4f36-a7c8-82e8dd81273b",
+          "source": "fixture://studio/api/projects/B/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+          "mounts": 1
+        }
+      ],
+      "highlighted": [
+        {
+          "text": "ALPHA ",
+          "color": "rgb(230, 237, 243)"
+        },
+        {
+          "text": "BETA",
+          "color": "rgb(255, 123, 114)"
+        }
+      ]
+    }
+  },
+  "requests": [
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310449,
+      "completed": 1794577310449
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310450,
+      "completed": 1794577310450
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310451,
+      "completed": 1794577310869
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310470,
+      "completed": 1794577310470
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/pixel.svg",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/pixel.svg?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310471,
+      "completed": 1794577310471
+    },
+    {
+      "id": "A",
+      "endpoint": "/explorer/raw",
+      "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310471,
+      "completed": 1794577310471
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310548,
+      "completed": 1794577310548
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310549,
+      "completed": 1794577310549
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/B/plugins/pages?project_id=B&epoch=epoch-B",
+      "method": "GET",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310549,
+      "completed": 1794577310549
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/style.css?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310561,
+      "completed": 1794577310561
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/pixel.svg",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/pixel.svg?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310562,
+      "completed": 1794577310562
+    },
+    {
+      "id": "B",
+      "endpoint": "/explorer/raw",
+      "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310562,
+      "completed": 1794577310562
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=B&epoch=epoch-B&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310819,
+      "completed": 1794577310819
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/style.css?project_id=B&epoch=epoch-B&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "B1",
+      "authorization": null,
+      "started": 1794577310825,
+      "completed": 1794577310825
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=0&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310871,
+      "completed": 1794577310881
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577310885,
+      "completed": 1794577310885
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/settings",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/settings?project_id=A&epoch=epoch-A",
+      "method": "PUT",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310963,
+      "body": {
+        "settings": {
+          "origin": "A1"
+        }
+      },
+      "completed": 1794577310963
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/actions/record",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/actions/record?project_id=A&epoch=epoch-A",
+      "method": "POST",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310965,
+      "body": {
+        "origin": "A1"
+      },
+      "completed": 1794577310965
+    },
+    {
+      "id": "A",
+      "endpoint": "/explorer/raw",
+      "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310965,
+      "completed": 1794577310965
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/grammars",
+      "url": "fixture://studio/api/projects/A/plugins/grammars?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310966,
+      "completed": 1794577310966
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/grammar.json",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/grammar.json?v=same-stamp&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577310995,
+      "completed": 1794577310995
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/settings",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/settings?project_id=B&epoch=epoch-B",
+      "method": "PUT",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311016,
+      "body": {
+        "settings": {
+          "origin": "B1"
+        }
+      },
+      "completed": 1794577311016
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/actions/record",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/actions/record?project_id=B&epoch=epoch-B",
+      "method": "POST",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311017,
+      "body": {
+        "origin": "B1"
+      },
+      "completed": 1794577311017
+    },
+    {
+      "id": "B",
+      "endpoint": "/explorer/raw",
+      "url": "fixture://studio/api/projects/B/explorer/raw?path=same.fixture&project_id=B&epoch=epoch-B",
+      "method": "GET",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311018,
+      "completed": 1794577311018
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/grammars",
+      "url": "fixture://studio/api/projects/B/plugins/grammars?project_id=B&epoch=epoch-B",
+      "method": "GET",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311019,
+      "completed": 1794577311019
+    },
+    {
+      "id": "B",
+      "endpoint": "/plugins/same-plugin/assets/grammar.json",
+      "url": "fixture://studio/api/projects/B/plugins/same-plugin/assets/grammar.json?v=same-stamp&project_id=B&epoch=epoch-B",
+      "method": "GET",
+      "label": "B1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311048,
+      "completed": 1794577311048
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577311071,
+      "completed": 1794577311071
+    },
+    {
+      "id": "A",
+      "endpoint": "/explorer/file",
+      "url": "fixture://studio/api/projects/A/explorer/file?path=same.fixture&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311077,
+      "completed": 1794577311077
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577311078,
+      "completed": 1794577311078
+    },
+    {
+      "id": "A",
+      "endpoint": "/explorer/raw",
+      "url": "fixture://studio/api/projects/A/explorer/raw?path=same.fixture&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311086,
+      "completed": 1794577311086
+    },
+    {
+      "id": "A",
+      "endpoint": "/explorer/file",
+      "url": "fixture://studio/api/projects/A/explorer/file?path=delayed.fixture&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A1",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311111,
+      "completed": 1794577311143
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A1",
+      "authorization": null,
+      "started": 1794577311144,
+      "completed": 1794577311144
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311175,
+      "completed": 1794577311176
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311177,
+      "completed": 1794577311177
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311178,
+      "completed": 1794577311178
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311179,
+      "completed": 1794577311179
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311179,
+      "completed": 1794577311179
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311180,
+      "completed": 1794577311180
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311181,
+      "completed": 1794577311181
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/grammars",
+      "url": "fixture://studio/api/projects/A/plugins/grammars?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311231,
+      "completed": 1794577311231
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/grammar.json",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/grammar.json?v=same-stamp&project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311232,
+      "completed": 1794577311232
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/late.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/late.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=1&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311239,
+      "completed": 1794577311284
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311283,
+      "completed": 1794577311284
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins",
+      "url": "fixture://studio/api/projects/A/plugins?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311283,
+      "completed": 1794577311283
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311285,
+      "completed": 1794577311285
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins",
+      "url": "fixture://studio/api/projects/A/plugins?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311285,
+      "completed": 1794577311285
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311286,
+      "completed": 1794577311286
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311286,
+      "completed": 1794577311286
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=2&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311287,
+      "completed": 1794577311287
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311287,
+      "completed": 1794577311287
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311288,
+      "completed": 1794577311288
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311345,
+      "completed": 1794577311345
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311356,
+      "completed": 1794577311356
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins",
+      "url": "fixture://studio/api/projects/A/plugins?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311357,
+      "completed": 1794577311357
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311363,
+      "completed": 1794577311363
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins",
+      "url": "fixture://studio/api/projects/A/plugins?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311364,
+      "completed": 1794577311364
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311365,
+      "completed": 1794577311365
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311365,
+      "completed": 1794577311365
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=3&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311366,
+      "completed": 1794577311366
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311366,
+      "completed": 1794577311366
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A2",
+      "authorization": null,
+      "started": 1794577311367,
+      "completed": 1794577311367
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311418,
+      "completed": 1794577311453
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311454,
+      "completed": 1794577311454
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/grammars",
+      "url": "fixture://studio/api/projects/A/plugins/grammars?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A2",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311458,
+      "completed": 1794577311458
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/pages",
+      "url": "fixture://studio/api/projects/A/plugins/pages?project_id=A&epoch=epoch-A",
+      "method": "GET",
+      "label": "A3",
+      "authorization": "Bearer fixture secret /&",
+      "started": 1794577311476,
+      "completed": 1794577311476
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/previewer.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/previewer.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A3",
+      "authorization": null,
+      "started": 1794577311477,
+      "completed": 1794577311477
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/node.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/node.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A3",
+      "authorization": null,
+      "started": 1794577311478,
+      "completed": 1794577311478
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/page.js",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/page.js?v=same-stamp&project_id=A&epoch=epoch-A&studio_generation=5&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A3",
+      "authorization": null,
+      "started": 1794577311479,
+      "completed": 1794577311479
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A3",
+      "authorization": null,
+      "started": 1794577311479,
+      "completed": 1794577311479
+    },
+    {
+      "id": "A",
+      "endpoint": "/plugins/same-plugin/assets/style.css",
+      "url": "fixture://studio/api/projects/A/plugins/same-plugin/assets/style.css?project_id=A&epoch=epoch-A&token=fixture%20secret%20%2F%26",
+      "method": "GET",
+      "label": "A3",
+      "authorization": null,
+      "started": 1794577311482,
+      "completed": 1794577311482
+    }
+  ],
+  "console": [
+    {
+      "id": "A",
+      "stage": "VS-41 page pipeline page",
+      "at": 1794577311095,
+      "level": "warning",
+      "message": "setNodeParams(same-node) ignored: pipeline editor is no longer mounted",
+      "line": 11843,
+      "source": "fixture://studio/assets/index-D2ohwjaR.js"
+    }
+  ],
+  "expectedWarnings": [
+    {
+      "id": "A",
+      "stage": "VS-41 page pipeline page",
+      "at": 1794577311095,
+      "level": "warning",
+      "message": "setNodeParams(same-node) ignored: pipeline editor is no longer mounted",
+      "line": 11843,
+      "source": "fixture://studio/assets/index-D2ohwjaR.js"
+    }
+  ],
+  "violations": [],
+  "diagnostics": {
+    "A": {
+      "consoleErrors": [],
+      "uncaught": [],
+      "rejections": []
+    },
+    "B": {
+      "consoleErrors": [],
+      "uncaught": [],
+      "rejections": []
+    }
+  },
+  "sources": {
+    "desktop/test/plugin-project-scope.cjs": "993f13903cff2b190386eb67bb4703f64c524c66ad0851ecb6ffb7e647a0c6e7",
+    "desktop/test/fixtures/plugin-project-scope/index.html": "4065c6860c097351f613934c0de4c58c0d1b0c33a93db334f33fd2ecc6f838f3",
+    "desktop/test/fixtures/plugin-project-scope/renderer.js": "1cca1fa74d21f5fdf8835c78cbb978b74043b83fc2177782d7937da3dc47a8b5",
+    "desktop/test/fixtures/plugin-project-scope/component.js": "ca47039d8cc486b265a8c62628032cfaf321a347a6d95ce1de2561f0426ea188",
+    "frontend/src/views/MemoryView.vue": "25e27eb96da12606bf3c32ecb7dea242aa7065e24ba88fedd2a844b42faeba17",
+    "frontend/src/stores/runs.ts": "194946d6423fe0b0536ba95f0d3a23d2af82bc8a039fc88b197a1349d771c701",
+    "frontend/src/i18n/I18nT.vue": "67e93602b106b370e323b5a9f605e114ba4d9b4f9636c05afe0aa978fe2051a2",
+    "frontend/src/components/docs/nodes/ToggleView.vue": "28b67f5dc3b59e66e40f044078c60653d57d1f5f1863742e24db287ab0846e61",
+    "frontend/src/components/teams/RequiredContextEditor.vue": "d8a235e882112e7b86b47aad1635387e89141d742ddc43ee16240a79c8f2d4a2",
+    "frontend/src/components/settings/SettingsPage.vue": "6e94334f66e90b437d7d9ef473c7f1cb573a9b299e5cdcd082e86746489276e3",
+    "frontend/src/lib/highlight/use-highlight.ts": "9d7f8022e01bce25a80834acd58b6ea88b33de952afd369bd6f8852c06e52067",
+    "frontend/src/components/teams/DependencyPicker.vue": "e8c0b20688d24e63ec4ed2fe3457b3d95f8efd0f07b330b579996b30ce993401",
+    "frontend/src/lib/highlight/extensions.ts": "15c7b6506ce986c00a8f2a12f4087c307112ede3da77df980974ced4c5a0b976",
+    "frontend/src/components/explorer/FileContextMenu.vue": "5806fbceec5ffc487b906142fdc00b5837d472b7eb8cf25607f932c308a60c26",
+    "frontend/src/lib/editor/images.ts": "b138e7cc402505c729a2512915fa5368c98c7ed6efbf92774bc764ada6d35861",
+    "frontend/src/components/teams/SessionStatus.vue": "5f6654d55ef7dac9e63666c3fe02582d77d4c4b5956f51440f3c423cb67ecbd2",
+    "frontend/src/components/docs/BlockEditor.vue": "0245aa01adc46eae94a81a706d0cb4b15a55d9a7f8f0ca666766467111b87248",
+    "frontend/src/lib/md/prosemirror.ts": "9d97d1235795c7bbb54a30d5603caf583d194c41d4d0497b70cbab003dc6649a",
+    "frontend/src/components/producer/ProducerPlan.vue": "7efda230f97079c6880a7b90f1013615da01344d41f81923a417fe41791e1749",
+    "frontend/src/i18n/index.ts": "658960eb4d845a6ed53649aa386bc7d8f2191094243689ccd51890ac499fb901",
+    "frontend/src/components/explorer/FilePreview.vue": "8876cc4c497c4202f0f731023af6d1596d14aa73f4c4f323405ceaa86d305626",
+    "frontend/src/lib/editor/wiki-menu.ts": "0fbf3fb0ed9bb31640caeeeba12864f469c9af0b0c6ed6b6bcce23523fdf6774",
+    "frontend/src/components/ui/CodeLines.vue": "e9bc246a674ccf61fb68a37e60dd22f27bdbdf2bff4ddff6cf0c13f6091351ab",
+    "frontend/src/components/teams/TaskDiff.vue": "8fb26d58bd27649f578af79e08263163a08800669a667d843bbb5a49965b0ca0",
+    "frontend/src/components/ui/SegmentedControl.vue": "6d6d339149d3289e5fc66f032f49a066d3068d971a4d7b41f21b6e77969ceccb",
+    "frontend/src/components/ui/CodeCopyButton.vue": "3e9b595cd37d0122c3db8a40cf01f6dca3f9405a141a75689a1c8d4446ac1a98",
+    "frontend/src/components/ui/ModelEffortSlider.vue": "67188de898f382524f7e0dd3a799e86f4d3ec950e9255779b5d9e920b5ea4340",
+    "frontend/src/views/McpView.vue": "7eafa29b7b785d26edfd5ccf0fbc0f5aab4a74efa2789cc7d16ab067ab855b06",
+    "frontend/src/lib/task-result.ts": "bc15920468ee405d3a7437ae57ad6cb1b28aa8048cf159857a90b8c32275a681",
+    "frontend/src/components/skills/SkillFilters.vue": "d5479305f967ee14b8067244e87db2e9a6452f7a89e269338571ecb31ec27d4c",
+    "frontend/src/components/producer/TaskConversation.vue": "e0da8667c4955300176a4ebb9def173acb9288211e8486d92d3b7bc8e1dcacc0",
+    "frontend/src/components/ui/StatusBadge.vue": "a01a06649acf87fc23e667685d1e3c094ec5a4d2af2bf8d17623cd0b69daa1d5",
+    "frontend/src/components/teams/TaskComposerDialog.vue": "cb1e0c978dc1e2641514b3577908e175cfc3fe1c62b0efa8b1cf9f5f5200ec7e",
+    "frontend/src/lib/md/image-width.ts": "4ef87c2e875a1742b551dc8b5a9f973543a7257a82be046208236210653d0739",
+    "frontend/src/ws/connection.ts": "55bdd93ee026016fee5460283212c04de1cb05d2b3b86cfa2256a4f551838e18",
+    "frontend/src/components/pipeline/LogPanel.vue": "cf86f4a31635d0f2c1f9be6b40d740a283f96ab2403ea8d1e43fd23bc6cdfaa8",
+    "frontend/src/components/teams/MemberSelect.vue": "2a3867b1ac52ba5d7a6b8a9e2bd82547d376f1318a3cdd7ea48266f40ad8a97b",
+    "frontend/src/components/docs/DocCreateDialog.vue": "e3c26ff650fa84166cd3cd2bda224ef2b3d403525d7d5c0bb7d6ad8ad2a35cc3",
+    "frontend/src/node-renderer/PortField.vue": "d23629caefd6e9cdb284af306f757926cc4c2e94f797acf36a0253feec849b2e",
+    "frontend/src/components/teams/RunOverrides.vue": "4a67964064e19ba3e1d5277e19f45aff2db2484cc6ada723bc92b59667d15d99",
+    "frontend/src/views/ProducerView.vue": "6e2f4c667b3491242dadea5ea20274679586034d87163c6272c51d8464409f01",
+    "frontend/src/components/teams/ContextViewer.vue": "ab17c2f10cf6ebd4ae306a6037fc9936057192de2110be0f631f3fd82005e2c4",
+    "frontend/src/lib/transcript-verbosity.ts": "fefa2214dd19979e25e3e5dda9d029e62a6247d9369973c183c0953776ae613b",
+    "frontend/src/node-renderer/GenericNode.vue": "0def37f6822c3fb6710234820a2b8ab963c1559bdbc0bffb8014bba41b329ccb",
+    "frontend/src/components/docs/SlashMenu.vue": "6e550dacff8bbcdee08f2f7b5f7d677e2f739432061111e703c886d8466883d5",
+    "frontend/src/views/SkillsView.vue": "8aa7b1d80de746ac1b494b2ccb5f231a57c44418c9dc82bb303f9ad86fc8f612",
+    "frontend/src/components/teams/MemberEditor.vue": "dffe355aaef7c5a4f1d4acba1cac30a22ea0b841b237a47a4e1491733dee8e32",
+    "frontend/src/lib/task-telemetry.ts": "3783640b7af3c421d4afe7d48078441f6b22cb1bc3820787d9177c9084e30069",
+    "frontend/src/views/DocsGraphView.vue": "88e9cc7092eb02c114b46b04b884696e656c9b79b37cb62f4ea72bc73ff233f5",
+    "frontend/src/api/auth.ts": "90409ed09a2e7b1527af368dc3de6fddf48e5b3b6e0e6e8d76ec3e38eb9a7dee",
+    "frontend/src/stores/vcs.ts": "1e8fe37ab19c90356e8694766cf65965633ae12cfd1050e0f8ea89bddbef3e26",
+    "frontend/src/components/stats/ActivityHeatmap.vue": "56047506a4e460cbb78fbfc8af1e5444eb6873a201c1173b7bafac9c5f602041",
+    "frontend/src/stores/session.ts": "8e1e7a1590c8342281f4ce06792c5873e6649587f486ed3aa9019fd2bd59607b",
+    "frontend/src/components/docs/nodes/CalloutView.vue": "075447b03a168b9815097177361d4838a72022c50c883bf1c946a307331597eb",
+    "frontend/src/components/docs/SelectionToolbar.vue": "e859e57067512a8614513f9fe76606dce1692d45c93435773a9d6f7b51dc7392",
+    "frontend/src/components/ui/ModalDialog.vue": "4768fd03b0638b6206e904c39bd0085edf7bc998a94f35e0d069969431ac07d5",
+    "frontend/src/components/ui/ResizeHandle.vue": "68410e247e5b59528606085c056d294f81b1d19088471f53acf8b1ab3b7e5b2b",
+    "frontend/src/components/explorer/FileTreeNode.vue": "ae72cb46469dcb91475afbf88657d4b8de57c8d3c665074d578e18c10806c208",
+    "frontend/src/components/stats/StatsMetricColumn.vue": "dd0f19f0ec81ae5362ce4ddcfe20e2b8f707f1f6a764a39d85353164a85d5684",
+    "frontend/src/components/teams/ContextProvider.vue": "50dc181f0e411962cd3fb200a651b1a5c54e7dcf08684ceb67536047b1aaa804",
+    "frontend/src/lib/doc-graph-sim.ts": "54bf580f349f6af93f3220f359f78f2a5b4fe064f640e1aa9a613d90dbc2c993",
+    "frontend/src/components/docs/DocDeleteDialog.vue": "f4416b2ac5d7e6087dc586b81fde6fbfc3f094871b389d97f919824385944bb0",
+    "frontend/src/views/TasksView.vue": "b3fe53da6b488b31470af728340d3a5870600dc45190e0e69ff08b6c12b61ee4",
+    "frontend/src/components/chat/ChatUserMessage.vue": "12bf263bf3f4dc2a8c5b7864c2e5fa41a2127d9cfe0287a86101eb828e8d3c7f",
+    "frontend/src/components/ui/ModelSelector.vue": "fc78c063ab1067f1fe3fdfd499e6c13d3663199ecaf18c821625d3fcb91c1c8d",
+    "frontend/src/components/ui/TreeRow.vue": "61aa0c21f3919a62d06043442ea46319db64d9b58f37cae325bc853b57ef3dda",
+    "frontend/src/components/stats/CostChart.vue": "aebff3fb14ef2eae125ef4cce45a52ec2a0c47e4d0f414bc03d829e28d591444",
+    "frontend/src/lib/editor/text-color.ts": "4b0b090355bde15216ae0564c7e74ccca009aed728e9856e9ecf47cb89a9f421",
+    "frontend/src/components/ui/LoadingBars.vue": "d1355e4fd4d655c721ba4cfb7833a19ac8e3b6ff65b78f1d40a3fc73bc9c1043",
+    "frontend/src/components/docs/DocSidePanel.vue": "e9b52ebd47e1816bca7261496703a3cc409fae6e3fd76fb829f96448f5ef15ca",
+    "frontend/src/components/docs/DocTreeMenu.vue": "c489555622160b689e0d663f74cdfade4407a70deffd39d336941200941a4f5a",
+    "frontend/src/components/teams/TaskChanges.vue": "cb629656473a982fc42e47966d86c4f00e25587ff08cb38eaaa37d1aea88ce78",
+    "frontend/src/components/chat/TranscriptFold.vue": "81ee36869c7ed8e29163cfb753eead720a2c564e3766f5a66234437b70055aa8",
+    "frontend/src/lib/runtime-version.ts": "fb7bd4bf727ec2cec1a24f6d1832d7471e979cb78ffb0a74e2a109582d874c44",
+    "frontend/src/lib/editor/outline.ts": "d209b255c0455ab7f8766c8c55ec49bde67505ace998317f1fdc38ed81b31fe9",
+    "frontend/src/lib/memory.ts": "b18ec23aeb60cc4f278e80e57a4b7d0146763d846fb47f7022ed4185b72fb570",
+    "frontend/src/views/DocsView.vue": "638886e722ed286ee616b8777312f3e2b0fc1c65a4bcb5fa2e845b59183f6afa",
+    "frontend/src/lib/task-usage.ts": "f930ddcd09eabdfd6d6c74492b845f0488ba7a3658d43547305095d233f2229d",
+    "frontend/src/lib/editor/block-selection.ts": "7f7792cc0b307c9312f60bbdbf3442eb9f2fd7b23c00a8fbe900394f629c6d92",
+    "frontend/src/components/ui/EmptyState.vue": "7c713aa5cc77f4d1294cc42fb96247619ecd01a2a258304106af44f01c1be0b7",
+    "frontend/src/components/docs/nodes/UnsupportedView.vue": "6c7e787693dd44faff30a4a407f23c981824a49c088b389a965d2369d75896af",
+    "frontend/src/lib/producer-usage.ts": "dda27f1e412cbced73d6fdcb37af8307e04da62bcdfa90c26c14587e0df27e0e",
+    "frontend/src/components/docs/DocReader.vue": "82e3f2b0402236f42506f6d172ea3060bda57126de82d25d6881ac478e33589f",
+    "frontend/src/components/teams/MemberNode.vue": "3ba9e360487b25ae1fe2b6c201d363458a8484db4a5cc7b0b1b75dc648080e20",
+    "frontend/src/components/pipeline/NodePalette.vue": "6675cd2136d360adf895c82818bc9e402c47eb4f5b01c06bbfa27fe76f8fbf56",
+    "frontend/src/views/PipelineEditorView.vue": "bcbe6b30c5e1d6fe99b168bdff7464f0b0fdea00cacfea243448608e12e3e894",
+    "frontend/src/components/layout/SidePane.vue": "fd032dcaf515014c1e90e416f38b892ab22082a6a164e519c9ca88ea3d475312",
+    "frontend/src/lib/cost-chart.ts": "e06bd1c61b024b084ceeaa5af0271499f7b5ce12e92cac8600edd616f750d056",
+    "frontend/src/components/docs/FolderRenameDialog.vue": "28fa0648bbf8e4fc60098d46d442730a38eb6f669509084d810886fc36eba6f0",
+    "frontend/src/components/docs/nodes/ImageView.vue": "7155e3c33477ad42606ed36fc3742088fbc28be2a5f03efa6edfec1b8077fb5e",
+    "frontend/src/lib/context-map.ts": "330cf7873822aeed5b2edbd83f3d5c3ccd71045ececcb7ba121609e6b5f9b0aa",
+    "frontend/src/lib/editor/use-selection-toolbar.ts": "cdef51e04f9ac740fae7e6ae88dcb567bab82bbdce34afefee3502998b3b0e6a",
+    "frontend/src/components/docs/BlockMenu.vue": "6bf24725301e596109efaaa1e77a03b22bf3e7b654466978d3dc731423bf61d9",
+    "frontend/src/lib/skills.ts": "877b4fb3dde99636fa002d8e1571b884dff1744c9217b497b9b6318cf588f36e",
+    "frontend/src/components/teams/TeamSettings.vue": "57f9fdcdfa0142f550d0265fe7b4111d4a161c65e0f7d914a53aaf26ce00275d",
+    "frontend/src/lib/activity-heatmap.ts": "54f98e1d6081679c701d7bf969916a54814c9f551ec9b2181fe2c18b75e4a1ff",
+    "frontend/src/lib/editor/icons.ts": "68cb9f3c028e512393213b76969e66bfa2bade78769396b39699e94210d78135",
+    "frontend/src/lib/effort-solver.ts": "c8a9a4b79004720c018ee2deb8e555a96983ddd88d604c195b367cbc656b7b0b",
+    "frontend/src/plugin-runtime/loader.ts": "10cb931851dcef1218f1be68cc625045c1cc5b2059eb54dfb0efd193e6a195fc",
+    "frontend/src/views/PluginsView.vue": "f772a8d66203dc3a6943eff5be0161e11f421cf961402c0fd797ea2152b2ba26",
+    "frontend/src/lib/highlight/languages.ts": "98a3f215996d2ab2e686a9efbd83b8b09bcf4ad7ca0415c890c34c87f21357b7",
+    "frontend/src/api/project-scope.ts": "6e2c691458a8b6c3049759f923ee9180e657146b16bca1a2f69b4c35981cb067",
+    "frontend/src/lib/editor/slash-menu.ts": "b9202ab5983665c9c6879fea5e4a8e256522a6552cc5c74251ffdea68ec63f04",
+    "frontend/src/lib/editor/use-block-drag.ts": "01fd359fada2aea6474f322c037835f7a337905dfb0cec250b78c426af9acc3d",
+    "frontend/src/lib/subagents.ts": "3783d675e530c45318cae8a46df42789bbfccd55cb4c94a8bbcca25936bfbf9a",
+    "frontend/src/views/ProjectSettingsView.vue": "bd2ea8eb564693f3fa3a536d6741ae41800a86b7e2f60556b5ac72c17e23ce6e",
+    "frontend/src/lib/automations.ts": "e9b88c6622078a00357b9cee3e87b5ecdba33e8228415829c8e7ec55e2c837d4",
+    "frontend/src/components/teams/MemberMark.vue": "024146303631af6be34d0b6c1c1146872d7ea0adb1f651cb20e73a3012eb6929",
+    "frontend/src/locales/en.json": "b85166b43842dc496faa66335d57e159dcdda4ad8a60db124ea7ceea2a85f88a",
+    "frontend/src/lib/editor/languages.ts": "8ab7fac14da0d7a18b6bf544e712c34d4e65b982a11ef3c44a8df6d4675edb1d",
+    "frontend/src/views/PipelinesView.vue": "932a7170c5f1e97cf41ca3b73521736bd97a04f5051a408568694ff945ff7aa6",
+    "frontend/src/components/ui/ClampText.vue": "3a568098f0563cbe77dbdd64af3b1aff568118b8f72a32504044a3f9b552ec58",
+    "frontend/src/components/teams/TaskBoard.vue": "66dc9e26be6c843179481f897631f7fb2e1ca25e9831eac38336569d2487d102",
+    "frontend/src/components/stats/StatsValue.vue": "268631bf5aa960b4ccdc24e1aa4ef60bd2c5d0efd8d38bbbf719d37a81376a2c",
+    "frontend/src/lib/org-layout.ts": "d6834e988f32b500936a76e47d6a8d0189a31e20ffb2390e15871d3a41ef133d",
+    "frontend/src/components/memory/MemoryImportDialog.vue": "a42f3662b17e1b40b9a15f3208397fd15398c686682236eb0ea67716a02d9a98",
+    "frontend/src/components/teams/TaskDetail.vue": "3975c8571ed40d2f110fb80e4347ab21cc6aff5ec33b1d7bdfe9ee6de5d97d22",
+    "frontend/src/components/docs/WikiMenu.vue": "3a464b07b3e4d6f9fb24d2ee19c767ef2d64647547229711cb663529dc5e26dc",
+    "frontend/src/components/ui/AgentBackendIcon.vue": "e086cb6e67fc775182647b738d2ff31beb0d47d38cf3c1c0a771a8f2069bbc49",
+    "frontend/src/components/chat/ChatHeaderChips.vue": "a6c2902d768fefdad4f3966624c4e5f230f9ca33835ed818106fc72241ec24e9",
+    "frontend/src/lib/task-temp.ts": "12796186af86dd391170cae5644dba184e4c1192107340610cd1d368c94ea90a",
+    "frontend/src/components/teams/OrgChart.vue": "f508855c1954e17000243e20180df2e052b7191b6ecd9eebaa05118ab65e8d70",
+    "frontend/src/stores/explorer.ts": "e4ee33242cda55c6521a7442a2887134cf5083c38a9084ac915ae9c7bac719eb",
+    "frontend/src/views/VcsView.vue": "22c08d69366775825b5b58ea5f50ef00d5596588309bacb66fe353ec9378f96d",
+    "frontend/src/components/docs/nodes/CodeBlockView.vue": "17428f2529974271a0583f076fc8dd9350631d0c1d0b37fa2bbc4be04be4f380",
+    "frontend/src/lib/md/conventions.ts": "5af474c50d505fab37c64b0c75c82e70ed8ac06db8447fa05feefdc84765d0ca",
+    "frontend/src/components/ui/ContextUsageBar.vue": "a99baa686cb3a0c12066474b35fa15cfc6db0fabb4b0cbea4b16fe012cb6912a",
+    "frontend/src/lib/fold-state.ts": "a8163e085c0dd4d67047eaf1a03ff7e76f48b9ac9226e84839068e3b6e0f1cb7",
+    "frontend/src/components/teams/MemberIconPicker.vue": "a9d71a9d7120df530082a22e487c2853ddd18d1768a7d9bbf66fe036d4bfc540",
+    "frontend/src/lib/editor/block-menu.ts": "5683eccd44b595b9a16e2392161c31a76e1351a5f012571316861a22c61f0911",
+    "frontend/src/lib/task-clock.ts": "42b9dd5359a3ce5bdc93ba6e7b3e673ae064e5fb718c2eccdc064d5f1ce67d37",
+    "frontend/src/lib/md/document.ts": "889a7a0e1b903d0885132a7058f1fffde62683b55697308bb86917a5bdcdcd22",
+    "frontend/src/plugin-runtime/index.ts": "01104f018139fb86f33c0053bdb65f747b31886274f51e7fb69d21a2c0e23a0f",
+    "frontend/src/lib/editor/slash-items.ts": "ffccf21fee390c14132ea3afd336df91e430fe8e11da81b9c6b6cfee5bd2b4e8",
+    "frontend/src/components/pipeline/RunHistory.vue": "36a5a5fa2292253e50dd74c0f2ce22a0396f9973599358cdfbcf0a860238e7b7",
+    "frontend/src/components/settings/CommitDescriptionSettings.vue": "f752c7242a1cdf08d54b081948fda7cc8fb909081f412f5e08d438e66f26ecc6",
+    "frontend/src/components/teams/SubagentSummary.vue": "f8f6f8bf6185f50c6824c50fe67d56b2c11d1270ae90d6b2f1d18d8381714e5b",
+    "frontend/src/lib/token-directions.ts": "2039f33f6f462269ce1f1cfff81d6fbe7a0bbc6348f3ba4049d84e58ef07354e",
+    "frontend/src/components/chat/ProducerControls.vue": "6c5799c74a30f6570b9a415ba58bbdae7270737c00cd1f99c601e5e0ee336ed3",
+    "frontend/src/api/client.ts": "f27d7d180fd353e43331bf110a25fe9493e54ddc12a5f68a8d3dd2279d84b3b1",
+    "frontend/src/components/teams/ConversationPanel.vue": "67ac7d23e90e57e06c7831691241680cb565088b2d980baed57cc9c35e2e9fe8",
+    "frontend/src/lib/graph.ts": "b4f48602d4085c118611e187a6d5375bb3c8f7835f516b0b76f4cdec9f8d07d9",
+    "frontend/src/components/explorer/EntryPrompt.vue": "fe97c29b24dba13792cd35f0a2979d6f0021454096376839a1e329079ece11ea",
+    "frontend/src/stores/theme.ts": "ff4d44178318105e3a448830f0f6be98bc1feda3c9a6c6a92ddff73e7dd34300",
+    "frontend/src/lib/pane-width.ts": "6f0a8846c36d07be913e10b87d2dd78b02386a0aa2642cd717e1af56806e55fc",
+    "frontend/src/lib/user-context.ts": "1bf82cb0af9aa30a32590a679671b7d974910598ee6c419261500e082764ea62",
+    "frontend/src/stores/updates.ts": "2c493687f42771f54b7dd4db1dfe047046fdd8f85fcd62ccf0bcb3bae8e87cb3",
+    "frontend/src/components/pipeline/ProjectPathPicker.vue": "33262118470ca124f3ea93b19f6bd0d7ba98fbd84e9f1b026c5274c1e0721e93",
+    "frontend/src/components/teams/TaskWritePaths.vue": "f9449b73dbedf3582536bb62ec8b8d89d8e864a044bb01fa514a34e44fd68610",
+    "frontend/src/components/chat/EffortSolverResult.vue": "8bd16ce58df30116e906215a7ed02a920d4ec92fb0e85ac2a801ba135d26cfa7",
+    "frontend/src/views/TeamsView.vue": "26754f28e496f0241df566f84c5a93e87a51027dd69ecd36c28783c154ba093d",
+    "frontend/src/router/index.ts": "0e1d2acbadbd4ec4417e7d29163c31fd831ae00d9a2b0b38a31d88071b4efceb",
+    "frontend/src/stores/sync.ts": "d5023f9add7d48edeb920057328252d902758d26ae787f9108ecc8117d57a7a3",
+    "frontend/src/components/ui/TokenUsageChip.vue": "48a69c7326dbea0bb8d8940beaf7ff2c533c5df9dbc553051264449cab72f6a5",
+    "frontend/src/lib/md/wikilink.ts": "1465f56e363ea86dec4787dd37b11b963d5acaa90601f27ec220d7d0a25c295b",
+    "frontend/src/components/docs/nodes/WikiLinkView.vue": "93e4d7bc379739a7cfef5e93a77370c7fd49d714e26d969674bf5258b2f46145",
+    "frontend/src/components/explorer/ConfirmDialog.vue": "d7b86a8abfb482991272bbb3701f8ee2065a83bb53b92e55b85a8c1378628261",
+    "frontend/src/components/ui/MarkdownText.vue": "e3dee3cbbc98fa859599e3b81818560af15983d380a1bec37d28f44c4768a610",
+    "frontend/src/lib/highlight/highlighter.ts": "48d284f5ae907e89a8315694d75490049807a4d8a469fd9e240b10e4003e46db",
+    "frontend/src/lib/collab/session.ts": "65bc0e52b3cc213ec85f22860e47010f868ef65789d3fcffec18e008bf5d013b",
+    "frontend/src/stores/pipelines.ts": "b939f6739307de7b2d7633ecfc22e041ab8c5a6f82407322ab9b64a38e7f5d04",
+    "frontend/src/lib/editor/transform.ts": "335d810dbb7e6f71942278dd4497d7d35b5ff20c53968f0d21b306e998c0698a",
+    "frontend/src/components/settings/SyncSettings.vue": "655ae067fe760672a84e5fa005387117104c50a0a1c34834b76a0b939383ea19",
+    "frontend/src/lib/leave.ts": "84e4e00c1db19bd15897e72b9eab4bb0becd5343b514ffb709e8af046a15f509",
+    "frontend/src/node-renderer/NodeConfigPanel.vue": "9eb1eea23b5183522828d4f69d8c39d2c7c975d65b7d421068779a2579492a55",
+    "frontend/src/components/teams/ContextFragmentText.vue": "4b100a7241a9178d3f8b95cc2d5ca52977dbae2b844b9d7ddbf8224278688aca",
+    "frontend/src/components/chat/ProducerCompaction.vue": "3a59bbfcb79ff10a207cc08202d720b8ac589c6ed07ebe97c31ffeb27dc0d912",
+    "frontend/src/views/AutomationsView.vue": "fa2b3f0d674bc7961bbd0857e5607a24be1baa2e690596f23e090bc7dc46595f",
+    "frontend/src/plugin-runtime/node-params.ts": "ca47e1b8f5eb5dd2940e316450523f7e4992b22a71cde783d89e7bd63a82062c",
+    "frontend/src/plugin-runtime/MissingPluginPage.vue": "2d9f5682c2d4875aad18dee76b5fb13e3fb66d74e2a2aba53c4296d48acfb61c",
+    "frontend/src/components/settings/StartupSettings.vue": "0de32dc16e2fe85f5d8ede3e294ae5b161ec51865dd03d19c41be7261985bfad",
+    "frontend/src/lib/collab/carried.ts": "5944ecdbbd049b09bba260801ebdfaae9245efdb89e50a807c101a0b7ccd11e8",
+    "frontend/src/views/ChatsView.vue": "ffae67ecf4b178b0b8fe14ce897cc32b8785c7693287c67f4e20fbe7e39a27b5",
+    "frontend/src/components/settings/AgentPrompts.vue": "0eb9289a190b1ae02cc195abd3b3a35337a73bcbc52c39f90974a6380728dd09",
+    "frontend/src/lib/transcript.ts": "8e5358664c2039022fcc16b4032fe1908ccc5005fc2e7c53e20a3531f47d0222",
+    "frontend/src/views/ExplorerView.vue": "1a75261f7a0d0633451617ce34b2200c9c36b185229a442ad23b423b13139809",
+    "frontend/src/stores/automations.ts": "30b8b28bd8816c8eb99137017dca80b47e9b7b589fb77de8cf2c1fe01da80357",
+    "frontend/src/lib/editor/shortcuts.ts": "bfd7840d6a7edd5c6c27553b3409a0638992d65c06af4b0764c4e8f8ecc0f4e1",
+    "frontend/src/lib/collab/seed.ts": "52903340b09757287b2bcf68270d8cbfe0ffca0f3b63fcd6892cbe4ca932df84",
+    "frontend/src/locales/ru.json": "41318642b1dafbfbc5abc8e7672f87e91db86665ab09eb2318d3c9e8e431eee9",
+    "frontend/src/stores/teams.ts": "447f53beda378a4d9bba7f33f1d466402280d8abe4e50370dd1f893dce97aae8",
+    "frontend/src/components/skills/SkillPicker.vue": "e450b745029c2b63b5cdd7204420f20f803720a5ce43b99256bd50a32bbfdd90",
+    "frontend/src/components/docs/DocLinkGraph.vue": "58d8fed06e37bf55137b4e2af3a84ba4c4c9222992f6efcefb2cad9779bcf005",
+    "frontend/src/lib/editor/nodes.ts": "333e237200ce726bd6d8835b89074e13ef5032e5b45ad5c155155df7d84d804c",
+    "frontend/src/lib/appearance.ts": "1392362d1ebd416b5e12646b7f974bdeb747f12cd7a106c26c4069b6f5ec458c",
+    "frontend/src/lib/editor/extensions.ts": "0eccba32c012db6d85ab932dca7bed1d6aa976ab0d62b7ea3379214769e698c3",
+    "frontend/src/stores/memory.ts": "bb75619f3cbb09529da40f8afcdc17f80bbad40594c8b15c15e60a4f77ad0189",
+    "frontend/src/lib/collab/caret.ts": "cbb8ffd6f40d79794201de3e7678314b1366ebf635e7e63572c9a9308cc24f54",
+    "frontend/src/lib/task-write-paths.ts": "c358988f1794c2f69d48f18c6aa86afb55c8ebc96c21069961eea39edf90c535",
+    "frontend/src/session/project-session.ts": "4150a8f2abae82bf36df41cb34394270544106badbe580af791b17b7236fe4b0",
+    "frontend/src/i18n/messages.ts": "d64f6f44d4f92ed3e33317a6fd05817123f460a499574ae4b3264902be435619",
+    "frontend/src/lib/highlight/grammars.ts": "886427ce3f59df97b259e546567756757c47f4fe41081aed4e910bbc32a80101",
+    "frontend/src/views/NotFoundView.vue": "d3fcb25c32d4c7329b09526cb23ee72540dd7fcc10936b2fd78aadacb6b85cf2",
+    "frontend/src/lib/editor/image-drop.ts": "1b93da07eebad9ee435bb2e4d3023ee5b1ef5ccc3ab61aa40ea2812bd42b668f",
+    "frontend/src/components/ui/AttachmentPicker.vue": "b36c672cd0b91702b947bfcb0b36ac4c30885a739d5c03e3f576ef6627386cf4",
+    "frontend/src/lib/folder-style.ts": "e2cf494202cbd42e3d62a38e562254a1722ea43ac0dc7ca92e7f9f87abdaeead",
+    "frontend/src/lib/editor/blocks.ts": "00c2b2e131bf8396165f93d8d5b5ff6767433a8c168ffb2f69eb60cca7200756",
+    "frontend/src/lib/context-format.ts": "0481dfbf0a1feda626232160de55c3cf04b5c5c312cfd4b71f57c495c06d3d34",
+    "frontend/src/lib/dialog.ts": "bcd50bc4af466df7f1953957d69f7e922468ed00ef00ab4b1b9eb5829ef81659",
+    "frontend/src/components/automations/AutomationDialog.vue": "691c1c6324f3562a32b562646970902aede2247c3167fc85c7f294352df70d18",
+    "frontend/src/stores/skills.ts": "68c5e91c76b65de42e6441f3e67bae9ceb584940bb8c3e8027ea919e38da6701",
+    "frontend/src/lib/md/title.ts": "f82b440b855b617aba5dcb63b7787efc18f6d244c7197cea7caae188fe1ad8f1",
+    "frontend/src/lib/producer.ts": "cab5c34462216f44023724b373209b43b40c053b09c853ade8f62f3c85b07a72",
+    "frontend/src/lib/highlight/diff.ts": "bf58075671fa054c69f79700f57e47735e96c9160291df595adc9bdff33185bf",
+    "frontend/src/lib/editor/document-context.ts": "78a68366869f11c13f4442f95208b8e5253e2fb650310d1ae3e3f6365635c857",
+    "frontend/src/lib/md/table.ts": "e6083e96318bb426a2836902f2566ddc6fc00b308ef6bc28dd53b2f1fbbcef40",
+    "frontend/src/views/SettingsView.vue": "61dbd9747e451a36cacff02871c949bd36269a84a11cc254088ee0252121ad48",
+    "frontend/src/lib/chat-usage.ts": "1fdee6d03f73e12db358954fe06cfe3d4b9641b5389a8b1f5a25ecb0b652a8ab",
+    "frontend/src/lib/md/index.ts": "df9f9ecf3bc807cdd8aa2a2297773c22f02771ee9c8576a926ad83dd6069fc57",
+    "frontend/src/lib/context-source.ts": "1c9b18265c539de97214b90428a7227346dbb6e09a03e462bbbdde9e23646133",
+    "frontend/src/lib/context-json.ts": "f303cb57cc5ec6ea3d9db9a441b13e9a8bbe5e89caeddc47243358fdbebb0f60",
+    "frontend/src/stores/docs.ts": "491b63ada5246e52c56a1d820889c3d01466afd70b611dc9784b0cd483e21236",
+    "frontend/src/components/docs/DocTree.vue": "a903f8542638048f67ad7e38dea3647da2e9580360d91aadd538fc64b8209d7f",
+    "frontend/src/lib/activity.ts": "dd1c3f40b5cd734dc511f11de759ed997147c30d33643a19c128a5b1d8f2e35e",
+    "frontend/src/lib/member-icons.ts": "2023e4d76649f19132185538bea4ad01515369225a39918a1cfcc4513b4bad0e",
+    "frontend/src/views/StatisticsView.vue": "fd73664bc2ff34d02e0641d4bb828a6ed23fcc197b399d37708277324b4a13f4",
+    "frontend/src/lib/md/color.ts": "7b7f28e004b7a00907d3618d719a32817c22b1c7e9f24f5f83db858a88eaf6bf",
+    "frontend/src/lib/session-status.ts": "3ef7cab22a7c901c4e5563d7144c66c5e373263b9e0c4f434ac0d0af6d3bf2b9",
+    "frontend/src/lib/task-conversation.ts": "5a99099db36c31a263a7de13838eab6fd675c00075fda16eab6911a8ce882b91",
+    "frontend/src/lib/links.ts": "7906aea5488f6ae9b78900be4afef32db233c91b142abcc61889bf39c6336d13",
+    "frontend/src/lib/icons.ts": "aef0c96fc0f5d01b4990319b231302ac7561b96c766afbb70e8868f4e0ede8fb",
+    "frontend/src/stores/chat.ts": "55797368036d206b2fbe2eb52b9e606e614788566516034071d91604b1814306",
+    "frontend/src/lib/status.ts": "087023e8039280fe595a0cce7868509f9a4e72c77d42ffd368f8178d5fdbb7ff",
+    "frontend/src/lib/doc-graph.ts": "e7b3a4c1a322fa98c9189a46e95b9beb272c1042040d481d06eb7a2ca0d02b1f",
+    "frontend/src/stores/notifications.ts": "55a7e927715149f6954ee7439d4ed1bbae77e4e4cbd7ca930d1f2efae2cde57c"
+  },
+  "lifecycle": {
+    "helperPid": 4324,
+    "helperExited": true,
+    "helperExitCode": 0,
+    "helperRemaining": [],
+    "sourceExeSha256": "0bd2cb4ca32c5721f18dafd2dacb918995e5213e8730e2e1a4827a37b703820f",
+    "copiedExeSha256": "0bd2cb4ca32c5721f18dafd2dacb918995e5213e8730e2e1a4827a37b703820f",
+    "before": {
+      "staticDigest": "9baa2e0881071c1702d334c5b9339f49da6a0ea0b92184727e653d194381d7d7",
+      "staticFiles": 205,
+      "backendProcesses": [
+        {
+          "ProcessId": 15152,
+          "CreationDate": "/Date(1794556095387)/",
+          "CommandLine": "\"C:\\Users\\AkaSd\\AppData\\Local\\Programs\\Voxarium Studio\\resources\\runtime\\python\\python.exe\" -m voxarium_studio.cli run --host 127.0.0.1 --port 8765 --no-open "
+        }
+      ]
+    },
+    "after": {
+      "staticDigest": "9baa2e0881071c1702d334c5b9339f49da6a0ea0b92184727e653d194381d7d7",
+      "staticFiles": 205,
+      "backendProcesses": [
+        {
+          "ProcessId": 15152,
+          "CreationDate": "/Date(1794556095387)/",
+          "CommandLine": "\"C:\\Users\\AkaSd\\AppData\\Local\\Programs\\Voxarium Studio\\resources\\runtime\\python\\python.exe\" -m voxarium_studio.cli run --host 127.0.0.1 --port 8765 --no-open "
+        }
+      ]
+    }
+  }
+}

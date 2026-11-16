@@ -7,8 +7,10 @@
  * what is checked here is that a session does the right thing with each answer.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
+
+import { ProjectSession } from '@/session/project-session'
 
 import {
   CollabSession,
@@ -297,5 +299,139 @@ describe('in a room', () => {
     room.members.find((member) => member.socket.name === 'bob')!.socket.drop(1006)
     carol.close()
     expect(ends).toEqual(['alice:reset', 'bob:offline'])
+  })
+})
+
+/** The local scoped relay envelope, independent of remote room incarnation epochs. */
+class ScopedSocket implements SocketLike {
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: unknown }) => void) | null = null
+  onclose: ((event: { code: number }) => void) | null = null
+  readyState = 1
+  closed = false
+  sent: Array<Record<string, unknown>> = []
+  send(data: string): void { this.sent.push(JSON.parse(data)) }
+  close(): void { this.closed = true; this.readyState = 3 }
+  deliver(frame: Record<string, unknown>): void { this.onmessage?.({ data: JSON.stringify(frame) }) }
+}
+
+function projectSession(id: string): ProjectSession {
+  const binding = new ProjectSession(id)
+  binding.bind({ project_id: id, epoch: 'backend-epoch' })
+  return binding
+}
+function roomDocument(body: string): Y.Doc {
+  const doc = new Y.Doc()
+  doc.getText('body').insert(0, body)
+  return doc
+}
+function joinedFrame(binding: ProjectSession, doc: Y.Doc): Record<string, unknown> {
+  return {
+    ...binding.scope, t: 'joined', sid: `sid-${binding.projectId}`, room_epoch: 'room-incarnation',
+    scribe: true, seeded: true, dirty: false, state: toBase64(Y.encodeStateAsUpdate(doc)),
+    user: { id: 'alice', name: 'Alice', color: '#123456' },
+  }
+}
+
+describe('project-scoped collab binding (§5.3.2)', () => {
+  it('isolates identical document paths, handshakes, updates and awareness across A/B', async () => {
+    const a = projectSession('A'); const b = projectSession('B')
+    const sa = new ScopedSocket(); const sb = new ScopedSocket()
+    const roomA = roomDocument('A'); const roomB = roomDocument('B')
+    const seed = vi.fn(seeder().seed)
+    const openingA = openSession({ path: 'same.md', seed, session: a, socket: () => sa })
+    const openingB = openSession({ path: 'same.md', seed, session: b, socket: () => sb })
+    sa.onopen!(); sb.onopen!()
+    expect(sa.sent[0]).toMatchObject({ t: 'join', path: 'same.md', ...a.scope })
+    expect(sb.sent[0]).toMatchObject({ t: 'join', path: 'same.md', ...b.scope })
+    // A foreign join cannot seed A or hand it B's document, even at the same path.
+    sa.deliver({ ...joinedFrame(b, roomB), seeded: false, content: 'foreign' })
+    sa.deliver({ ...joinedFrame(a, roomA), epoch: 'expired' })
+    sa.deliver({ t: 'joined', seeded: false, content: 'unscoped' })
+    expect(seed).not.toHaveBeenCalled(); expect(sa.sent).toHaveLength(1)
+    sa.deliver(joinedFrame(a, roomA)); sb.deliver(joinedFrame(b, roomB))
+    const [alice, bob] = await Promise.all([openingA, openingB])
+    expect(text(alice!)).toBe('A'); expect(text(bob!)).toBe('B')
+    expect(alice!.scope).toEqual(a.scope); expect(bob!.scope).toEqual(b.scope)
+    expect(alice!.changed).toBe(false)
+    roomB.getText('body').insert(1, '-foreign')
+    sa.deliver({ t: 'update', update: toBase64(Y.encodeStateAsUpdate(roomB)), ...b.scope })
+    roomA.getText('body').insert(1, '-local')
+    const update = toBase64(Y.encodeStateAsUpdate(roomA))
+    sa.deliver({ t: 'update', update, ...a.scope, epoch: 'expired' })
+    sa.deliver({ t: 'update', update })
+    expect(text(alice!)).toBe('A')
+    sa.deliver({ t: 'update', update, ...a.scope })
+    expect(text(alice!)).toBe('A-local'); expect(text(bob!)).toBe('B')
+    alice!.doc.getText('body').insert(0, '!')
+    expect(sa.sent.some(frame => frame.t === 'update')).toBe(true)
+    expect(sa.sent.some(frame => frame.t === 'awareness')).toBe(true)
+    expect(sa.sent.every(frame => frame.project_id === 'A' && frame.epoch === 'backend-epoch')).toBe(true)
+    expect(sb.sent.every(frame => frame.project_id === 'B' && frame.epoch === 'backend-epoch')).toBe(true)
+    alice!.close(); bob!.close(); roomA.destroy(); roomB.destroy()
+  })
+
+  it('envelopes seeds and preserves the originally captured document path', async () => {
+    const a = projectSession('A'); const socket = new ScopedSocket()
+    const options = { path: 'original.md', seed: seeder().seed, session: a, socket: () => socket }
+    const pending = openSession(options)
+    options.path = 'different.md'
+    socket.onopen!()
+    expect(socket.sent[0]).toMatchObject({ path: 'original.md', ...a.scope })
+    socket.deliver({ t: 'joined', seeded: false, sid: 'sid', scribe: true, content: '# own', ...a.scope })
+    expect(socket.sent[1]).toMatchObject({ t: 'seed', ...a.scope })
+    socket.deliver({ t: 'seeded', ok: true, ...a.scope })
+    const session = await pending
+    expect(session!.path).toBe('original.md'); expect(text(session!)).toBe('# own')
+    expect(session!.changed).toBe(false)
+    session!.close()
+  })
+
+  it('drops stale pending handshakes and does not send edits after invalidation', async () => {
+    const a = projectSession('A'); const socket = new ScopedSocket(); const doc = roomDocument('A')
+    const pending = openSession({ path: 'same.md', seed: seeder().seed, session: a, socket: () => socket })
+    socket.onopen!(); a.invalidate(); socket.deliver(joinedFrame(a, doc))
+    expect(await pending).toBeNull(); expect(socket.closed).toBe(true)
+
+    const b = projectSession('B'); const sb = new ScopedSocket()
+    const opening = openSession({ path: 'same.md', seed: seeder().seed, session: b, socket: () => sb })
+    sb.onopen!(); sb.deliver(joinedFrame(b, doc))
+    const session = (await opening)!
+    const ended = vi.fn(); session.onEnd(ended)
+    const sent = sb.sent.length
+    b.invalidate(); session.doc.getText('body').insert(0, 'stale')
+    sb.deliver({ t: 'scribe', ...b.scope })
+    expect(sb.sent).toHaveLength(sent); expect(sb.closed).toBe(true)
+    expect(ended).toHaveBeenCalledExactlyOnceWith('offline')
+    session.close(); doc.destroy()
+  })
+
+  it('requires bootstrap even with a supplied transport and fails closed on malformed state', async () => {
+    const socket = new ScopedSocket()
+    expect(() => openSession({ path: 'same.md', seed: seeder().seed, session: new ProjectSession('A'), socket: () => socket })).toThrow()
+    const a = projectSession('A')
+    const pending = openSession({ path: 'same.md', seed: seeder().seed, session: a, socket: () => socket })
+    socket.onopen!(); socket.deliver({ t: 'joined', seeded: true, state: 'not base64!', ...a.scope })
+    expect(await pending).toBeNull(); expect(socket.closed).toBe(true)
+  })
+
+  it('uses the scoped WS handshake URL instead of the legacy collab relay', async () => {
+    const a = projectSession('A'); let url = ''; let socket: ScopedSocket | undefined
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', host: 'localhost:8765' },
+      localStorage: { getItem: () => null },
+    })
+    vi.stubGlobal('WebSocket', class extends ScopedSocket {
+      constructor(value: string) { super(); url = value; socket = this }
+    })
+    try {
+      const pending = openSession({ path: 'same.md', seed: seeder().seed, session: a })
+      expect(new URL(url).protocol).toBe('wss:')
+      expect(new URL(url).pathname).toBe('/ws/projects/A/collab')
+      expect(new URL(url).searchParams.get('project_id')).toBe('A')
+      expect(new URL(url).searchParams.get('epoch')).toBe('backend-epoch')
+      socket!.onclose!({ code: 1008 })
+      expect(await pending).toBeNull()
+    } finally { vi.unstubAllGlobals() }
   })
 })

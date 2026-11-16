@@ -54,13 +54,19 @@ vi.mock("@/api/client", async () => {
 // One socket, owned by the app; the store only subscribes to it. The handlers are kept so a
 // check can play an event the way the socket would — `mock` prefix because `vi.mock` is
 // hoisted above everything else in the file.
-type MockHandler = (payload: Record<string, unknown>) => void;
+type MockHandler = (payload: Record<string, unknown>, envelope?: { project_id?: string; epoch?: string }) => void;
 const mockWsHandlers = new Map<string, MockHandler>();
 vi.mock("@/ws/connection", () => ({
   onEvent: (name: string, handler: MockHandler) => {
     mockWsHandlers.set(name, handler);
   },
 }));
+
+const mockSession = vi.hoisted(() => ({
+  isLegacy: true,
+  matches: (scope: { project_id?: string; epoch?: string }) => scope.project_id === 'project_a' && scope.epoch === 'epoch_a',
+}));
+vi.mock('@/session/project-session', () => ({ rendererSession: mockSession }));
 
 const {
   FOLDS_KEY_PREFIX,
@@ -89,12 +95,369 @@ function detail(path: string, content = "# Doc\n"): DocDetail {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  mockSession.isLegacy = true;
   setActivePinia(createPinia());
   mockWsHandlers.clear();
   for (const stub of Object.values(api)) stub.mockReset();
   api.docs.mockResolvedValue([entry("features/dash.md", "Dash ability")]);
   api.docsGraph.mockResolvedValue({ nodes: [], edges: [] });
   api.docFolders.mockResolvedValue([]);
+});
+
+describe('copied document paths in separate renderers (§5.3.2)', () => {
+  it('keeps a delayed read in A out of B even when both open the same path', async () => {
+    const path = 'features/dash.md';
+    const a = useDocsStore(createPinia());
+    const b = useDocsStore(createPinia());
+    let finishA!: (document: DocDetail) => void;
+    api.doc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finishA = resolve; }));
+    api.doc.mockResolvedValueOnce(detail(path, '# Project B\n'));
+
+    const readingA = a.select(path);
+    await b.select(path);
+    b.markDirty();
+    b.setLiveTitle('B unsaved title');
+    const originalB = b.open;
+
+    finishA(detail(path, '# Project A\n'));
+    await readingA;
+    expect(a.open?.content).toBe('# Project A\n');
+    expect(a.dirty).toBe(false);
+    expect(b.open).toBe(originalB);
+    expect(b.open?.content).toBe('# Project B\n');
+    expect(b.dirty).toBe(true);
+    expect(b.draftTitle).toBe('B unsaved title');
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it('does not share save queues or apply a delayed A save to the copied path in B', async () => {
+    const path = 'features/dash.md';
+    const a = useDocsStore(createPinia());
+    const b = useDocsStore(createPinia());
+    api.doc.mockResolvedValueOnce(detail(path, '# Project A\n'));
+    api.doc.mockResolvedValueOnce(detail(path, '# Project B\n'));
+    await a.select(path);
+    await b.select(path);
+    let finishA!: (document: DocDetail) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finishA = resolve; }));
+    api.saveDoc.mockResolvedValueOnce(detail(path, '# B saved\n'));
+
+    a.markDirty();
+    const savingA = a.save('# A saved\n');
+    await tick();
+    expect(a.saving).toBe(true);
+    b.markDirty();
+    expect(await b.save('# B saved\n')).toBe(true);
+    expect(a.saving).toBe(true);
+    expect(b.saving).toBe(false);
+    b.markDirty();
+    b.setLiveTitle('B next unsaved edit');
+    const originalB = b.open;
+
+    finishA(detail(path, '# A saved\n'));
+    expect(await savingA).toBe(true);
+    expect(a.open?.content).toBe('# A saved\n');
+    expect(a.dirty).toBe(false);
+    expect(b.open).toBe(originalB);
+    expect(b.open?.content).toBe('# B saved\n');
+    expect(b.dirty).toBe(true);
+    expect(b.draftTitle).toBe('B next unsaved edit');
+    expect(api.saveDoc.mock.calls.map(call => call.slice(0, 2))).toEqual([
+      [path, '# A saved\n'],
+      [path, '# B saved\n'],
+    ]);
+  });
+});
+
+describe('scoped gap recovery', () => {
+  const scope = { project_id: 'project_a', epoch: 'epoch_a' };
+  const gap = () => mockWsHandlers.get('system.dropped')!({ count: 3, resync: true }, scope);
+
+  it('recovers listing, warm graph and clean document without saving', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    await store.loadGraph();
+    api.docs.mockResolvedValue([entry('one.md'), entry('new.md')]);
+    api.doc.mockResolvedValue(detail('one.md', '# External edit\n'));
+    api.docsGraph.mockResolvedValue({ nodes: [{ path: 'new.md' }], edges: [] });
+    gap();
+    await tick();
+    expect(store.entries.map(doc => doc.path)).toEqual(['one.md', 'new.md']);
+    expect(store.graph?.nodes).toEqual([{ path: 'new.md' }]);
+    expect(store.open?.content).toBe('# External edit\n');
+    expect(store.dirty).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it('leaves an unchanged clean document object untouched', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    const original = store.open;
+    gap();
+    await tick();
+    expect(store.open).toBe(original);
+    expect(store.dirty).toBe(false);
+    expect(await store.save('not an edit')).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(['dirty', 'saving', 'live'] as const)('does not replace a %s document or clear its editor state', async state => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    const original = store.open;
+    if (state === 'dirty') store.markDirty();
+    if (state === 'saving') store.saving = true;
+    if (state === 'live') store.setLive('room-one');
+    api.doc.mockResolvedValue(detail('one.md', '# Changed externally'));
+    gap();
+    await tick();
+    expect(store.open).toBe(original);
+    expect(store.staleOnDisk).toBe(state !== 'live');
+    expect(store.dirty).toBe(state === 'dirty');
+    expect(store.saving).toBe(state === 'saving');
+    expect(store.live).toBe(state === 'live' ? 'room-one' : null);
+    expect(api.doc).toHaveBeenCalledTimes(state === 'live' ? 1 : 2);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it('protects an edit typed during the recovery read', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    const original = store.open;
+    let resolve!: (doc: DocDetail) => void;
+    api.doc.mockReturnValueOnce(new Promise<DocDetail>(done => { resolve = done; }));
+    gap();
+    await tick();
+    store.markDirty();
+    store.setLiveTitle('My draft title');
+    resolve(detail('one.md', '# External'));
+    await tick();
+    expect(store.open).toBe(original);
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(true);
+    expect(store.draftTitle).toBe('My draft title');
+  });
+
+  it('does not navigate back after a delayed recovery or clear a deleted dirty draft', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    let resolve!: (doc: DocDetail) => void;
+    api.doc.mockReturnValueOnce(new Promise<DocDetail>(done => { resolve = done; }));
+    gap();
+    await tick();
+    api.doc.mockResolvedValueOnce(detail('two.md'));
+    await store.select('two.md');
+    resolve(detail('one.md', '# Old selection'));
+    await tick();
+    expect(store.open?.path).toBe('two.md');
+    store.markDirty();
+    api.doc.mockRejectedValueOnce(new ApiError(404, 'deleted'));
+    gap();
+    await tick();
+    expect(store.open?.path).toBe('two.md');
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(true);
+  });
+
+  it('ignores foreign, obsolete, unscoped and legacy gaps', async () => {
+    const store = useDocsStore();
+    store.subscribe();
+    gap();
+    mockSession.isLegacy = false;
+    const handler = mockWsHandlers.get('system.dropped')!;
+    handler({ resync: true }, { ...scope, project_id: 'project_b' });
+    handler({ resync: true }, { ...scope, epoch: 'old' });
+    handler({ resync: true });
+    handler({ resync: false }, scope);
+    await tick();
+    expect(api.docs).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a burst, handles rejection and permits the next recovery', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.docs.mockRejectedValueOnce(new Error('offline'));
+    gap(); gap(); gap();
+    await tick();
+    expect(api.docs).toHaveBeenCalledTimes(1);
+    expect(store.error).toBe('offline');
+    gap();
+    await tick();
+    expect(api.docs).toHaveBeenCalledTimes(2);
+    expect(store.entries).toHaveLength(1);
+  });
+
+  it('queues one follow-up for gaps arriving during a read, without parallel recoveries', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    let resolve!: (docs: DocEntry[]) => void;
+    api.docs.mockReturnValueOnce(new Promise<DocEntry[]>(done => { resolve = done; }));
+    gap();
+    await tick();
+    gap(); gap(); gap();
+    await tick();
+    expect(api.docs).toHaveBeenCalledTimes(1);
+    resolve([entry('old.md')]);
+    await tick();
+    expect(api.docs).toHaveBeenCalledTimes(2);
+    expect(store.entries[0]?.path).toBe('features/dash.md');
+  });
+
+  it('only marks a dirty draft stale when disk changed and closes a deleted clean document', async () => {
+    mockSession.isLegacy = false;
+    const store = useDocsStore();
+    store.subscribe();
+    api.doc.mockResolvedValue(detail('one.md'));
+    await store.select('one.md');
+    store.markDirty();
+    gap();
+    await tick();
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    await store.select('one.md');
+    api.doc.mockRejectedValueOnce(new ApiError(404, 'deleted'));
+    gap();
+    await tick();
+    expect(store.open).toBeNull();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe("settling saves before desktop close (§5.3)", () => {
+  const path = "features/dash.md";
+
+  async function opened() {
+    const store = useDocsStore();
+    api.doc.mockResolvedValue(detail(path));
+    await store.select(path);
+    store.setLive("room-before-close");
+    return store;
+  }
+
+  it("does not write a clean open document or leave its room", async () => {
+    const store = await opened();
+    const document = store.open;
+    await store.settle();
+    expect(store.open).toBe(document);
+    expect(store.live).toBe("room-before-close");
+    expect(store.saveState).toBe("saved");
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it("waits for a delayed save without clearing the room or the dirty state early", async () => {
+    const store = await opened();
+    let finish!: (document: DocDetail) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finish = resolve; }));
+    store.markDirty();
+    const saving = store.save("# Last edit\n");
+    let settled = false;
+    const settling = store.settle().then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    expect(store.dirty).toBe(true);
+    expect(store.saving).toBe(true);
+    expect(store.live).toBe("room-before-close");
+    expect(api.saveDoc.mock.calls[0][4]).toBe("room-before-close");
+
+    finish(detail(path, "# Last edit\n"));
+    await settling;
+    expect(await saving).toBe(true);
+    expect(store.saveState).toBe("saved");
+    expect(store.live).toBe("room-before-close");
+  });
+
+  it("also waits for a newer save queued after settling started", async () => {
+    const store = await opened();
+    let finishFirst!: (document: DocDetail) => void;
+    let finishSecond!: (document: DocDetail) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finishFirst = resolve; }));
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finishSecond = resolve; }));
+    store.markDirty();
+    void store.save("# First\n");
+    let settled = false;
+    const settling = store.settle().then(() => { settled = true; });
+    await tick();
+    store.markDirty();
+    void store.save("# First and second\n");
+    finishFirst(detail(path, "# First\n"));
+    await tick();
+    expect(api.saveDoc).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    expect(store.saving).toBe(true);
+
+    finishSecond(detail(path, "# First and second\n"));
+    await settling;
+    expect(store.open?.content).toBe("# First and second\n");
+    expect(store.saveState).toBe("saved");
+  });
+
+  it.each([409, 500])("settles a failed %s save without treating it as success or retrying", async status => {
+    const store = await opened();
+    api.saveDoc.mockRejectedValueOnce(new ApiError(status, "save refused"));
+    store.markDirty();
+    const saving = store.save("# Only in the editor\n");
+    await store.settle();
+    expect(await saving).toBe(false);
+    expect(store.saving).toBe(false);
+    expect(store.dirty).toBe(true);
+    expect(store.saveError).not.toBeNull();
+    expect(store.saveState).toBe("failed");
+    expect(store.live).toBe("room-before-close");
+    await store.settle();
+    expect(api.saveDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a newer editor edit dirty even once the preceding save has settled", async () => {
+    const store = await opened();
+    let finish!: (document: DocDetail) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finish = resolve; }));
+    store.markDirty();
+    void store.save("# Earlier edit\n");
+    const settling = store.settle();
+    await tick();
+    store.markDirty();
+    finish(detail(path, "# Earlier edit\n"));
+    await settling;
+    expect(store.dirty).toBe(true);
+    expect(store.saving).toBe(false);
+    expect(store.saveState).toBe("dirty");
+    expect(api.saveDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps newer typing dirty after an explicit conflict overwrite settles", async () => {
+    const store = await opened();
+    let finish!: (document: DocDetail) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise<DocDetail>(resolve => { finish = resolve; }));
+    store.markDirty();
+    const saving = store.saveOverwriting("# Earlier overwrite\n");
+    await tick();
+    store.markDirty();
+    finish(detail(path, "# Earlier overwrite\n"));
+    await store.settle();
+    expect(await saving).toBe(true);
+    expect(store.dirty).toBe(true);
+    expect(store.saveState).toBe("dirty");
+    api.saveDoc.mockResolvedValueOnce(detail(path, "# Newer typing\n"));
+    expect(await store.save("# Newer typing\n")).toBe(true);
+    expect(store.dirty).toBe(false);
+  });
 });
 
 describe("saving", () => {
@@ -539,6 +902,31 @@ describe("which folders stay folded across a reload (§5.2)", () => {
 
     expect(reload("D:\\Games\\Other").isCollapsed("features")).toBe(false);
     expect(reload().isCollapsed("features")).toBe(true);
+  });
+
+  it("prunes a late A listing only under A's root while B keeps the copied folders", async () => {
+    const otherRoot = "D:\\Games\\Other";
+    const otherKey = `${FOLDS_KEY_PREFIX}${otherRoot}`;
+    local.items.set(KEY, '["features","gone"]');
+    local.items.set(otherKey, '["qa"]');
+    const a = reload();
+    let finishA!: (documents: DocEntry[]) => void;
+    api.docs.mockReturnValueOnce(new Promise<DocEntry[]>(resolve => { finishA = resolve; }));
+    const loadingA = a.load();
+
+    const b = reload(otherRoot);
+    await b.load();
+    b.toggleFolder("features");
+    expect(local.items.get(otherKey)).toBe('["features","qa"]');
+    finishA([entry("features/dash.md")]);
+    await loadingA;
+
+    expect(local.items.get(KEY)).toBe('["features"]');
+    expect(local.items.get(otherKey)).toBe('["features","qa"]');
+    expect([...b.collapsed].sort()).toEqual(["features", "qa"]);
+    // New store instances restore by canonical root, without any runtime project id.
+    expect([...reload().collapsed]).toEqual(["features"]);
+    expect([...reload(otherRoot).collapsed].sort()).toEqual(["features", "qa"]);
   });
 
   it("leaves no key behind once nothing is folded", async () => {

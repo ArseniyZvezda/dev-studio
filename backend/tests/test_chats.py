@@ -224,6 +224,8 @@ async def test_a_message_reaches_the_member_with_the_context_in_front(chats: App
 
     request = RecordingBackend.requests[-1]
     assert request.task is None and request.session_key == chat.id
+    assert request.runtime_key.owner.project_root == chats.paths.root.resolve()
+    assert (request.runtime_key.owner.owner_kind, request.runtime_key.owner.owner_id) == ("chat", chat.id)
     assert request.proactive_subagents
     assert request.resume_session_id is None
     assert request.prompt.endswith("\n\nWhy is the dash slow?")
@@ -273,6 +275,7 @@ async def test_a_chat_above_the_project_keeps_the_project_as_a_write_root(chats:
     request = RecordingBackend.requests[-1]
     assert request.workdir == chats.paths.root.parent
     assert request.writable_roots == [chats.paths.root]
+    assert request.runtime_key.owner.project_root == chats.paths.root.resolve()
 
 
 async def test_the_system_prompt_is_the_chat_one(chats: AppContext) -> None:
@@ -332,6 +335,9 @@ async def test_the_second_message_resumes_the_same_session(chats: AppContext) ->
     first, second = RecordingBackend.requests[-2:]
     assert first.resume_session_id is None
     assert second.resume_session_id == "chat_sess"
+    assert first.session_key == second.session_key == chat.id
+    assert first.runtime_key.owner == second.runtime_key.owner
+    assert first.runtime_key.generation != second.runtime_key.generation
     assert "- Open file: Assets/a.png" in second.prompt
     stored = await chats.chats.get_chat(chat.id)
     assert stored is not None and stored.num_turns == 2

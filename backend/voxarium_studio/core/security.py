@@ -132,7 +132,7 @@ def browser_access_allowed(connection: HTTPConnection, settings: AuthSettings) -
 
 async def require_auth(request: Request) -> None:
     """FastAPI dependency guarding the REST API."""
-    settings: AuthSettings = request.app.state.ctx.auth
+    settings: AuthSettings = request.app.state.auth
     if not browser_access_allowed(request, settings):
         raise HTTPException(status_code=403, detail="Untrusted request host or origin.")
     if not settings.enabled:
@@ -148,7 +148,7 @@ async def require_auth(request: Request) -> None:
 async def authorise_websocket(websocket: WebSocket) -> bool:
     """WebSocket handshake auth. Browsers cannot set headers here, so a query
     parameter is accepted as well; the token never leaves the local machine by default."""
-    settings: AuthSettings = websocket.app.state.ctx.auth
+    settings: AuthSettings = websocket.app.state.auth
     if not browser_access_allowed(websocket, settings):
         return False
     if not settings.enabled:

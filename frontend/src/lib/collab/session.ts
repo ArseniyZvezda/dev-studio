@@ -17,6 +17,8 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwareness
 import * as Y from 'yjs'
 
 import { withTokenParam } from '@/api/auth'
+import { scopedWsUrl } from '@/api/project-scope'
+import { ProjectSession, rendererSession, type ProjectScope } from '@/session/project-session'
 
 export interface CollabUser {
   id: string
@@ -50,6 +52,8 @@ const OPEN = 1
 
 export interface OpenOptions {
   path: string
+  /** Immutable renderer binding; the same path in another project is another session (§5.3.2). */
+  session?: ProjectSession
   /** Builds the update an empty room is seeded with, from the file's Markdown (`seed.ts`). */
   seed: (markdown: string) => Uint8Array
   socket?: () => SocketLike
@@ -65,6 +69,8 @@ const ROOM = Symbol('room')
 
 interface Frame {
   t: string
+  project_id?: unknown
+  epoch?: unknown
   [key: string]: unknown
 }
 
@@ -84,9 +90,9 @@ export function fromBase64(text: string): Uint8Array {
   return bytes
 }
 
-function defaultSocket(): SocketLike {
+function defaultSocket(session: ProjectSession): SocketLike {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(withTokenParam(`${scheme}//${window.location.host}/ws/collab`)) as unknown as SocketLike
+  return new WebSocket(withTokenParam(`${scheme}//${window.location.host}${scopedWsUrl(session, true)}`)) as unknown as SocketLike
 }
 
 function parse(data: unknown): Frame | null {
@@ -124,6 +130,9 @@ export class CollabSession {
      * the file is owed a save even though nothing changed since.
      */
     readonly aheadAtJoin: boolean,
+    readonly projectSession: ProjectSession = rendererSession,
+    readonly scope: ProjectScope | null = projectSession.scope,
+    private readonly assertCurrent: () => void = projectSession.capture(),
   ) {
     this.isScribe = scribe
     this.awareness = new Awareness(doc)
@@ -190,6 +199,8 @@ export class CollabSession {
       // `send` drops everything after it, and this removal is the one frame that must go.
       removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
       this.ended = true
+      this.socket.onopen = null
+      this.socket.onmessage = null
       this.socket.onclose = null
       this.socket.close()
     }
@@ -204,7 +215,7 @@ export class CollabSession {
 
   /** A frame from the room. */
   receive(frame: Frame): void {
-    if (this.ended) return
+    if (this.ended || !this.current() || !this.projectSession.matches(frame)) return
     try {
       switch (frame.t) {
         case 'update':
@@ -239,14 +250,26 @@ export class CollabSession {
   }
 
   private send(frame: Frame): void {
-    if (this.ended) return
+    if (this.ended || !this.current()) return
     // A socket the other end has started closing still takes a `send` — and a browser
     // logs each one as an error. The close itself arrives through `onclose` a moment later.
     if (this.socket.readyState !== undefined && this.socket.readyState !== OPEN) return
     try {
-      this.socket.send(JSON.stringify(frame))
+      this.socket.send(JSON.stringify({ ...frame, ...this.scope }))
     } catch {
       // A socket that is closing reports it through `onclose`; nothing to add here.
+    }
+  }
+
+  private current(): boolean {
+    try { this.assertCurrent(); return true }
+    catch {
+      this.end('offline')
+      this.socket.onopen = null
+      this.socket.onmessage = null
+      this.socket.onclose = null
+      try { this.socket.close() } catch { /* Already closed. */ }
+      return false
     }
   }
 
@@ -259,6 +282,7 @@ export class CollabSession {
   }
 
   private readonly onDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    if (this.ended || !this.current()) return
     if (origin !== ROOM) this.send({ t: 'update', update: toBase64(update) })
     this.changed = true
     for (const handler of this.changeHandlers) handler()
@@ -286,11 +310,18 @@ export class CollabSession {
  * there is no room to join.
  */
 export function openSession(options: OpenOptions): Promise<CollabSession | null> {
+  const path = options.path
+  const binding = options.session ?? rendererSession
+  const assertCurrent = binding.capture()
+  // Validate even when a caller supplies a transport. No scoped room may fall back
+  // to /ws/collab because its project has not bootstrapped yet (§5.3.2).
+  scopedWsUrl(binding, true)
+  const scope = binding.scope
   return new Promise((resolve) => {
     const doc = new Y.Doc()
     let socket: SocketLike
     try {
-      socket = (options.socket ?? defaultSocket)()
+      socket = options.socket ? options.socket() : defaultSocket(binding)
     } catch {
       doc.destroy()
       resolve(null)
@@ -307,6 +338,7 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
       if (settled) return
       settled = true
       clearTimeout(timer)
+      socket.onopen = null
       socket.onclose = null
       socket.onmessage = null
       try {
@@ -319,8 +351,27 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
     }
     const timer = setTimeout(fail, options.timeoutMs ?? JOIN_TIMEOUT_MS)
 
+    const current = (): boolean => {
+      try { assertCurrent(); return true }
+      catch {
+        if (session) {
+          session.end('offline')
+          socket.onopen = null
+          socket.onmessage = null
+          socket.onclose = null
+          try { socket.close() } catch { /* Already closed. */ }
+        } else fail()
+        return false
+      }
+    }
+    const send = (frame: Frame): void => {
+      if (!current()) return
+      try { socket.send(JSON.stringify({ ...frame, ...scope })) }
+      catch { fail() }
+    }
+
     const ready = (state: Uint8Array): void => {
-      if (settled || !joined) return
+      if (settled || !joined || !current()) return
       try {
         Y.applyUpdate(doc, state, ROOM)
       } catch {
@@ -331,23 +382,28 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
       clearTimeout(timer)
       const user = (joined.user ?? {}) as Partial<CollabUser>
       session = new CollabSession(
-        options.path,
+        path,
         String(joined.sid),
         { id: String(user.id ?? ''), name: String(user.name ?? ''), color: String(user.color ?? '#888888') },
         doc,
         socket,
         scribe,
         joined.dirty === true,
+        binding,
+        scope,
+        assertCurrent,
       )
       resolve(session)
     }
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ t: 'join', path: options.path, client_id: doc.clientID }))
+      if (settled) return
+      send({ t: 'join', path, client_id: doc.clientID })
     }
     socket.onmessage = (event) => {
+      if (!current()) return
       const frame = parse(event.data)
-      if (!frame) return
+      if (!frame || !binding.matches(frame) || (settled && !session)) return
       if (session) {
         session.receive(frame)
         return
@@ -356,7 +412,7 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
         joined = frame
         scribe = frame.scribe === true
         if (frame.seeded) {
-          ready(fromBase64(String(frame.state)))
+          try { ready(fromBase64(String(frame.state))) } catch { fail() }
           return
         }
         // An empty room. Offer the document, built from the Markdown the backend read at
@@ -368,10 +424,12 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
           fail()
           return
         }
-        socket.send(JSON.stringify({ t: 'seed', update: toBase64(offered) }))
+        send({ t: 'seed', update: toBase64(offered) })
       } else if (frame.t === 'seeded' && joined) {
         if (frame.ok === true && offered) ready(offered)
-        else if (typeof frame.state === 'string') ready(fromBase64(frame.state))
+        else if (typeof frame.state === 'string') {
+          try { ready(fromBase64(frame.state)) } catch { fail() }
+        }
         else fail()
       } else if (frame.t === 'scribe') {
         // The member before us left while we were still arriving.

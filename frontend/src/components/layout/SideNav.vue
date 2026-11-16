@@ -41,15 +41,11 @@ import { useRoute } from 'vue-router'
 import AboutDialog from '@/components/project/AboutDialog.vue'
 import ChangelogDialog from '@/components/project/ChangelogDialog.vue'
 import UpdateDialog from '@/components/project/UpdateDialog.vue'
-import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import { t, type MessageKey } from '@/i18n'
-import { formatTime } from '@/lib/status'
 import { pluginNavItems } from '@/plugin-runtime/loader'
 import { useSearchStore } from '@/stores/search'
-import { useSessionStore } from '@/stores/session'
 import { useThemeStore } from '@/stores/theme'
 import { useUpdatesStore } from '@/stores/updates'
-import { useVcsStore, vcsIndicator } from '@/stores/vcs'
 
 interface NavItem {
   to: string
@@ -66,42 +62,11 @@ interface NavItem {
   tint: string
 }
 
-const session = useSessionStore()
 const theme = useThemeStore()
-const vcs = useVcsStore()
 const updates = useUpdatesStore()
 const search = useSearchStore()
 const showingChangelog = ref(false)
 const showingAbout = ref(false)
-let statusTimer: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  statusTimer = setInterval(() => {
-    // The project menu still uses the current project's task counts (§5.1).
-    void session.refreshTaskCounts()
-    if (session.connection === 'open') void session.refreshStatus()
-  }, 15_000)
-})
-onBeforeUnmount(() => clearInterval(statusTimer))
-watch(() => session.connection, (connection) => {
-  if (connection === 'open') void session.refreshStatus()
-}, { immediate: true })
-
-// §6.1: the backend's monochrome mark carries readiness; the whole row explains it.
-const agentBackends = computed(() => (['claude_code', 'codex', 'qwen'] as const).map((id) => {
-  const label = t(`nav.agentBackends.${id}`)
-  const info = session.connection === 'open' ? session.status?.agent_backends[id] : undefined
-  const reason = info?.reason || t(info
-    ? info.available ? 'nav.agentBackends.ready' : 'nav.agentBackends.unavailable'
-    : 'nav.agentBackends.unknown')
-  return {
-    id,
-    label,
-    reason,
-    title: `${label}\n${reason}`,
-    color: !info ? 'var(--vxs-warning)' : info.available ? 'var(--vxs-success)' : 'var(--vxs-danger)',
-  }
-}))
-
 // The rail is where the build already is, so it is where "there is a newer one" belongs.
 onMounted(() => void updates.load())
 // And where the search field lives — shown only once a plugin has something to answer it
@@ -160,6 +125,14 @@ const builtinItems: NavItem[] = [
  * sprang after them would trail its own row. Those measurements land with the transition off.
  */
 const route = useRoute()
+const tooltip = ref<{ text: string; left: number; top: number } | null>(null)
+function showTooltip(event: PointerEvent | FocusEvent): void {
+  const item = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-nav-tip]') : null
+  if (!item?.dataset.navTip) return
+  const rect = item.getBoundingClientRect()
+  tooltip.value = { text: item.dataset.navTip, left: rect.right + 7, top: rect.top + rect.height / 2 }
+}
+
 const rows = ref<HTMLElement | null>(null)
 const mark = ref<CSSProperties | null>(null)
 
@@ -198,75 +171,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => rowsObserver?.disconnect())
 
-const connectionTitle = computed(() => {
-  switch (session.connection) {
-    case 'open':
-      return t('nav.connection.live')
-    case 'connecting':
-      return t('nav.connection.connecting')
-    default:
-      return t('nav.connection.disconnected')
-  }
-})
-
-/** The state itself, as the one word the footer row has room for. */
-const connectionLabel = computed(() => {
-  switch (session.connection) {
-    case 'open':
-      return t('nav.connection.state.open')
-    case 'connecting':
-      return t('nav.connection.state.connecting')
-    default:
-      return t('nav.connection.state.closed')
-  }
-})
-
-const connectionColor = computed(() => {
-  switch (session.connection) {
-    case 'open':
-      return 'var(--vxs-success)'
-    case 'connecting':
-      return 'var(--vxs-warning)'
-    default:
-      return 'var(--vxs-danger)'
-  }
-})
-
-/**
- * Which build is running, next to the live indicator: those two answer the same question
- * — "is what I am looking at the thing I just changed?" — and a status light alone cannot.
- * The label is the build's tag or its commit, composed by the backend; the star is the
- * only thing added here, because a tree with uncommitted changes is not described by
- * either. Everything the label leaves out is in the tooltip.
- */
-const build = computed(() => session.project?.version ?? null)
-
-const buildLabel = computed(() => {
-  if (!build.value) return ''
-  return build.value.dirty ? `${build.value.display}*` : build.value.display
-})
-
-const buildTitle = computed(() => {
-  const info = build.value
-  if (!info) return ''
-  const lines = [`${t('app.name')} ${info.display}`]
-  if (info.tag) lines.push(t('nav.build.tag', { tag: info.tag }))
-  if (info.commit) {
-    lines.push(
-      info.branch
-        ? t('nav.build.commitOnBranch', { commit: info.commit, branch: info.branch })
-        : t('nav.build.commit', { commit: info.commit }),
-    )
-  } else {
-    lines.push(t('nav.build.noCommit'))
-  }
-  if (info.committed_at) {
-    lines.push(t('nav.build.committed', { time: formatTime(info.committed_at) }))
-  }
-  if (info.dirty) lines.push(t('nav.build.dirty'))
-  return lines.join('\n')
-})
-
 /**
  * Desktop keeps the original update entry reachable for manual checks (§12.1).
  * Source checkouts offer it when a release is available or an update is running.
@@ -289,24 +193,6 @@ const updateTitle = computed(() => {
   return lines.join('\n')
 })
 
-/** In the strip the words are gone, so the tooltip has to say everything the row did. */
-const footTitle = computed(() =>
-  [connectionTitle.value, buildTitle.value].filter(Boolean).join('\n\n'),
-)
-
-/**
- * Which system the project is under, and whether its tool answers (§9.6). The session's
- * answer is what `/api/project` said at load; the vcs store's overview supersedes it once
- * the Version Control page has read or changed the backend, because that page is the one
- * place the answer can change without a reload. The position comes from whichever of the
- * two reads has happened, so the tooltip names the branch without a request of its own.
- */
-const vcsLine = computed(() =>
-  vcsIndicator(vcs.overview ? vcs.overview.active : session.project?.vcs, {
-    branch: vcs.status?.branch ?? vcs.overview?.branch,
-    revision: vcs.status?.revision ?? vcs.overview?.revision,
-  }),
-)
 </script>
 
 <template>
@@ -314,16 +200,18 @@ const vcsLine = computed(() =>
        positioned over the page, so widening it moves nothing else. -->
   <div class="relative shrink-0" :class="sidebar === 'auto' ? 'w-12' : 'w-rail'">
     <nav
-      class="vxs-pane vxs-rail rail flex h-full pt-2 flex-col border-r border-pane bg-surface"
+      class="vxs-pane vxs-rail rail flex h-full pt-2 flex-col"
       :class="`rail-${sidebar}`"
+      @pointerover="showTooltip" @pointerout="tooltip = null"
+      @focusin="showTooltip" @focusout="tooltip = null" @keydown.esc="tooltip = null" @click="tooltip = null"
     >
       <!-- The search field, under the project it searches. A button drawn as a field rather
            than an input: the rail is 48px wide in two of its three shapes, and the panel it
            opens carries the real input at any width. -->
       <button
         v-if="search.available"
-        class="rail-search mx-2 mb-1 flex items-center gap-2 rounded-md border border-line bg-inset px-2 py-1.5 text-left text-muted hover:border-accent hover:text-primary"
-        :title="t('nav.search.title')"
+        class="rail-search mx-2 mb-1.5 flex items-center gap-2 rounded-md bg-inset px-2 py-1.5 text-left text-muted hover:border-accent hover:text-primary"
+        :aria-label="t('nav.search.title')" :data-nav-tip="t('nav.search.title')"
         @click="search.show()"
       >
         <Search class="size-4 shrink-0" />
@@ -331,24 +219,24 @@ const vcsLine = computed(() =>
         <kbd class="rail-label ml-auto shrink-0 font-mono text-[10px] text-faint">Ctrl K</kbd>
       </button>
 
-      <div class="rail-scroll flex-1 overflow-x-hidden overflow-y-auto px-2">
+      <div @scroll.passive="tooltip = null" class="rail-scroll flex-1 overflow-x-hidden overflow-y-auto px-2">
         <!-- One positioned box around the rows: the frame the travelling mark is measured and
              drawn in (`measureMark`), and it scrolls with them. -->
-        <div ref="rows" class="rail-rows relative" :data-mark="mark ? '' : undefined">
+        <div ref="rows" class="rail-rows relative flex flex-col gap-1.5" :data-mark="mark ? '' : undefined">
           <RouterLink
             v-for="item in builtinItems"
             :key="item.to"
             :to="item.to"
             class="nav-link"
             active-class="nav-link-active"
-            :title="t(item.labelKey)"
+            :aria-label="t(item.labelKey)" :data-nav-tip="t(item.labelKey)"
           >
             <component :is="item.icon" class="size-4 shrink-0" :style="{ color: item.tint }" />
             <span class="rail-label truncate">{{ t(item.labelKey) }}</span>
           </RouterLink>
 
           <template v-if="pluginNavItems.length">
-            <div class="rail-rule my-2" />
+            <div class="my-1" aria-hidden="true" />
             <p class="rail-label px-2 pb-1 text-small tracking-wide text-faint uppercase">
               {{ t('nav.pluginPages') }}
             </p>
@@ -358,7 +246,7 @@ const vcsLine = computed(() =>
               :to="item.route"
               class="nav-link"
               active-class="nav-link-active"
-              :title="item.title"
+              :aria-label="item.title" :data-nav-tip="item.title"
             >
               <Blocks class="size-4 shrink-0" style="color: var(--vxs-nav-plugin-page)" />
               <span class="rail-label truncate">{{ item.title }}</span>
@@ -369,12 +257,12 @@ const vcsLine = computed(() =>
         </div>
       </div>
 
-      <div class="rail-footer p-2">
+      <div class="rail-footer flex flex-col gap-1.5 p-2">
         <!-- The original update position; desktop also uses it for manual checks. -->
         <button
           v-if="showUpdate"
           class="nav-link nav-link-update w-full"
-          :title="updateTitle"
+          :aria-label="updateTitle" :data-nav-tip="updateTitle"
           :disabled="updates.busy"
           @click="updates.running ? (updates.dialogOpen = true) : updates.startFromButton()"
         >
@@ -388,7 +276,7 @@ const vcsLine = computed(() =>
              still has a history worth reading. -->
         <button
           class="nav-link w-full"
-          :title="t('nav.changelog.title')"
+          :aria-label="t('nav.changelog.title')" :data-nav-tip="t('nav.changelog.title')"
           @click="showingChangelog = true"
         >
           <ScrollText class="size-4 shrink-0" />
@@ -398,90 +286,41 @@ const vcsLine = computed(() =>
           to="/settings"
           class="nav-link"
           active-class="nav-link-active"
-          :title="t('nav.section.settings')"
+          :aria-label="t('nav.section.settings')" :data-nav-tip="t('nav.section.settings')"
         >
           <Settings class="size-4 shrink-0" />
           <span class="rail-label">{{ t('nav.section.settings') }}</span>
         </RouterLink>
         <!-- Last, under Settings: who makes the Studio and on what terms. -->
-        <button class="nav-link w-full" :title="t('nav.about.title')" @click="showingAbout = true">
+        <button class="nav-link w-full" :aria-label="t('nav.about.title')" :data-nav-tip="t('nav.about.title')" @click="showingAbout = true">
           <Info class="size-4 shrink-0" />
           <span class="rail-label truncate">{{ t('nav.about.label') }}</span>
         </button>
-        <div class="rail-status">
-          <div
-            v-for="backend in agentBackends"
-            :key="backend.id"
-            class="rail-foot flex items-center gap-1.5"
-            :title="backend.title"
-          >
-            <AgentBackendIcon :backend="backend.id" class="size-3 shrink-0" :style="{ color: backend.color }" />
-            <span class="rail-label truncate text-small">{{ backend.label }}</span>
-            <span class="sr-only">{{ backend.reason }}</span>
-          </div>
-          <!-- Which version control the project is under, in the same shape as the row below
-               it: a dot for the state, a word for the system. It links to the page that can
-               change either, and its tooltip carries what the strip hides. -->
-          <RouterLink to="/vcs" class="rail-foot flex items-center gap-1.5" :title="vcsLine.title">
-            <span class="size-2 shrink-0 rounded-full" :style="{ background: vcsLine.color }" />
-            <span class="rail-label truncate text-small">{{ t('nav.vcs', { name: vcsLine.label }) }}</span>
-          </RouterLink>
-          <div class="rail-foot flex items-center gap-1.5" :title="footTitle">
-            <!-- The one dot in the rail that breathes, and only while events are arriving: a
-                 connection that is retrying is not alive, and its colour already says so. -->
-            <span
-              class="rail-live size-2 shrink-0 rounded-full"
-              :class="{ 'vxs-dot-live': session.connection === 'open' }"
-              :style="{ background: connectionColor }"
-            />
-            <!-- The rail is 192px wide and "connecting" plus a version does not fit in it.
-                 The word is the one that gives way: it is transient, its tooltip spells it
-                 out, and the dot beside it already carries the same state in colour. -->
-            <span class="rail-label truncate text-small">{{ connectionLabel }}</span>
-            <!-- A commit is always seven characters; a tag is whatever someone typed, so it
-                 is capped rather than allowed to push the row past the rail's width. -->
-            <span
-              v-if="buildLabel"
-              class="rail-build rail-label ml-auto max-w-28 shrink-0 truncate font-mono text-[10px]"
-              >{{ buildLabel }}</span
-            >
-          </div>
-        </div>
       </div>
     </nav>
   </div>
 
+  <Teleport to="body">
+    <span v-if="tooltip" class="nav-tooltip" role="tooltip" :style="{ left: tooltip.left + 'px', top: tooltip.top + 'px' }">{{ tooltip.text }}</span>
+  </Teleport>
   <ChangelogDialog v-if="showingChangelog" @close="showingChangelog = false" />
   <AboutDialog v-if="showingAbout" @close="showingAbout = false" />
   <UpdateDialog v-if="updates.dialogOpen" @close="updates.dialogOpen = false" />
 </template>
 
 <style scoped>
-/* The project switcher is a raised tile rather than a row: it names what everything under
-   it is scoped to, and the tile is what says it is a control and not a heading. Its mark sits
-   in a well of the canvas grey. In the 48px strip the rules further down centre it and take
-   its side padding, and the tile is then just the well. */
-.rail-project {
-  margin: 12px 8px 6px;
-  padding: 7px 8px;
-  border-radius: var(--vxs-radius-md);
-  background: var(--vxs-bg-hover);
-  box-shadow: inset 0 0 0 1px var(--vxs-accent-border);
+.nav-tooltip {
+  position: fixed;
+  z-index: 90;
+  transform: translateY(-50%);
+  pointer-events: none;
+  max-width: min(26rem, 65vw);
+  padding: 4px 8px;
+  border-radius: var(--vxs-radius-sm);
+  background: var(--vxs-text-primary);
+  color: var(--vxs-bg-surface);
+  font-size: var(--vxs-text-small);
 }
-
-.rail-project:hover {
-  background: var(--vxs-bg-active);
-}
-
-.rail-project > svg:first-child {
-  width: 26px;
-  height: 26px;
-  padding: 5px;
-  border-radius: 6px;
-  background: var(--vxs-bg-canvas);
-  box-shadow: inset 0 0 0 1px var(--vxs-accent-border);
-}
-
 .nav-link {
   display: flex;
   align-items: center;
@@ -503,7 +342,6 @@ const vcsLine = computed(() =>
 .nav-link-active:hover {
   position: relative;
   background: var(--vxs-accent-container);
-  box-shadow: inset 0 0 0 1px var(--vxs-accent-border);
   color: var(--vxs-text-on-accent-container);
 }
 
@@ -604,59 +442,6 @@ const vcsLine = computed(() =>
   color: var(--vxs-nav-update);
 }
 
-/* Rules fade out at both ends instead of stopping: they separate groups of rows, and a hard
-   line across the rail read as an edge of the rail itself. */
-.rail-rule,
-.rail-footer::before {
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--vxs-text-primary) 16%, transparent) 30%,
-    color-mix(in srgb, var(--vxs-text-primary) 16%, transparent) 70%,
-    transparent
-  );
-}
-
-.rail-footer::before {
-  content: '';
-  display: block;
-  margin-bottom: 8px;
-}
-
-/* Agent readiness, version control and the live connection with the build share one
-   inset status card at the foot of the rail (§6.1). */
-.rail-status {
-  margin-top: 8px;
-  padding: 8px;
-  border-radius: var(--vxs-radius-md);
-  background: var(--vxs-bg-canvas);
-  box-shadow: inset 0 0 0 1px var(--vxs-border);
-}
-
-.rail-status .rail-foot {
-  padding: 6px 0 0;
-  color: var(--vxs-text-secondary);
-}
-
-.rail-status .rail-foot:first-child {
-  padding-top: 0;
-}
-
-.rail-status a.rail-foot:hover {
-  color: var(--vxs-text-primary);
-}
-
-.rail-build {
-  color: var(--vxs-text-faint);
-}
-
-/* A connection is ambient where a run is urgent, so the live dot breathes slower than work in
-   flight does. */
-.rail-live.vxs-dot-live {
-  animation-duration: 2s;
-}
-
 /* Icons only: the strip keeps every control and drops the words; `title` carries them. */
 .rail-icons .rail-label,
 .rail-auto:not(:hover) .rail-label {
@@ -664,13 +449,9 @@ const vcsLine = computed(() =>
 }
 
 .rail-icons .nav-link,
-.rail-icons .rail-project,
 .rail-icons .rail-search,
-.rail-icons .rail-foot,
 .rail-auto:not(:hover) .nav-link,
-.rail-auto:not(:hover) .rail-project,
-.rail-auto:not(:hover) .rail-search,
-.rail-auto:not(:hover) .rail-foot {
+.rail-auto:not(:hover) .rail-search {
   justify-content: center;
   padding-left: 0;
   padding-right: 0;
@@ -690,6 +471,7 @@ const vcsLine = computed(() =>
 
 .rail-auto:hover {
   width: var(--vxs-rail-width);
+  background: var(--vxs-bg-shell);
   box-shadow: var(--vxs-shadow-lg);
 }
 </style>

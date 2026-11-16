@@ -14,6 +14,7 @@ from voxarium_studio.teams.backends.base import AgentEvent
 from voxarium_studio.teams.chat import ChatBusy
 from voxarium_studio.teams import effort_solver_runner, orchestrator as orchestrator_module
 from voxarium_studio.teams.tools import build_toolset
+from voxarium_studio.ws.events import EventType
 
 from test_producer import DEV, PRODUCER, TEAM, ProducerBackend, allow, finished, opened, producer, tools_for
 
@@ -125,6 +126,7 @@ async def test_auto_uses_solver_even_for_stale_toolsets_and_explicit_choices(pro
     assert messages[0].data["scores"] == SCORES
     assert messages[0].data["effort"] == 3
     assert messages[0].data["effort_level"] == "high"
+    assert messages[0].data["task_id"] == task.id
     assert all("Private assessment" not in message.text for message in await producer.chats.messages(chat.id))
 
 
@@ -195,7 +197,55 @@ async def test_successful_evaluations_add_usage_once_to_chat_without_exposing_ra
     messages = [message for message in await producer.chats.messages(chat.id) if message.kind == "effort_solver"]
     assert len(messages) == 2
     assert all(message.text == "" for message in messages)
-    assert all(set(message.data) == {"scores", "effort", "effort_level"} for message in messages)
+    assert all(set(message.data) == {"scores", "effort", "effort_level", "task_id"} for message in messages)
+
+
+async def test_create_task_result_and_chat_event_share_the_evaluated_task(producer, solver, monkeypatch):
+    chat = await opened(producer)
+    await producer.chats.producer.set_effort_mode(chat.id, "auto")
+    async with producer.db.session() as session:
+        assignee = await session.get(TeamMember, DEV)
+    published = []
+    publish = producer.bus.publish
+
+    async def capture(event_type, data, **kwargs):
+        if event_type == EventType.TEAM_CHAT_MESSAGE and data.get("kind") == "effort_solver":
+            published.append(data)
+        return await publish(event_type, data, **kwargs)
+
+    monkeypatch.setattr(producer.bus, "publish", capture)
+    tools = await tools_for(producer, chat)
+    for title in ("Implement movement", "Implement jumping"):
+        result = await tools["create_task"]({"assignee_id": DEV, "title": title, "brief": "Instructions"})
+        assert not result.get("is_error"), result
+        payload = json.loads(result["content"][0]["text"])
+        task = await producer.teams._reload(payload["task_id"])
+        assert payload == {
+            "task_id": task.id,
+            "display_id": producer.teams.display_id(task),
+            "title": title,
+            "message": (f"Created {producer.teams.display_id(task)} for {assignee.name}. "
+                        "Draft held in Todo. Include it in propose_producer_plan: Careful requires the user's "
+                        "plan approval; Independent validates and releases that plan automatically. "
+                        "Refer to it by that id when you mention it to anyone."),
+            "effort_solver": {"scores": SCORES, "effort": 3, "effort_level": "high"},
+        }
+        assert published[-1]["data"] == {**payload["effort_solver"], "task_id": task.id}
+    assert len(solver.requests) == len(published) == 2
+    assert published[0]["data"]["task_id"] != published[1]["data"]["task_id"]
+    messages = [message for message in await producer.chats.messages(chat.id) if message.kind == "effort_solver"]
+    assert [message.data for message in messages] == [event["data"] for event in published]
+
+
+async def test_agent_mode_keeps_plain_text_create_task_result_without_evaluation(producer, solver):
+    chat = await opened(producer)
+    result = await (await tools_for(producer, chat))["create_task"](
+        {"assignee_id": DEV, "title": "Implement movement", "brief": "Instructions"})
+    assert not result.get("is_error"), result
+    assert result["content"][0]["text"].startswith("Created ")
+    assert "effort_solver" not in result["content"][0]["text"]
+    assert not solver.requests
+    assert not [message for message in await producer.chats.messages(chat.id) if message.kind == "effort_solver"]
 
 
 @pytest.mark.parametrize("failure", ["invalid_json", "out_of_range", "backend_error"])
@@ -278,12 +328,15 @@ async def test_waiting_solver_does_not_lock_task_creation_and_cancellation_leave
 async def test_solver_summary_and_task_are_rolled_back_together_if_creation_fails(producer, solver):
     chat = await opened(producer)
     await producer.chats.producer.set_effort_mode(chat.id, "auto")
+    effort_solver_result = {}
     with pytest.raises(ValueError, match="Invalid attachment"):
         await producer.teams.create_task(
             team_id=TEAM, assignee_id=DEV, created_by=PRODUCER,
             title="Invalid attachment", brief="Instructions", producer_chat_id=chat.id,
             attachments=["not-an-upload"],
+            effort_solver_result=effort_solver_result,
         )
+    assert effort_solver_result == {}
     assert len(solver.requests) == 1
     async with producer.db.session() as session:
         assert not list((await session.exec(select(TeamTask))).all())

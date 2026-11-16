@@ -16,6 +16,7 @@ from sqlmodel import select
 from ..core.context import AppContext
 from ..models import AgentChat, AgentChatMessage, ChatSessionContext, TeamMember
 from ..teams.chat import ChatBusy, UserContext
+from ..teams.backends.base import runtime_session_owner
 from .deps import Ctx
 from .session_context import ContextView, fragment_response, inspect_session, inventory_response, read_context
 
@@ -146,14 +147,15 @@ async def _retained_chat_context(chat_id: str, ctx: Ctx, view: ContextView,
         messages = (await session.exec(select(AgentChatMessage).where(
             AgentChatMessage.chat_id == chat_id,
         ).order_by(AgentChatMessage.created_at, AgentChatMessage.id))).all()
-    parts, metrics = await read_context(snapshot, messages, member, chat.agent_session_id, view)
+    parts, metrics = await read_context(snapshot, messages, member, chat.agent_session_id, view,
+                                        project_root=ctx.paths.root)
     return parts, metrics, chat.agent_session_id
 
 
 @router.get("/{chat_id}/context")
 async def get_chat_context(chat_id: str, ctx: Ctx, view: ContextView = "auto") -> dict[str, Any]:
     parts, metrics, session_id = await _retained_chat_context(chat_id, ctx, view)
-    return inventory_response(chat_id, parts, metrics, session_id)
+    return inventory_response(runtime_session_owner(ctx.paths.root, "chat", chat_id), parts, metrics, session_id)
 
 
 @router.get("/{chat_id}/context/fragments/{source_id}")
@@ -169,7 +171,7 @@ async def inspect_chat_context(chat_id: str, ctx: Ctx) -> dict[str, Any]:
     chat = await ctx.chats.get_chat(chat_id)
     if chat is None:
         raise HTTPException(404, f"No chat {chat_id!r}")
-    return await inspect_session(chat_id, chat.agent_session_id)
+    return await inspect_session(runtime_session_owner(ctx.paths.root, "chat", chat_id), chat.agent_session_id)
 
 
 @router.delete("/{chat_id}")

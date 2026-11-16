@@ -13,6 +13,7 @@ import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { MemoryOverview } from '@/api/types'
 import { inMemoryFolder } from '@/lib/memory'
+import { rendererSession } from '@/session/project-session'
 import { onEvent } from '@/ws/connection'
 
 export const MEMORY_REFRESH_DEBOUNCE_MS = 300
@@ -36,7 +37,9 @@ export const useMemoryStore = defineStore('memory', () => {
         const result = await api.memory()
         if (request.started === generation) adopt(result)
       } catch (cause) {
-        error.value = cause instanceof Error ? cause.message : String(cause)
+        if (request.started === generation) {
+          error.value = cause instanceof Error ? cause.message : String(cause)
+        }
       } finally {
         if (pending === request) {
           pending = null
@@ -61,25 +64,53 @@ export const useMemoryStore = defineStore('memory', () => {
 
   let subscribed = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let recovering: Promise<void> | null = null
+  let recoveryGeneration: number | null = null
 
   function scheduleLoad(): void {
+    // A pre-change read cannot cover this event, nor may a queued timer outlive a local write.
+    const requested = ++generation
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
-      void refresh()
+      if (requested === generation) void load()
     }, MEMORY_REFRESH_DEBOUNCE_MS)
   }
 
   function subscribe(): void {
     if (subscribed) return
     subscribed = true
+    // §5.3.2: a scoped gap invalidates server inventory, not the view's editor/draft.
+    onEvent('system.dropped', (payload, envelope) => {
+      if (!payload.resync || rendererSession.isLegacy || !rendererSession.matches(envelope)) return
+      if (!overview.value && !pending) return
+      // Invalidate immediately, even when recovery is already awaiting an older read.
+      // Otherwise a pre-gap request could be joined or briefly restore obsolete rows.
+      recoveryGeneration = ++generation
+      if (timer) clearTimeout(timer)
+      timer = null
+      return recovering ??= Promise.resolve().then(async () => {
+        try {
+          while (recoveryGeneration !== null) {
+            const requested = recoveryGeneration
+            recoveryGeneration = null
+            // A newer local adopt/refresh already covers this gap; do not let an older
+            // queued recovery supersede that write with another server snapshot.
+            if (requested === generation) await load()
+          }
+        } finally {
+          recovering = null
+        }
+      })
+    })
     onEvent('team.memory.changed', () => {
-      if (overview.value) scheduleLoad()
+      if (overview.value || pending) scheduleLoad()
     })
     onEvent('explorer.file_changed', (payload) => {
+      if (!overview.value && !pending) return
       const folder = overview.value?.path
-      if (!folder) return
-      const touched = payload.changes.some((change) => inMemoryFolder(change.path, folder))
+      // The initial response has not told us the folder yet; cover watcher batches until then.
+      const touched = !folder || payload.changes.some((change) => inMemoryFolder(change.path, folder))
       if (touched || payload.truncated) scheduleLoad()
     })
   }
