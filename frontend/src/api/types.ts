@@ -1074,7 +1074,18 @@ export interface SuggestedModel {
 
 /** One agent backend as the editor sees it: usable or not, and whether it runs a member as a
  *  named agent definition (`claude --agent`) — Codex does not, so "Runs as" is hidden. */
+export interface ApiBackendConnection {
+  id: string
+  name: string
+  base_url: string
+  model: string
+  icon: string | null
+  has_api_key: boolean
+}
+
 export interface AgentBackendInfo {
+  label?: string
+  icon?: string | null
   available: boolean
   reason: string
   named_agents?: boolean

@@ -13,6 +13,7 @@ import { computed, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { ThemeConfig } from '@/api/types'
+import ApiBackendsSettings from '@/components/settings/ApiBackendsSettings.vue'
 import OrchestratorSettings from '@/components/settings/OrchestratorSettings.vue'
 import StartupSettings from '@/components/settings/StartupSettings.vue'
 import RemoteServersSettings from '@/components/settings/RemoteServersSettings.vue'
@@ -51,6 +52,7 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-language', titleKey: 'settings.language.title' },
   { id: 'settings-appearance', titleKey: 'settings.appearance.title' },
   { id: 'settings-explorer', titleKey: 'settings.explorer.title' },
+  { id: 'settings-api-backends', titleKey: 'settings.apiBackends.title' },
   { id: 'settings-orchestrator', titleKey: 'settings.orchestrator.title' },
   { id: 'settings-execution', titleKey: 'settings.execution.title' },
   { id: 'settings-remote-servers', titleKey: 'settings.remoteServers.title' },
@@ -559,6 +561,8 @@ async function setNodeCache(value: boolean) {
               </span>
             </label>
           </section>
+
+          <section id="settings-api-backends" class="vxs-enter scroll-mt-4"><ApiBackendsSettings /></section>
 
           <section id="settings-orchestrator" class="vxs-enter scroll-mt-4"><OrchestratorSettings /></section>
 

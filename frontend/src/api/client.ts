@@ -12,6 +12,7 @@ import { authHeaders, withTokenParam } from './auth'
 import { ProjectSession, rendererSession, StaleProjectResponseError } from '@/session/project-session'
 import { scopedApiUrl, type Query } from './project-scope'
 import type {
+  ApiBackendConnection,
   ContextInventory,
   ContextTarget,
   ContextView,
@@ -514,6 +515,13 @@ export function createApiClient(session: ProjectSession = rendererSession) {
       return session.isLegacy ? updated : request<AppConfig>('GET', '/settings')
     },
     /** The built-in text behind every line the Studio says to an agent, in send order. */
+    apiBackends: () => request<ApiBackendConnection[]>('GET', '/settings/api-backends', { cache: 'no-store' }),
+    saveApiBackend: (body: Omit<ApiBackendConnection, 'has_api_key'> & { api_key?: string }) =>
+      request<ApiBackendConnection>('PUT', `/settings/api-backends/${body.id}`, {
+        body: { name: body.name, base_url: body.base_url, model: body.model, icon: body.icon,
+          ...(body.api_key !== undefined ? { api_key: body.api_key } : {}) },
+      }),
+    deleteApiBackend: (id: string) => request<{ deleted: boolean }>('DELETE', `/settings/api-backends/${id}`),
     promptSpecs: () => request<Record<string, PromptSpec>>('GET', '/settings/prompts'),
     reloadSettings: () =>
       request<{ config: AppConfig; plugins: LoadedPlugin[] }>('POST', '/settings/reload'),

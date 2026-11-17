@@ -594,6 +594,12 @@ def register_backend(name: str, factory: Callable[[], AgentBackend]) -> None:
 
 
 def get_backend(name: str) -> AgentBackend:
+    if name.startswith("openai_api:"):
+        from ...core.api_backends import connections
+        from .openai_api import OpenAIApiBackend
+        for connection in connections():
+            if connection.backend_id == name:
+                return OpenAIApiBackend(connection)
     factory = _BACKENDS.get(name)
     if factory is None:
         raise KeyError(
@@ -603,4 +609,5 @@ def get_backend(name: str) -> AgentBackend:
 
 
 def available_backends() -> list[str]:
-    return sorted(_BACKENDS)
+    from ...core.api_backends import connections
+    return sorted([*_BACKENDS, *(c.backend_id for c in connections())])

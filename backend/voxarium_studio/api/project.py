@@ -356,7 +356,57 @@ async def update_project_settings(
 
 @router.get("/settings/application")
 async def get_application_settings() -> dict[str, Any]:
-    return load_application_config().model_dump(mode="json")
+    return load_application_config().model_dump(mode="json", exclude={"api_backends"})
+
+
+@router.get("/settings/api-backends")
+async def list_api_backends() -> list[dict[str, Any]]:
+    return [item.public() for item in load_application_config().api_backends]
+
+
+@router.put("/settings/api-backends/{connection_id}")
+async def put_api_backend(connection_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from ..core.api_backends import ApiBackendConfig
+    from ..core.application_config import (
+        application_config_transaction, _load_application_document, _write_application_document,
+    )
+    with application_config_transaction():
+        try:
+            raw, application = _load_application_document()
+            existing = next((c for c in application.api_backends if c.id == connection_id), None)
+            values = {**payload, "id": connection_id}
+            if "api_key" not in values and existing:
+                values["api_key"] = existing.api_key
+            connection = ApiBackendConfig.model_validate(values)
+            items = [connection if c.id == connection_id else c for c in application.api_backends]
+            if existing is None:
+                items.append(connection)
+            # Secrets are serialized only here, never into generic settings or DTOs.
+            raw["api_backends"] = [
+                {**c.model_dump(mode="json", exclude={"api_key"}),
+                 "api_key": c.api_key.get_secret_value()} for c in items
+            ]
+            _write_application_document(raw)
+        except (ValueError, OSError):
+            raise HTTPException(400, "Could not save API backend. Check its name, URL and model.") from None
+    return connection.public()
+
+
+@router.delete("/settings/api-backends/{connection_id}")
+async def delete_api_backend(connection_id: str) -> dict[str, bool]:
+    from ..core.application_config import (
+        application_config_transaction, _load_application_document, _write_application_document,
+    )
+    with application_config_transaction():
+        try:
+            raw, application = _load_application_document()
+            if not any(c.id == connection_id for c in application.api_backends):
+                raise HTTPException(404, "API backend not found")
+            raw["api_backends"] = [c for c in raw.get("api_backends", []) if c["id"] != connection_id]
+            _write_application_document(raw)
+        except (ValueError, OSError):
+            raise HTTPException(400, "Could not remove API backend.") from None
+    return {"deleted": True}
 
 
 @router.put("/settings/application")

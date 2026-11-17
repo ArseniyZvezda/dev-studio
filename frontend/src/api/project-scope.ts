@@ -4,7 +4,9 @@ export type Query = Record<string, string | number | boolean | null | undefined>
 
 /** Explicit process-wide operations; no implicit active-tab scope (§5.3.3). */
 export function isGlobalApiPath(path: string): boolean {
-  return path === '/settings/application' || path === '/changelog' || path === '/projects/open'
+  return path === '/settings/api-backends'
+    || /^\/settings\/api-backends\/[0-9a-f-]{36}$/.test(path)
+    || path === '/settings/application' || path === '/changelog' || path === '/projects/open'
     || path === '/project/recent' || path.startsWith('/fs/') || path.startsWith('/runtime/')
     || path === '/updates' || path.startsWith('/updates/')
     || /^\/plugins\/[^/]+\/install-env$/.test(path)

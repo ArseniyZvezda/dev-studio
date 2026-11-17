@@ -5,11 +5,13 @@
  * caller can actually run — Graphify reads documents through `claude -p`, so it passes
  * `['claude_code']`.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 import type { MemberOptions } from '@/api/types'
 import AgentBackendIcon from './AgentBackendIcon.vue'
 import { t } from '@/i18n'
+import { apiConnections, loadApiConnections } from '@/lib/api-backends'
+onMounted(() => loadApiConnections())
 
 const props = defineProps<{
   backend: string | null
@@ -26,19 +28,37 @@ const props = defineProps<{
 const emit = defineEmits<{ change: [backend: string | null, model: string | null] }>()
 const ALL_BACKENDS = ['claude_code', 'codex', 'qwen'] as const
 const backends = computed(() => {
-  const allowed = props.backends ? [...props.backends] : [...ALL_BACKENDS]
+  const allowed = props.backends ? [...props.backends] : [...new Set([
+    ...ALL_BACKENDS, ...Object.keys(props.options?.agent_backends ?? {}).filter(id =>
+      !id.startsWith('openai_api:') || apiConnections.value.some(c => `openai_api:${c.id}` === id)
+      || !apiConnections.value.length),
+    ...apiConnections.value.map(c => `openai_api:${c.id}`),
+    ...(props.backend ? [props.backend] : []),
+  ])]
   return allowed.length ? allowed : [...ALL_BACKENDS]
 })
 const selectedBackend = computed(() => props.backend || props.inheritedBackend || backends.value[0])
-const models = computed(() => (props.options?.suggested_models ?? []).filter(
-  entry => !entry.backend || entry.backend === selectedBackend.value,
-))
+const models = computed(() => {
+  const entries = (props.options?.suggested_models ?? []).filter(
+    entry => !entry.backend || entry.backend === selectedBackend.value,
+  )
+  const connection = apiConnections.value.find(c => `openai_api:${c.id}` === selectedBackend.value)
+  if (connection && !entries.some(entry => entry.id === connection.model)) {
+    return [...entries, { id: connection.model, label: connection.model, group: connection.name }]
+  }
+  return entries
+})
 const custom = ref(false)
 watch(() => [props.backend, props.model], () => { custom.value = false })
 const listed = computed(() => props.model === null || props.model === '' || (props.allowAuto && props.model === 'auto') || models.value.some(entry => entry.id === props.model))
 const editingCustom = computed(() => custom.value || !listed.value)
 const modelValue = computed(() => editingCustom.value ? '__custom__' : props.model === null
   ? (props.allowInherit && selectedBackend.value === props.inheritedBackend ? '__inherit__' : '') : props.model)
+
+function backendLabel(name: string): string {
+  return apiConnections.value.find(c => `openai_api:${c.id}` === name)?.name
+    || props.options?.agent_backends[name]?.label || name
+}
 
 function chooseBackend(value: string): void {
   if (props.disabled) return
@@ -69,7 +89,7 @@ function showList(): void {
     <div class="flex shrink-0 items-center rounded-md border border-line bg-inset p-0.5" role="group" :aria-label="t('teams.editor.backend')">
       <button v-for="name in backends" :key="name" type="button" class="grid size-7 place-items-center rounded-sm"
         :class="selectedBackend === name ? 'bg-accent-soft text-primary' : 'text-faint hover:bg-hover hover:text-primary'"
-        :title="name" :aria-label="name" :aria-pressed="selectedBackend === name" :disabled="disabled"
+        :title="backendLabel(name)" :aria-label="backendLabel(name)" :aria-pressed="selectedBackend === name" :disabled="disabled"
         @click.stop="chooseBackend(name)">
         <AgentBackendIcon :backend="name" class="size-4" />
       </button>

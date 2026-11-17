@@ -30,6 +30,7 @@ from ..models.teams import (
 from ..teams import project_skills
 from ..teams.attachments import MAX_ATTACHMENT_BYTES, media_type_of
 from ..teams.backends import codex, qwen
+from ..core.api_backends import connections as api_connections
 from ..teams.backends.base import (
     RemoteControlUnavailable,
     available_backends,
@@ -385,6 +386,8 @@ async def member_options(ctx: Ctx) -> dict[str, Any]:
         except Exception as exc:  # a broken backend must not break the editor
             usable, reason = False, f"{type(exc).__name__}: {exc}"
         backends[name] = {
+            "label": getattr(backend, "label", name),
+            "icon": getattr(backend, "icon", None),
             "available": usable,
             "reason": reason,
             # Whether the member can run as a named agent definition (`claude --agent`);
@@ -396,7 +399,9 @@ async def member_options(ctx: Ctx) -> dict[str, Any]:
         "permission_modes": _permission_modes(),
         "effort_levels": _effort_levels(),
         "common_tools": COMMON_TOOLS,
-        "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models()],
+        "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models(),
+                             *[{"id": c.model, "label": c.model, "group": c.name, "backend": c.backend_id}
+                               for c in api_connections()]],
         "studio_tool_prefix": f"mcp__{SERVER_NAME}__",
     }
 
