@@ -144,3 +144,24 @@ async def test_malformed_usage_does_not_break_work_or_turn_output_into_context(c
 
     await ctx.teams._drain_events(Backend(), request, task.id, task.assignee_id)
     assert await total(ctx, task) == 8
+
+
+def test_claude_result_window_sizes_the_snapshot_and_later_responses():
+    """Claude names its context window only on the result (`modelUsage`, §10.4)."""
+    from voxarium_studio.teams.usage import RunUsage
+
+    usage = RunUsage()
+    usage.observe(AgentEvent(kind="text", data={"usage": {"input_tokens": 100}}))
+    assert "context_window" not in usage.snapshot(0).data
+    usage.finish({"total_tokens": 100, "context_window": 1_000_000})
+    assert usage.snapshot(0).data["context_window"] == 1_000_000
+    usage.next_segment()
+    usage.observe(AgentEvent(kind="text", data={"usage": {"input_tokens": 150}}))
+    usage.observe(AgentEvent(kind="text", data={"usage": {"input_tokens": 5},
+                                                "parent_tool_use_id": "worker", "context_window": 200_000}))
+    data = usage.snapshot(0).data
+    assert (data["context_tokens"], data["context_window"]) == (150, 1_000_000)
+    # A result without a measured request in the run does not invent one.
+    fresh = RunUsage()
+    fresh.finish({"total_tokens": 0, "context_window": 1_000_000})
+    assert "context_window" not in fresh.snapshot(0).data

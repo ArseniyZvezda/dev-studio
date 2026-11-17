@@ -175,6 +175,10 @@ async def get_remote(request: Request, ctx: Ctx) -> dict[str, Any]:
     change_state = ctx.docs.transitions.change_status(change.change_id) if change is not None else None
     if ctx.docs.transitions.binding_quiescing:
         state = "blocked" if change_state["state"] in {"blocked", "paused"} else "quiescing"
+        reason = change_state["reason"]
+    else:
+        # I12: a runner's fixed typed stop code (recovery_required, *_mismatch…).
+        reason = status["message"] if active and state in {"blocked", "unauthorised"} else None
     return {
         "project_id": scope.project_id, "epoch": scope.epoch,
         "backend_epoch": ctx.docs.transitions.backend_epoch,
@@ -185,7 +189,7 @@ async def get_remote(request: Request, ctx: Ctx) -> dict[str, Any]:
         "has_token": status["has_token"],
         "binding_generation": ctx.docs.transitions.generation,
         "state": state,
-        "reason": change_state["reason"] if ctx.docs.transitions.binding_quiescing else None,
+        "reason": reason,
         "active_rooms": len(ctx.sync._sessions),
         "pending_writes": len(ctx.sync._pending) + len(ctx.sync._live_writes),
         "binding_change": change_state,
@@ -366,7 +370,7 @@ def _prepare_observation(ctx: Any) -> dict[str, Any]:
 
 def _prepare_destination(ctx: Any, payload: RemotePrepare, observed: dict[str, Any],
                          selection: dict | None = None) -> dict[str, Any]:
-    # R3/I9 own authoritative catalog observations. A browser's ID/incarnation
+    # I9 owns authoritative catalog observations. A browser's ID/incarnation
     # is not one; do not probe the v1 server to manufacture a successful plan.
     if payload.operation == "select":
         selection = selection or _select_observation(ctx, payload)
@@ -409,20 +413,25 @@ def _check_destination_reservation(ctx, observed, destination):
                 _remote_refusal("duplicate_local_binding")
 
 
-def _select_observation(ctx: Any, payload: RemotePrepare) -> dict[str, Any]:
-    """I6 test/in-process observation seam; production is closed until I9/R3.
+def _select_observation(ctx: Any, payload: RemotePrepare,
+                        observed: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Validate one exact Select observation against live local state (I6/I9).
 
-    No request flag, transport, token lookup, v1 fallback or catalog fabrication.
-    The injected owner must return an exact validated snapshot, rechecked at CAS.
+    Production passes ``observed`` from ``_catalog_select_source`` (the app
+    owner's strict-v2 read). The injected ``ctx.remote_select_observer`` stays a
+    test/in-process override and takes precedence. No request flag, browser
+    catalog identity, v1 fallback or fabrication is ever a source; the profile
+    and credential are re-read here, so every call is also a CAS recheck.
     """
     from ..core.application_config import RemoteServerProfile
     from ..sync.bindings import BindingRecord
     from ..sync.profiles import RemoteProfiles
     observer = getattr(ctx, "remote_select_observer", None)
-    if observer is None:
+    if observer is None and observed is None:
         _remote_refusal("catalog_unavailable", 503)
     try:
-        source = observer(payload.profile_id, payload.persistent_id)
+        source = (observer(payload.profile_id, payload.persistent_id)
+                  if observer is not None else observed)
         if not isinstance(source, dict) or set(source) != {"profile", "credential", "catalog"}:
             raise ValueError
         profile = RemoteServerProfile.model_validate(source["profile"],
@@ -452,6 +461,64 @@ def _select_observation(ctx: Any, payload: RemotePrepare) -> dict[str, Any]:
                 "catalog": dict(catalog)}
     except Exception:
         _remote_refusal("stale_binding")
+
+
+# Local/browser staleness (the chosen profile, key or exact project no longer
+# matches) is a 409; everything else about the Remote read is unavailability.
+_SELECT_STALE_CODES = frozenset({
+    "profile_not_found", "profile_revision_conflict", "profile_recovery_required",
+    "credential_binding_conflict", "credential_required", "invalid_credential",
+    "project_not_found", "identity_mismatch", "snapshot_changed", "invalid_id",
+    "invalid_request",
+})
+
+
+async def _catalog_select_source(request: Request, ctx: Any, profile_id: str | None,
+                                 persistent_id: str) -> dict[str, Any] | None:
+    """I9: observe the exact catalog project through the app owner for Select.
+
+    Reached via ``request.app.state.remote_catalog`` (the lifespan holder), never
+    app.state.ctx or a new singleton. The profile/credential are captured
+    BEFORE the read, so ``_select_observation``'s live re-read detects drift
+    during it. The owner's read is strict v2 with a fresh revision/URL-bound
+    provider and a lifecycle lease; there is no v1 probe, Create or Enable.
+    Returns None when the injected I6 test observer is installed.
+    """
+    from ..sync.catalog import CatalogError
+    from ..sync.profiles import ProfileError
+    if getattr(ctx, "remote_select_observer", None) is not None:
+        return None
+    holder = getattr(request.app.state, "remote_catalog", None)
+    if holder is None:
+        _remote_refusal("catalog_unavailable", 503)
+    if profile_id is None:
+        _remote_refusal("stale_binding")
+    code = None
+    profile = credential = catalog = None
+    try:
+        profile = holder.get(profile_id)
+        credential = {"revision": credentials.profile_token_revision(profile.profile_id, profile.url),
+                      "source": credentials.profile_token_source(profile.profile_id, profile.url)}
+    except CatalogError as error:
+        code = "catalog_unavailable" if error.code == "service_unavailable" else "stale_binding"
+    except Exception:
+        code = "stale_binding"
+    if code is None:
+        try:
+            catalog = await holder.select_observation(
+                profile.profile_id, persistent_id, expected_revision=profile.revision,
+            )
+        except CatalogError as error:
+            code = "stale_binding" if error.code in _SELECT_STALE_CODES else "catalog_unavailable"
+        except ProfileError as error:
+            code = ("stale_binding" if len(error.args) == 1 and error.args[0] in _SELECT_STALE_CODES
+                    else "catalog_unavailable")
+        except Exception:
+            code = "catalog_unavailable"
+    # Refuse outside the handlers: no provider/transport exception is retained.
+    if code is not None:
+        _remote_refusal(code, 503 if code == "catalog_unavailable" else 409)
+    return {"profile": profile.model_dump(), "credential": credential, "catalog": catalog}
 
 
 def _check_change_observation(ctx: Any, change_id: str) -> None:
@@ -488,11 +555,11 @@ def _bind_change_owners(ctx: Any) -> None:
 
 
 @remote_router.post("/prepare")
-async def prepare_remote(payload: RemotePrepare, ctx: Ctx) -> dict[str, Any]:
+async def prepare_remote(payload: RemotePrepare, request: Request, ctx: Ctx) -> dict[str, Any]:
     """Read-only preparation for the separate disabled identity/config commit."""
     activated_model(ctx)
-    from ..sync.transitions import read_binding_change_journals
-    if any(row["phase"] != "completed" for row in read_binding_change_journals(ctx.paths.root)):
+    from ..sync.transitions import journal_unresolved, read_binding_change_journals
+    if any(journal_unresolved(row) for row in read_binding_change_journals(ctx.paths.root)):
         _remote_refusal("recovery_required")
     if payload.backend_epoch is not None:
         ctx.docs.transitions._require_epoch(payload.backend_epoch)
@@ -500,7 +567,13 @@ async def prepare_remote(payload: RemotePrepare, ctx: Ctx) -> dict[str, Any]:
     if (observed["identity_revision"] != payload.expected_revision
             or observed["config_fingerprint"] != payload.config_fingerprint):
         _remote_refusal("stale_binding")
-    selection = _select_observation(ctx, payload) if payload.operation == "select" else None
+    selection = None
+    if payload.operation == "select":
+        # Local refusals above are cheap and come first; only then the network.
+        source = await _catalog_select_source(request, ctx, payload.profile_id, payload.persistent_id)
+        if source is not None and _prepare_observation(ctx) != observed:
+            _remote_refusal("stale_binding")  # Local state moved during the read.
+        selection = _select_observation(ctx, payload, source)
     destination = _prepare_destination(ctx, payload, observed, selection)
     _bind_change_owners(ctx)
     expected = {"observation": observed, "from": {
@@ -541,7 +614,7 @@ async def cancel_remote_change(change_id: str, ctx: Ctx) -> dict[str, Any]:
     # Cancellation never needs a successful CAS read; stale/unavailable config
     # cannot trap the editor in a wait or convert cancellation into a commit.
     from ..sync.transitions import read_binding_change_journals
-    if any(row["change_id"] == change_id and row["phase"] == "completed"
+    if any(row["change_id"] == change_id and row["version"] == 2 and row["phase"] == "completed"
            for row in read_binding_change_journals(ctx.paths.root)):
         _remote_refusal("already_committed")
     result = ctx.docs.transitions.cancel_change(change_id)
@@ -549,8 +622,13 @@ async def cancel_remote_change(change_id: str, ctx: Ctx) -> dict[str, Any]:
     return result
 
 
-def _commit_selection(ctx, expected):
-    """Repeat profile/credential/catalog CAS, including label revision drift."""
+def _commit_selection(ctx, expected, fresh=None):
+    """Repeat profile/credential/catalog CAS, including label revision drift.
+
+    ``fresh`` is the I9 catalog observation re-read just before the commit's
+    synchronous locks (no network under them). Profile and credential are
+    re-read live at every call; the catalog part must equal prepare's exactly.
+    """
     from ..sync.profiles import RemoteProfiles
     source = expected.get("selection")
     if source is not None:
@@ -562,7 +640,7 @@ def _commit_selection(ctx, expected):
             url=profile["url"], operation="select", catalog_id=catalog["persistent_id"],
             catalog_instance_id=catalog["space_instance_id"],
         )
-        if _select_observation(ctx, payload) != source:
+        if _select_observation(ctx, payload, fresh) != source:
             _remote_refusal("stale_binding")
     else:
         source = expected["observation"]
@@ -673,8 +751,8 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
     # A completed journal is retained forever, even if another change replaced
     # the RAM slot. This read cannot repair config/private state or adopt G.
     records = read_binding_change_journals(ctx.paths.root)
-    completed = next((row for row in records
-                      if row["change_id"] == change_id and row["phase"] == "completed"), None)
+    completed = next((row for row in records if row["change_id"] == change_id
+                      and row["version"] == 2 and row["phase"] == "completed"), None)
     if completed is not None:
         result = _confirmed_completed_result(ctx, payload, completed)
         return _committed_response(request, ctx, change_id, result)
@@ -682,13 +760,22 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
     change = transitions.require_ready_commit(change_id, **payload.model_dump(exclude={"confirmation"}),
                                                confirmation=confirmation)
     expected = change.expected
+    fresh = None
+    if expected.get("selection") is not None:
+        # I9: re-observe the exact project BEFORE any lock (the read is async;
+        # lifecycle/config/credential locks below are synchronous). A failed
+        # read refuses with nothing written; the change stays retryable.
+        selected = expected["selection"]
+        fresh = await _catalog_select_source(request, ctx, selected["profile"]["profile_id"],
+                                             selected["catalog"]["persistent_id"])
     # All fallible I/O below leaves admission fenced; never resurrect old leases.
     async with request.app.state.project_lock:
         # A same-change request may have committed while this one waited for
         # an ordinary settings writer or another command. Return its durable
         # result instead of trying to drain/advance the identity a second time.
         completed = next((row for row in read_binding_change_journals(ctx.paths.root)
-                          if row["change_id"] == change_id and row["phase"] == "completed"), None)
+                          if row["change_id"] == change_id and row["version"] == 2
+                          and row["phase"] == "completed"), None)
         if completed is not None:
             return _committed_response(request, ctx, change_id,
                                        _confirmed_completed_result(ctx, payload, completed))
@@ -703,7 +790,7 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
                     with credentials._file_lock:
                         if str(user_config_dir()) != expected["observation"]["personal_home"]:
                             _remote_refusal("stale_binding")
-                        _commit_selection(ctx, expected)
+                        _commit_selection(ctx, expected, fresh)
                         _check_destination_reservation(ctx, expected["observation"], expected["to"])
                         _commit_corpus_matches(ctx, change)
                         store = RemoteBindings()
@@ -758,7 +845,7 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
                                 transitions.require_ready_commit(change_id,
                                     **payload.model_dump(exclude={"confirmation"}), confirmation=confirmation)
                                 _commit_corpus_matches(ctx, change)
-                                _commit_selection(ctx, expected)
+                                _commit_selection(ctx, expected, fresh)
                                 _check_destination_reservation(ctx, expected["observation"], expected["to"])
                                 if store.read().fingerprint != snapshot.fingerprint:
                                     raise BindingChangeError("stale_binding")
@@ -779,7 +866,7 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
                             publish_binding_change_commit(ctx.paths.root, change_id, expected, result, "config_committed")
                             if config_owner.read_project_config_snapshot(ctx.paths).fingerprint != result["config_fingerprint"]:
                                 raise BindingChangeError("stale_binding")
-                            _commit_selection(ctx, expected)
+                            _commit_selection(ctx, expected, fresh)
                             if snapshot.fingerprint != result["private_fingerprint"]:
                                 if target is None:
                                     snapshot = store._remove_in_transaction(ctx.paths.root,
@@ -803,6 +890,612 @@ async def commit_remote_change(change_id: str, payload: RemoteCommit, request: R
     await ctx.sync._set_status("disabled")
     await ctx.bus.publish(EventType.REMOTE_BINDING_CHANGE, transitions.change_status(change_id))
     return _committed_response(request, ctx, change_id, result)
+
+
+# --- I11: read-only reconcile preview (studio-design §5.2/§6, server-design §3.3) ---
+
+class RemoteReconcilePreview(BaseModel):
+    """CAS of the observation the reader is looking at; no target is accepted."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    expected_revision: StrictInt = Field(ge=1)
+    config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    backend_epoch: str | None = None
+
+
+# Remote/owner codes meaning "the selected project or snapshot moved": 409 and a
+# new preview (or a new Select). Everything else is unavailability (503).
+_PREVIEW_REFUSALS = {
+    "snapshot_changed": (409, "snapshot_changed"),
+    "instance_mismatch": (409, "instance_mismatch"),
+    "project_not_found": (409, "project_not_found"),
+    "identity_mismatch": (409, "instance_mismatch"),
+    "pagination_limit": (413, "snapshot_too_large"),
+    "snapshot_size_limit": (413, "snapshot_too_large"),
+    "payload_too_large": (413, "snapshot_too_large"),
+}
+
+
+def _preview_selected_binding(ctx: Any) -> Any:
+    """The exact selected tuple of THIS canonical root, with typed refusals.
+
+    Reads only: binding-change journals, the private bindings store, profiles
+    and the in-memory config. Copied roots and same-ID/other-URL tuples are
+    refused before any network access; ``_prepare_observation`` then captures
+    every remaining nonsecret component for CAS and the fingerprint.
+    """
+    from ..core.project_scope import canonical_root
+    from ..sync.bindings import RemoteBindings
+    from ..sync.profiles import RemoteProfiles
+    from ..sync.transitions import journal_unresolved, read_binding_change_journals
+
+    if any(journal_unresolved(row) for row in read_binding_change_journals(ctx.paths.root)):
+        _remote_refusal("recovery_required")
+    if ctx.docs.transitions.binding_quiescing:
+        _remote_refusal("change_in_progress")
+    code = None
+    row = None
+    try:
+        root = str(canonical_root(ctx.paths.root))
+        private = RemoteBindings().read()
+        row = private.get(root)
+        identity = ctx.config.project_identity
+        url = normalise_url(ctx.config.sync.url) if ctx.config.sync.url else ""
+        if identity is None:
+            code = "binding_required"
+        elif any(other.canonical_root != root and other.persistent_id == identity.id
+                 and other.url in {url, row.url if row is not None else url}
+                 for other in private.records):
+            # A copied checkout carries the same portable identity/URL; the
+            # binding belongs to the original root and is never shared (§4.3).
+            code = "duplicate_local_binding"
+        elif row is None or row.space_instance_id is None:
+            code = "binding_required"
+        elif row.persistent_id == identity.id and (
+                row.url != url or RemoteProfiles().get(row.profile_id).url != row.url):
+            code = "url_mismatch"
+    except Exception:
+        code = "stale_binding"
+    if code is not None:
+        _remote_refusal(code)
+    return row
+
+
+async def _preview_snapshot(request: Request, row: Any, profile: dict[str, Any]) -> Any:
+    """One complete consistent snapshot through the app owner: GET only (§6)."""
+    from ..sync.catalog import CatalogError
+    from ..sync.profiles import ProfileError
+
+    holder = getattr(request.app.state, "remote_catalog", None)
+    if holder is None:
+        _remote_refusal("catalog_unavailable", 503)
+    code = shot = None
+    try:
+        shot = await holder.snapshot(row.profile_id, row.persistent_id,
+                                     expected_revision=profile["revision"],
+                                     expected_epoch=row.space_instance_id)
+    except CatalogError as error:
+        code = error.code
+    except ProfileError as error:
+        code = error.args[0] if len(error.args) == 1 and isinstance(error.args[0], str) else "unavailable"
+    except Exception:
+        code = "unavailable"
+    if code == "snapshot_changed":
+        # The first page is bound to the selected incarnation: tell a replaced
+        # project (new Select) from drift between pages (new preview).
+        try:
+            project = await holder.get_project(row.profile_id, row.persistent_id,
+                                               expected_revision=profile["revision"])
+            if project.storage_epoch != row.space_instance_id:
+                code = "instance_mismatch"
+        except Exception:
+            pass
+    if code is not None:
+        status, refusal = _PREVIEW_REFUSALS.get(code, (None, None))
+        if status is None:
+            status, refusal = ((409, "stale_binding") if code in _SELECT_STALE_CODES
+                               else (503, "catalog_unavailable"))
+        _remote_refusal(refusal, status)
+    return shot
+
+
+def _checkpoint_fingerprint(checkpoint: Any) -> str | None:
+    """Nonsecret digest of one v2 checkpoint's incarnation, cursor and bases."""
+    import json
+    if checkpoint is None:
+        return None
+    return hashlib.sha256(json.dumps(
+        [checkpoint.space_instance_id, checkpoint.cursor,
+         [[p, b.rev, b.hash] for p, b in sorted(checkpoint.docs.items())]],
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+async def reconcile_preview_evidence(request: Request, ctx: Any, *, expected_revision: int,
+                                     config_fingerprint: str,
+                                     backend_epoch: str | None = None) -> dict[str, Any]:
+    """Compute a FRESH read-only preview observation (I11; reused by I12 recheck).
+
+    Only GETs reach the Remote. No DocStore/config/private/base/checkpoint/queue
+    write, room or WS. The returned ``evidence`` is the complete fingerprint
+    input; ``counts``/``conflicts`` follow the §16.3 engine policy.
+    """
+    import json
+    from ..sync.state import SyncStateError, SyncStateV2
+    from ..sync.transitions import classify_reconcile
+
+    transitions = ctx.docs.transitions
+    if backend_epoch is not None:
+        transitions._require_epoch(backend_epoch)
+    row = _preview_selected_binding(ctx)
+    observed = _prepare_observation(ctx)
+    generation = transitions.generation
+    if (observed["identity_revision"] != expected_revision
+            or observed["config_fingerprint"] != config_fingerprint
+            or observed["binding"] != row.model_dump() or observed["profile"] is None):
+        _remote_refusal("stale_binding")
+    _check_destination_reservation(ctx, observed, {"url": row.url, "persistent_id": row.persistent_id})
+    shot = await _preview_snapshot(request, row, observed["profile"])
+    # Local state moved during the network read: discard, never mix observations.
+    if (shot.id != row.persistent_id or shot.storage_epoch != row.space_instance_id
+            or _prepare_observation(ctx) != observed or transitions.generation != generation
+            or transitions.binding_quiescing):
+        _remote_refusal("stale_binding")
+    try:
+        local, local_fingerprint = ctx.sync._binding_corpus()
+    except Exception:
+        _remote_refusal("documents_unavailable")
+    try:
+        checkpoint = SyncStateV2.load(ctx.paths.root, url=row.url, persistent_id=row.persistent_id)
+    except SyncStateError:
+        _remote_refusal("checkpoint_unavailable")
+    bases: dict[str, tuple[int, str | None]] = {}
+    checkpoint_fingerprint = _checkpoint_fingerprint(checkpoint)
+    if checkpoint is None:
+        base_state = "none"
+    else:
+        # Old bases are preserved, but they only apply to the SAME incarnation
+        # whose seq has not gone backwards (§6); otherwise full reconciliation.
+        if checkpoint.space_instance_id != shot.storage_epoch:
+            base_state = "epoch_mismatch"
+        elif checkpoint.cursor > shot.seq:
+            base_state = "cursor_rollback"
+        else:
+            base_state = "matched"
+            bases = {p: (b.rev, b.hash) for p, b in checkpoint.docs.items()}
+    remote = {d.path: (d.rev, None if d.deleted else d.hash) for d in shot.documents}
+    counts, conflicts = classify_reconcile(local, remote, bases)
+    remote_digest = hashlib.sha256(json.dumps(
+        [[d.path, d.rev, d.hash, d.deleted] for d in shot.documents],
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    evidence = {
+        "observation": observed, "binding_generation": generation,
+        "backend_epoch": transitions.backend_epoch,
+        "snapshot": {"id": shot.id, "storage_epoch": shot.storage_epoch, "seq": shot.seq,
+                     "documents": remote_digest},
+        "local_fingerprint": local_fingerprint,
+        "checkpoint": {"state": base_state, "fingerprint": checkpoint_fingerprint},
+        "ttl": transitions.reconcile_previews.ttl,
+    }
+    return {"evidence": evidence, "counts": counts, "conflicts": conflicts,
+            "base": base_state, "incarnation": {"space_instance_id": shot.storage_epoch,
+                                                "seq": shot.seq}}
+
+
+async def recheck_reconcile_preview(request: Request, ctx: Any, preview_id: str, fingerprint: str, *,
+                                    expected_revision: int, config_fingerprint: str,
+                                    backend_epoch: str | None = None) -> Any:
+    """I12 Enable gate: re-read everything and reproduce the stored fingerprint.
+
+    Raises 409 ``preview_not_found``/``preview_expired``/``preview_stale`` or the
+    same typed refusals as the preview itself; any refusal discards ONLY that
+    temporary preview. Success returns the ReconcilePreview without consuming
+    it. Still not a lock: Enable keeps its own CAS/conflict handling.
+    """
+    previews = ctx.docs.transitions.reconcile_previews
+    previews.get(preview_id)
+    try:
+        fresh = await reconcile_preview_evidence(
+            request, ctx, expected_revision=expected_revision,
+            config_fingerprint=config_fingerprint, backend_epoch=backend_epoch)
+    except BaseException:
+        previews.discard(preview_id)
+        raise
+    return previews.require(preview_id, fingerprint, fresh["evidence"])
+
+
+@remote_router.post("/reconcile-preview")
+async def reconcile_preview(payload: RemoteReconcilePreview, request: Request,
+                            ctx: Ctx) -> dict[str, Any]:
+    """Read-only Preview of the exact selected tuple; never Enable or a lock."""
+    fresh = await reconcile_preview_evidence(
+        request, ctx, expected_revision=payload.expected_revision,
+        config_fingerprint=payload.config_fingerprint, backend_epoch=payload.backend_epoch)
+    preview = ctx.docs.transitions.reconcile_previews.publish(
+        fresh["evidence"], fresh["counts"], fresh["conflicts"])
+    return {**preview.dto(), "base": fresh["base"], "incarnation": fresh["incarnation"]}
+
+
+# --- I12: separate Enable/catch-up (studio-design §5.2/§7.7, runtime-integration-plan I12) ---
+
+class RemoteEnableConfirmation(BaseModel):
+    """The exact target the reader saw in the preview, and the reconcile action."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    url: str
+    persistent_id: str
+    action: Literal["reconcile"]
+
+
+class RemoteEnable(BaseModel):
+    """A current preview plus exact confirmation; no target is accepted from the browser."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+    expected_revision: StrictInt = Field(ge=1)
+    expected_generation: StrictInt = Field(ge=0)
+    preview_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmation: RemoteEnableConfirmation
+    config_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    backend_epoch: str | None = None
+
+
+class _EnableRefused(Exception):
+    """A typed refusal from inside the synchronous publication section."""
+
+    def __init__(self, code: str, status: int = 409) -> None:
+        super().__init__(code)
+        self.code, self.status = code, status
+
+
+_VERIFY_REFUSALS = {"unauthorised": (409, "unauthorised"),
+                    "incompatible": (409, "protocol_unavailable"),
+                    "insecure_blocked": (409, "insecure_blocked")}
+
+
+async def _enable_verified_account(request: Request, profile: dict[str, Any]) -> str:
+    """(c) Verify the exact profile revision via the app owner; return me.user.id.
+
+    GET /healthz + /api/v2/me only. The account is recorded in the Enable
+    journal and every hello (also after restart) must present it (§6).
+    """
+    from ..sync.catalog import CatalogError
+    from ..sync.profiles import ProfileError
+
+    holder = getattr(request.app.state, "remote_catalog", None)
+    if holder is None:
+        _remote_refusal("catalog_unavailable", 503)
+    code, status, verified = None, 409, None
+    try:
+        verified = await holder.verify(profile["profile_id"], expected_revision=profile["revision"])
+    except CatalogError as error:
+        code = "stale_binding" if error.code in _SELECT_STALE_CODES else "catalog_unavailable"
+    except ProfileError as error:
+        code = ("stale_binding" if len(error.args) == 1 and error.args[0] in _SELECT_STALE_CODES
+                else "catalog_unavailable")
+    except Exception:
+        code = "catalog_unavailable"
+    if code is None:
+        account = getattr(getattr(verified, "user", None), "id", None)
+        if (getattr(verified, "state", None) == "valid" and verified.wire_protocol == 2
+                and verified.catalog_version == 2 and verified.error_code is None
+                and isinstance(account, str) and 0 < len(account) <= 256):
+            return account
+        status, code = _VERIFY_REFUSALS.get(getattr(verified, "state", None),
+                                            (503, "catalog_unavailable"))
+    # Refuse outside the handlers: no provider/transport exception is retained.
+    _remote_refusal(code, 503 if code == "catalog_unavailable" else status)
+
+
+def _publish_enable(ctx: Any, preview: Any, account: str, fence: Any, owner: Any) -> dict[str, Any]:
+    """Steps (d)–(i), synchronously, under project → snapshot → lifecycle → config → credential.
+
+    No await/network. Before the project config replace nothing is published:
+    a refusal settles the intent as ``aborted`` and releases only this
+    reservation. After it, every failure is blocked ``recovery_required``:
+    no rollback, retry or reset (studio-design §7.5/§7.7).
+    """
+    import json
+    from uuid import uuid4
+
+    import yaml
+    from ..core import config as config_owner
+    from ..core.paths import user_config_dir
+    from ..sync.bindings import BindingRecord, RemoteBindings, root_key
+    from ..sync.reservations import ReservationError
+    from ..sync.state import SyncStateV2
+    from ..sync.transitions import (_plain_preview_evidence, journal_unresolved, next_binding_generation,
+                                    publish_enable_journal, read_binding_change_journals)
+
+    transitions = ctx.docs.transitions
+    evidence = preview.evidence
+    observation = _plain_preview_evidence(evidence["observation"])
+    seen = evidence["snapshot"]
+    row = BindingRecord.model_validate(dict(observation["binding"]))
+    root = observation["canonical_root"]
+    destination = (row.url, row.persistent_id)
+
+    def local_cas(own_change: str | None) -> None:
+        """Every LOCAL component the preview observed, re-read now (no network)."""
+        try:
+            stale = (any(journal_unresolved(r) and r["change_id"] != own_change
+                         for r in read_binding_change_journals(ctx.paths.root))
+                     or transitions.binding_quiescing
+                     or transitions.generation != evidence["binding_generation"]
+                     or transitions.backend_epoch != evidence["backend_epoch"]
+                     or str(user_config_dir()) != observation["personal_home"]
+                     or (ctx.config.sync.enabled and own_change is None))
+            if not stale:
+                # Config bytes, R, private store, profile revision and credential.
+                stale = _plain_preview_evidence(_prepare_observation(ctx)) != observation
+            if not stale:
+                checkpoint = SyncStateV2.load(ctx.paths.root, url=row.url, persistent_id=row.persistent_id)
+                stale = (ctx.sync._binding_corpus()[1] != evidence["local_fingerprint"]
+                         or _checkpoint_fingerprint(checkpoint) != evidence["checkpoint"]["fingerprint"])
+            others = RemoteBindings().read().records if not stale else ()
+        except Exception:
+            stale = True
+        if stale:
+            raise _EnableRefused("preview_stale")
+        # One working copy per (URL, ID): no other root may hold this destination.
+        if any(other.canonical_root != root and (other.url, other.persistent_id) == destination
+               for other in others):
+            raise _EnableRefused("duplicate_local_binding")
+
+    def reserved(lease: object) -> None:
+        with owner._lock:
+            incumbent = owner._reservations.get(destination)
+        if incumbent is None or incumbent.lease is not lease or incumbent.consumer is not ctx.sync:
+            raise _EnableRefused("duplicate_local_binding")
+
+    local_cas(None)
+    # (d) Reserve: the same consumer the runner uses, so it adopts THIS lease.
+    try:
+        lease = owner.reserve(root=root, url=row.url, persistent_id=row.persistent_id, consumer=ctx.sync)
+    except ReservationError as error:
+        if error.code == "duplicate_local_binding":
+            raise _EnableRefused("duplicate_local_binding") from None
+        raise _EnableRefused("consumer_lifecycle_unavailable", 503) from None
+    adopted = lease is getattr(ctx.sync, "_reservation_lease", None)
+
+    def release() -> None:
+        if not adopted:
+            owner.release(lease)
+
+    change_id = expected = commit = None
+    try:
+        raw, _, fingerprint = config_owner._project_config_document(ctx.paths)
+        if fingerprint != observation["config_fingerprint"]:
+            raise _EnableRefused("preview_stale")
+        identity = ProjectIdentity(id=row.persistent_id, revision=observation["identity_revision"] + 1)
+        document = config_owner._project_fields(raw)
+        document["project_identity"] = identity.model_dump(mode="json")
+        document["sync"] = {"enabled": True, "url": row.url}
+        content = yaml.safe_dump(document, sort_keys=False, allow_unicode=True, indent=2).encode("utf-8")
+        confirmed = BindingRecord.model_validate({**row.model_dump(), "selection_state": "confirmed",
+                                                  "identity_revision": identity.revision})
+        store = RemoteBindings()
+        private = store.read()
+        if private.fingerprint != observation["private_fingerprint"]:
+            raise _EnableRefused("preview_stale")
+        roots = {root_key(r.canonical_root): r.model_dump() for r in private.records}
+        roots[root_key(ctx.paths.root)] = confirmed.model_dump()
+        private_bytes = (json.dumps({"version": 1, "roots": roots}, ensure_ascii=False, indent=2,
+                                    allow_nan=False) + "\n").encode("utf-8")
+        checkpoint = SyncStateV2.load(ctx.paths.root, url=row.url, persistent_id=row.persistent_id)
+        if checkpoint is not None and (checkpoint.space_instance_id != row.space_instance_id
+                                       or checkpoint.cursor > seen["seq"]):
+            raise _EnableRefused("preview_stale")
+        change_id = uuid4().hex
+        expected = {"operation": "enable", "observation": observation,
+                    "to": {"persistent_id": identity.id, "url": row.url, "enabled": True},
+                    "snapshot": {"id": seen["id"], "storage_epoch": seen["storage_epoch"],
+                                 "seq": seen["seq"]},
+                    "binding_generation": transitions.generation,
+                    "backend_epoch": transitions.backend_epoch, "account_id": account}
+        commit = {"identity_revision": identity.revision, "persistent_id": identity.id,
+                  "url": row.url, "enabled": True,
+                  "config_fingerprint": hashlib.sha256(content).hexdigest(),
+                  "private_fingerprint": hashlib.sha256(private_bytes).hexdigest(),
+                  "binding": confirmed.model_dump(),
+                  "binding_generation": next_binding_generation(transitions.generation)}
+        # (e) Durable intent BEFORE any publication.
+        publish_enable_journal(ctx.paths.root, change_id, expected, commit, "enabling")
+    except Exception as error:
+        release()
+        if (change_id is not None and any(r["change_id"] == change_id for r in _journals_or_empty(ctx))
+                and not _abort_enable(ctx, change_id, expected, commit)):
+            # The intent became durable although its write reported failure, and
+            # it cannot be settled: unresolved, i.e. blocked recovery_required.
+            raise _EnableRefused("recovery_required") from None
+        if isinstance(error, _EnableRefused):
+            raise
+        raise _EnableRefused("binding_journal_unavailable", 503) from None
+
+    def abort(code: str, status: int = 409) -> None:
+        """Nothing of ours was published: settle the intent, release, refuse."""
+        release()
+        if not _abort_enable(ctx, change_id, expected, commit):
+            raise _EnableRefused("recovery_required")
+        raise _EnableRefused(code, status)
+
+    # (f) Project config: R+1, enabled, same URL — the commit point.
+    def before_replace() -> None:
+        local_cas(change_id)
+        reserved(lease)
+
+    try:
+        written = config_owner._write_project_document_in_transaction(
+            ctx.paths, document, expected_fingerprint=observation["config_fingerprint"],
+            before_replace=before_replace)
+    except Exception as error:
+        try:
+            current = config_owner._project_config_bytes(ctx.paths)
+            ours = current is not None and hashlib.sha256(current).hexdigest() == commit["config_fingerprint"]
+        except Exception:
+            ours = None  # Unknown: never guess that nothing was published.
+        if ours is False:
+            if isinstance(error, _EnableRefused):
+                abort(error.code, error.status)
+            if getattr(error, "code", None) == "config_revision_conflict":
+                abort("preview_stale")
+            abort("config_store_unavailable", 503)
+        raise _EnableRefused("recovery_required") from None
+    try:
+        if written != commit["config_fingerprint"]:
+            raise ValueError
+        published = config_owner.read_project_config_snapshot(ctx.paths)
+        if published.fingerprint != commit["config_fingerprint"]:
+            raise ValueError
+        # Metadata only: never replace Ctx, paths, jobs, MCP or descriptor (as I6).
+        ctx.config.project_identity = published.config.project_identity
+        ctx.config.sync = published.config.sync
+        transitions.observe_activated_model()
+        ctx.sync._activated_model_seen = True
+        # Enable's own G: old leases/callbacks can no longer save or join.
+        if fence.advance_generation() != commit["binding_generation"]:
+            raise ValueError
+        publish_enable_journal(ctx.paths.root, change_id, expected, commit, "config_committed")
+        # (g) Private confirmed binding of the SAME R+1.
+        reserved(lease)
+        snapshot = store._save_in_transaction(confirmed,
+                                              expected_fingerprint=observation["private_fingerprint"])
+        if snapshot.fingerprint != commit["private_fingerprint"]:
+            raise ValueError
+        publish_enable_journal(ctx.paths.root, change_id, expected, commit, "binding_committed")
+        # (h) The namespace's checkpoint: a fresh one for this incarnation, or the
+        # same-incarnation one the preview's bases came from. save() itself
+        # refuses to overwrite a foreign/newer state: never a fresh reset.
+        if checkpoint is None:
+            SyncStateV2.fresh(ctx.paths.root, url=row.url, persistent_id=row.persistent_id,
+                              space_instance_id=row.space_instance_id).save()
+        current = SyncStateV2.load(ctx.paths.root, url=row.url, persistent_id=row.persistent_id)
+        if (current is None or current.space_instance_id != row.space_instance_id
+                or checkpoint is not None and current != checkpoint):
+            raise ValueError
+        # (i) Only a completed record is activation evidence for the runner.
+        publish_enable_journal(ctx.paths.root, change_id, expected, commit, "completed")
+    except Exception:
+        raise _EnableRefused("recovery_required") from None
+    return {"change_id": change_id, "persistent_id": identity.id,
+            "identity_revision": identity.revision, "url": row.url, "enabled": True,
+            "config_fingerprint": commit["config_fingerprint"],
+            "binding_generation": commit["binding_generation"],
+            "profile_id": row.profile_id, "space_instance_id": row.space_instance_id}
+
+
+def _journals_or_empty(ctx: Any) -> tuple:
+    from ..sync.transitions import read_binding_change_journals
+    try:
+        return read_binding_change_journals(ctx.paths.root)
+    except Exception:
+        return ()
+
+
+def _abort_enable(ctx: Any, change_id: str, expected: Any, commit: Any) -> bool:
+    """Settle a proven-unpublished intent; False leaves it unresolved (fail closed)."""
+    from ..sync.transitions import publish_enable_journal
+    try:
+        publish_enable_journal(ctx.paths.root, change_id, expected, commit, "aborted")
+    except Exception:
+        return False
+    return True
+
+
+async def enable_remote_binding(request: Request, ctx: Any, payload: RemoteEnable) -> dict[str, Any]:
+    """I12 Enable/catch-up, without the HTTP envelope (studio-design §5.2/§7.7).
+
+    Local admission → (b) preview recheck incl. snapshot (GET only) and CAS of
+    R/G/config/private/profile/credential → (c) Verify (GET only) → one
+    synchronous section: (d) reserve, (e) journal intent, (f) project R+1
+    enabled, (g) private confirmed R+1, (h) v2 checkpoint, (i) journal
+    completed. Only then, outside every lock, the runner starts: strict hello
+    (ID/epoch/account/cursor) and catch-up. Rooms are offered once connected.
+    """
+    from ..core.application_config import application_config_transaction
+    from ..sync.profiles import ProfileError
+    from ..sync.transitions import journal_unresolved, read_binding_change_journals
+
+    activated_model(ctx)
+    transitions = ctx.docs.transitions
+    previews = transitions.reconcile_previews
+    if payload.backend_epoch is not None:
+        transitions._require_epoch(payload.backend_epoch)
+    if any(journal_unresolved(row) for row in read_binding_change_journals(ctx.paths.root)):
+        _remote_refusal("recovery_required")
+    if transitions.binding_quiescing:
+        _remote_refusal("change_in_progress")
+    if ctx.config.sync.enabled:
+        _remote_refusal("already_enabled")
+    preview = previews.get(payload.preview_id)
+    evidence = preview.evidence
+    observation = evidence["observation"]
+    binding = observation.get("binding") or {}
+    if (payload.expected_revision != observation["identity_revision"]
+            or payload.config_fingerprint not in {None, observation["config_fingerprint"]}
+            or payload.expected_generation != evidence["binding_generation"]
+            or payload.confirmation.model_dump() != {
+                "url": binding.get("url"), "persistent_id": binding.get("persistent_id"),
+                "action": "reconcile"}):
+        _remote_refusal("confirmation_required")
+    transitions._require_generation(payload.expected_generation)
+    base = evidence["checkpoint"]["state"]
+    if base not in {"none", "matched"}:
+        # Another incarnation's/rolled-back checkpoint owns this namespace. It is
+        # retained as recovery evidence, never reset into a fresh one (§4.3/§6).
+        _remote_refusal("instance_mismatch" if base == "epoch_mismatch" else "cursor_rollback")
+    # (b) Re-read everything, the snapshot included; a refusal discards only the preview.
+    await recheck_reconcile_preview(
+        request, ctx, payload.preview_id, payload.fingerprint,
+        expected_revision=payload.expected_revision,
+        config_fingerprint=observation["config_fingerprint"], backend_epoch=payload.backend_epoch)
+    # (c) The account the hello must present.
+    account = await _enable_verified_account(request, dict(observation["profile"]))
+    lifecycle, owner = ctx.remote_profile_lifecycle, ctx.remote_reservations
+    if lifecycle is None or owner is None:
+        _remote_refusal("consumer_lifecycle_unavailable", 503)
+    refused = result = None
+    try:
+        async with request.app.state.project_lock:
+            async with transitions.final_snapshot() as fence:
+                # A concurrent Enable may have consumed it while this one waited.
+                previews.get(payload.preview_id)
+                with lifecycle._critical():
+                    with application_config_transaction():
+                        with credentials._file_lock:
+                            result = _publish_enable(ctx, preview, account, fence, owner)
+    except _EnableRefused as error:
+        refused = error
+    except ProfileError:
+        refused = _EnableRefused("consumer_lifecycle_unavailable", 503)
+    if refused is not None:
+        if refused.code == "preview_stale":
+            previews.discard(payload.preview_id)
+        _remote_refusal(refused.code, refused.status)
+    previews.discard(payload.preview_id)
+    await ctx.bus.publish(EventType.REMOTE_BINDING_CHANGE, {
+        "change_id": result["change_id"], "state": "enabled", "operation": "enable",
+        "binding_generation": result["binding_generation"],
+        "expected_generation": payload.expected_generation, "fenced": False,
+        "required_editor_acks": [], "missing_acks": [], "reason": None})
+    try:
+        # Runner → strict hello → `sync since cursor`. Never before completion.
+        await ctx.sync.reconfigure()
+    except Exception:
+        await ctx.sync._set_status("blocked", "runner_unavailable")
+    status = ctx.sync.status()
+    return {**result, "backend_epoch": transitions.backend_epoch,
+            "state": status["state"],
+            "reason": status["message"] if status["state"] in {"blocked", "unauthorised"} else None,
+            "has_token": status["has_token"], "active_rooms": len(ctx.sync._sessions),
+            "pending_writes": len(ctx.sync._pending) + len(ctx.sync._live_writes)}
+
+
+@remote_router.post("/enable")
+async def enable_remote(payload: RemoteEnable, request: Request, ctx: Ctx) -> dict[str, Any]:
+    """Separate Enable after a current preview and exact confirmation (I12)."""
+    result = await enable_remote_binding(request, ctx, payload)
+    scope = request.state.project_scope
+    return {"project_id": scope.project_id, "epoch": scope.epoch, **result}
 
 
 class SyncUpdate(BaseModel):

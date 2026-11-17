@@ -58,6 +58,9 @@ def _task_json(ctx: AppContext, task: TeamTask) -> dict[str, Any]:
         "display_id": format_task_id(ctx.task_code, task.number),
         "is_running": ctx.jobs.is_running(task.id),
         "is_compacting": bool(ctx.jobs.get(task.id) and ctx.jobs.get(task.id).kind == "task_compaction"),
+        # §10.4: true for automatic compression inside a run too; display only — Stop
+        # stays the run's control, unlike the manual job's cancel button.
+        "is_compressing_context": task.id in ctx.teams.compressing,
     }
 
 

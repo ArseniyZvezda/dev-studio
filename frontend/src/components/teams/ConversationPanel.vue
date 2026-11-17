@@ -11,6 +11,7 @@
  */
 import { useResizeObserver } from '@vueuse/core'
 import {
+  Archive,
   ArrowDown,
   Bot,
   Brain,
@@ -69,10 +70,13 @@ const props = defineProps<{
   embedded?: boolean
   taskStatus?: string
   /** A chat with a member, by name, and whether it is answering right now (§10.9). */
-  chat?: { name: string; running: boolean }
+  chat?: { name: string; running: boolean; compacting?: boolean }
+  /** §10.4: a task's context is being summarized — the activity line says so, nothing else. */
+  compressing?: boolean
 }>()
 const teams = useTeamsStore()
 const chats = useChatStore()
+const COMPRESSED_KINDS = new Set(['compressed summary', 'context_summary'])
 const transcript = ref<HTMLElement | null>(null)
 const verbosity = useVerbosity()
 const blocks = computed(() => {
@@ -93,10 +97,14 @@ const blocks = computed(() => {
 /** Every call's result, whatever the level shows — a spawn row reads its evaluation from it. */
 const results = computed(() => resultsByCall(props.messages))
 const live = computed(() => {
+  // §10.4: while the dialogue is being replaced by its summary, that is the whole activity.
+  if (props.compressing) return { activity: t('taskDetail.compression.activity'), seq: -1 }
   let start = 0
   if (props.chat) {
     // Only the current turn of a chat has live activity (§10.9).
     if (!props.chat.running) return { activity: '', seq: 0 }
+    // §10.11: while the Producer summarizes its context, that is the whole activity.
+    if (props.chat.compacting) return { activity: t('chat.producer.compacting'), seq: -1 }
     props.messages.forEach((message, index) => { if (message.role === 'user') start = index + 1 })
   }
   // The activity footer is also a presentation surface for observation notices (§10.4).
@@ -434,6 +442,21 @@ useResizeObserver(transcript, () => {
       <EffortSolverResult v-else-if="block.message.kind === 'effort_solver'" :data="block.message.data" />
       <ProducerCompaction v-else-if="chat && block.message.kind === 'producer_compacted'" :message="block.message" />
 
+      <!-- §10.4: the compressed handoff stands in for the whole earlier dialogue, so it is
+           drawn as that dialogue folded away rather than as one more message. -->
+      <details
+        v-else-if="COMPRESSED_KINDS.has(block.message.kind)"
+        class="rounded-md border border-line-subtle bg-inset px-3 py-2 text-small text-muted"
+        data-compressed-summary
+      >
+        <summary class="flex cursor-pointer items-center gap-2 font-medium" :title="t('taskDetail.compression.blockHint')">
+          <Archive class="size-3.5 shrink-0" />
+          <span class="min-w-0 truncate">{{ t('taskDetail.compression.block') }}</span>
+          <span class="ml-auto shrink-0 font-normal text-faint">{{ formatTime(block.message.created_at) }}</span>
+        </summary>
+        <MarkdownText :text="block.message.text" class="mt-2" />
+      </details>
+
       <!-- A summary that came with a result type (§10.4) wears its colour: the edge and
            a chip in the result's green, blue or red, with the words left as they are.
            Level 3 of the styling rules — the colour is a token resolved per entry. -->
@@ -465,7 +488,7 @@ useResizeObserver(transcript, () => {
                   chat?.name ?? block.message.member_id)
             }}
           </span>
-          <span class="font-mono">{{ ['context_summary', 'compressed summary'].includes(block.message.kind) ? t('taskDetail.compression.summary') : block.message.kind }}</span>
+          <span class="font-mono">{{ block.message.kind }}</span>
           <span
             v-if="resultTypeOf(block.message)"
             class="inline-flex items-center gap-1 font-medium"

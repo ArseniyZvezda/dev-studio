@@ -24,13 +24,14 @@ import math
 import os
 import re
 import shutil
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from ..backend_usage import record_claude_usage
+from ..backend_usage import record_claude_usage, record_claude_usage_report
 from ..changes import edit_stat
 from .base import (
     AgentBackend,
@@ -408,6 +409,10 @@ class ClaudeCodeBackend(AgentBackend):
             )
 
         session_id: str | None = request.resume_session_id
+        # The model the CLI says the session runs, from its `init` frame. It is the key of
+        # the result's `modelUsage` — `claude-opus-5[1m]` where an assistant message says
+        # `claude-opus-5` — and so the only way to tell which window is the session's (§10.4).
+        session_model: str | None = None
         cost_counter = _SessionCost(session_id, await asyncio.to_thread(_session_cost_baseline, session_id))
         prompt = request.prompt
         continuations = 0
@@ -448,6 +453,8 @@ class ClaudeCodeBackend(AgentBackend):
                     expecting = False
                     if inbox is not None:
                         inbox.attach(_inbox_sender(client, inbox, receipts))
+                    if not request.text_only:
+                        _refresh_account_usage(client)
 
                     def silence_limit() -> float:
                         # A message the CLI was sent and has not echoed is picked up within
@@ -486,7 +493,8 @@ class ClaudeCodeBackend(AgentBackend):
                                         session_id=session_id,
                                     )
                                 elif isinstance(message, AssistantMessage):
-                                    for event in _assistant_events(message, session_id):
+                                    window = _CONTEXT_WINDOWS.get(session_model or "")
+                                    for event in _assistant_events(message, session_id, window):
                                         yield event
                                 elif isinstance(message, UserMessage):
                                     receipt = receipts.pop(getattr(message, "uuid", None) or "", None)
@@ -502,6 +510,8 @@ class ClaudeCodeBackend(AgentBackend):
                                     subtype = str(getattr(message, "subtype", ""))
                                     payload = _as_dict(getattr(message, "data", {}))
                                     delegated.observe(subtype, payload)
+                                    if subtype == "init" and isinstance(payload.get("model"), str):
+                                        session_model = payload["model"]
                                     yield AgentEvent(
                                         kind="system",
                                         text=subtype,
@@ -511,6 +521,13 @@ class ClaudeCodeBackend(AgentBackend):
                                 elif isinstance(message, ResultMessage):
                                     text = getattr(message, "result", "") or ""
                                     data = cost_counter.apply(_result_data(message), session_id)
+                                    window = _learn_context_window(
+                                        getattr(message, "model_usage", None), session_model
+                                    )
+                                    if window is not None:
+                                        data["context_window"] = window
+                                    if not request.text_only:
+                                        _refresh_account_usage(client)
                                     mid_work = _stopped_mid_work(data, text)
                                     stalled = (
                                         mid_work
@@ -582,6 +599,7 @@ class ClaudeCodeBackend(AgentBackend):
                         # The next result frame decides again, against whatever is left
                         # running by then.
                         waiting = False
+                _abandon_account_usage(client)
                 # The subprocess is gone the moment its context exits, so its handle must
                 # go with it — between attempts there is briefly no session to steer, and
                 # offering one that controls nothing is the §10.8 defect in miniature.
@@ -923,7 +941,9 @@ def _stall_reason(data: dict[str, Any]) -> str:
     return "it ended on a tool call without saying anything"
 
 
-def _assistant_events(message: Any, session_id: str | None) -> list[AgentEvent]:
+def _assistant_events(
+    message: Any, session_id: str | None, context_window: int | None = None
+) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     for block in getattr(message, "content", []) or []:
         block_type = type(block).__name__
@@ -961,15 +981,107 @@ def _assistant_events(message: Any, session_id: str | None) -> list[AgentEvent]:
                     session_id=session_id,
                 )
             )
-    _attach_usage(events, message)
     parent = getattr(message, "parent_tool_use_id", None)
+    # A sub-agent may run another model, so the session's window says nothing about it.
+    _attach_usage(events, message, None if parent else context_window)
     if parent:
         for event in events:
             event.data["parent_tool_use_id"] = parent
     return events
 
 
-def _attach_usage(events: list[AgentEvent], message: Any) -> None:
+#: Context window per session model, learned from result frames (``modelUsage[model]
+#: .contextWindow``). The CLI reports the window nowhere else, so without this a run's
+#: first turn — and every turn of a chat, which has no live usage snapshot of its own —
+#: would show its occupancy against an unknown window (§10.4). Bounded by the handful of
+#: model names a Studio ever runs.
+_CONTEXT_WINDOWS: dict[str, int] = {}
+
+
+def _learn_context_window(model_usage: Any, session_model: str | None) -> int | None:
+    """The session model's window from a result's ``modelUsage``, remembered for later turns.
+
+    Only the session model's own entry answers: a sub-agent or a background request on
+    another model has an entry too, and its window is not the conversation's. When the
+    ``init`` frame named no model, a single entry is unambiguous; several are not.
+    """
+    if not isinstance(model_usage, dict):
+        return None
+    windows = {}
+    for model, entry in model_usage.items():
+        value = entry.get("contextWindow") if isinstance(entry, dict) else None
+        if isinstance(model, str) and isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            windows[model] = value
+    if len(_CONTEXT_WINDOWS) < 64:
+        _CONTEXT_WINDOWS.update(windows)
+    if session_model is not None:
+        return windows.get(session_model)
+    return next(iter(windows.values())) if len(windows) == 1 else None
+
+
+#: Account usage is one figure for every session, so one report a minute is plenty —
+#: and the CLI fetches it from the provider each time it is asked (§6.1).
+_USAGE_REFRESH_SECONDS = 60.0
+_USAGE_REFRESH_TIMEOUT = 30.0
+_usage_refreshed_at = -math.inf
+_usage_refresh: asyncio.Task[None] | None = None
+_usage_refresh_client: Any = None
+
+
+def _refresh_account_usage(client: Any) -> None:
+    """Ask the running CLI for the account's usage windows, without waiting for the answer.
+
+    ``get_usage`` is the control request behind ``/usage``: the CLI asks the provider and
+    replies with every window's utilization as a percentage. The stream's own
+    ``rate_limit`` frames are no substitute — they carry a utilization only past a warning
+    threshold — so the status bar had either nothing or a figure frozen at that threshold.
+    Private to the SDK (verified against claude-agent-sdk 0.2.180 and Claude Code 2.1.227)
+    and reached defensively: an SDK or CLI without it leaves the stream frames as the only
+    source, exactly as before.
+    """
+    global _usage_refresh, _usage_refresh_client
+    send = getattr(getattr(client, "_query", None), "_send_control_request", None)
+    if send is None:
+        return
+    if time.monotonic() - _usage_refreshed_at < _USAGE_REFRESH_SECONDS:
+        return
+    if (_usage_refresh is not None and not _usage_refresh.done()
+            and _usage_refresh.get_loop() is asyncio.get_running_loop()):
+        return
+    _usage_refresh_client = client
+    _usage_refresh = asyncio.create_task(_fetch_account_usage(send))
+
+
+def _abandon_account_usage(client: Any) -> None:
+    """The session is closing: a report it was asked for will never come.
+
+    The SDK does not fail a control request whose CLI has exited — it waits out the whole
+    timeout — and a Studio session answers ``get_usage`` in seconds rather than in the
+    fraction of one a bare session takes (measured 4.6 s on Claude Code 2.1.227), so a
+    short run regularly closes first. Cancelling it lets the next run or turn ask again
+    at once instead of being blocked behind a request nobody will answer.
+    """
+    global _usage_refresh, _usage_refresh_client
+    if _usage_refresh_client is client:
+        if _usage_refresh is not None and not _usage_refresh.done():
+            _usage_refresh.cancel()
+        _usage_refresh = _usage_refresh_client = None
+
+
+async def _fetch_account_usage(send: Callable[..., Any]) -> None:
+    global _usage_refreshed_at
+    try:
+        reply = await send({"subtype": "get_usage"}, timeout=_USAGE_REFRESH_TIMEOUT)
+    except Exception as exc:  # a closed session or an older CLI: the stream frames still count
+        log.debug("Claude usage report unavailable: %s", exc)
+        return
+    if isinstance(reply, dict):
+        # Only an answer starts the quiet minute; a request that came to nothing does not.
+        _usage_refreshed_at = time.monotonic()
+        record_claude_usage_report(reply.get("rate_limits"))
+
+
+def _attach_usage(events: list[AgentEvent], message: Any, context_window: int | None = None) -> None:
     """Put this message's accounting on **one** of the events it produced.
 
     An assistant message that answers in prose and then calls two tools is one API response
@@ -990,6 +1102,8 @@ def _attach_usage(events: list[AgentEvent], message: Any) -> None:
         response_id = getattr(message, "message_id", None)
         if response_id:
             events[0].data["provider_response_id"] = str(response_id)
+        if context_window is not None:
+            events[0].data["context_window"] = context_window
 
 
 def _tool_result_events(message: Any, session_id: str | None) -> list[AgentEvent]:

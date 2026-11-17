@@ -668,22 +668,35 @@ async def test_final_journal_failure_is_503_not_a_created_envelope(h, monkeypatc
     assert h.wire.calls == before
 
 
-async def test_production_r3_gate_uses_ready_create_before_key_network_or_journal(h, monkeypatch):
+async def test_production_ready_create_uses_owned_transport_behind_journal_and_lifecycle(h, monkeypatch):
+    """I9 lifted the production R3 gate on this same mounted route.
+
+    The production owner hands Create its own pool handle. With no S2 profile
+    row the explicit command opens only the durable journal, then refuses at
+    the C5 lifecycle: no key lookup, no send, no Select.
+    """
     class UnusedPool:
+        request = h.deny("production_transport")
+
         async def aclose(self):
             pass
 
     monkeypatch.setattr(catalog_runtime, "CatalogHttpTransport", UnusedPool)
-    monkeypatch.setattr(CatalogIntentJournal, "__init__", h.deny("journal"))
     production = catalog_runtime.RemoteCatalogRuntime()
     monkeypatch.setattr(production, "_token", h.deny("production_key"))
     try:
         ready = await asyncio.wait_for(production.start(), timeout=DEADLINE)
         assert type(ready.create) is CatalogCreateRuntime
+        assert ready.create._transport is production._outbound
+        assert not (h.home / JOURNAL).exists()
         h.app.state.remote_catalog.runtime = production
-        boundary(await h.create(), 503, "service_unavailable")
-        boundary(await h.observe(), 503, "service_unavailable")
-        assert not h.wire.calls and not (h.home / JOURNAL).exists()
+        boundary(await h.create(), 404, "profile_not_found")
+        boundary(await h.observe(), 404, "profile_not_found")
+        # Journal opened (loss/corruption check) but nothing reserved: refusal
+        # precedes the provider/key binding and the durable intent.
+        assert not h.wire.calls and (h.home / JOURNAL).is_file()
+        with pytest.raises(CatalogError, match="operation_not_found"):
+            CatalogIntentJournal(h.home / JOURNAL).lookup(OP)
         assert not h.counts
     finally:
         await asyncio.wait_for(production.close(), timeout=DEADLINE)

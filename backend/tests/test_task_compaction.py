@@ -25,6 +25,7 @@ class Backend:
         self.gate = None
         self.entered = asyncio.Event()
         self.usage = 0
+        self.window = None
 
     async def run(self, request):
         self.requests.append(request)
@@ -38,8 +39,10 @@ class Backend:
             yield AgentEvent(kind="result", text="" if self.empty else "Implemented movement. Test jumping next.",
                              data={"total_cost_usd": 0.01, "num_turns": 1, "total_tokens": 50})
         else:
-            yield AgentEvent(kind="text", text="Movement implemented", session_id="new-session",
-                             data={"usage": {"input_tokens": self.usage}})
+            data = {"usage": {"input_tokens": self.usage}}
+            if self.window:
+                data["context_window"] = self.window
+            yield AgentEvent(kind="text", text="Movement implemented", session_id="new-session", data=data)
             yield AgentEvent(kind="result", text="Done", session_id="new-session")
 
 
@@ -225,6 +228,63 @@ def test_threshold_uses_latest_context_not_cumulative_usage():
     history.append(message(role="assistant", data={"usage": {"input_tokens": 5}}))
     assert compaction.context_tokens(history) == 5
     assert compaction.context_tokens([message(role="user", text="x" * 4000)]) >= 1000
+
+
+def test_threshold_is_a_share_of_the_reported_window():
+    def message(**kwargs):
+        return AgentMessage(task_id="task", member_id=DEV, **kwargs)
+
+    def telemetry(tokens, window=None):
+        data = {"subtype": "usage_update", "context_tokens": tokens}
+        if window:
+            data["context_window"] = window
+        return message(role="system", kind="system", text="usage_update", data=data)
+
+    dialogue = message(role="assistant", text="Working on it")
+    assert compaction.needs_compression([dialogue, telemetry(700, 1000)], 70, 0)
+    assert not compaction.needs_compression([dialogue, telemetry(699, 1000)], 70, 0)
+    # The window is the model's: it is still known after an earlier summary.
+    earlier = [telemetry(10, 1000), message(role="assistant", kind="compressed summary", text="S")]
+    assert compaction.compression_threshold(earlier, 70, 5) == 700
+    assert not compaction.needs_compression([*earlier, dialogue, telemetry(600)], 70, 5)
+    # A runtime that never reports a window falls back to the absolute threshold.
+    assert compaction.compression_threshold([dialogue, telemetry(600)], 70, 500) == 500
+    assert compaction.needs_compression([dialogue, telemetry(600)], 70, 500)
+    # Zero percent is off, whatever the fallback says.
+    assert not compaction.needs_compression([dialogue, telemetry(990, 1000)], 0, 1)
+    # Usage alone is not a reason to compress: there must be dialogue.
+    assert not compaction.needs_compression([telemetry(990, 1000)], 70, 0)
+
+
+async def test_automatic_compression_at_seventy_percent_marks_the_task(setup, wait_for):
+    from voxarium_studio.api.teams import _task_json
+
+    ctx, task, backend = setup
+    ctx.config.teams.context_compression_tokens = 0  # Only the window share may trigger it.
+    backend.usage, backend.window = 7000, 10_000
+    backend.gate = asyncio.Event()
+    await ctx.teams.update_task(task.id, {"status": TaskStatus.PENDING})
+    await ctx.teams.start_task(task.id)
+    await asyncio.wait_for(backend.entered.wait(), 5)
+    assert task.id in ctx.teams.compressing
+    payload = _task_json(ctx, await ctx.teams.find_task(task.id))
+    assert payload["is_compressing_context"] is True
+    assert payload["is_compacting"] is False  # Not the manual job: Stop stays the run's control.
+    backend.gate.set()
+    await wait_for(task.id)
+    assert task.id not in ctx.teams.compressing
+    kinds = [m.kind for m in await ctx.teams._messages_of(task.id)]
+    assert kinds.count("compressed summary") == 1
+
+
+async def test_below_seventy_percent_nothing_is_compressed(setup, wait_for):
+    ctx, task, backend = setup
+    ctx.config.teams.context_compression_tokens = 0
+    backend.usage, backend.window = 6999, 10_000
+    await ctx.teams.update_task(task.id, {"status": TaskStatus.PENDING})
+    await ctx.teams.start_task(task.id)
+    await wait_for(task.id)
+    assert not [r for r in backend.requests if r.session_key.endswith(":summary")]
 
 
 def test_only_dialogue_text_is_sent_to_compression():

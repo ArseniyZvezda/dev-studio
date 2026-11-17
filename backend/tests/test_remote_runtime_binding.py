@@ -1,8 +1,9 @@
 """I2 synthetic runtime admission fixtures (studio-design §4.3; runtime plan §3.1).
 
-No production activation reader, v2 transport, key, or legacy checkpoint is used.
-The protected runner seam only supplies local coroutines; accepting these tests
-does not remove R3 or implement Enable/Preview, generation fencing, or drain.
+No production activation reader, network, key, or legacy checkpoint is used. Most
+tests override the runner seam with local coroutines; the I10 tests below check
+the real seam's profile-bound v2 runner, strict hello and immutable checkpoint
+without a socket (the end-to-end v2 runner is in test_remote_sync.py).
 """
 from __future__ import annotations
 
@@ -33,6 +34,9 @@ from voxarium_studio.sync.state import SyncNamespace, SyncState, SyncStateError,
 from voxarium_studio.teams.docs import DocStore
 from voxarium_studio.ws.bus import EventBus
 
+
+# Captured before the autouse fixture denies persistence (I10 checkpoint test).
+_SAVE_V2 = SyncStateV2.save
 
 PROFILE = "c503da2b-f8fe-4fb0-b945-86bc119495b3"
 OTHER_PROFILE = "81ccda2b-f8fe-4fb0-b945-86bc119495b3"
@@ -459,20 +463,178 @@ async def test_runtime_status_cannot_bypass_rejected_preflight(binding, no_exter
     assert before == tree_snapshot(binding.paths.root, binding.home)
 
 
-async def test_production_seam_remains_r3_gated(binding, no_external_io):
+async def test_production_seam_publishes_profile_bound_v2_runner(binding, no_external_io):
+    """I10: the real seam publishes a v2 runner; its key is the binding's PROFILE key.
+
+    No key here, so it stops terminally before any socket: the legacy per-URL
+    token, the v1 runner and the network are never reached (fixture counts them).
+    """
     before = tree_snapshot(binding.paths.root, binding.home)
-    sync, owner, lifecycle = make_sync(binding, no_external_io, cls=_ProfileRemoteSync)
+    asked = []
+
+    def profile_token(profile_id, url):
+        asked.append((profile_id, url))
+        return None
+
+    owner, lifecycle, bus = ReservationOwner(), TrackedLifecycle(binding), EventBus()
+    sync = _ProfileRemoteSync(binding.paths, lambda: binding.config, DocStore(binding.paths, bus), bus,
+                              lifecycle=lambda: lifecycle, reservations=lambda: owner,
+                              activation=lambda: binding.target, profile_reader=binding.read_profile,
+                              profile_token=profile_token)
+    sync._token = no_external_io
     try:
         await sync.start()
-        assert sync.status()["message"] == "protocol_unavailable"
-        assert sync._runner is None
-        assert lifecycle.live_leases == 0
-        assert lifecycle.issued[0].releases == 1
-        lease = owner.reserve(root=binding.paths.root, url=URL, persistent_id="synthetic-runtime")
-        assert owner.release(lease)
+        assert sync._runner is not None
+        await asyncio.wait_for(asyncio.shield(sync._runner), 2)
+        assert sync.status()["state"] == "blocked"
+        assert sync.status()["message"] == "credential_missing"
+        assert sync.status()["has_token"] is False
+        assert asked == [(PROFILE, URL)]
+        assert sync._ws is None and sync._state is None
+        # The ended runner keeps its consumer until a stop/reconfigure replaces it.
+        assert_owned(owner, binding, object())
+        assert lifecycle.live_leases == 1
     finally:
         await sync.stop()
+    assert lifecycle.live_leases == 0 and lifecycle.issued[0].releases == 1
+    lease = owner.reserve(root=binding.paths.root, url=URL, persistent_id="synthetic-runtime")
+    assert owner.release(lease)
     assert before == tree_snapshot(binding.paths.root, binding.home)
+
+
+def _link(binding, *, account=None, drift=None, checkpoint=None):
+    observed = binding.preflight()
+    if checkpoint is not None:
+        observed = replace(observed, checkpoint=checkpoint)
+    return service._ActivatedLink(observed, credential=lambda: "unused",
+                                  account=lambda: account, drift=drift or (lambda: None))
+
+
+def _hello(**changes):
+    frame = {"t": "hello", "protocol": 2,
+             "user": {"id": "user-a", "display_name": "Anna", "color": "#3e63dd"},
+             "space": {"id": "synthetic-runtime", "display_name": "Synthetic", "storage_epoch": INSTANCE},
+             "seq": 3}
+    for key, value in changes.items():
+        if value is _DROP:
+            frame.pop(key)
+        else:
+            frame[key] = value
+    return json.dumps(frame)
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("raw,code", [
+    (b"{}", "invalid_hello"),
+    ("not json", "invalid_hello"),
+    (json.dumps([]), "invalid_hello"),
+    (_hello(t="welcome"), "invalid_hello"),
+    (_hello(protocol=1), "protocol_mismatch"),
+    (_hello(protocol=True), "invalid_hello"),
+    (_hello(protocol="2"), "invalid_hello"),
+    (_hello(seq=_DROP), "invalid_hello"),
+    (_hello(seq=True), "invalid_hello"),
+    (_hello(seq=-1), "invalid_hello"),
+    (_hello(extra=1), "invalid_hello"),
+    (_hello(user={"id": "user-a", "display_name": "Anna"}), "invalid_hello"),
+    (_hello(user={"id": "", "display_name": "Anna", "color": "#3e63dd"}), "invalid_hello"),
+    (_hello(user={"id": "user-a", "display_name": "Anna", "color": "blue"}), "invalid_hello"),
+    (_hello(space={"id": "Synthetic-Runtime", "display_name": "S", "storage_epoch": INSTANCE}), "invalid_hello"),
+    (_hello(space={"id": "synthetic-runtime", "display_name": "S", "storage_epoch": "e"}), "invalid_hello"),
+    (_hello(space={"id": "another-id", "display_name": "S", "storage_epoch": INSTANCE}), "identity_mismatch"),
+    (_hello(space={"id": "synthetic-runtime", "display_name": "S", "storage_epoch": OTHER_INSTANCE}),
+     "instance_mismatch"),
+    (_hello(seq=2), "cursor_rollback"),
+])
+def test_strict_v2_hello_refuses_before_publication(binding, raw, code):
+    link = _link(binding)
+    before = tree_snapshot(binding.paths.root, binding.home)
+    with pytest.raises(service._Stop) as stopped:
+        link.accept_hello(raw)
+    assert (stopped.value.state, stopped.value.message) == ("blocked", code)
+    assert link.user_id is None
+    assert link.state.cursor == 3 and link.state.docs["note.md"].rev == 2, "no cursor reset"
+    assert before == tree_snapshot(binding.paths.root, binding.home)
+
+
+def test_hello_account_is_the_verified_one_and_stays_pinned(binding):
+    with pytest.raises(service._Stop, match="account_mismatch"):
+        _link(binding, account="user-b").accept_hello(_hello())
+    verified = _link(binding, account="user-a")
+    assert verified.accept_hello(_hello())["user"]["id"] == "user-a"
+    # Without a verification the first accepted hello pins the account for reconnects.
+    unverified = _link(binding)
+    unverified.accept_hello(_hello(seq=9))
+    assert unverified.user_id == "user-a"
+    other = json.loads(_hello())
+    other["user"]["id"] = "user-b"
+    with pytest.raises(service._Stop, match="account_mismatch"):
+        unverified.accept_hello(json.dumps(other))
+    assert unverified.user_id == "user-a"
+
+
+@pytest.mark.parametrize("code,reason,expected", [
+    (4401, "unauthorised", ("unauthorised", "unauthorised")),
+    (4400, "invalid_id", ("blocked", "invalid_id")),
+    (4400, "anything the server says", ("blocked", "invalid_request")),
+    (4404, "project_not_found", ("blocked", "project_not_found")),
+    (4408, "overloaded", None),
+    (1013, "temporarily_unavailable", None),
+    (1000, "", None),
+])
+def test_v2_close_codes_terminal_or_retried(code, reason, expected):
+    ws = type("Closed", (), {"close_code": code, "close_reason": reason})()
+    if expected is None:
+        service._ActivatedLink.raise_for_close(ws)  # left to reconnect with backoff
+        return
+    with pytest.raises(service._Stop) as stopped:
+        service._ActivatedLink.raise_for_close(ws)
+    assert (stopped.value.state, stopped.value.message) == expected
+
+
+def test_drift_is_checked_before_the_hello_is_accepted(binding):
+    with pytest.raises(service._Stop, match="binding_required"):
+        _link(binding, drift=lambda: "binding_required").accept_hello(_hello())
+    with pytest.raises(service._Stop, match="activation_unavailable"):
+        _link(binding, drift=lambda: 1 / 0).open()
+
+
+def test_v2_checkpoint_publishes_new_immutable_state(binding, monkeypatch):
+    monkeypatch.setattr(SyncStateV2, "save", _SAVE_V2)
+    loaded = binding.preflight().checkpoint
+    working = service._CheckpointV2(loaded)
+    working.cursor = 5
+    working.docs["note.md"] = service.Base(5, "b" * 64)
+    working.docs["gone.md"] = service.Base(0, None)  # the engine's "no base", never persisted
+    working.save()
+    assert loaded.cursor == 3 and loaded.docs["note.md"].rev == 2, "loaded state is not mutated"
+    published = SyncStateV2.load(binding.paths.root, url=URL, persistent_id="synthetic-runtime")
+    assert published == working.published and published.cursor == 5
+    assert set(published.docs) == {"note.md"}
+    # SyncStateV2 itself refuses a lower cursor over a newer checkpoint: terminal, no reset.
+    stale = service._CheckpointV2(loaded)
+    stale.docs["other.md"] = service.Base(1, "c" * 64)
+    with pytest.raises(service._Stop, match="cursor_rollback"):
+        stale.save()
+    assert SyncStateV2.load(binding.paths.root, url=URL, persistent_id="synthetic-runtime") == published
+    with pytest.raises(service._Stop, match="preview_required"):
+        service._CheckpointV2(None)
+
+
+def test_drift_comparison_ignores_checkpoint_progress_and_other_rows(binding):
+    from voxarium_studio.core.context import _same_binding_target
+
+    captured = binding.preflight()
+    binding.write_state(cursor=9)
+    binding.write_rows(binding.row(), binding.row(canonical_root=str(canonical_root(binding.paths.root / "x"))))
+    current = binding.preflight()
+    assert current != captured and _same_binding_target(current, captured)
+    assert not _same_binding_target(replace(current, enabled=False), captured)
+    assert not _same_binding_target(replace(current, checkpoint=None), captured)
+    assert not _same_binding_target(
+        replace(current, target=replace(current.target, profile_id=OTHER_PROFILE)), captured)
 
 
 async def test_disabled_activated_config_does_not_admit_consumer(binding, no_external_io):

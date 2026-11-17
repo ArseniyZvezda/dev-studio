@@ -142,6 +142,41 @@ async def test_exact_wire_prefix_query_method_auth_and_owned_close(method, path,
     assert KEY not in repr(client) and SERVER_SECRET not in repr(result)
 
 
+@pytest.mark.parametrize("path,params,query", [
+    ("/api/v2/projects/a._-1/snapshot", {"limit": 20}, b"limit=20"),
+    ("/api/v2/projects/a/snapshot", {"limit": 1, "expected_epoch": "a" * 32},
+     b"limit=1&expected_epoch=" + b"a" * 32),
+    ("/api/v2/projects/healthz/snapshot", {"limit": 100, "after": "dir/b c.md", "expected_seq": 7,
+                                           "expected_epoch": "b" * 32},
+     b"limit=100&after=dir%2Fb+c.md&expected_seq=7&expected_epoch=" + b"b" * 32),
+    ("/api/v2/projects/snapshot", {}, b""),  # "snapshot" is an ordinary exact project ID.
+    ("/api/v2/legacy-spaces/resolve", {"name": "Old Space/ü&x=1"},
+     b"name=Old+Space%2F%C3%BC%26x%3D1"),
+])
+async def test_s3_snapshot_and_resolve_are_exact_get_only_reads(path, params, query):
+    """I11: the production pool sends exactly these read-only GET forms."""
+    wire = Wire()
+    async with CatalogHttpTransport(transport=wire) as client:
+        result = await request(client, "GET", path, params=params)
+        assert result.status == 200 and result.body == {"ok": True}
+    sent = wire.calls[0]
+    assert len(wire.calls) == 1 and sent.method == "GET" and sent.content == b""
+    assert sent.url.path == "/deployment/team" + path
+    assert sent.url.query == query
+    assert sent.headers["authorization"] == "Bearer " + KEY
+    assert KEY not in str(sent.url)
+    assert wire.stream.closed == 1
+
+
+async def test_s3_snapshot_response_is_bounded_like_every_response(monkeypatch):
+    wire = Wire(Stream(b"{" + b" " * LIMIT, b"}"))
+    async with CatalogHttpTransport(transport=wire) as client:
+        with pytest.raises(CatalogError) as caught:
+            await request(client, "GET", "/api/v2/projects/a/snapshot", params={"limit": 20})
+    sanitized(caught.value, "invalid_response")
+    assert len(wire.calls) == 1 and wire.stream.closed == 1
+
+
 async def test_cookie_response_is_not_forwarded_on_next_request():
     wire = Wire(headers={"Content-Type": "application/json", "Set-Cookie": "key=" + KEY})
     async with CatalogHttpTransport(transport=wire) as client:
@@ -228,6 +263,34 @@ async def test_redirect_never_reads_body_or_sends_again(status, location):
     ("POST", "/api/v2/me", {}),
     ("GET", "/api/v2/projects/a/snapshot", {}),
     ("GET", "/api/v2/projects/a/", {}),
+    # I11/S3: snapshot and legacy resolve are GET-only with exact query sets.
+    ("POST", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}}),
+    ("POST", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}, "json": {"id": "a"}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}, "json": {"id": "a"}}),
+    ("PUT", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}}),
+    ("DELETE", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20, "space": "a"}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20, "after": "a.md"}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20, "after": "a.md", "expected_seq": 1}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"after": "a.md", "expected_seq": 1,
+                                                       "expected_epoch": "a" * 32}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}, "headers": {}}),
+    ("GET", "/api/v2/projects/a/snapshot/", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/a/snapshots", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/A/snapshot", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/a/b/snapshot", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/a/sync", {"params": {"limit": 20}}),
+    ("GET", "/api/v2/projects/a/documents", {}),
+    ("GET", "/api/v2/sync", {"params": {"space": "a"}}),
+    ("GET", "/api/v2/legacy-spaces/resolve", {}),
+    ("GET", "/api/v2/legacy-spaces/resolve", {"params": {"name": "x", "limit": 1}}),
+    ("GET", "/api/v2/legacy-spaces/resolve", {"params": {"name": 7}}),
+    ("GET", "/api/v2/legacy-spaces/resolve", {"params": {"name": "x"}, "headers": {}}),
+    ("POST", "/api/v2/legacy-spaces/resolve", {"params": {"name": "x"}}),
+    ("POST", "/api/v2/legacy-spaces/resolve", {"json": {"name": "x"}}),
+    ("GET", "/api/v2/legacy-spaces", {"params": {"name": "x"}}),
+    ("GET", "/api/v2/legacy-spaces/resolve/", {"params": {"name": "x"}}),
+    ("GET", "/api/v2/projects/a/snapshot", {"params": {"limit": 20}, "follow_redirects": True}),
     ("GET", "/api/v2/projects", {"follow_redirects": True}),
     ("GET", "/healthz", {"headers": AUTH}),
     ("GET", "/api/v2/me", {"headers": {}}),

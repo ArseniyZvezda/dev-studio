@@ -240,11 +240,18 @@ class TeamsConfig(BaseModel):
     session, which is why it is bounded and configurable rather than "keep going".
     """
 
+    context_compression_percent: int = Field(default=70, ge=0, le=100)
+    """Compact task history once the latest request fills this share of the window (§10.4).
+
+    The window is the one the runtime last reported for the task's model. Zero disables
+    automatic compression; Compress still works.
+    """
+
     context_compression_tokens: int = Field(default=100_000, ge=0)
-    """Compact task history at this context size between runs (§10.4).
+    """Fallback threshold for a runtime that never reports its context window (§10.4).
 
     Uses the latest request's input/cache tokens, or a character estimate when the
-    backend supplies no usage. Zero disables automatic compression; Compress still works.
+    backend supplies no usage. Zero disables the fallback only.
     """
 
     result_follow_up: bool = True

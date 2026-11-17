@@ -1,8 +1,9 @@
 """Application-owned durable Create (dev spec §5.2.1; activation plan C8).
 
-No routes, project binding, replay authorization or production POST activation.
-The default transport is absent until R3. Only an explicit trusted composition
-(offline tests today) can supply it. Journal metadata never proves a cold key.
+No routes, project binding, replay authorization or Select. I9 lifted the R3
+gate: the application owner (catalog_runtime) supplies its single owned pool as
+the transport; there is no default or second client. Journal metadata never
+proves a cold key.
 """
 from __future__ import annotations
 
@@ -143,12 +144,13 @@ class CatalogCreateRuntime:
     ID is refused at capacity (503), NEVER evicted to make room. Each admitted
     worker owns a C5 logical lease through service and cancellation cleanup;
     synchronous lifecycle/config/SQLite locks are never held across awaits.
-    ``transport=None`` is the production R3 gate, before journal/key lookup.
+    ``transport`` is required (I9: the app owner's pool). A missing or closed
+    transport refuses before any journal/provider/key lookup.
     """
 
     def __init__(self, *, home: Path, check: Callable[[], None],
                  providers: Callable[..., PendingCatalogProviders],
-                 lifecycle: ProfileLifecycle, transport: CatalogTransport | None = None):
+                 lifecycle: ProfileLifecycle, transport: CatalogTransport | None):
         if (not isinstance(home, Path) or not home.is_absolute()
                 or ".." in home.parts or str(home).startswith(("\\\\", "//"))):
             raise CatalogError("invalid_intent_path")

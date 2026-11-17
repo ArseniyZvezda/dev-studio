@@ -572,6 +572,8 @@ export interface TeamTask {
   /** Producer draft approval gate, returned by the ordinary task API (§10.11). */
   producer_chat_id?: string | null
   producer_approved?: boolean
+  /** Times a Producer reopened this task's Done result; counted, never reset (§10.11). */
+  reopen_count?: number
   attachments?: (TaskAttachment & { reference: string })[]
   id: string
   /**
@@ -666,6 +668,8 @@ export interface TeamTask {
   finished_at: string | null
   is_running?: boolean
   is_compacting?: boolean
+  /** §10.4: context is being summarized now — by Compress or automatically inside a run. */
+  is_compressing_context?: boolean
 }
 
 /**
@@ -720,7 +724,7 @@ export interface AgentChat {
   producer_plan?: ProducerPlanTask[]
   producer_plan_summary?: string
   producer_plan_version?: number
-  producer_checklist?: { text: string; done: boolean }[]
+  producer_checklist?: ProducerPlanItem[]
   id: string
   member_id: string
   /** The first message's first line, unless somebody named it. */
@@ -739,6 +743,33 @@ export interface AgentChat {
   last_message_at: string
   /** The member is answering right now. */
   is_running: boolean
+  /** A Producer turn is summarizing its context right now (§10.11). */
+  is_compacting?: boolean
+}
+
+/**
+ * One item of the Producer's session Plan (§10.11). `id` and `tasks` are absent on a Plan
+ * saved before items kept their tasks; the backend adds them the next time it is used.
+ */
+export interface ProducerPlanItem {
+  id?: string
+  text: string
+  done: boolean
+  tasks?: ProducerPlanItemTask[]
+}
+
+/**
+ * A board task an item has ever been given — kept in whatever status it ends, and after
+ * the task itself is deleted, so the item goes on showing what it cost.
+ */
+export interface ProducerPlanItemTask {
+  id: string
+  display_id: string
+  title: string
+  status: string
+  /** How many times the Producer sent this task's Done result back. */
+  reopens: number
+  justification?: string
 }
 
 export interface ProducerPlanTask {
@@ -1700,6 +1731,7 @@ export interface TeamsConfig {
   /** Automatic resumes of a session that stopped mid-work, e.g. on `max_turns` (§10.3). */
   max_run_continuations: number
   /** Automatic task compression threshold; zero disables automatic compression (§10.4). */
+  context_compression_percent?: number
   context_compression_tokens?: number
   /**
    * The largest single message the Studio accepts from an agent runtime (§10.3). The Agent

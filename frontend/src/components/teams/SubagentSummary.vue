@@ -91,12 +91,17 @@ const ENDINGS: Record<Exclude<Subagent['status'], 'running'>, MessageKey> = {
 }
 
 /**
- * The right-hand end of a row: what it is doing now, or how it ended. Counted rather than
- * timed — a duration would have to tick, re-rendering every row each second.
+ * The right-hand end of a row: who is doing the work now, or how it ended. Counted rather
+ * than timed — a duration would have to tick, re-rendering every row each second.
+ *
+ * A running row names its model ("gpt-6-astra") rather than its last tool and call count:
+ * which model a piece of work went to is what a reader is checking while it runs. A runtime's
+ * own sub-agent reports no model, so it keeps the tool and the count.
  */
 function note(entry: Subagent): string {
   const parts: string[] = []
   if (entry.status === 'running') {
+    if (entry.model) return entry.model
     if (entry.lastTool) parts.push(entry.lastTool)
   } else {
     parts.push(t(ENDINGS[entry.status]))

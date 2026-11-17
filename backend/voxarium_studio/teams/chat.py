@@ -198,6 +198,9 @@ class ChatService:
         ``_ending`` works for tasks."""
         self._inboxes: dict[str, Inbox] = {}
         """What was sent to each chat while its turn runs (§10.8), for the length of it."""
+        self.compacting: set[str] = set()
+        """Producer chats whose context is being summarized right now (§10.11) — live
+        state like ``is_running``, never stored."""
 
     # ---- what the orchestrator owns ----
 
@@ -234,6 +237,7 @@ class ChatService:
         return {
             **chat.model_dump(mode="json"),
             "is_running": self.is_running(chat.id) if running is None else running,
+            "is_compacting": chat.id in self.compacting,
         }
 
     async def list_chats(self) -> list[AgentChat]:

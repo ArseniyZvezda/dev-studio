@@ -292,6 +292,8 @@ function context(): ChatContext {
 // A message sent while the member is answering is not refused (§10.8): it is queued and
 // reaches them at the next step, so the composer stays live and Stop sits beside Send.
 const running = computed(() => chat.view === 'chat' && chat.activeChat?.is_running === true)
+/** §10.11: a Producer turn summarizing its context says so in the last line. */
+const compacting = computed(() => chat.view === 'chat' && chat.activeChat?.is_compacting === true)
 const canSend = computed(
   () =>
     (draft.value.trim().length > 0 || attached.value.length > 0) &&
@@ -527,7 +529,7 @@ onBeforeUnmount(() => {
           v-else-if="producerPage"
           :conversation-id="chat.view === 'chat' ? chat.activeChatId : null"
           :messages="chat.view === 'chat' ? chat.activeMessages : []"
-          :chat="{ name: producerName, running }"
+          :chat="{ name: producerName, running, compacting }"
           :empty-text="t(chat.view === 'new' ? 'chat.new.hint' : 'chat.transcript.empty', { name: producerName })"
         />
 

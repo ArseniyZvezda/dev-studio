@@ -154,6 +154,35 @@ async def client_for(h, *, known=True):
             yield client
 
 
+SYMLINK_SKIP = "symlink creation needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+
+
+@pytest.fixture
+def symlink_capability(request, tmp_path):
+    """Host capability probe for the cases that create symlinks, BEFORE ``harness``.
+
+    Requested first so a host without the privilege (Windows WinError 1314,
+    Developer Mode off) skips before harness setup/teardown runs; parameter
+    cases that create no link (``kind="directory"``) are never skipped. Any
+    other OSError is a real failure. Where links can be created, the tests run
+    unchanged.
+    """
+    callspec = getattr(request.node, "callspec", None)
+    kind = callspec.params.get("kind") if callspec is not None else None
+    if kind is not None and not kind.endswith("link"):
+        return
+    probe = tmp_path / "symlink-capability" / "probe"
+    probe.parent.mkdir()
+    try:
+        probe.symlink_to(probe.parent / "absent-target")
+    except OSError as failure:
+        if getattr(failure, "winerror", None) == 1314:
+            pytest.skip(SYMLINK_SKIP)
+        raise
+    probe.unlink()
+    probe.parent.rmdir()
+
+
 @pytest.fixture
 async def harness(monkeypatch, studio_home, tmp_path):
     counts = Counter()
@@ -428,7 +457,8 @@ async def test_recovery_rechecks_journal_evidence_under_lifecycle_guard(harness)
 @pytest.mark.parametrize("operation", OPERATIONS)
 @pytest.mark.parametrize("filename", ("config.yaml", "remote-keys.json"))
 @pytest.mark.parametrize("kind", ("dangling-link", "directory"))
-async def test_unsafe_store_is_not_proven_absence_and_never_mutated(harness, operation, filename, kind):
+async def test_unsafe_store_is_not_proven_absence_and_never_mutated(
+        symlink_capability, harness, operation, filename, kind):
     h = harness
     async with client_for(h) as client:
         if operation == "recover":
@@ -459,7 +489,8 @@ async def test_unsafe_store_is_not_proven_absence_and_never_mutated(harness, ope
 
 @pytest.mark.parametrize("operation", OPERATIONS)
 @pytest.mark.parametrize("filename", ("config.yaml", "remote-keys.json"))
-async def test_store_path_is_rechecked_after_inventory_under_shared_guard(harness, operation, filename):
+async def test_store_path_is_rechecked_after_inventory_under_shared_guard(
+        symlink_capability, harness, operation, filename):
     h = harness
     async with client_for(h) as client:
         if operation == "recover":
@@ -1071,7 +1102,8 @@ async def test_i1_recovery_url_union_is_rechecked_after_config_transaction_acqui
 
 
 @pytest.mark.parametrize("kind", ("directory", "dangling-link", "regular-link"))
-async def test_i1_private_binding_location_must_be_regular_unlinked_file(harness, monkeypatch, kind):
+async def test_i1_private_binding_location_must_be_regular_unlinked_file(
+        symlink_capability, harness, monkeypatch, kind):
     h = harness
     path = h.home / "remote-bindings.json"
     target = h.home / "synthetic-binding-target.json"

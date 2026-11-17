@@ -181,7 +181,9 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
         snapshot = journal = None  # A manual compaction invalidated the captured session.
     captured_at = snapshot.captured_at.isoformat() if snapshot else None
     if journal is not None:
-        return journal.sources, {"reported": journal.reported_tokens, "window": journal.context_window,
+        # Claude Code's journal records no window; the run reported it to the Studio.
+        window = journal.context_window or _reported_window(messages, snapshot.started_at if snapshot else None)
+        return journal.sources, {"reported": journal.reported_tokens, "window": window,
                                  "origin": f"{backend}_journal", "journal_path": journal.journal_path, "partial": journal.partial,
                                  "has_studio_view": snapshot is not None}
 
@@ -207,6 +209,8 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
                 if any(count is not None for count in counts):
                     reported = sum(count or 0 for count in counts)
                     break
+    if window is None and reported is not None:
+        window = _reported_window(messages, cutoff)
     for message in messages:
         if (cutoff and message.created_at < cutoff) or message.data.get("parent_tool_use_id"):
             continue
@@ -255,6 +259,24 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
     return parts, {"reported": reported, "window": window, "origin": "studio",
                    "partial": snapshot is None or snapshot.partial,
                    "captured_at": captured_at, "has_studio_view": snapshot is not None}
+
+
+def _reported_window(messages: Sequence, cutoff: datetime | None) -> int | None:
+    """The newest context window the runtime reported for this session (§10.4).
+
+    A window belongs to the session's model rather than to one request, so a compaction
+    does not end the search — but the start of the captured session does: an earlier
+    dispatch may have run on another backend or model. Sub-agents run their own model.
+    """
+    for message in reversed(messages):
+        if cutoff and message.created_at < cutoff:
+            break
+        if message.data.get("parent_tool_use_id"):
+            continue
+        window = count(message.data.get("context_window"))
+        if window:
+            return window
+    return None
 
 
 def inventory(snapshot: SessionContext | None, messages: list, journal=None, *, backend: str = "") -> dict[str, Any]:

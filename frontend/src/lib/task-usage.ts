@@ -50,6 +50,9 @@ export function taskUsage(task: {
   }, -Infinity)
   let foundTotals = false
   let foundContext = false
+  // Claude names its context window only on a turn's result, which follows the
+  // responses it sizes; read backwards, that result is met first.
+  let resultWindow: number | null = null
   let latestSnapshot: Record<string, unknown> | null = null
   for (let index = task.messages.length - 1; index >= 0; index -= 1) {
     const message = task.messages[index]!
@@ -85,6 +88,10 @@ export function taskUsage(task: {
       }
       continue
     }
+    if (!foundContext && message.kind === 'result' && !message.data?.parent_tool_use_id) {
+      resultWindow ??= count(message.data?.context_window)
+      continue
+    }
     if (foundContext || message.role !== 'assistant' || message.kind === 'result' ||
       message.data?.parent_tool_use_id) continue
     // Older Claude/Qwen transcripts predate usage_update. Each assistant usage is one
@@ -96,6 +103,8 @@ export function taskUsage(task: {
     const cached = count(usage.cache_read_input_tokens)
     if (input === null && cached === null) continue
     result.contextTokens = (input ?? 0) + (cached ?? 0) + (count(usage.cache_creation_input_tokens) ?? 0)
+    const window = count(message.data?.context_window) ?? resultWindow
+    result.contextWindow = window !== null && window > 0 ? window : null
     foundContext = true
   }
   // Missing historical classification stays unknown; it is never counted as uncached.

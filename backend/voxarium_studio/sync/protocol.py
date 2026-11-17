@@ -14,8 +14,9 @@ import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
 # Staged delivery (§16.7–16.9, VS-180): these v2 declarations are shared with Remote,
-# NOT permission to switch the legacy runner. service.py still imports PROTOCOL_VERSION
-# and socket_url(), deliberately pinned to v1 until I9–I16 and L are accepted.
+# NOT permission to switch the legacy runner. The legacy runner keeps PROTOCOL_VERSION
+# and socket_url(), deliberately pinned to v1; only an activated binding (I10) uses
+# socket_url_v2()/parse_hello_v2(). Neither branch falls back to the other.
 WIRE_V2_VERSION = 2
 CATALOG_API_VERSION = 2
 LEGACY_RUNNER_PROTOCOL_VERSION = 1
@@ -101,10 +102,74 @@ def normalise_url(raw: str) -> str:
 
 
 def socket_url(base: str, space: str) -> str:
-    """Where the sync socket is, for a normalised *base*."""
+    """Where the LEGACY v1 sync socket is, for a normalised *base* (compatibility branch)."""
     parts = urlsplit(base)
     scheme = "wss" if parts.scheme == "https" else "ws"
     return urlunsplit((scheme, parts.netloc, f"{parts.path}/api/v1/sync", f"space={space}", ""))
+
+
+# ---------------------------------------------------------------- v2 strict connect (I10)
+# Restated from the accepted Remote (``voxarium_studio_remote/app.py`` ``/api/v2/sync``,
+# ``hub.py`` hello); never imported. server-design §3.1 is the contract.
+
+SYNC_V2_PATH = "/api/v2/sync"
+CLOSE_REASON_PROTOCOL_UPGRADE = "protocol_upgrade_required"
+"""The v1 socket's fixed 4400 reason on a v2 Remote: the legacy runner stops on it."""
+CLOSE_REASONS_BAD_REQUEST = frozenset({"invalid_request", "invalid_id", CLOSE_REASON_PROTOCOL_UPGRADE})
+"""Fixed 4400 reasons a client may show; anything else is reported as ``invalid_request``.
+4400/4401/4404 are never retried automatically (a correction or new choice, never
+Create); 4408 overload and transport drops are retried with backoff."""
+
+_HELLO_V2_FIELDS = frozenset({"t", "protocol", "user", "space", "seq"})
+_HELLO_V2_USER = frozenset({"id", "display_name", "color"})
+_HELLO_V2_SPACE = frozenset({"id", "display_name", "storage_epoch"})
+
+
+def socket_url_v2(base: str, project_id: str) -> str:
+    """The strict v2 sync socket for the EXACT project ID — no trim/lower/legacy fold."""
+    check_project_id(project_id)
+    parts = urlsplit(base)
+    scheme = "wss" if parts.scheme == "https" else "ws"
+    return urlunsplit((scheme, parts.netloc, f"{parts.path}{SYNC_V2_PATH}", f"space={project_id}", ""))
+
+
+class HelloError(ValueError):
+    """A v2 hello that cannot be trusted; carries a fixed local code only."""
+
+    def __init__(self, code: str = "invalid_hello") -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def parse_hello_v2(raw: object) -> dict:
+    """Shape-check one v2 hello frame (server-design §3.1), before ANY comparison.
+
+    Exact field sets, no bool-as-int, no coercion. Identity/epoch/cursor/account
+    comparisons belong to the caller, which knows the captured binding.
+    """
+    if not isinstance(raw, dict) or raw.get("t") != "hello" or raw.keys() != _HELLO_V2_FIELDS:
+        raise HelloError()
+    protocol = raw["protocol"]
+    if type(protocol) is not int:
+        raise HelloError()
+    if protocol != WIRE_V2_VERSION:
+        raise HelloError("protocol_mismatch")
+    user, space, seq = raw["user"], raw["space"], raw["seq"]
+    if (not isinstance(user, dict) or user.keys() != _HELLO_V2_USER
+            or not isinstance(space, dict) or space.keys() != _HELLO_V2_SPACE
+            or type(seq) is not int or seq < 0):
+        raise HelloError()
+    if (not isinstance(user["id"], str) or not user["id"] or len(user["id"]) > 128
+            or not isinstance(user["display_name"], str) or not isinstance(space["display_name"], str)
+            or not isinstance(space["storage_epoch"], str)
+            or re.fullmatch(r"[0-9a-f]{32}", space["storage_epoch"]) is None):
+        raise HelloError()
+    try:
+        check_project_id(space["id"])
+        check_color(user["color"])
+    except ValueError:
+        raise HelloError() from None
+    return raw
 
 
 def is_insecure(base: str) -> bool:

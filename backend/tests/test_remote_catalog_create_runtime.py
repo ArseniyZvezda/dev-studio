@@ -271,9 +271,11 @@ def test_constructor_and_close_are_lazy_but_explicit_recovery_may_open_journal(s
 
 
 @pytest.mark.parametrize("action", ["create", "recover"])
-def test_default_r3_gate_precedes_journal_providers_and_keys(s, action):
+def test_absent_transport_precedes_journal_providers_and_keys(s, action):
+    # I9 removed the default: a transport is a required owned dependency. An
+    # explicitly absent one (like a closed owner) still refuses before storage.
     runtime = s.make(transport=False)
-    # Even corrupt local data cannot move the production gate behind storage.
+    # Even corrupt local data cannot move the refusal behind storage.
     s.path.write_bytes(b"not a journal")
     before = s.path.read_bytes()
     call = create(runtime) if action == "create" else runtime.recover_create(PROFILE, OP, expected_revision=1)
@@ -281,7 +283,19 @@ def test_default_r3_gate_precedes_journal_providers_and_keys(s, action):
     assert s.path.read_bytes() == before and not s.calls and not s.transport.calls
 
 
-def test_remote_ready_composes_closed_gate_without_opening_journal(s, monkeypatch):
+def test_transport_is_a_required_owned_dependency():
+    with pytest.raises(TypeError):
+        owner.CatalogCreateRuntime(home=Path.cwd().absolute(), check=lambda: None,
+                                   providers=lambda *_a, **_k: None, lifecycle=None)
+
+
+def test_remote_ready_composes_owned_transport_without_opening_journal(s, monkeypatch):
+    """I9: production Create gets the owner's single pool, not the R3 gate.
+
+    Startup and metadata still open no journal. An explicit Create reaches the
+    journal/lifecycle; with no S2 profile row it refuses locally before any key
+    lookup or send (``production_transport`` stays uncalled).
+    """
     events = []
 
     class Pool:
@@ -300,15 +314,18 @@ def test_remote_ready_composes_closed_gate_without_opening_journal(s, monkeypatc
         ready = await runtime.start()
         assert isinstance(ready.create, owner.CatalogCreateRuntime)
         assert (await runtime.start()).create is ready.create
+        # The owner's per-send pool handle: neither None nor a second client.
+        assert ready.create._transport is runtime._outbound
+        assert runtime._outbound.owner is runtime and isinstance(runtime._transport, Pool)
         assert ready.metadata.list() == ()
         assert not s.path.exists()
         with pytest.raises(CatalogError) as caught:
             await create(ready.create)
-        clean_error(caught.value, "service_unavailable")
+        clean_error(caught.value, "profile_not_found")
         with pytest.raises(CatalogError) as caught:
-            await ready.create.recover_create(PROFILE, OP, expected_revision=1)
-        clean_error(caught.value, "service_unavailable")
-        assert not s.path.exists()
+            await ready.create.recover_create(PROFILE, "vs146-other-command", expected_revision=1)
+        clean_error(caught.value, "operation_not_found")
+        assert s.path.is_file()  # Opened only by the explicit commands.
         original = ready.create.close
 
         async def close_create():

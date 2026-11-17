@@ -4,6 +4,9 @@ Real S2 writes use only pytest's synthetic homes. Authoritative inventory below
 is explicit *test evidence* for the future binding/drain owners, never inferred
 from an empty resident registry. HTTP Verify uses the real HTTP/guard services
 with MockTransport; no Remote installation, listeners or real keys are needed.
+The one exception is ``TestI14RealRemoteCredentialGeneration``: it needs the
+real Remote v2 package (``uv pip install -e ../remote``) and a loopback-only
+listener of its own, and fails rather than skips when the package is absent.
 """
 from __future__ import annotations
 
@@ -926,7 +929,7 @@ async def test_runtime_production_inventory_remains_unknown_even_after_valid_ver
         await owner.close()
 
 
-async def test_runtime_verify_admits_before_binding_token_and_http_and_catalog_stays_disabled(
+async def test_runtime_verify_and_catalog_read_admit_before_binding_token_and_http(
     store, monkeypatch,
 ):
     owner, requests = runtime_with_mock_http(store, monkeypatch)
@@ -942,13 +945,19 @@ async def test_runtime_verify_admits_before_binding_token_and_http_and_catalog_s
         tokens.assert_not_called()
         providers.assert_not_called()
         assert not requests
+        # I9 lifted the R3 gate: a catalog read takes the same C5 admission
+        # (kind="read") FIRST, so a held S2 guard refuses it before any
+        # provider, key lookup or HTTP send, with a fixed typed code.
         operation = Mock(wraps=owner.lifecycle.operation)
         monkeypatch.setattr(owner.lifecycle, "operation", operation)
-        with pytest.raises(CatalogError, match="service_unavailable"):
-            await ready.catalog.list_projects(store.pid, expected_revision=1)
-        operation.assert_not_called()
+        with owner.lifecycle.consumer_guard(store.pid):
+            with pytest.raises(CatalogError, match="consumer_lifecycle_unavailable") as caught:
+                await ready.catalog.list_projects(store.pid, expected_revision=1)
+        assert caught.value.__context__ is None and SECRET not in repr(caught.value)
+        operation.assert_called_once_with(store.pid, kind="read")
+        providers.assert_not_called()
         tokens.assert_not_called()
-        assert not requests
+        assert not requests and not owner._requests
     finally:
         await owner.close()
 
@@ -1463,3 +1472,397 @@ def test_i14_synthetic_interrupted_recovery_can_only_continue_demotion(store, tm
     assert all(row.selection_state == "selected" for row in after.records if row.profile_id == store.pid)
     if phase == "credential":
         assert after == before  # Repeat performs zero private writes.
+
+
+# ---------------------------------------------------------------- I14: real Remote v2 credential generation
+#
+# What THIS block proves, against the real in-process Remote v2 (wire/catalog v2,
+# credential binding (UUID, credential_version), server-admin-verification §1):
+# the server's own rotate/revoke ends the old WS generation with 4401, the
+# activated runner stops without a retry, the old key never reconnects, and the
+# lifecycle treats that ``unauthorised`` runner as still bound and NOT drained.
+# What it does NOT prove: a positive drain or gate L. Production inventory stays
+# unknown, so production positive mutation is refused (the expected I14 result);
+# ``BindingInventory(state="known")`` below is the explicit future-L test seam.
+
+REMOTE_PROJECT = "game"
+
+
+async def _eventually(check, *, timeout=5.0, what=""):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        value = check()
+        if value:
+            return value
+        if loop.time() > deadline:
+            raise AssertionError("Timed out waiting for " + (what or repr(check)))
+        await asyncio.sleep(0.01)
+
+
+class _RoomBrowser:
+    """The browser's end of ``/ws/collab`` as the backend handler sees it."""
+
+    def __init__(self, path, client_id, scope):
+        self.incoming = asyncio.Queue()
+        self.frames = asyncio.Queue()
+        self.closed = None
+        self.incoming.put_nowait({"t": "join", "path": path, "client_id": client_id, **scope})
+
+    async def receive_json(self):
+        message = await self.incoming.get()
+        if message is None:
+            from fastapi import WebSocketDisconnect
+            raise WebSocketDisconnect(1000)
+        return message
+
+    async def send_json(self, message):
+        if self.closed is not None:
+            raise RuntimeError("closed")
+        self.frames.put_nowait(message)
+
+    async def close(self, code=1000, reason=""):
+        if self.closed is None:
+            self.closed = (code, reason)
+            self.incoming.put_nowait(None)
+
+    async def expect(self, kind):
+        while True:
+            message = await asyncio.wait_for(self.frames.get(), 5)
+            if message["t"] == kind:
+                return message
+
+
+class TestI14RealRemoteCredentialGeneration:
+    LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+
+    @pytest.fixture(autouse=True)
+    async def safety(self, monkeypatch):
+        """Overrides the module guard: loopback to the in-process Remote ONLY.
+
+        Every non-loopback socket/DNS use, any process and any httpx transport
+        (the catalog is not part of this slice) is still counted and refused.
+        """
+        attempts = Counter()
+        loopback = self.LOOPBACK
+
+        def host(address):
+            return address[0] if isinstance(address, tuple) and address else address
+
+        def guard(kind, real, *, address_index):
+            def checked(*args, **kwargs):
+                address = args[address_index] if len(args) > address_index else None
+                if host(address) not in loopback:
+                    attempts[kind] += 1
+                    raise AssertionError("I14 forbidden non-loopback " + kind)
+                return real(*args, **kwargs)
+            return checked
+
+        def deny(kind):
+            def forbidden(*_args, **_kwargs):
+                attempts[kind] += 1
+                raise AssertionError("I14 forbidden " + kind)
+            return forbidden
+
+        monkeypatch.delenv(credentials.TOKEN_ENV_VAR, raising=False)
+        monkeypatch.delenv(credentials.URL_ENV_VAR, raising=False)
+        for method in ("connect", "connect_ex", "bind"):
+            monkeypatch.setattr(socket.socket, method,
+                                guard("socket." + method, getattr(socket.socket, method), address_index=1))
+        monkeypatch.setattr(socket, "getaddrinfo", guard("DNS", socket.getaddrinfo, address_index=0))
+        monkeypatch.setattr(socket, "create_connection",
+                            guard("create_connection", socket.create_connection, address_index=0))
+        monkeypatch.setattr(subprocess, "Popen", deny("process"))
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny("HTTP"))
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny("HTTP"))
+        yield attempts
+        assert not attempts, attempts
+
+    @pytest.fixture
+    async def remote(self, monkeypatch):
+        """The real Remote v2 package in this event loop (as tests/test_remote_sync.py)."""
+        import uvicorn
+        from voxarium_studio_remote import app as remote_app
+        from voxarium_studio_remote.auth import hash_token, new_token
+        from voxarium_studio_remote.store import Store as RemoteStore
+        from voxarium_studio.sync import service as sync_service
+
+        monkeypatch.setattr(sync_service, "PUSH_DEBOUNCE_SECONDS", 0.01)
+        monkeypatch.setattr(sync_service, "RECONNECT_MIN_SECONDS", 0.01)
+        db = RemoteStore(":memory:")
+        app = remote_app.create_app(store=db)
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0,
+                                               log_level="warning", lifespan="off"))
+        task = asyncio.create_task(server.serve())
+        try:
+            await _eventually(lambda: server.started, what="the remote to start")
+            port = server.servers[0].sockets[0].getsockname()[1]
+            yield SimpleNamespace(store=db, app_module=remote_app, hub=app.state.hub,
+                                  url=f"http://127.0.0.1:{port}", hash_token=hash_token,
+                                  new_token=new_token, service=sync_service)
+        finally:
+            server.should_exit = True
+            await task
+            db.close()
+
+    @staticmethod
+    def count_connects(monkeypatch, service):
+        addresses = []
+        real = service.connect
+
+        def counted(address, **kwargs):
+            addresses.append(address)
+            return real(address, **kwargs)
+
+        monkeypatch.setattr(service, "connect", counted)
+        return addresses, real
+
+    @staticmethod
+    async def activated(tmp_path, remote):
+        """An I12-activated root: confirmed private row + profile key + v2 checkpoint.
+
+        Profiles are the real S2 store, the lifecycle is production-shaped (no
+        inventory callback: gate L unknown) and the key provider is the default
+        profile-bound one. Fixture setup writes the key directly, exactly like
+        ``Store`` above: that is setup, not lifecycle authorization.
+        """
+        import hashlib
+
+        import yaml
+
+        from voxarium_studio.core.context import _ProfileRemoteSync
+        from voxarium_studio.core.project import init_project
+        from voxarium_studio.core.project_scope import canonical_root
+        from voxarium_studio.sync.bindings import root_key
+        from voxarium_studio.sync.protocol import normalise_url
+        from voxarium_studio.sync.reservations import ReservationOwner
+        from voxarium_studio.sync.service import ActivatedRemoteTarget
+        from voxarium_studio.sync.state import SyncStateV2
+        from voxarium_studio.teams.docs import DocStore
+
+        url = normalise_url(remote.url)
+        project = remote.store.create_project(REMOTE_PROJECT, "Game")
+        token = remote.new_token()
+        user = remote.store.add_user("alice", remote.hash_token(token))
+        holder = []
+        lifecycle = ProfileLifecycle(profile_reader=lambda pid: holder[0].get(pid))
+        repo = RemoteProfiles(consumer_guard=lifecycle.consumer_guard)
+        holder.append(repo)
+        profile = repo.create("Alice remote", url)
+        credentials.save_profile_token(profile.profile_id, url, token, expected_revision=0)
+
+        root = tmp_path / "alice"
+        root.mkdir()
+        paths = init_project(root)
+        raw = {"project_identity": {"id": REMOTE_PROJECT, "revision": 1},
+               "sync": {"enabled": True, "url": url}}
+        paths.config_file.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        config = AppConfig.model_validate(raw)
+        target = ActivatedRemoteTarget(
+            str(canonical_root(paths.root)), hashlib.sha256(paths.config_file.read_bytes()).hexdigest(),
+            profile.profile_id, url, REMOTE_PROJECT, 1, project.storage_epoch,
+        )
+        file = bindings_file()
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(json.dumps({"version": 1, "roots": {root_key(target.canonical_root): {
+            "canonical_root": target.canonical_root, "profile_id": target.profile_id, "url": url,
+            "persistent_id": REMOTE_PROJECT, "identity_revision": 1, "selection_state": "confirmed",
+            "space_instance_id": project.storage_epoch}}}), encoding="utf-8")
+        SyncStateV2.fresh(paths.root, url=url, persistent_id=REMOTE_PROJECT,
+                          space_instance_id=project.storage_epoch).save()
+        bus = EventBus()
+        docs = DocStore(paths, bus)
+        owner = ReservationOwner()
+        sync = _ProfileRemoteSync(
+            paths, lambda: config, docs, bus, lifecycle=lambda: lifecycle, reservations=lambda: owner,
+            activation=lambda: target, profile_reader=repo.get,
+            verified_account=lambda _pid, _url: user.id,
+        )
+
+        def checkpoint():
+            return SyncStateV2.load(paths.root, url=url, persistent_id=REMOTE_PROJECT)
+
+        return SimpleNamespace(sync=sync, docs=docs, repo=repo, lifecycle=lifecycle, user=user,
+                               token=token, profile=profile, target=target, root=root,
+                               checkpoint=checkpoint, url=url)
+
+    @staticmethod
+    def open_room(alice, path):
+        gate = alice.docs.transitions
+        lease = gate.register_editor(path, "browser-i14", gate.backend_epoch, gate.generation)
+        browser = _RoomBrowser(path, 14, {
+            "editor_id": lease["editor_id"], "backend_epoch": gate.backend_epoch,
+            "expected_binding_generation": gate.generation, "client_instance_id": "browser-i14"})
+        return browser, asyncio.create_task(alice.sync.serve_collab(browser))
+
+    @staticmethod
+    def private_rows():
+        return RemoteBindings().read().records
+
+    @staticmethod
+    def home_files(home):
+        names = ("config.yaml", "remote-keys.json", "remote-bindings.json", "remote-profile-change.json")
+        return {name: (home / name).read_bytes() if (home / name).exists() else None for name in names}
+
+    @staticmethod
+    def mutate(alice, kind, *, token=None):
+        revision = alice.repo.get(alice.profile.profile_id).revision
+        pid = alice.profile.profile_id
+        if kind == "credential":
+            return alice.repo.set_credential(pid, token or SECRET + "-i14", expected_revision=revision)
+        if kind == "clear":
+            return alice.repo.clear_credential(pid, expected_revision=revision)
+        if kind == "url":
+            return alice.repo.change_url(pid, OTHER_URL, expected_revision=revision, clear_credential=True)
+        assert kind == "delete"
+        return alice.repo.delete(pid, expected_revision=revision)
+
+    @pytest.mark.parametrize("trigger", ("idle-watch", "inbound-write"))
+    @pytest.mark.parametrize("action", ("rotate", "revoke"))
+    async def test_remote_rotate_or_revoke_ends_old_ws_generation_4401_without_retry(
+        self, tmp_path, remote, monkeypatch, action, trigger,
+    ):
+        from voxarium_studio.sync.protocol import CLOSE_COLLAB_UNAVAILABLE, CLOSE_UNAUTHORISED
+
+        # idle-watch: the Remote's own revocation watcher closes an idle socket;
+        # inbound-write: the next Studio frame is refused under credential_guard.
+        monkeypatch.setattr(remote.app_module, "REVOCATION_CHECK_SECONDS",
+                            0.02 if trigger == "idle-watch" else 30.0)
+        connects, real_connect = self.count_connects(monkeypatch, remote.service)
+        alice = await self.activated(tmp_path, remote)
+        await alice.sync.start()
+        await _eventually(lambda: alice.sync.live, what="the v2 runner to connect")
+        await alice.docs.write("kept.md", "# Kept\n")
+        await _eventually(lambda: (remote.store.doc(REMOTE_PROJECT, "kept.md") or SimpleNamespace(
+            content=None)).content == "# Kept\n" and not alice.sync._pending, what="the push")
+
+        # A profile rename while connected is label-only: no reconnect (§3.1).
+        socket_before = alice.sync._ws
+        renamed = alice.repo.rename(alice.profile.profile_id, "Renamed",
+                                    expected_revision=alice.profile.revision)
+        assert renamed.url == alice.url
+        await alice.sync.reconfigure()
+        assert alice.sync._ws is socket_before and alice.sync.live and len(connects) == 1
+
+        browser, room = self.open_room(alice, "kept.md")
+        await browser.expect("joined")
+        cursor, bases = alice.sync._state.cursor, dict(alice.sync._state.docs)
+        assert cursor > 0 and "kept.md" in bases
+        kept = (alice.docs.directory / "kept.md").read_bytes()
+
+        row = remote.store.user(alice.user.id)
+        if action == "rotate":
+            remote.store.rotate_user(row.id, remote.hash_token(remote.new_token()),
+                                     row.metadata_revision, row.credential_version)
+        else:
+            remote.store.revoke_user_by_id(row.id, row.metadata_revision, row.credential_version)
+        if trigger == "inbound-write":
+            await alice.docs.write("late.md", "# Late\n")
+
+        await _eventually(lambda: alice.sync._runner is not None and alice.sync._runner.done(),
+                          what="the runner to stop")
+        status = alice.sync.status()
+        assert (status["state"], status["message"]) == ("unauthorised", "unauthorised")
+        await asyncio.sleep(0.15)
+        assert len(connects) == 1, "4401 is terminal: no retry"
+        assert all("/api/v2/sync?space=game" in address for address in connects)
+        assert remote.store.doc(REMOTE_PROJECT, "late.md") is None
+        # Rooms of the old generation are closed; nothing is left on either side.
+        await asyncio.wait_for(room, 5)
+        assert browser.closed == (CLOSE_COLLAB_UNAVAILABLE, "offline")
+        assert not alice.sync._sessions and alice.sync._ws is None and not alice.sync.live
+        assert not any(space.connections for space in remote.hub._spaces.values())
+        # Markdown and the v2 checkpoint are not reset; consent stays confirmed.
+        assert (alice.docs.directory / "kept.md").read_bytes() == kept
+        if trigger == "inbound-write":
+            assert (alice.docs.directory / "late.md").read_text(encoding="utf-8") == "# Late\n"
+        saved = alice.checkpoint()
+        assert saved is not None and saved.cursor == cursor and saved.docs == bases
+        (record,) = self.private_rows()
+        assert (record.selection_state, record.persistent_id, record.space_instance_id) == (
+            "confirmed", REMOTE_PROJECT, alice.target.space_instance_id)
+
+        # The old key never opens a new generation: an immediate 4401 for a raw
+        # client, and a restart of the same runner is one more refused attempt.
+        async with real_connect(remote.url.replace("http://", "ws://") + "/api/v2/sync?space=game",
+                                additional_headers={"Authorization": "Bearer " + alice.token}) as raw:
+            from websockets.exceptions import ConnectionClosed
+
+            with pytest.raises(ConnectionClosed):
+                await asyncio.wait_for(raw.recv(), 5)  # no hello: closed before Hub
+            assert raw.close_code == CLOSE_UNAUTHORISED
+        await alice.sync.reconfigure()
+        await _eventually(lambda: alice.sync._runner is not None and alice.sync._runner.done(),
+                          what="the restarted runner to stop")
+        status = alice.sync.status()
+        assert (status["state"], status["message"]) == ("unauthorised", "unauthorised")
+        await asyncio.sleep(0.1)
+        assert len(connects) == 2
+        assert alice.checkpoint() == saved and self.private_rows() == (record,)
+        await alice.sync.stop()
+
+    @pytest.mark.parametrize("action", ("rotate", "revoke"))
+    async def test_unauthorised_runner_is_bound_not_drained_and_production_refuses(
+        self, tmp_path, remote, studio_home, monkeypatch, action,
+    ):
+        monkeypatch.setattr(remote.app_module, "REVOCATION_CHECK_SECONDS", 0.02)
+        alice = await self.activated(tmp_path, remote)
+        await alice.sync.start()
+        await _eventually(lambda: alice.sync.live, what="the v2 runner to connect")
+        row = remote.store.user(alice.user.id)
+        fresh = remote.new_token()
+        if action == "rotate":
+            remote.store.rotate_user(row.id, remote.hash_token(fresh), row.metadata_revision,
+                                     row.credential_version)
+        else:
+            remote.store.revoke_user_by_id(row.id, row.metadata_revision, row.credential_version)
+        await _eventually(lambda: alice.sync.status()["state"] == "unauthorised", what="4401")
+        (record,) = self.private_rows()
+        before = self.home_files(studio_home)
+        key_before = credentials.load_profile_token(alice.profile.profile_id, alice.url)
+        assert key_before == alice.token
+
+        # Production: no owner of gate L -> every positive mutation is refused,
+        # typed, before any config/key/binding/journal write, with no forced stop.
+        for kind in ("credential", "clear", "url", "delete"):
+            failure(lambda: self.mutate(alice, kind, token=fresh))
+        assert self.home_files(studio_home) == before
+
+        # Future-L seam: even with complete coverage asserted, the unauthorised
+        # runner's retained lease is an active consumer (not drained), and its
+        # confirmed private row is a binding (drained != unbound).
+        alice.lifecycle._inventory = lambda _pid: BindingInventory(state="known")
+        state = snapshot(alice.lifecycle, alice.profile.profile_id)
+        assert state.bound_roots == (alice.target.canonical_root,)
+        # The lease spells the root via Path.resolve(), the private row via
+        # canonical_root (Windows case-folded): one root, two spellings today.
+        assert tuple(os.path.normcase(root) for root in state.active_roots) == (
+            alice.target.canonical_root,) and not state.drained
+        for kind in ("credential", "clear"):
+            failure(lambda: self.mutate(alice, kind, token=fresh), "profile_consumers_not_drained")
+        for kind in ("url", "delete"):
+            failure(lambda: self.mutate(alice, kind), "profile_in_use")
+        assert self.home_files(studio_home) == before
+
+        # A successful stop is the only release. URL/delete still refuse.
+        await alice.sync.stop()
+        state = snapshot(alice.lifecycle, alice.profile.profile_id)
+        assert state.active_roots == () and state.bound_roots == (alice.target.canonical_root,)
+        for kind in ("url", "delete"):
+            failure(lambda: self.mutate(alice, kind), "profile_in_use")
+        assert self.home_files(studio_home) == before
+
+        if action == "rotate":
+            # Under that seam a new key may be stored, but the old proof is gone:
+            # the confirmed consent is demoted before the key, and a restart
+            # neither reconnects nor re-confirms (no automatic Enable).
+            self.mutate(alice, "credential", token=fresh)
+            assert credentials.load_profile_token(alice.profile.profile_id, alice.url) == fresh
+            (demoted,) = self.private_rows()
+            assert demoted == record.model_copy(update={"selection_state": "selected"})
+            await alice.sync.start()
+            status = alice.sync.status()
+            assert (status["state"], status["message"]) == ("blocked", "binding_required")
+            assert alice.sync._runner is None or alice.sync._runner.done()
+            assert self.private_rows() == (demoted,)
+            await alice.sync.stop()

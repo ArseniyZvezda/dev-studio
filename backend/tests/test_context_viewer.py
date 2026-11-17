@@ -49,6 +49,25 @@ def test_compaction_invalidates_old_snapshot_and_usage():
     assert result["sources"][0]["source_kind"] == "compaction"
 
 
+def test_window_reported_on_a_result_sizes_journal_and_assistant_context():
+    """Claude's journal records no window; the run's result frame does (§10.4)."""
+    from voxarium_studio.teams.context_sources import JournalContext
+
+    now = utcnow()
+    snapshot = TaskContext(task_id="task", started_at=now, captured_at=now, sources=[source("task", "brief")])
+    messages = [message(created_at=now - timedelta(seconds=5), data={"context_window": 200_000}),
+                message(created_at=now, data={"usage": {"input_tokens": 10, "cache_read_input_tokens": 90}}),
+                message("result", "done", created_at=now + timedelta(seconds=1),
+                        data={"context_window": 1_000_000}),
+                message("result", "child", created_at=now + timedelta(seconds=2),
+                        data={"context_window": 128_000, "parent_tool_use_id": "worker"})]
+    assert inventory(snapshot, messages)["context_window"] == 1_000_000
+    journal = JournalContext(reported_tokens=100)
+    assert inventory(snapshot, messages, journal, backend="claude_code")["context_window"] == 1_000_000
+    # An earlier dispatch may have run another model: its window is not this session's.
+    assert inventory(snapshot, messages[:2], journal, backend="claude_code")["context_window"] is None
+
+
 def test_worker_messages_and_pre_session_history_are_excluded():
     now = utcnow()
     snapshot = TaskContext(task_id="task", started_at=now, captured_at=now, sources=[source("task", "brief")])

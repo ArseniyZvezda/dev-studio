@@ -354,9 +354,9 @@ async def test_producer_brief_limit_on_create_and_update(producer, character):
     chat = await opened(producer)
     tools = await tools_for(producer, chat)
     # Include whitespace and non-BMP Unicode; count characters, not bytes.
-    brief = "A" + character * 1498 + "Z"
+    brief = "A" + character * 2798 + "Z"
     result = await tools["create_task"]({"assignee_id": DEV, "title": "Too long", "brief": brief + "!"})
-    assert result["is_error"] and "1500" in result["content"][0]["text"]
+    assert result["is_error"] and "2800" in result["content"][0]["text"]
     assert await producer.chats.producer.tasks(chat.id) == []
 
     result = await tools["create_task"]({"assignee_id": DEV, "title": "Valid", "brief": brief})
@@ -369,7 +369,7 @@ async def test_producer_brief_limit_on_create_and_update(producer, character):
     saved = await producer.teams._reload(task.id)
     assert saved.brief == brief and saved.title == "Valid"
 
-    replacement = "B" + character * 1498 + "Y"
+    replacement = "B" + character * 2798 + "Y"
     result = await tools["update_task"]({"task": task.id, "brief": replacement})
     assert not result.get("is_error")
     assert (await producer.teams._reload(task.id)).brief == replacement
@@ -383,7 +383,7 @@ async def test_regular_tools_keep_long_briefs(producer):
     for tool in toolset.definitions:
         if tool.name in {"create_task", "update_task"}:
             assert "maxLength" not in tool.input_schema["properties"]["brief"]
-    brief = "A" * 1501
+    brief = "A" * 2801
     result = await tools["create_task"]({"assignee_id": DEV, "title": "Regular task", "brief": brief})
     assert not result.get("is_error")
     async with producer.db.session() as session:
@@ -430,7 +430,7 @@ async def test_approval_releases_only_its_plan_and_honors_dependencies(producer)
 
 @pytest.mark.parametrize("policy", ["careful", "independent"])
 @pytest.mark.parametrize("origin", ["manual", "same_chat", "other_chat"])
-async def test_done_result_can_only_be_approved_in_producer_mode(producer, policy, origin):
+async def test_done_result_is_approved_or_reopened_with_justification(producer, policy, origin):
     chat = await opened(producer)
     await producer.chats.producer.set_policy(chat.id, policy)
     await finished(producer, chat.id)
@@ -444,7 +444,8 @@ async def test_done_result_can_only_be_approved_in_producer_mode(producer, polic
     await producer.teams.submit_for_review(task.id, "Movement implemented", "done")
     tools = await tools_for(producer, chat)
 
-    # Both on arrival and after approval, no action may reopen or cancel the work.
+    # Both on arrival and after approval the work cannot be started or cancelled, and
+    # sending it back without a justification changes nothing (§10.11).
     for status in ("needs_review", "done"):
         if job := producer.teams._commit_jobs.get(task.id):
             await asyncio.wait_for(asyncio.shield(job), timeout=10)
@@ -455,7 +456,7 @@ async def test_done_result_can_only_be_approved_in_producer_mode(producer, polic
                 "task": task.id, "action": action, "comment": "Fix the remaining animation issue",
             })
             assert result["is_error"], result
-            assert "Create a new task" in result["content"][0]["text"]
+            assert "justification" in result["content"][0]["text"]
             assert (await producer.teams._reload(task.id)).model_dump() == before
             assert not producer.jobs.is_running(task.id)
             assert len(ProducerBackend.requests) == requests
@@ -831,6 +832,21 @@ async def test_compaction_keeps_messages_recorded_while_summarizing(producer):
     ]
 
 
+async def test_compaction_is_live_state_on_the_chat(producer):
+    chat = await opened(producer)
+    seen: list[bool] = []
+
+    class WatchingBackend:
+        async def run(self, request):
+            seen.append(producer.chats.to_json(await producer.chats.get_chat(chat.id))["is_compacting"])
+            yield AgentEvent(kind="text", text="Captured conversation summary")
+
+    assert producer.chats.to_json(chat)["is_compacting"] is False
+    await producer.chats.producer.compact(chat.id, WatchingBackend(), ProducerBackend.requests[-1], force=True)
+    assert seen == [True]
+    assert producer.chats.to_json(await producer.chats.get_chat(chat.id))["is_compacting"] is False
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_empty_or_cancelled_compaction_keeps_history(producer, cancel):
     chat = await opened(producer)
@@ -845,6 +861,7 @@ async def test_empty_or_cancelled_compaction_keeps_history(producer, cancel):
 
     with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
         await producer.chats.producer.compact(chat.id, UnfinishedBackend(), ProducerBackend.requests[-1], force=True)
+    assert chat.id not in producer.chats.compacting
     saved = await producer.chats.get_chat(chat.id)
     assert saved.agent_session_id == chat.agent_session_id
     assert not saved.producer_summary and not saved.producer_compacted_through

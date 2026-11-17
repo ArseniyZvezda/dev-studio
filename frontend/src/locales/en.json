@@ -1132,9 +1132,11 @@
       "cancelHint": "Stop compression and keep the existing dialogue.",
       "button": "Compress",
       "busy": "Compressing…",
-      "summary": "compressed summary",
       "hint": "Replace the entire previous dialogue with one summary and continue in a fresh agent session.",
-      "wait": "Wait for the current run to finish or stop it before compressing."
+      "wait": "Wait for the current run to finish or stop it before compressing.",
+      "activity": "Compressing context…",
+      "block": "Context compressed",
+      "blockHint": "The earlier dialogue was replaced with this summary. Expand to read it."
     },
     "you": "You",
     "header": {
@@ -2430,6 +2432,7 @@
     "producer": {
       "approved": "Plan approved",
       "compacted": "Conversation summarized",
+      "compacting": "Compacting context…",
       "label": "Producer Mode",
       "sessionUsage": "Session total",
       "chatUsage": "Producer chat",
@@ -3054,7 +3057,9 @@
     "loading": "Loading conversations…",
     "taskCost": "API Cost",
     "taskTokens": "Tokens spent",
-    "noMessages": "No messages yet"
+    "noMessages": "No messages yet",
+    "planTasks": "Tasks of “{item}”",
+    "planTaskReopened": "Reopened · {count}"
   },
   "tokenUsage": {
     "costValue": "Cost: {cost}",

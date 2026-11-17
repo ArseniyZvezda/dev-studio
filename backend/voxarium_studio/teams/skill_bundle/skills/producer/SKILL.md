@@ -1,6 +1,6 @@
 ---
 name: producer
-description: "Coordinate work in an active Voxarium Studio Producer chat: split goals into small board tasks, approve plans, review results and wait for progress. Use only in Producer Mode."
+description: "Coordinate work in an active Voxarium Studio Producer chat: turn goals into board tasks, approve plans, review results and wait for progress. Use only in Producer Mode."
 ---
 
 # Producer Mode (dev spec §10.11)
@@ -32,11 +32,20 @@ indispensable. Count new, reused and corrective tasks together, including comple
 tasks. Do not split or rewrite Plan items merely to evade this increasing restraint.
 Do not create empty tasks to increase the count.
 
+The Studio enforces this restraint. Every task belongs to a session Plan item: pass the
+item's id as `plan_item` to `create_task`, and link a task you are reusing with
+`link_producer_task`. `propose_producer_plan` refuses tasks that are not linked. An item
+keeps every task ever linked to it, in any status, and the Plan shows them beside the item.
+An item's first task needs no `justification`; each further one needs a justification whose
+minimum length grows with the item's load: its tasks, plus 1, 2, 3 and so on for each
+task's reopenings. The saved Plan reports each item's `load` and
+`next_task_justification_chars`.
+
 The session Plan's 1?20 checklist items are milestones, not individual board tasks.
 Keep the checklist concise and apply the increasing restraint above to task decomposition.
 If new work is discovered, first reuse or adjust existing tasks
 and follow the current plan approval policy. Keep each brief self-contained and
-within the Producer's 1500-character limit.
+within the Producer's 2800-character limit.
 
 ## Coordinate the plan
 
@@ -49,7 +58,9 @@ or pass effort yourself. If the evaluation fails, no task is created; address th
 before retrying. Each new task receives its own evaluation.
 Write the session **Plan** with `update_producer_checklist` before coordinating tasks.
 It contains only 1–20 checkbox items: `text` is plain single-line text of at most 50
-characters and `done` is a boolean. Replace the checklist as tasks are added, edited,
+characters and `done` is a boolean. Send an existing item's `id` with it, so the item keeps
+its linked tasks; omit `id` only for a new item. An item with unfinished linked tasks cannot
+be removed. Replace the checklist as tasks are added, edited,
 reviewed or completed, preserving existing milestones and marking only completed work done.
 Keep the session Plan free of task IDs and direct links to tasks; describe milestones,
 not individual board entries. Keep the session Plan stable and concise: do not substantially
@@ -90,12 +101,14 @@ Both modes may ask for an initial or next goal. Include task ids in questions wh
 never in the session Plan, and end
 the turn after a question is actually sent.
 
-When a task returns to review with `result_type=done`, the only review action is `approve`
-to move it into Done. Never restart it, request changes on it or cancel it, including after
-approval. Approve only verified, scope-compliant results. If review identifies corrections,
-leave the result unapproved and create a new task for corrections within the approved scope;
-follow the usual plan approval policy in both modes. Do not make that task depend on approval
-of the result it must fix. Re-check the original result after corrections before approving it.
+When a task returns to review with `result_type=done`, either `approve` it into Done or
+reopen it in place: `request_changes` with concrete feedback in `comment` and a
+`justification`. Reopening also works after approval. Never start or cancel such a task.
+Approve only verified, scope-compliant results. If corrections belong to the same
+deliverable, reopen the task rather than creating a corrective one. Every reopening is
+counted on the task and never reset: each needs a longer justification than the last (why
+the result fails its acceptance criteria and why this attempt will succeed) and adds its
+number to the load of the task's session Plan item. Give complete feedback in one round.
 New scope requires new drafts and another approved plan. Inspect the saved board before
 repeating an action.
 
