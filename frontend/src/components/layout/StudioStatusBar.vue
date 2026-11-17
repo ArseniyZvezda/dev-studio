@@ -38,7 +38,7 @@ function resetCountdown(reset: number | null): string | null {
 }
 
 // §6.1: the backend's monochrome mark carries readiness; the whole row explains it.
-const agentBackends = computed(() => (['claude_code', 'codex', 'qwen'] as const).map((id) => {
+const agentBackends = computed(() => (['claude_code', 'codex', 'qwen', 'antigravity'] as const).map((id) => {
   const label = t(`nav.agentBackends.${id}`)
   const info = session.connection === 'open' ? session.status?.agent_backends[id] : undefined
   const reason = info?.reason || t(info

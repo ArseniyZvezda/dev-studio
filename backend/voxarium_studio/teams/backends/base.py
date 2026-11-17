@@ -1,8 +1,8 @@
 """Agent backend interface (§10.6).
 
 ``TeamMember.agent_backend`` selects an implementation, so the Task Board, hierarchy and
-UI never depend on one runtime. Claude Code, Codex and Qwen Code implement the
-contract; the registry below is the extension point for others.
+UI never depend on one runtime. Claude Code, Codex, Qwen Code and Antigravity implement
+the contract; the registry below is the extension point for others.
 """
 
 from __future__ import annotations

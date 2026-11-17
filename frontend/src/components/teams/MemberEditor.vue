@@ -184,6 +184,7 @@ const backendNamesAgents = computed(
 const backendHint = computed(() => {
   if (draft.value.agent_backend === 'codex') return t('teams.editor.codexHint')
   if (draft.value.agent_backend === 'qwen') return t('teams.editor.qwenHint')
+  if (draft.value.agent_backend === 'antigravity') return t('teams.editor.antigravityHint')
   return ''
 })
 

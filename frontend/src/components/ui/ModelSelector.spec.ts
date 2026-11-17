@@ -18,9 +18,9 @@ async function markup(backend: string | null, model: string | null): Promise<str
 }
 
 describe('model selector', () => {
-  it('shows three icon-only backend buttons and only the selected backend models', async () => {
+  it('shows four icon-only backend buttons and only the selected backend models', async () => {
     const html = await markup('codex', 'gpt-test')
-    expect((html.match(/<button\b/g) ?? []).length).toBe(3)
+    expect((html.match(/<button\b/g) ?? []).length).toBe(4)
     expect(html).toContain('aria-label="codex" aria-pressed="true"')
     expect(html).toContain('GPT Test')
     expect(html).not.toContain('Sonnet')

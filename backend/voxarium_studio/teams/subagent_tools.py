@@ -87,7 +87,7 @@ def build_subagent_tools(
             "properties": {
                 "description": {"type": "string", "description": "Short label shown in the task UI."},
                 "prompt": {"type": "string", "description": "Complete assignment, context and expected result."},
-                "backend": {"type": "string", "description": "Optional registered backend, e.g. claude_code, codex, qwen."},
+                "backend": {"type": "string", "description": "Optional registered backend, e.g. claude_code, codex, qwen, antigravity."},
                 "model": {"type": "string", "description": "Optional model; required when changing backend."},
             },
             "required": ["description", "prompt"],

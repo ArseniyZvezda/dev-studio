@@ -29,7 +29,7 @@ from ..models.teams import (
 )
 from ..teams import project_skills
 from ..teams.attachments import MAX_ATTACHMENT_BYTES, media_type_of
-from ..teams.backends import codex, qwen
+from ..teams.backends import antigravity, codex, qwen
 from ..teams.backends.base import (
     RemoteControlUnavailable,
     available_backends,
@@ -396,7 +396,8 @@ async def member_options(ctx: Ctx) -> dict[str, Any]:
         "permission_modes": _permission_modes(),
         "effort_levels": _effort_levels(),
         "common_tools": COMMON_TOOLS,
-        "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models()],
+        "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models(),
+                             *antigravity.suggested_models()],
         "studio_tool_prefix": f"mcp__{SERVER_NAME}__",
     }
 

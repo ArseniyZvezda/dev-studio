@@ -5,11 +5,13 @@ from .base import AgentBackend, AgentEvent, AgentRunRequest, get_backend, regist
 from . import claude_code  # noqa: F401  (side effect: register_backend("claude_code"))
 from . import qwen  # noqa: F401  (side effect: register_backend("qwen"), §10.6)
 from . import codex  # noqa: F401  (side effect: register_backend("codex"), §10.6)
+from . import antigravity  # noqa: F401  (side effect: register_backend("antigravity"), §10.6)
 
 __all__ = [
     "AgentBackend",
     "AgentEvent",
     "AgentRunRequest",
+    "antigravity",
     "claude_code",
     "codex",
     "qwen",

@@ -31,7 +31,13 @@ def default_orchestrator_models() -> dict[str, dict[str, str]]:
         "claude_code": {"1": "claude-haiku-4-5", "2": "claude-opus-5-5", "3": "claude-fable-5-2"},
         "codex": {"1": "gpt-6.1-terra", "2": "gpt-6.1-sol", "3": "gpt-6-astra"},
         "qwen": {"1": "qwen3-coder-flash", "2": "qwen3-coder-plus", "3": "qwen3.8-max"},
+        "antigravity": {"1": "gemini-3.8-flash-low", "2": "gemini-3.8-flash-high",
+                        "3": "claude-opus-4-6-thinking"},
     }
+
+
+#: Columns a saved table must carry. Later built-ins are filled from the defaults.
+_REQUIRED_ORCHESTRATOR_BACKENDS = frozenset({"claude_code", "codex", "qwen"})
 
 
 def validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
@@ -40,8 +46,12 @@ def validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
     The catalog is advisory: explicit future/custom model ids remain usable.
     Extra backends may supply their own complete three-tier column.
     """
-    if not isinstance(value, dict) or not {"claude_code", "codex", "qwen"} <= value.keys():
+    if not isinstance(value, dict) or not _REQUIRED_ORCHESTRATOR_BACKENDS <= value.keys():
         raise ValueError("Orchestrator models must include every built-in backend")
+    # A built-in backend added after the table was saved gets its default column rather
+    # than invalidating the user's table (§10.11).
+    value = {**{name: tiers for name, tiers in default_orchestrator_models().items()
+                if name not in _REQUIRED_ORCHESTRATOR_BACKENDS}, **value}
     result = {}
     for backend, tiers in value.items():
         if (not isinstance(backend, str) or not backend.strip()
