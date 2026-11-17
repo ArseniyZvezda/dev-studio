@@ -18,6 +18,7 @@ const props = defineProps<{
   inheritedBackend?: string
   inheritedModel?: string
   allowInherit?: boolean
+  allowAuto?: boolean
   disabled?: boolean
   label?: string
   backends?: readonly string[]
@@ -25,7 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{ change: [backend: string | null, model: string | null] }>()
 const ALL_BACKENDS = ['claude_code', 'codex', 'qwen'] as const
 const backends = computed(() => {
-  const allowed = ALL_BACKENDS.filter(name => !props.backends || props.backends.includes(name))
+  const allowed = props.backends ? [...props.backends] : [...ALL_BACKENDS]
   return allowed.length ? allowed : [...ALL_BACKENDS]
 })
 const selectedBackend = computed(() => props.backend || props.inheritedBackend || backends.value[0])
@@ -34,7 +35,7 @@ const models = computed(() => (props.options?.suggested_models ?? []).filter(
 ))
 const custom = ref(false)
 watch(() => [props.backend, props.model], () => { custom.value = false })
-const listed = computed(() => props.model === null || props.model === '' || models.value.some(entry => entry.id === props.model))
+const listed = computed(() => props.model === null || props.model === '' || (props.allowAuto && props.model === 'auto') || models.value.some(entry => entry.id === props.model))
 const editingCustom = computed(() => custom.value || !listed.value)
 const modelValue = computed(() => editingCustom.value ? '__custom__' : props.model === null
   ? (props.allowInherit && selectedBackend.value === props.inheritedBackend ? '__inherit__' : '') : props.model)
@@ -51,6 +52,7 @@ function chooseBackend(value: string): void {
 }
 
 function chooseModel(value: string): void {
+  if (value.trim() === 'auto' && !props.allowAuto) return
   if (value === '__custom__') { custom.value = true; return }
   custom.value = false
   emit('change', props.backend, value === '__inherit__' ? null : value)
@@ -74,7 +76,7 @@ function showList(): void {
     </div>
     <input v-if="editingCustom" class="min-w-0 flex-1 font-mono rounded-md border border-line bg-inset px-2 py-1 text-primary outline-none focus:border-accent" :value="model ?? ''"
       :aria-label="t('teams.editor.modelId')" :placeholder="t('teams.editor.modelId')" :disabled="disabled"
-      @change="emit('change', backend, ($event.target as HTMLInputElement).value.trim())" />
+      @change="chooseModel(($event.target as HTMLInputElement).value.trim())" />
     <button v-if="editingCustom" type="button" class="grid size-7 shrink-0 place-items-center rounded-sm border border-line hover:bg-hover"
       :title="t('teams.editor.model')" :aria-label="t('teams.editor.model')" :disabled="disabled" @click.stop="showList">
       <ChevronDown class="size-4" />
@@ -84,6 +86,7 @@ function showList(): void {
       <option v-if="allowInherit && selectedBackend === inheritedBackend" value="__inherit__">
         {{ t('tasks.overrides.sameAsMemberValue', { value: inheritedModel || t('chat.defaultModel') }) }}
       </option>
+      <option v-if="allowAuto" value="auto">{{ t('effortSolver.autoModel') }}</option>
       <option value="">{{ t('chat.defaultModel') }}</option>
       <optgroup v-for="group in [...new Set(models.map(entry => entry.group))]" :key="group" :label="group">
         <option v-for="entry in models.filter(item => item.group === group)" :key="entry.id" :value="entry.id">{{ entry.label }}</option>

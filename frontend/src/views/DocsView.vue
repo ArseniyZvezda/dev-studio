@@ -45,7 +45,11 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
+import { api, ApiError } from "@/api/client";
+import type { DocumentFence, ProjectRemoteEditorLease, ProjectRemoteEditorHeartbeat } from "@/api/types";
+import { rendererSession } from "@/session/project-session";
+import type { RemoteBindingTicket } from "@/stores/sync";
 
 import BlockEditor from "@/components/docs/BlockEditor.vue";
 import DocCreateDialog from "@/components/docs/DocCreateDialog.vue";
@@ -78,6 +82,7 @@ import {
   useDocsStore,
   type DocTreeNode,
   type SaveState,
+  type CapturedDocSave,
 } from "@/stores/docs";
 import { useSessionStore } from "@/stores/session";
 import { useSyncStore } from "@/stores/sync";
@@ -126,14 +131,246 @@ const roomPeers = ref<CollabUser[]>([]);
 /** Bumped by every `bind()`, so an answer that arrives for a superseded one is dropped. */
 let binding = 0;
 
+/** I8: the existing close snapshot/flush owns both desktop close and quiesce.
+ * A failed or fenced transition retains the same DOM, Y.Doc and screen text (§7).
+ */
+const frozen = ref(false);
+const admissionFailed = ref(false);
+const materializationError = ref<string | null>(null);
+type Registration = {
+  lease: ProjectRemoteEditorLease;
+  ticket: RemoteBindingTicket;
+  fence: Readonly<DocumentFence>;
+};
+let registration: Registration | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let heartbeats: Promise<unknown> = Promise.resolve();
+const pendingSaves = new Set<Promise<unknown>>();
+let transitionAttempt = 0;
+let acknowledgedChange: string | null = null;
+let activeTransition: string | null = null;
+let transitionWork: Promise<void> | null = null;
+let proofRetryTimer: ReturnType<typeof setTimeout> | null = null;
+// Renderer-owned, deliberately not shared through localStorage or a persistent-ID key.
+const clientInstanceId = crypto.randomUUID();
+
+function freeze(value: boolean): void {
+  frozen.value = value;
+  editor.value?.freeze(value);
+}
+
+function failAdmission(): void {
+  admissionFailed.value = true;
+  freeze(true);
+  docs.staleOnDisk = false;
+  docs.saveError = t("docs.remoteEditor.blocked");
+}
+
+function captureSave(): CapturedDocSave | null {
+  try { return docs.captureSave(); }
+  catch { failAdmission(); return null; }
+}
+
+function heartbeatBody(row: Registration, dirty?: boolean, version?: number): ProjectRemoteEditorHeartbeat {
+  return { backend_epoch: row.fence.backend_epoch,
+    expected_binding_generation: row.fence.expected_binding_generation,
+    client_instance_id: row.fence.client_instance_id, sid: row.fence.sid,
+    document_path: row.lease.document_path,
+    // Renewal must NOT re-announce dirty or adopt a newer version after a save.
+    version, dirty };
+}
+
+/** Release only positively saved leases. A failed close is a blocker, not clean silence. */
+async function releaseRegistration(validate?: () => boolean): Promise<boolean> {
+  const row = registration;
+  if (!row) return !admissionFailed.value && (!validate || validate());
+  try {
+    const receipt = savedReceipt(row);
+    if (receipt === null || receipt === undefined) return false;
+    const captured = docs.captureSave();
+    const fence = row.fence;
+    row.ticket.assertCurrent();
+    await api.deleteRemoteEditor(row.lease.editor_id, {
+      ...heartbeatBody(row, false, captured.version), last_saved_version: receipt,
+    });
+    row.ticket.assertCurrent();
+    const now = docs.captureSave();
+    // The backend may have accepted DELETE before a delayed response. It cannot
+    // protect a new local edit or cancelled page target during that await.
+    if (registration !== row || row.fence !== fence || now.path !== captured.path
+      || now.version !== captured.version || now.revision !== captured.revision
+      || now.live !== captured.live || docs.dirty || docs.saving || docs.saveError
+      || admissionFailed.value || (validate && !validate())) throw new Error(t("docs.remoteEditor.blocked"));
+    if (registration === row) {
+      registration = null;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      docs.setEditorFence(null);
+    }
+    return true;
+  } catch { failAdmission(); return false; }
+}
+
+function heartbeat(dirty?: boolean, version?: number): void {
+  const row = registration;
+  if (!row || admissionFailed.value) return;
+  const capturedFence = row.fence;
+  const renewal = dirty === undefined && version === undefined;
+  const body = heartbeatBody(row, dirty, version); // capture BEFORE queue/await
+  const send = async () => {
+    row.ticket.assertCurrent();
+    const result = await api.heartbeatRemoteEditor(row.lease.editor_id, body);
+    row.ticket.assertCurrent();
+    if (registration === row && row.fence === capturedFence) {
+      // A renewal extends lifetime, never restores an ordinary clean receipt
+      // invalidated by a join, an edit, or a later save while it was in flight.
+      row.lease = renewal ? { ...row.lease, lease_expires_at: result.lease_expires_at } : result;
+    }
+  };
+  const refused = () => { if (registration === row && row.fence === capturedFence) failAdmission(); };
+  // Renewal without a version cannot invalidate evidence and may extend a slow
+  // in-flight save. Dirty/version announcements remain on the common write tail.
+  if (renewal) void send().catch(refused);
+  else heartbeats = heartbeats.then(send).catch(refused);
+}
+
+function savedReceipt(row: Registration): number | null {
+  if (!Number.isFinite(row.lease.lease_expires_at) || row.lease.lease_expires_at <= Date.now() / 1000) return null;
+  const saved = docs.lastSaveReceipt;
+  const version = docs.captureSave().version;
+  if (saved?.version === version && saved.editor_id === row.lease.editor_id && saved.backend_epoch === row.fence.backend_epoch
+    && saved.binding_generation === row.fence.expected_binding_generation) return saved.last_saved_version;
+  return row.lease.version === version && row.lease.confirmed && !row.lease.dirty ? row.lease.last_saved_version : null;
+}
+
+async function register(path: string): Promise<boolean> {
+  // Remount is not recovery permission for text retained after a refused write.
+  // Show that existing model read-only; do not replace it with a fresh clean read.
+  if (docs.dirty || docs.saveError || docs.fenceError) { failAdmission(); return false; }
+  if (rendererSession.isLegacy) return true; // legacy sockets remain backend blockers, never capable ACKs.
+  try {
+    if (!sync.remote && !await sync.loadRemote()) throw new Error();
+    const ticket = sync.capture();
+    const lease = await sync.run(ticket, captured => api.registerRemoteEditor({
+      document_path: path, client_instance_id: clientInstanceId,
+      backend_epoch: captured.backend_epoch,
+      expected_binding_generation: captured.expected_binding_generation,
+    }));
+    if (lease.document_path !== path || lease.backend_epoch !== ticket.backend_epoch
+      || lease.binding_generation !== ticket.expected_binding_generation
+      || lease.client_instance_id !== clientInstanceId) throw new Error();
+    if (docs.open?.path !== path || !alive || docs.dirty || docs.saveError || docs.fenceError) {
+      // This lease was never rendered. Only its bound initial-read receipt may
+      // release it; errors retain the backend blocker, never a client clean claim.
+      if (lease.confirmed && !lease.dirty && lease.last_saved_version !== null) {
+        try {
+          ticket.assertCurrent();
+          await api.deleteRemoteEditor(lease.editor_id, {
+            backend_epoch: ticket.backend_epoch, expected_binding_generation: ticket.expected_binding_generation,
+            document_path: path, client_instance_id: clientInstanceId, sid: null,
+            version: lease.version, dirty: false, last_saved_version: lease.last_saved_version,
+          });
+        } catch { /* Keep unresolved evidence; no retry with latest G. */ }
+      }
+      if (alive && docs.open?.path === path) failAdmission();
+      return false;
+    }
+    registration = { lease, ticket, fence: Object.freeze({
+      backend_epoch: ticket.backend_epoch,
+      expected_binding_generation: ticket.expected_binding_generation,
+      editor_id: lease.editor_id, client_instance_id: clientInstanceId, sid: null,
+      version: lease.version,
+    }) };
+    // The bound server read is the only clean-open receipt, not the earlier GET.
+    if (lease.loaded_document) docs.open = lease.loaded_document;
+    docs.setEditorFence(registration.fence, registration.ticket);
+    admissionFailed.value = false;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => heartbeat(), 10_000);
+    return true;
+  } catch { failAdmission(); return false; }
+}
+
+/** The same frozen close snapshot is used by navigation, desktop close and I8.
+ * Capture the old lease/version before the FIRST await; proof never refreshes G.
+ */
+async function settleEditor(snapshot: CloseSnapshot, stillCurrent: () => boolean = () => true): Promise<boolean> {
+  const wasFrozen = frozen.value;
+  const row = registration;
+  const fence = row?.fence;
+  const session = room.value;
+  const roomRevision = session?.materializationRevision;
+  const renewal = row && heartbeatBody(row);
+  const previousReceipt = docs.lastSaveReceipt;
+  freeze(true);
+  try {
+    snapshot.editor?.flush();
+    const captured = docs.open ? docs.captureSave() : null;
+    const assertCurrent = () => {
+      const now = docs.open ? docs.captureSave() : null;
+      if (!alive || !stillCurrent() || admissionFailed.value || snapshot.binding !== binding
+        || snapshot.path !== docs.open?.path || snapshot.editor !== editor.value
+        || registration !== row || row?.fence !== fence || room.value !== session
+        || session?.materializationRevision !== roomRevision
+        || now?.version !== captured?.version || now?.revision !== captured?.revision
+        || now?.live !== captured?.live) throw new Error(t("docs.remoteEditor.blocked"));
+      row?.ticket.assertCurrent();
+    };
+    await heartbeats;
+    while (pendingSaves.size) await Promise.all([...pendingSaves]);
+    await docs.settle();
+    assertCurrent();
+    // A clean live join revoked the ordinary initial-read receipt. Non-scribes
+    // also own RAM without owing a write. Neither may borrow the scribe's receipt.
+    if (row && session && captured && snapshot.editor
+      && (docs.lastSaveReceipt === previousReceipt || savedReceipt(row) === null
+        || docs.dirty || snapshot.editor.hasPendingWork())) {
+      const materialized = snapshot.editor.captureMaterialization();
+      const assertSnapshot = () => { assertCurrent(); materialized.assertCurrent(); };
+      // Join and peer-final-save both change the SERVER lease CAS. Read it only
+      // after queued dirty announcements/saves, without laundering dirty=false.
+      const lease = await api.heartbeatRemoteEditor(row.lease.editor_id, renewal!);
+      assertSnapshot();
+      docs.setEditorLease(lease);
+      row.lease = lease;
+      const confirmed = await docs.proveMaterialization(captured, session.sid, materialized.content, assertSnapshot);
+      assertSnapshot();
+      materialized.accept();
+      row.lease = confirmed;
+      docs.dirty = false;
+      docs.lastSaveReceipt = Object.freeze({ editor_id: confirmed.editor_id,
+        backend_epoch: confirmed.backend_epoch, binding_generation: confirmed.binding_generation,
+        version: confirmed.version, last_saved_version: confirmed.last_saved_version! });
+      snapshot.proof = () => { assertCurrent(); materialized.assertCurrent(); };
+    }
+    snapshot.proof ??= assertCurrent;
+    materializationError.value = null;
+    return canClose(snapshot);
+  } catch (cause) {
+    // A failed proof is NOT a disk conflict and never authorises Keep mine.
+    if (stillCurrent() && alive && registration === row && !admissionFailed.value) {
+      materializationError.value = t("docs.remoteEditor.proofRequired");
+      if (cause instanceof ApiError && ['stale_backend_epoch', 'stale_binding_generation',
+        'editor_lease_expired', 'unknown_editor', 'unknown_sid', 'editor_mismatch'].includes(cause.code ?? '')) failAdmission();
+    }
+    return false;
+  } finally {
+    // Desktop prepare may be vetoed by another existing guard. Do not strand the
+    // editor read-only; final close validation checks this exact snapshot again.
+    if (!wasFrozen && !admissionFailed.value && !activeTransition && alive) freeze(false);
+  }
+}
+
 type CloseSnapshot = {
   editor: InstanceType<typeof BlockEditor> | null;
   path: string | undefined;
   binding: number;
+  proof?: () => void;
 };
 let preparedClose: CloseSnapshot | null = null;
 
 function canClose(snapshot: CloseSnapshot | null): boolean {
+  try { snapshot?.proof?.(); } catch { return false; }
   return Boolean(
     snapshot &&
     snapshot.binding === binding &&
@@ -146,6 +383,7 @@ function canClose(snapshot: CloseSnapshot | null): boolean {
     !docs.saving &&
     docs.error === null &&
     docs.saveError === null &&
+    (!registration || savedReceipt(registration) !== null) &&
     docs.saveState !== "failed"
   );
 }
@@ -163,9 +401,7 @@ useCloseGuard(async () => {
     binding,
   };
   try {
-    snapshot.editor?.flush();
-    await docs.settle();
-    if (!canClose(snapshot)) return false;
+    if (!await settleEditor(snapshot)) return false;
     preparedClose = snapshot;
     return true;
   } catch {
@@ -182,6 +418,79 @@ const editorKey = computed(
   () => `${docs.open?.path ?? ""}\u0000${room.value?.sid ?? ""}`,
 );
 
+// No new close framework: transition uses exactly the desktop snapshot/flush check.
+// A peer's final save/Remote ACK can complete after this renderer's first proof
+// attempt. Retry only proof of the retained old-G editor, never a save or a join.
+function retryTransition(): void {
+  if (proofRetryTimer || transitionWork || !activeTransition || admissionFailed.value || !alive) return;
+  const change = sync.bindingChange;
+  if (!change || change.change_id !== activeTransition || change.fenced
+    || !['draining', 'blocked'].includes(change.state) || Date.now() / 1000 >= change.expires_at) return;
+  proofRetryTimer = setTimeout(() => {
+    proofRetryTimer = null;
+    acknowledgeTransition();
+  }, 250);
+}
+
+function acknowledgeTransition(): void {
+  const change = sync.bindingChange;
+  const row = registration;
+  if (transitionWork || !change || !row || change.change_id !== activeTransition
+    || acknowledgedChange === change.change_id || admissionFailed.value
+    || !change.required_editor_acks.includes(row.lease.editor_id)) return;
+  const attempt = transitionAttempt;
+  const snapshot: CloseSnapshot = { editor: editor.value, path: docs.open?.path, binding };
+  const current = () => attempt === transitionAttempt && activeTransition === change.change_id;
+  transitionWork = (async () => {
+    if (!await settleEditor(snapshot, current) || !current()) return;
+    const receipt = savedReceipt(row);
+    if (receipt === null || receipt === undefined) return;
+    try {
+      row.ticket.assertCurrent();
+      if (!canClose(snapshot)) return;
+      await api.ackRemoteEditor(change.change_id, { editor_id: row.lease.editor_id,
+        old_generation: row.fence.expected_binding_generation, last_saved_version: receipt });
+      if (current() && canClose(snapshot)) acknowledgedChange = change.change_id;
+    } catch { if (current()) failAdmission(); }
+  })().finally(() => {
+    transitionWork = null;
+    if (acknowledgedChange !== activeTransition) retryTransition();
+  });
+}
+
+watch(() => sync.bindingChange, change => {
+  if (!change) return;
+  const row = registration;
+  if (change.fenced || (row && change.binding_generation !== row.fence.expected_binding_generation)) {
+    transitionAttempt += 1;
+    activeTransition = null;
+    if (proofRetryTimer) clearTimeout(proofRetryTimer);
+    proofRetryTimer = null;
+    freeze(true);
+    admissionFailed.value = true;
+    docs.saveError = t("docs.remoteEditor.resumeRequired");
+    return; // Never re-register/rejoin with latest G, even after successful commit.
+  }
+  if (['cancelled', 'expired'].includes(change.state) && !change.fenced) {
+    transitionAttempt += 1;
+    activeTransition = null;
+    acknowledgedChange = null;
+    materializationError.value = null;
+    if (proofRetryTimer) clearTimeout(proofRetryTimer);
+    proofRetryTimer = null;
+    if (!admissionFailed.value) freeze(false);
+    return;
+  }
+  if (!['draining', 'blocked'].includes(change.state)) return;
+  if (activeTransition !== change.change_id) {
+    transitionAttempt += 1;
+    activeTransition = change.change_id;
+    acknowledgedChange = null;
+  }
+  freeze(true);
+  acknowledgeTransition();
+}, { flush: 'sync' });
+
 /** Leave *session* — after whatever was saved from it has been sent on its way. */
 async function leave(session: CollabSession): Promise<void> {
   // Not before the editor bound to it is gone: closing destroys the document under it.
@@ -189,6 +498,7 @@ async function leave(session: CollabSession): Promise<void> {
   // The editor's last save is marked as the room's own, and has to be: written after the
   // room is left it would count as a write from outside and end the room for the others.
   await docs.settle();
+  if (docs.dirty || docs.saveError || admissionFailed.value) return;
   if (docs.live === session.sid) docs.setLive(null);
   session.close();
 }
@@ -198,31 +508,28 @@ async function leave(session: CollabSession): Promise<void> {
  * open one: an editor on its way out must not mark its successor's document as edited.
  */
 function onDirty(path: string): void {
-  if (docs.open?.path === path) docs.markDirty();
+  if (docs.open?.path !== path) return;
+  acknowledgedChange = null;
+  docs.markDirty();
+  const captured = captureSave();
+  if (captured) heartbeat(true, captured.version);
+  retryTransition();
 }
 
 /** The editor hands over Markdown for *path* — written only if that is still the open document. */
-function onChange(markdown: string, path: string): void {
-  if (docs.open?.path === path) void docs.save(markdown);
-}
-
-/**
- * Stop editing in *session* and carry on alone with what is on screen.
- *
- * The text is read out of the editor while it is still the room's, before anything that
- * replaces it, and becomes the document edited alone. If the room had moved on from what
- * this disk last saw, that text is owed a save — an ordinary one, since the room is gone.
- */
-function dropToSolo(session: CollabSession): void {
-  const markdown = session.changed ? editor.value?.takeMarkdown() : undefined;
-  room.value = null;
-  roomPeers.value = [];
-  joining.value = false;
-  docs.setLive(null);
-  if (markdown !== undefined && markdown !== docs.open?.content)
-    docs.adopt(markdown);
-  // After the editor bound to it is gone — the key has just changed.
-  void nextTick(() => session.close());
+function onChange(markdown: string, path: string, captured?: CapturedDocSave | null): void {
+  if (docs.open?.path !== path || captured === null || admissionFailed.value) return;
+  const ticket = captured ?? captureSave();
+  if (!ticket) return;
+  // Dirty announcements and writes share one ordered tail. A newer heartbeat
+  // must not change the lease revision while the preceding save returns its receipt.
+  const prior = heartbeats.then(() => {
+    if (admissionFailed.value) throw new Error(t("docs.remoteEditor.blocked"));
+  });
+  const work = docs.save(markdown, ticket, prior);
+  heartbeats = work;
+  pendingSaves.add(work);
+  void work.finally(() => pendingSaves.delete(work));
 }
 
 /** How many times a room that could not be joined is asked for again, and how often. */
@@ -241,44 +548,83 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
  * could save — the wrong text.
  */
 function bind(): void {
+  const phase = sync.bindingChange;
+  if (frozen.value && !admissionFailed.value && sync.live
+    && phase && ['cancelled', 'expired'].includes(phase.state) && !phase.fenced) freeze(false);
+  // Losing admission is NOT an invitation to adopt a live room as an ordinary file.
+  if (room.value && room.value.path === docs.open?.path && sync.remotePending
+    && !admissionFailed.value && (!phase || ['prepared', 'cancelled', 'expired'].includes(phase.state))) return;
+  if (frozen.value || (room.value && room.value.path === docs.open?.path && !sync.live)) {
+    freeze(true);
+    return;
+  }
+  const path = docs.open?.path ?? null;
+  if (!room.value && editor.value && path && !sync.live
+    && (rendererSession.isLegacy || registration?.lease.document_path === path)) return;
+  if (!room.value && editor.value && sync.live && (docs.dirty || docs.saving || editor.value.hasPendingWork())) {
+    // A later connected hint must not tear down an ordinary editor whose save failed.
+    editor.value.flush();
+    scheduleRetry(binding);
+    return;
+  }
+  if (room.value?.path === path && sync.live) return;
   const generation = ++binding;
   const previous = room.value;
-  const path = docs.open?.path ?? null;
   const wanted = Boolean(path) && sync.live;
   const focused = editor.value?.hasFocus() ?? false;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
 
-  // The same document, and no room to be had any more: the project fell out of step.
-  if (previous && previous.path === path && !wanted) {
-    dropToSolo(previous);
-    return;
-  }
+  if (previous && previous.path === path) return;
 
   // An edit made alone and not saved yet goes to the file first: the room is joined from
   // the revision on disk, and the editor about to replace this one starts from it.
   if (!previous) editor.value?.flush();
   room.value = null;
   roomPeers.value = [];
-  joining.value = wanted;
+  joining.value = wanted || (!rendererSession.isLegacy && Boolean(path));
 
   void (async () => {
     if (previous) await leave(previous);
     else await docs.settle();
     if (generation !== binding) return;
-    if (!wanted || !path) return;
+    if (!path) { joining.value = false; return; }
+    if (!registration || registration.lease.document_path !== path) {
+      if (!await register(path)) { if (generation === binding) joining.value = false; return; }
+    }
+    if (generation !== binding || frozen.value) return;
+    if (!wanted) { joining.value = false; return; }
 
-    const session = await openSession({ path, seed: seedUpdate });
-    if (generation !== binding || docs.open?.path !== path) {
+    const joiningRegistration = registration;
+    const session = await openSession({ path, seed: seedUpdate,
+      fence: joiningRegistration?.fence, ticket: joiningRegistration?.ticket });
+    if (generation !== binding || docs.open?.path !== path || !alive
+      || registration !== joiningRegistration || frozen.value || admissionFailed.value) {
+      // This handshake was never rendered. It cannot acquire a sid/editor binding
+      // after quiesce/cancel/fence or supersede a retained editor. No latest-G retry.
       session?.close();
+      if (alive && generation === binding && docs.open?.path === path) {
+        joining.value = false;
+        failAdmission();
+      }
       return;
     }
+    try { joiningRegistration?.ticket.assertCurrent(); }
+    catch { session?.close(); joining.value = false; failAdmission(); return; }
     if (session) {
       session.onEnd((reason) => void onRoomEnd(session, reason));
       session.onPeers(() => {
         if (room.value === session) roomPeers.value = session.peers();
       });
       docs.setLive(session.sid);
+      if (registration) {
+        registration.fence = Object.freeze({ ...registration.fence, sid: session.sid });
+        // Joining invalidates the ordinary clean-read receipt on the backend.
+        registration.lease.last_saved_version = null;
+        registration.lease.confirmed = false;
+        registration.lease.dirty = true;
+        docs.setEditorFence(registration.fence, registration.ticket);
+      }
       room.value = session;
       roomPeers.value = session.peers();
     }
@@ -316,26 +662,14 @@ function scheduleRetry(generation: number): void {
 /** The room ended without this page leaving it. */
 async function onRoomEnd(
   session: CollabSession,
-  reason: EndReason,
+  _reason: EndReason,
 ): Promise<void> {
   if (room.value !== session) return;
-  if (reason === "reset") {
-    // The file was replaced or deleted from outside the room. What the room held no longer
-    // describes it; read the file again and join whatever room there is now.
-    binding += 1;
-    room.value = null;
-    roomPeers.value = [];
-    joining.value = true;
-    docs.setLive(null);
-    // After the editor bound to it is gone — `joining` has just hidden it.
-    void nextTick(() => session.close());
-    await docs.reopen();
-    bind();
-    return;
-  }
-  // The connection went away. What is on screen stays on screen.
-  binding += 1;
-  dropToSolo(session);
+  // Keep the binding and screen text. Neither disconnect nor reset is a save receipt.
+  freeze(true);
+  admissionFailed.value = true;
+  docs.saveError = t("docs.remoteEditor.blocked");
+  return;
 }
 
 watch(
@@ -345,7 +679,16 @@ watch(
     retries = 0;
   },
 );
-watch([() => docs.open?.path, () => sync.live], bind, { immediate: true });
+watch([() => docs.open?.path, () => sync.live, frozen], bind, { immediate: true });
+watch(() => sync.remote, remote => {
+  const row = registration;
+  if (row && remote && (remote.backend_epoch !== row.fence.backend_epoch
+    || remote.binding_generation !== row.fence.expected_binding_generation)) {
+    transitionAttempt += 1;
+    failAdmission();
+  }
+}, { flush: 'sync' });
+watch(() => docs.fenceError, failure => { if (failure) failAdmission(); }, { flush: 'sync' });
 
 const requestedPath = computed(() => {
   const value = route.query.path;
@@ -426,6 +769,7 @@ onMounted(() => {
 
 async function initialise(): Promise<void> {
   docs.subscribe();
+  sync.subscribe();
   // §9.6: the tree colours documents by version control status, refreshed by the same
   // debounced `explorer.file_changed` the Explorer uses — an agent's `write_doc` is a file
   // write like any other, and the Explorer would show it a moment later anyway.
@@ -450,9 +794,29 @@ useDesktopPageTarget("/documents", async (page, current) => {
     return alive && docs.open?.path === path && !docs.error;
   }
   if (docs.open || pendingSelection) {
-    editor.value?.flush();
-    await docs.select(null);
-    current();
+    const snapshot: CloseSnapshot = { editor: editor.value, path: docs.open?.path, binding };
+    const wasFrozen = frozen.value;
+    // Keep the EXISTING close snapshot frozen through lease release and the
+    // destructive selection, not just through materialization/prepare.
+    freeze(true);
+    try {
+      const currentSnapshot = () => { current(); return canClose(snapshot); };
+      if (!await settleEditor(snapshot, () => { current(); return true; })) return false;
+      current();
+      if (!await releaseRegistration(currentSnapshot)) return false;
+      current(); // No await between these final local checks and destructive selection.
+      if (!alive || admissionFailed.value || snapshot.binding !== binding
+        || snapshot.path !== docs.open?.path || snapshot.editor !== editor.value
+        || docs.dirty || docs.saving || docs.saveError || docs.fenceError
+        || snapshot.editor?.hasPendingWork()) {
+        failAdmission();
+        return false;
+      }
+      await docs.select(null);
+      current();
+    } finally {
+      if (!wasFrozen && !admissionFailed.value && !activeTransition && alive) freeze(false);
+    }
   }
   return alive && !docs.open && !docs.error;
 });
@@ -461,11 +825,35 @@ useDesktopPageTarget("/documents", async (page, current) => {
 onBeforeUnmount(() => {
   alive = false;
   editor.value?.flush();
+  // Forced teardown cannot keep DOM mounted. Keep the ordinary editor's last
+  // extracted text in the existing open model even if its write is refused;
+  // this is not persistence, a crash draft, an adopt, or permission to retry.
+  if (docs.dirty && !room.value && docs.open && editor.value) {
+    docs.open = { ...docs.open, content: editor.value.takeMarkdown() };
+  }
   binding += 1;
   if (retryTimer) clearTimeout(retryTimer);
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (proofRetryTimer) clearTimeout(proofRetryTimer);
+  proofRetryTimer = null;
+  activeTransition = null;
+  transitionAttempt += 1;
   const session = room.value;
-  room.value = null;
-  if (session) void leave(session);
+  // Forced unmount is not a clean ACK. Keep dirty/unconfirmed Yjs and lease evidence;
+  // there is deliberately no crash-draft/discard shortcut.
+  void (async () => {
+    await heartbeats;
+    while (pendingSaves.size) await Promise.all([...pendingSaves]);
+    await docs.settle();
+    if (docs.dirty || docs.saveError || admissionFailed.value) return;
+    if (!await releaseRegistration()) return;
+    if (session) await leave(session);
+  })();
+});
+
+onBeforeRouteLeave(async () => {
+  const snapshot: CloseSnapshot = { editor: editor.value, path: docs.open?.path, binding };
+  return await settleEditor(snapshot);
 });
 
 watch(requestedPath, async (path) => {
@@ -494,11 +882,22 @@ function select(path: string): Promise<void> {
   editor.value?.flush();
   const selection = { path, promise: Promise.resolve() };
   pendingSelection = selection;
-  selection.promise = docs.select(path).then(() => {
+  selection.promise = (async () => {
+    if (docs.open) {
+      const snapshot: CloseSnapshot = { editor: editor.value, path: docs.open.path, binding };
+      const wasFrozen = frozen.value;
+      freeze(true);
+      if (!await settleEditor(snapshot) || !await releaseRegistration()) {
+        if (!wasFrozen && !admissionFailed.value) freeze(false);
+        return;
+      }
+    }
+    await docs.select(path);
+    if (!admissionFailed.value) freeze(false);
     if (!alive || pendingSelection !== selection) return;
     headings.value = [];
     activeHeading.value = null;
-  }).finally(() => {
+  })().finally(() => {
     if (pendingSelection === selection) pendingSelection = null;
   });
   return selection.promise;
@@ -507,16 +906,16 @@ function select(path: string): Promise<void> {
 async function open(path: string) {
   searchOpen.value = false;
   if (docs.open?.path !== path) await select(path);
-  await router.replace({ name: "docs", query: { path } });
+  if (docs.open?.path === path) await router.replace({ name: "docs", query: { path } });
 }
 
 async function create(rawPath: string) {
   const path = documentPath("", rawPath);
   if (!path) return;
-  const created = await docs.create(path);
+  const created = await docs.create(path, { open: false });
   creating.value = false;
   newPath.value = "";
-  if (created) await router.replace({ name: "docs", query: { path: created } });
+  if (created) await open(created);
 }
 
 /**
@@ -546,9 +945,28 @@ async function rename() {
   const source = docs.open?.path;
   const target = renamePath.value.trim();
   renaming.value = false;
-  if (!source || !target || target === source) return;
-  editor.value?.flush();
-  const referrers = await docs.rename(source, target);
+  if (!source || !target || target === source || frozen.value) return;
+  let captured;
+  try { captured = docs.captureMutation(); }
+  catch { failAdmission(); return; }
+  const snapshot: CloseSnapshot = { editor: editor.value, path: source, binding };
+  freeze(true);
+  if (!await settleEditor(snapshot) || !await releaseRegistration()) {
+    if (!admissionFailed.value) freeze(false);
+    return;
+  }
+  const previous = room.value;
+  if (previous) {
+    room.value = null;
+    roomPeers.value = [];
+    joining.value = true;
+    await leave(previous);
+  }
+  const referrers = await docs.rename(source, target, captured);
+  if (!admissionFailed.value) {
+    if (docs.open?.path === source && !registration) await register(source);
+    freeze(false);
+  }
   if (referrers.length) {
     docs.error = t("docs.banner.renamedReferrers", {
       count: referrers.length,
@@ -648,12 +1066,15 @@ function onHeadings(next: Heading[]) {
  * for the autosave to flush.
  */
 async function saveNow() {
+  if (frozen.value || (room.value && !room.value.scribe)) return;
+  const captured = captureSave();
   const content = editor.value?.takeMarkdown();
-  if (content !== undefined) await docs.save(content);
+  if (content !== undefined && captured) onChange(content, docs.open?.path ?? "", captured);
 }
 
 /** Reload from disk, discarding what is in the editor — the answer to a 409 (§14.5). */
 async function reload() {
+  if (frozen.value || docs.fenceError) return;
   const path = docs.open?.path;
   if (!path) return;
   await docs.select(path);
@@ -663,8 +1084,17 @@ async function reload() {
 }
 
 async function forceSave() {
+  if (frozen.value || docs.fenceError || (room.value && !room.value.scribe)) return;
+  const captured = captureSave();
   const content = editor.value?.takeMarkdown();
-  if (content !== undefined) await docs.saveOverwriting(content);
+  if (content === undefined || !captured) return;
+  const prior = heartbeats.then(() => {
+    if (admissionFailed.value) throw new Error(t("docs.remoteEditor.blocked"));
+  });
+  const work = docs.saveOverwriting(content, captured, prior);
+  heartbeats = work;
+  pendingSaves.add(work);
+  try { await work; } finally { pendingSaves.delete(work); }
 }
 </script>
 
@@ -813,6 +1243,7 @@ async function forceSave() {
       </p>
 
       <template v-if="docs.open">
+        <p v-if="materializationError" role="status" class="shrink-0 bg-danger-soft px-pane py-1 text-danger">{{ materializationError }}</p>
         <header
           class="vxs-pane flex shrink-0 items-center gap-2 border-b border-pane px-pane py-2"
         >
@@ -981,6 +1412,8 @@ async function forceSave() {
             :path="docs.open.path"
             :documents="documents"
             :collab="room"
+            :capture-save="captureSave"
+            :frozen="frozen"
             class="min-w-0 flex-1"
             :style="editorStyle"
             @dirty="onDirty"

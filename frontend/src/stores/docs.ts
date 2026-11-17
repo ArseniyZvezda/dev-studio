@@ -25,9 +25,9 @@
  */
 
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, shallowRef } from "vue";
 
-import { api, ApiError } from "@/api/client";
+import { api, ApiError, createApiClient } from "@/api/client";
 import type {
   DocBacklink,
   DocDetail,
@@ -38,11 +38,32 @@ import type {
   DocGraph,
   DocSearchResult,
   DocsConfig,
+  DocumentFence,
+  DocumentSaveReceipt,
+  DocSaved,
+  ProjectRemoteEditorLease,
+  ProjectRemoteEditorMaterialization,
 } from "@/api/types";
 import { t } from "@/i18n";
 import { titleOf } from "@/lib/md/title";
 import { onEvent } from "@/ws/connection";
-import { rendererSession } from "@/session/project-session";
+import { ProjectSession, rendererSession, StaleProjectResponseError } from "@/session/project-session";
+import { useSyncStore, StaleRemoteBindingError, type RemoteBindingTicket } from "@/stores/sync";
+
+export interface CapturedDocMutation {
+  readonly binding: RemoteBindingTicket | null;
+  readonly fence: Readonly<DocumentFence> | undefined;
+}
+
+/** Capture before debounce/queue, not when the delayed callback executes (§5.3). */
+export interface CapturedDocSave extends CapturedDocMutation {
+  readonly path: string | null;
+  readonly live: string | null;
+  readonly version: number;
+  readonly revision: number;
+  readonly expectedUpdatedAt: string | null;
+  readonly dirty: boolean;
+}
 
 export type SaveState = "saved" | "saving" | "dirty" | "failed";
 
@@ -258,6 +279,9 @@ const serialiseFolds = (folds: Set<string>): string =>
 export const GRAPH_REFRESH_MS = 500;
 
 export const useDocsStore = defineStore("docs", () => {
+  // Capture the owning Pinia dependency before queue/await. Another mounted
+  // editor may become active while this one's final save is awaiting its tail.
+  const sync = useSyncStore();
   const entries = ref<DocEntry[]>([]);
   const open = ref<DocDetail | null>(null);
   const loading = ref(false);
@@ -268,6 +292,214 @@ export const useDocsStore = defineStore("docs", () => {
   const saveError = ref<string | null>(null);
   /** True when the file changed underneath us and the save was refused (§14.5). */
   const staleOnDisk = ref(false);
+  const fenceError = shallowRef<Error | null>(null);
+  const lastSaveReceipt = shallowRef<Readonly<DocumentSaveReceipt> | null>(null);
+  let editorFence: Readonly<DocumentFence> | null = null;
+  let editorBinding: RemoteBindingTicket | null = null;
+  let editorLease: Readonly<ProjectRemoteEditorLease> | null = null;
+  let materializationPending = false;
+  let saveRevision = 0;
+  let editorRevision = -1;
+  let editorPath: string | null = null;
+  let fenced = false;
+  const savedRevisions = new Map<number, string>();
+
+  function setEditorFence(fence: DocumentFence | null, binding?: RemoteBindingTicket): void {
+    // Registration owns admission. Reuse its pre-await ticket even while a same-G
+    // draining event refreshes metadata; a final save is not a new editor admission.
+    let registeredBinding: RemoteBindingTicket | null = null;
+    if (fence) {
+      try {
+        registeredBinding = binding ?? sync.capture();
+        registeredBinding.assertCurrent();
+        if (fence.backend_epoch !== registeredBinding.backend_epoch
+          || fence.expected_binding_generation !== registeredBinding.expected_binding_generation) {
+          throw new ApiError(409, t("docs.remoteEditor.blocked"), "reload_required");
+        }
+      } catch (cause) { recordFenceError(cause); throw cause; }
+    }
+    if (editorFence?.editor_id !== fence?.editor_id || editorFence?.sid !== fence?.sid
+      || editorFence?.backend_epoch !== fence?.backend_epoch
+      || editorFence?.client_instance_id !== fence?.client_instance_id
+      || editorFence?.expected_binding_generation !== fence?.expected_binding_generation) saveRevision += 1;
+    if (fence) {
+      fenced = true;
+      if (editorFence?.editor_id !== fence.editor_id) {
+        edits = fence.version ?? 0;
+        fenceError.value = null;
+      }
+      else edits = Math.max(edits, fence.version ?? 0);
+    }
+    editorFence = fence ? Object.freeze({ ...fence }) : null;
+    editorLease = null;
+    materializationPending = false;
+    editorBinding = registeredBinding;
+    editorRevision = documentRequest;
+    editorPath = open.value?.path ?? null;
+    lastSaveReceipt.value = null;
+  }
+
+  function captureMutation(): CapturedDocMutation {
+    return captureDocumentMutation(false);
+  }
+
+  function captureDocumentMutation(editor: boolean): CapturedDocMutation {
+    try { return captureMutationTicket(editor); }
+    catch (cause) { recordFenceError(cause); throw cause; }
+  }
+
+  function captureMutationTicket(editor: boolean): CapturedDocMutation {
+    if (editor && fenceError.value) throw fenceError.value;
+    // Only a genuinely unactivated legacy renderer can omit the new contract.
+    if (rendererSession.isLegacy && !sync.remote && !fenced) {
+      return Object.freeze({ binding: null, fence: undefined });
+    }
+    fenced = true;
+    const binding = editor ? editorBinding : sync.capture();
+    if (!binding || (editor && (!editorFence?.editor_id
+      || editorRevision !== documentRequest || editorPath !== open.value?.path
+      || editorFence.backend_epoch !== binding.backend_epoch
+      || editorFence.expected_binding_generation !== binding.expected_binding_generation))) {
+      throw new ApiError(409, t("docs.remoteEditor.blocked"), "reload_required");
+    }
+    binding.assertCurrent();
+    const fence = Object.freeze(editor ? { ...editorFence!, version: edits } : {
+      backend_epoch: binding.backend_epoch,
+      expected_binding_generation: binding.expected_binding_generation,
+    });
+    return Object.freeze({ binding, fence });
+  }
+
+  function captureSave(): CapturedDocSave {
+    return Object.freeze({ ...captureDocumentMutation(true), path: open.value?.path ?? null,
+      live: live.value, version: edits, revision: saveRevision,
+      expectedUpdatedAt: open.value?.updated_at ?? null, dirty: dirty.value });
+  }
+
+  /** Propagate server registration/heartbeat evidence, never synthesize its CAS revision. */
+  function setEditorLease(lease: ProjectRemoteEditorLease): void {
+    if (!editorFence || !editorBinding || editorRevision !== documentRequest
+      || editorPath !== open.value?.path || lease.document_path !== editorPath
+      || lease.editor_id !== editorFence.editor_id
+      || lease.backend_epoch !== editorFence.backend_epoch
+      || lease.binding_generation !== editorFence.expected_binding_generation
+      || lease.client_instance_id !== editorFence.client_instance_id
+      || !Number.isSafeInteger(lease.revision) || lease.revision < 0
+      || (editorLease && lease.revision < editorLease.revision)) {
+      throw new ApiError(409, t("docs.remoteEditor.blocked"), "editor_mismatch");
+    }
+    editorBinding.assertCurrent();
+    editorLease = Object.freeze({ ...lease });
+  }
+
+  /** I8 / studio-design §5.2–5.3: prove this frozen editor, without a Markdown write.
+   * The caller settles dirty announcements/room frames first and retains ACK ownership.
+   */
+  async function proveMaterialization(captured: CapturedDocSave, sid: string, content: string,
+    assertSnapshot: () => void): Promise<ProjectRemoteEditorLease> {
+    const owner = editorFence;
+    const lease = editorLease;
+    const binding = captured.binding;
+    const fence = captured.fence;
+    const stale = () => new ApiError(409, t("docs.remoteEditor.blocked"), "stale_editor_version");
+    const assertCurrent = () => {
+      binding?.assertCurrent();
+      if (!binding || binding !== editorBinding || !owner || owner !== editorFence || !fence
+        || fenceError.value || !lease || !editorLease || !sid || !captured.path
+        || !fence.editor_id || !fence.client_instance_id
+        || captured.revision !== saveRevision || captured.path !== open.value?.path
+        || editorRevision !== documentRequest || editorPath !== captured.path
+        || captured.version !== edits || fence.version !== captured.version
+        || captured.live !== sid || live.value !== sid || fence.sid !== sid || owner.sid !== sid
+        || fence.editor_id !== owner.editor_id || fence.client_instance_id !== owner.client_instance_id
+        || fence.backend_epoch !== binding.backend_epoch || fence.backend_epoch !== owner.backend_epoch
+        || fence.expected_binding_generation !== binding.expected_binding_generation
+        || fence.expected_binding_generation !== owner.expected_binding_generation
+        || lease.version !== captured.version || editorLease.version !== lease.version
+        || editorLease.revision !== lease.revision) throw stale();
+      assertSnapshot();
+    };
+    assertCurrent();
+    // A separate immutable project client prevents any legacy/global fallback or late rebind.
+    const session = new ProjectSession(binding!.runtime_scope.project_id);
+    session.bind(binding!.runtime_scope);
+    const client = createApiClient(session);
+    const body: Readonly<ProjectRemoteEditorMaterialization> = Object.freeze({
+      backend_epoch: fence!.backend_epoch, expected_binding_generation: fence!.expected_binding_generation,
+      document_path: captured.path!, client_instance_id: fence!.client_instance_id!, sid,
+      version: captured.version, revision: lease!.revision,
+    });
+    const exactLease = (result: ProjectRemoteEditorLease) => result.editor_id === fence!.editor_id
+      && result.backend_epoch === body.backend_epoch
+      && result.binding_generation === body.expected_binding_generation
+      && result.document_path === body.document_path && result.client_instance_id === body.client_instance_id
+      && result.version === body.version && result.revision === body.revision;
+    try {
+      let ticket;
+      try { ticket = await client.materializeRemoteEditor(fence!.editor_id!, body); }
+      finally { assertCurrent(); }
+      if (!exactLease(ticket) || typeof ticket.proof_id !== "string" || !ticket.proof_id) throw stale();
+      let confirmed;
+      try {
+        confirmed = await client.confirmRemoteEditorMaterialization(fence!.editor_id!, {
+          ...body, proof_id: ticket.proof_id, content,
+        });
+      } finally { assertCurrent(); }
+      if (!exactLease(confirmed) || confirmed.dirty || !confirmed.confirmed
+        || !Number.isSafeInteger(confirmed.last_saved_version) || confirmed.last_saved_version! <= 0) throw stale();
+      editorLease = Object.freeze({ ...confirmed });
+      materializationPending = false;
+      return confirmed;
+    } catch (cause) {
+      // Proof conflicts are never disk conflicts or permission for Keep mine.
+      const refusal = cause instanceof ApiError && cause.status === 409 && cause.code === null
+        ? new ApiError(409, cause.message, "pending_edits") : cause;
+      try { assertCurrent(); } catch { throw refusal; }
+      if (refusal instanceof ApiError && refusal.status === 409
+        && ["pending_edits", "mutation_busy", "stale_editor_version"].includes(refusal.code ?? "")) {
+        // A peer's final save or a newer server CAS may still arrive during old-G drain.
+        // Keep this editor retryable, but this is never a disk overwrite capability.
+        materializationPending = true;
+        staleOnDisk.value = false;
+      } else recordFenceError(refusal);
+      throw refusal;
+    }
+  }
+
+  function recordFenceError(cause: unknown): void {
+    if ((cause instanceof ApiError && cause.status === 409 && cause.code !== null)
+      || cause instanceof StaleRemoteBindingError || cause instanceof StaleProjectResponseError) {
+      fenced = true;
+      fenceError.value = cause;
+      staleOnDisk.value = false;
+    }
+  }
+
+  /** External observations cannot replace RAM owned by an admitted/frozen editor (I8). */
+  function retainsScopedSource(): boolean {
+    const change = sync.bindingChange;
+    const transitioning = !!editorBinding && !!change
+      && (change.binding_generation === editorBinding.expected_binding_generation
+        || change.expected_generation === editorBinding.expected_binding_generation)
+      && (change.fenced || ["draining", "ready", "blocked", "paused"].includes(change.state));
+    return !!(editorBinding && (live.value || transitioning || fenceError.value || saveError.value));
+  }
+
+  function blockExternalReplacement(): void {
+    editorLease = null;
+    lastSaveReceipt.value = null;
+    recordFenceError(fenceError.value ?? new ApiError(409, t("docs.remoteEditor.blocked"),
+      live.value ? "unknown_sid" : "editor_mismatch"));
+  }
+
+  async function mutate<T>(captured: CapturedDocMutation, run: () => Promise<T>): Promise<T> {
+    try {
+      return captured.binding ? await sync.run(captured.binding, run) : await run();
+    } catch (cause) {
+      recordFenceError(cause);
+      throw cause;
+    }
+  }
   /**
    * The session id of the live room the open document is being edited in, or `null` when it
    * is edited alone (dev spec §16.4). Set by the page that owns the session, which is also
@@ -576,6 +808,12 @@ export const useDocsStore = defineStore("docs", () => {
     path: string,
     patch: { color?: string | null; icon?: string | null },
   ): Promise<boolean> {
+    let captured: CapturedDocMutation;
+    try { captured = captureMutation(); }
+    catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause);
+      return Promise.resolve(false);
+    }
     const previous = folderStyle(path);
     folderStyles.value = withStyle(folderStyles.value, {
       path,
@@ -586,7 +824,9 @@ export const useDocsStore = defineStore("docs", () => {
     const run = async (): Promise<boolean> => {
       styling.add(path);
       try {
-        const stored = await api.setDocFolderStyle({ path, ...patch });
+        const stored = await mutate(captured, () => captured.fence
+          ? api.setDocFolderStyle({ path, ...patch }, captured.fence)
+          : api.setDocFolderStyle({ path, ...patch }));
         folderStyles.value = withStyle(folderStyles.value, stored);
         return true;
       } catch (cause) {
@@ -619,40 +859,53 @@ export const useDocsStore = defineStore("docs", () => {
     name: string,
     onFrame: (frame: DocFolderRenameFrame) => void,
   ): Promise<DocFolderRenameDone> {
+    const captured = captureMutation();
     const moved = { to: null as string | null };
     renamingFolder = true;
     try {
-      return await api.renameDocFolder(path, name, (frame) => {
+      await settle();
+      const receive = (frame: DocFolderRenameFrame) => {
+        captured.binding?.assertCurrent();
         if (frame.type === "renamed") moved.to = frame.path;
         onFrame(frame);
-      });
+      };
+      return await mutate(captured, () => captured.fence
+        ? api.renameDocFolder(path, name, receive, captured.fence)
+        : api.renameDocFolder(path, name, receive));
     } finally {
       renamingFolder = false;
-      if (moved.to !== null) await adoptFolderRename(path, moved.to);
+      if (moved.to !== null) {
+        // A late old-G stream cannot navigate/remount the current editor.
+        let current = true;
+        try { captured.binding?.assertCurrent(); } catch { current = false; }
+        if (current) await adoptFolderRename(path, moved.to);
+      }
     }
   }
 
   /** The paths this client holds, moved to where a folder rename put them. */
   async function adoptFolderRename(from: string, to: string): Promise<void> {
+    const document = open.value;
+    const path = document ? movedPath(document.path, from, to) : null;
+    if (document && path !== document.path && retainsScopedSource()) blockExternalReplacement();
     // Before `load()`, which would otherwise prune the old paths as folders that are gone.
     setCollapsed(
       new Set([...collapsed.value].map((folder) => movedPath(folder, from, to))),
     );
     await load();
     invalidateGraph();
-    const document = open.value;
-    if (!document) return;
-    const path = movedPath(document.path, from, to);
+    if (!document || open.value !== document || !path) return;
     // Outside the folder, there is nothing to follow. If its links were rewritten, that arrives
     // as `team.doc.changed` like any other write, and the handler above re-reads it.
     if (path === document.path) return;
+    if (retainsScopedSource()) { blockExternalReplacement(); return; }
     // An unsaved edit stays where it is: re-reading a moved document remounts the editor under
     // a new key, which throws the edit away outright.
     if (dirty.value || saving.value) {
-      staleOnDisk.value = true;
+      staleOnDisk.value = !fenceError.value;
       return;
     }
-    await select(path);
+    await select(path, true);
   }
 
   /**
@@ -670,8 +923,16 @@ export const useDocsStore = defineStore("docs", () => {
 
   let documentRequest = 0;
 
-  async function select(path: string | null): Promise<void> {
+  async function select(path: string | null, external = false): Promise<void> {
+    if (external && retainsScopedSource()) { blockExternalReplacement(); return; }
+    const samePath = path !== null && open.value?.path === path;
+    // A read is not a new registration and cannot recover a typed admission refusal.
+    if (samePath && fenceError.value) return;
+    const before = documentRequest;
+    const version = edits;
+    saveRevision += 1;
     const request = ++documentRequest;
+    if (samePath && editorPath === path && editorRevision === before) editorRevision = request;
     if (!path) {
       closeDocument();
       return;
@@ -680,11 +941,21 @@ export const useDocsStore = defineStore("docs", () => {
     try {
       const fresh = await api.doc(path);
       if (request !== documentRequest) return;
+      if (external && retainsScopedSource()) { blockExternalReplacement(); return; }
+      if (samePath) {
+        if (fenceError.value || edits !== version) return;
+        editorBinding?.assertCurrent();
+      }
       open.value = fresh;
       liveTitle.value = open.value.title;
       resetEditState();
     } catch (cause) {
       if (request !== documentRequest) return;
+      if (external && retainsScopedSource()) {
+        if (cause instanceof ApiError && cause.status === 404) blockExternalReplacement();
+        return;
+      }
+      recordFenceError(cause);
       error.value = cause instanceof Error ? cause.message : String(cause);
     }
   }
@@ -699,15 +970,23 @@ export const useDocsStore = defineStore("docs", () => {
    */
   async function reopen(): Promise<void> {
     const path = open.value?.path;
-    if (!path) return;
+    if (!path || fenceError.value) return;
+    const before = documentRequest;
+    const version = edits;
+    saveRevision += 1;
+    const request = ++documentRequest;
+    if (editorPath === path && editorRevision === before) editorRevision = request;
     try {
       const fresh = await api.doc(path);
-      if (open.value?.path !== path) return;
+      if (request !== documentRequest || open.value?.path !== path) return;
+      if (fenceError.value || edits !== version) return;
+      editorBinding?.assertCurrent();
       open.value = fresh;
       liveTitle.value = fresh.title;
       resetEditState();
     } catch (cause) {
-      if (open.value?.path !== path) return;
+      if (request !== documentRequest || open.value?.path !== path) return;
+      recordFenceError(cause);
       if (cause instanceof ApiError && cause.status === 404) closeDocument();
       else error.value = cause instanceof Error ? cause.message : String(cause);
     }
@@ -719,20 +998,30 @@ export const useDocsStore = defineStore("docs", () => {
    * For an editor that has just dropped out of a live room with something on screen its
    * own disk has not seen: the text stays, is edited alone from here on, and is written.
    */
-  function adopt(content: string): void {
-    if (!open.value) return;
+  function adopt(content: string, captured?: CapturedDocSave): void {
+    if (!open.value || fenceError.value) return;
+    // Transition cleanup must never recapture a newer lease/G as a solo save.
+    const ticket = captured ?? markDirty();
+    if (!ticket || ticket.path !== open.value.path || ticket.revision !== saveRevision) return;
     open.value = { ...open.value, content };
-    markDirty();
-    void save(content);
+    dirty.value = true;
+    void save(content, Object.freeze({ ...ticket, dirty: true }));
   }
 
   /** The latest facts about the open document, without touching what is being edited. */
   async function refreshOpen(path: string): Promise<void> {
+    const document = open.value;
+    const session = live.value;
+    const request = documentRequest;
+    const owner = editorFence;
     try {
       const fresh = await api.doc(path);
       // Still the same document, still in a room: only then is "leave the editor alone,
       // take the rest" the right thing to do with this answer.
-      if (open.value?.path === path && live.value) open.value = fresh;
+      if (open.value === document && open.value?.path === path && live.value === session
+        && documentRequest === request && editorFence === owner && !fenceError.value) {
+        open.value = editorBinding ? { ...fresh, content: document!.content } : fresh;
+      }
     } catch {
       // A read that failed changes nothing here; a delete has its own event.
     }
@@ -740,22 +1029,28 @@ export const useDocsStore = defineStore("docs", () => {
 
   function resetEditState(): void {
     dirty.value = false;
-    saveError.value = null;
+    if (!fenceError.value) saveError.value = null;
     staleOnDisk.value = false;
+    lastSaveReceipt.value = null;
+    materializationPending = false;
+    savedRevisions.clear();
   }
 
   /** No document open — what is left once the open one was deleted. */
   function closeDocument(): void {
+    saveRevision += 1;
     documentRequest += 1;
     open.value = null;
     resetEditState();
   }
 
   /** Raised by the editor on a transaction that changed the document, and by nothing else. */
-  function markDirty(): void {
+  function markDirty(): CapturedDocSave | null {
     dirty.value = true;
     edits += 1;
     saveError.value = null;
+    try { return captureSave(); }
+    catch (cause) { failedSave(cause); return null; }
   }
 
   function setLiveTitle(title: string): void {
@@ -788,100 +1083,98 @@ export const useDocsStore = defineStore("docs", () => {
    * landed in between is answered with a 409 instead of being overwritten. The editor keeps
    * its state either way (§7): nothing here touches what the user has on screen.
    */
-  function save(content: string): Promise<boolean> {
-    return chained(() => writeDocument(content), false);
-  }
-
-  async function writeDocument(content: string): Promise<boolean> {
-    const document = open.value;
-    // Nothing was edited, so there is nothing to write. The editor already guards this, and
-    // the invariant belongs here too: §8.2 is about the *file*, and this is the last place
-    // that decides whether one is touched.
-    if (!document || !dirty.value) return false;
-
-    saving.value = true;
-    saveError.value = null;
-    const sent = edits;
-    // Read now, not after the round trip: the page clears it once this write is on its way.
-    const room = live.value;
-    writing.add(document.path);
+  function save(content: string, captured?: CapturedDocSave, prerequisite?: Promise<unknown>): Promise<boolean> {
     try {
-      const saved = await api.saveDoc(
-        document.path,
-        content,
-        null,
-        // In a room the write is unconditional: what is on disk is the same room's Markdown,
-        // put there by sync from whoever was scribe before, and refusing to replace it
-        // would stop the file following the document.
-        room ? null : document.updated_at,
-        room,
-      );
-      if (open.value?.path === saved.path) {
-        // Only what was *sent* is saved. If the user typed while it was in flight, this
-        // answer is already older than the screen: take everything except its `content`, so
-        // the editor is not handed back a document missing the last thing they typed. Its
-        // own guard would refuse it anyway; leaving the value untouched means the change
-        // never reaches the editor at all.
-        open.value =
-          edits === sent ? saved : { ...saved, content: open.value.content };
-        // The rest follows the same rule — something typed since is still unwritten, and
-        // its own debounce is what writes it, but only if it is still dirty by then.
-        if (edits === sent) {
-          dirty.value = false;
-          staleOnDisk.value = false;
-        }
-      }
-      await load();
-      // A save is exactly when links change. The document's own links and backlinks came
-      // back with the response and refresh the panels below; the whole-corpus picture is the
-      // one thing that needs the extra call, which is why it is a separate lazy endpoint.
-      invalidateGraph();
-      return true;
+      const ticket = captured ?? captureSave();
+      // Enqueue immediately, before waiting on the editor's dirty heartbeat.
+      // Folder/move/delete settle() must see this save, not an empty store queue.
+      return chained(async () => {
+        try { await prerequisite; }
+        catch (cause) { failedSave(cause); return false; }
+        return writeDocument(content, ticket);
+      }, false);
     } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 409) {
-        staleOnDisk.value = true;
-        saveError.value = t("docs.saveState.conflict");
-      } else {
-        saveError.value =
-          cause instanceof Error ? cause.message : String(cause);
-      }
-      return false;
-    } finally {
-      saving.value = false;
-      writing.delete(document.path);
+      failedSave(cause);
+      return Promise.resolve(false);
     }
   }
 
-  /** Save over whatever is on disk now — what the user picks after a 409. */
-  function saveOverwriting(content: string): Promise<boolean> {
-    return chained(() => overwriteDocument(content), false);
+  function failedSave(cause: unknown): void {
+    recordFenceError(cause);
+    if (fenceError.value) saveError.value = t("docs.remoteEditor.blocked");
+    else if (cause instanceof ApiError && cause.isDiskConflict) {
+      staleOnDisk.value = !fenceError.value;
+      saveError.value = t("docs.saveState.conflict");
+    } else saveError.value = cause instanceof Error ? cause.message : String(cause);
   }
 
-  async function overwriteDocument(content: string): Promise<boolean> {
-    const document = open.value;
-    if (!document) return false;
-    const sent = edits;
+  function saveReceipt(saved: DocSaved, ticket: CapturedDocSave): void {
+    const fence = ticket.fence;
+    if (!fence?.editor_id) return;
+    // Keep only exact server evidence. Neither a clean flag nor the client version is a receipt.
+    if (saved.path !== ticket.path || saved.editor_id !== fence.editor_id
+      || saved.backend_epoch !== fence.backend_epoch
+      || saved.binding_generation !== fence.expected_binding_generation
+      || saved.version !== ticket.version || !Number.isSafeInteger(saved.last_saved_version)
+      || saved.last_saved_version! < 0) {
+      throw new ApiError(409, t("docs.remoteEditor.receiptRequired"), "stale_editor_version");
+    }
+    lastSaveReceipt.value = Object.freeze({ editor_id: saved.editor_id,
+      backend_epoch: saved.backend_epoch, binding_generation: saved.binding_generation,
+      version: saved.version, last_saved_version: saved.last_saved_version! });
+  }
+
+  async function writeDocument(content: string, ticket: CapturedDocSave, overwrite = false): Promise<boolean> {
+    if (!ticket.path || (!ticket.dirty && !overwrite)) return false;
+    // Navigation/reload is not permission to save old Markdown under the new open document.
+    if (saveRevision !== ticket.revision || open.value?.path !== ticket.path) return false;
+    if (fenceError.value) return false;
     saving.value = true;
     saveError.value = null;
+    lastSaveReceipt.value = null;
+    writing.add(ticket.path);
     try {
-      const saved = await api.saveDoc(document.path, content);
-      if (open.value?.path === saved.path) {
-        // §5.3: an explicit conflict overwrite only saves the revision it sent, just
-        // like autosave. New typing is still owed and must keep the close barrier shut.
-        open.value = edits === sent ? saved : { ...saved, content: open.value.content };
-        if (edits === sent) {
-          dirty.value = false;
-          staleOnDisk.value = false;
-        }
+      const saved = await mutate(ticket, () => {
+        const expected = savedRevisions.get(ticket.revision) ?? ticket.expectedUpdatedAt;
+        // Preserve the old unactivated wire call; activated writes always carry the exact fence.
+        if (overwrite && !ticket.fence) return api.saveDoc(ticket.path!, content);
+        const args = [ticket.path!, content, null,
+          overwrite || ticket.live ? null : expected, ticket.live] as const;
+        return ticket.fence ? api.saveDoc(...args, ticket.fence) : api.saveDoc(...args);
+      });
+      if (saveRevision !== ticket.revision || open.value?.path !== ticket.path) return false;
+      saveReceipt(saved, ticket);
+      savedRevisions.set(ticket.revision, saved.updated_at);
+      open.value = edits === ticket.version ? saved : { ...saved, content: open.value.content };
+      if (edits === ticket.version) {
+        dirty.value = false;
+        staleOnDisk.value = false;
       }
       await load();
       invalidateGraph();
       return true;
     } catch (cause) {
-      saveError.value = cause instanceof Error ? cause.message : String(cause);
+      failedSave(cause);
       return false;
     } finally {
       saving.value = false;
+      writing.delete(ticket.path);
+    }
+  }
+
+  /** Only an untyped disk conflict permits Keep mine, never an admission refusal. */
+  function saveOverwriting(content: string, captured?: CapturedDocSave, prerequisite?: Promise<unknown>): Promise<boolean> {
+    if (fenceError.value || materializationPending) return Promise.resolve(false);
+    try {
+      const ticket = captured ?? captureSave();
+      return chained(async () => {
+        try { await prerequisite; }
+        catch (cause) { failedSave(cause); return false; }
+        return writeDocument(content, ticket, true);
+      }, false);
+    } catch (cause) {
+      failedSave(cause);
+      return Promise.resolve(false);
     }
   }
 
@@ -900,8 +1193,12 @@ export const useDocsStore = defineStore("docs", () => {
     path: string,
     { title, open: openIt = true }: { title?: string; open?: boolean } = {},
   ): Promise<string> {
+    const captured = captureMutation();
+    if (openIt) await settle();
     const name = title ?? titleOf("", path);
-    const created = await api.createDoc(path, `# ${name}\n\n`);
+    const created = await mutate(captured, () => captured.fence
+      ? api.createDoc(path, `# ${name}\n\n`, captured.fence)
+      : api.createDoc(path, `# ${name}\n\n`));
     await load();
     // A new node, and it may resolve somebody's dangling link into a real edge.
     invalidateGraph();
@@ -933,12 +1230,13 @@ export const useDocsStore = defineStore("docs", () => {
    * straight back. The page flushes the editor before it asks, so nothing is pending there.
    */
   async function remove(path: string): Promise<void> {
+    const captured = captureMutation();
     await settle();
     // Its own event is not news — for an open document with unsaved edits it would raise
     // "changed on disk" until the answer below closes it.
     writing.add(path);
     try {
-      await api.deleteDoc(path);
+      await mutate(captured, () => captured.fence ? api.deleteDoc(path, captured.fence) : api.deleteDoc(path));
     } finally {
       writing.delete(path);
     }
@@ -958,13 +1256,16 @@ export const useDocsStore = defineStore("docs", () => {
    * nothing; anything else may have stopped part-way, so the listing is asked whatever it said.
    */
   async function deleteFolder(path: string): Promise<string[]> {
+    const captured = captureMutation();
     await settle();
     deletingFolders.add(path);
     let removed = true;
     try {
-      return (await api.deleteDocFolder(path)).documents;
+      return (await mutate(captured, () => captured.fence
+        ? api.deleteDocFolder(path, captured.fence) : api.deleteDocFolder(path))).documents;
     } catch (cause) {
-      removed = !(cause instanceof ApiError && cause.status >= 400 && cause.status < 500);
+      removed = !(cause instanceof StaleRemoteBindingError || cause instanceof StaleProjectResponseError
+        || (cause instanceof ApiError && cause.status >= 400 && cause.status < 500));
       throw cause;
     } finally {
       deletingFolders.delete(path);
@@ -984,12 +1285,16 @@ export const useDocsStore = defineStore("docs", () => {
     folder: string,
     { keepEdits }: { keepEdits: boolean },
   ): Promise<void> {
+    const document = open.value;
+    if (keepEdits && document?.path.startsWith(`${folder}/`) && retainsScopedSource()) {
+      blockExternalReplacement();
+    }
     await load();
     invalidateGraph();
-    const document = open.value;
-    if (!document?.path.startsWith(`${folder}/`)) return;
+    if (!document?.path.startsWith(`${folder}/`) || open.value !== document) return;
+    if (keepEdits && retainsScopedSource()) { blockExternalReplacement(); return; }
     if (entries.value.some((entry) => entry.path === document.path)) return;
-    if (keepEdits && (dirty.value || saving.value)) staleOnDisk.value = true;
+    if (keepEdits && (dirty.value || saving.value)) staleOnDisk.value = !fenceError.value;
     else closeDocument();
   }
 
@@ -997,10 +1302,14 @@ export const useDocsStore = defineStore("docs", () => {
   async function rename(
     source: string,
     target: string,
+    captured?: CapturedDocMutation,
   ): Promise<DocBacklink[]> {
     error.value = null;
     try {
-      const moved = await api.moveDoc(source, target);
+      const ticket = captured ?? captureMutation();
+      await settle();
+      const moved = await mutate(ticket, () => ticket.fence
+        ? api.moveDoc(source, target, ticket.fence) : api.moveDoc(source, target));
       await load();
       // The node's path changed, and `referrers` may be stranded on the old name.
       invalidateGraph();
@@ -1106,7 +1415,7 @@ export const useDocsStore = defineStore("docs", () => {
   /** §5.3: recover a gap without remounting an editor or writing its serialised Markdown. */
   async function resyncOpen(): Promise<void> {
     const document = open.value;
-    if (!document || live.value) return;
+    if (!document || live.value || retainsScopedSource()) return;
     const path = document.path;
     const request = documentRequest;
     const generation = edits;
@@ -1117,8 +1426,12 @@ export const useDocsStore = defineStore("docs", () => {
       const fresh = await api.doc(path);
       if (!current()) return;
       const changed = fresh.updated_at !== document.updated_at || fresh.content !== document.content;
+      if (retainsScopedSource()) {
+        if (changed) blockExternalReplacement();
+        return;
+      }
       if (protectedNow()) {
-        if (changed) staleOnDisk.value = true;
+        if (changed) staleOnDisk.value = !fenceError.value;
         return;
       }
       // Even an identical assignment can reset the editor/cursor. An unchanged read is a no-op.
@@ -1127,8 +1440,12 @@ export const useDocsStore = defineStore("docs", () => {
       liveTitle.value = fresh.title;
     } catch (cause) {
       if (!current()) return;
+      if (retainsScopedSource()) {
+        if (cause instanceof ApiError && cause.status === 404) blockExternalReplacement();
+        return;
+      }
       if (cause instanceof ApiError && cause.status === 404) {
-        if (protectedNow()) staleOnDisk.value = true;
+        if (protectedNow()) staleOnDisk.value = !fenceError.value;
         else closeDocument();
       } else error.value = cause instanceof Error ? cause.message : String(cause);
     }
@@ -1178,18 +1495,23 @@ export const useDocsStore = defineStore("docs", () => {
       if (live.value) {
         // In a room this is the room's own Markdown arriving through sync — written by its
         // scribe, already on screen here. Nothing to warn about and nothing to load: the
-        // header's facts are refreshed and the editor is left exactly as it is. A file
-        // replaced from *outside* the room ends the room, and the page reopens it.
-        if (payload.deleted) closeDocument();
-        else void refreshOpen(payload.path);
+        // header's facts are refreshed and the editor is left exactly as it is.
+        // External delete/reset is not proof that an admitted editor's RAM can be lost.
+        if (payload.deleted) {
+          if (!rendererSession.isLegacy || editorBinding || dirty.value || saving.value
+            || saveError.value || fenceError.value) {
+            blockExternalReplacement();
+          } else closeDocument();
+        } else if (!fenceError.value) void refreshOpen(payload.path);
         return;
       }
+      if (retainsScopedSource()) { blockExternalReplacement(); return; }
       // Someone else's write. With nothing local to lose, adopt it — or, for a delete, let the
       // document go, since reading it again is a 404; otherwise say so and let the user
       // decide — the save would be refused anyway (§14.5), and "Keep mine" writes it back.
-      if (dirty.value || saving.value) staleOnDisk.value = true;
+      if (dirty.value || saving.value) staleOnDisk.value = !fenceError.value;
       else if (payload.deleted) closeDocument();
-      else void select(payload.path);
+      else void select(payload.path, true);
     });
 
     onEvent("sync.conflict", (payload) => {
@@ -1228,6 +1550,13 @@ export const useDocsStore = defineStore("docs", () => {
     error,
     saveError,
     staleOnDisk,
+    fenceError,
+    lastSaveReceipt,
+    setEditorFence,
+    setEditorLease,
+    proveMaterialization,
+    captureSave,
+    captureMutation,
     live,
     setLive,
     reopen,

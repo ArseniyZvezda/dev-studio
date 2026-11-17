@@ -7,13 +7,22 @@ function fixture(platform = 'win32', appOwned = false) {
   const window = new EventEmitter();
   const overlays = [], flashes = [];
   const icon = { native: true };
-  let focused = false, label = 'Waiting for your reply';
+  let focused = false, destroyed = false, label = 'Waiting for your reply';
+  const contents = new EventEmitter();
   Object.assign(window, {
-    webContents: new EventEmitter(), isDestroyed: () => false, isFocused: () => focused,
-    setOverlayIcon: (...args) => overlays.push(args), flashFrame: value => flashes.push(value),
+    isDestroyed: () => destroyed, isFocused: () => focused,
+    setOverlayIcon: (...args) => { assert.equal(destroyed, false); overlays.push(args); },
+    flashFrame: value => { assert.equal(destroyed, false); flashes.push(value); },
+  });
+  Object.defineProperty(window, 'webContents', {
+    get() {
+      if (destroyed) throw new TypeError('Object has been destroyed');
+      return contents;
+    },
   });
   const attention = registerProducerAttention({ window, icon, description: () => label, platform, appOwned });
-  return { window, icon, attention, overlays, flashes,
+  return { window, contents, icon, attention, overlays, flashes,
+    close: () => { destroyed = true; window.emit('closed'); },
     focus: () => { focused = true; window.emit('focus'); },
     translate: () => { label = 'Ожидает ответа'; attention.refresh(); },
   };
@@ -34,6 +43,26 @@ test('attention survives focus and locale changes, and clears only when answered
   f.attention.set(false);
   assert.deepEqual(f.overlays.at(-1), [null, '']);
 });
+
+for (const appOwned of [false, true]) {
+  test(`closed-window cleanup avoids destroyed native properties (appOwned=${appOwned})`, () => {
+    const f = fixture('win32', appOwned);
+    f.attention.set(true);
+    const overlays = [...f.overlays], flashes = [...f.flashes];
+    assert.doesNotThrow(() => f.close());
+    assert.equal(f.window.listenerCount('focus'), 0);
+    assert.equal(f.window.listenerCount('closed'), 0);
+    assert.equal(f.contents.listenerCount('did-start-navigation'), 0);
+    assert.equal(f.contents.listenerCount('render-process-gone'), 0);
+    f.attention.dispose();
+    f.attention.set(true);
+    f.attention.refresh();
+    f.window.emit('focus');
+    f.contents.emit('render-process-gone');
+    assert.deepEqual(f.overlays, overlays);
+    assert.deepEqual(f.flashes, flashes);
+  });
+}
 
 test('reload, project navigation and a crashed renderer cannot retain a stale badge', () => {
   const f = fixture();

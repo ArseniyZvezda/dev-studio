@@ -30,6 +30,7 @@ from uuid import uuid4
 
 from ..models.base import utcnow
 from ..plugins import envs as plugin_envs
+from ..sync.reservations import ReservationOwner
 from ..ws.bus import Event, EventBus, Subscription
 from ..ws.events import EventType, desktop_target, producer_needs_reply
 from .context import AppContext
@@ -61,6 +62,19 @@ def initialise_workspace(state: Any, *, browser_bus: EventBus | None = None) -> 
     Call after the initial context's startup succeeds. Repeated calls never rotate
     runtime ids, discard resident contexts or reset the legacy browser event bus.
     """
+    # App lifespan supplies the owner BEFORE bootstrap startup (Studio design §4.3).
+    # Embedded callers may initialise it here, but selection/reinitialisation must
+    # never replace it or reopen admission, even after a failed shutdown.
+    if getattr(state, "remote_reservations", None) is None:
+        state.remote_reservations = ReservationOwner()
+    state.ctx.remote_reservations = state.remote_reservations
+    if not hasattr(state, "_failed_project_contexts"):
+        state._failed_project_contexts = {}
+    lifecycle = getattr(state, "remote_profile_lifecycle", None)
+    state.ctx.remote_profile_lifecycle = lifecycle
+    if lifecycle is not None:
+        # Also cover embedded/test contexts whose startup does not register itself.
+        lifecycle.register_context(state.ctx)
     if hasattr(state, "project_registry") and state.project_contexts:
         return
     if not hasattr(state, "project_lock"):
@@ -92,13 +106,45 @@ def _register_project(state: Any, ctx: AppContext) -> ProjectDescriptor:
 
 async def shutdown_workspace(state: Any) -> None:
     """Only server shutdown cancels work in every resident project (§5.1)."""
+    reservations = getattr(state, "remote_reservations", None)
+    if reservations is not None:
+        # Before the first await, including waiting for project_lock. Consumers
+        # retain their leases until their own stop completes; never clear here.
+        reservations.close_admission()
+    # Failed startup contexts have no public descriptor, but remain owned and
+    # retryable until shutdown actually joins their consumers
+    # (runtime-integration-plan §3.1/I2).
     async with state.project_lock:
-        await state.desktop_events.close()
-        contexts = list(state.project_contexts.values())
+        desktop_events = getattr(state, "desktop_events", None)
+        if desktop_events is not None:
+            await desktop_events.close()
+        residents = getattr(state, "project_contexts", {})
+        failed = getattr(state, "_failed_project_contexts", {})
+        contexts = list(residents.values())
+        contexts.extend(ctx for ctx in failed.values() if ctx not in contexts)
         results = await asyncio.gather(*(ctx.shutdown() for ctx in contexts), return_exceptions=True)
-        state.project_contexts.clear()
-        state.project_registry.clear()
-        state.project_roots.clear()
+        lifecycle = getattr(state, "remote_profile_lifecycle", None)
+        for index, (ctx, result) in enumerate(zip(contexts, results)):
+            if isinstance(result, BaseException):
+                continue
+            try:
+                if lifecycle is not None:
+                    # Embedded contexts may not implement AppContext's cleanup.
+                    lifecycle.unregister_context(ctx)
+            except Exception as exc:
+                results[index] = exc
+                continue
+            # Never lose a failed stop by clearing the whole registry. Cancellation
+            # before gather completes also leaves every context available to retry.
+            for root, resident in list(residents.items()):
+                if resident is ctx:
+                    del residents[root]
+                    descriptor = getattr(state, "project_roots", {}).pop(root, None)
+                    if descriptor is not None:
+                        getattr(state, "project_registry", {}).pop(descriptor.project_id, None)
+            for root, pending in list(failed.items()):
+                if pending is ctx:
+                    del failed[root]
         # Shared by every project, so stopped here rather than by any one of them (§2.1).
         await plugin_envs.shutdown()
         for result in results:
@@ -125,14 +171,28 @@ async def _ensure_project_locked(
     if resident is not None:
         return resident, existed
 
+    if target in state._failed_project_contexts:
+        # A second consumer cannot take over a failed startup's still-live leases.
+        raise RuntimeError("Project cleanup is incomplete")
     replacement = AppContext.create(str(target), state.auth)
+    replacement.remote_reservations = state.remote_reservations
     replacement.work_contexts = lambda: list(state.project_contexts.values())
+    lifecycle = getattr(state, "remote_profile_lifecycle", None)
+    replacement.remote_profile_lifecycle = lifecycle
     try:
+        # Track starting contexts before any await, not just the selected project.
+        if lifecycle is not None:
+            lifecycle.register_context(replacement)
         await replacement.startup()
     except BaseException:
         # Never publish a half-started context or mask the original startup failure.
+        # Record BEFORE cleanup: failure/cancellation must retain the exact context.
+        state._failed_project_contexts[target] = replacement
         try:
             await replacement.shutdown()
+            if lifecycle is not None:
+                lifecycle.unregister_context(replacement)
+            del state._failed_project_contexts[target]
         except BaseException:
             log.exception("Could not clean up failed project startup at %s", target)
         raise

@@ -84,6 +84,10 @@ $env:VOXARIUM_STUDIO_PROJECT = (Resolve-Path ../.scratch/demo-project).Path
 npm start
 ```
 
+Developer tools are available in packaged builds: press **F12** or **Ctrl+Shift+I**
+(**Cmd+Shift+I** on macOS) to toggle a detached inspector for the focused project
+page or shell. They are also available on the startup screen.
+
 The shell uses the built SPA. For browser HMR continue using `run.cmd -Dev`.
 Close confirms that running tasks will stop when the shell owns the backend.
 Exit waits for that backend process to finish saving state, then ends its entire

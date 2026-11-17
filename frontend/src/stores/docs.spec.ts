@@ -13,14 +13,19 @@
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "@/api/client";
+import { ApiError, createApiClient } from "@/api/client";
+import { t } from "@/i18n";
 import { LINE_HEIGHT } from "@/stores/docs";
+import { useSyncStore } from "@/stores/sync";
 import type {
   DocDetail,
   DocEntry,
   DocFolderDeleted,
   DocFolderRenameFrame,
   DocFolderStyle,
+  DocumentFence,
+  ProjectRemoteStatus,
+  ProjectRemoteEditorLease,
 } from "@/api/types";
 
 const api = {
@@ -37,6 +42,9 @@ const api = {
   setDocFolderStyle: vi.fn(),
   renameDocFolder: vi.fn(),
   updateSettings: vi.fn(),
+  projectRemote: vi.fn(),
+  materializeRemoteEditor: vi.fn(),
+  confirmRemoteEditorMaterialization: vi.fn(),
 };
 
 vi.mock("@/api/client", async () => {
@@ -44,6 +52,7 @@ vi.mock("@/api/client", async () => {
     await vi.importActual<typeof import("@/api/client")>("@/api/client");
   return {
     ApiError: actual.ApiError,
+    createApiClient: vi.fn(() => api),
     api: new Proxy(
       {},
       { get: (_, key: string) => api[key as keyof typeof api] },
@@ -64,9 +73,14 @@ vi.mock("@/ws/connection", () => ({
 
 const mockSession = vi.hoisted(() => ({
   isLegacy: true,
+  scope: null as { project_id: string; epoch: string } | null,
+  capture: () => () => undefined,
   matches: (scope: { project_id?: string; epoch?: string }) => scope.project_id === 'project_a' && scope.epoch === 'epoch_a',
 }));
-vi.mock('@/session/project-session', () => ({ rendererSession: mockSession }));
+vi.mock('@/session/project-session', async importOriginal => ({
+  ...await importOriginal<typeof import('@/session/project-session')>(),
+  rendererSession: mockSession,
+}));
 
 const {
   FOLDS_KEY_PREFIX,
@@ -95,7 +109,9 @@ function detail(path: string, content = "# Doc\n"): DocDetail {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  vi.mocked(createApiClient).mockClear();
   mockSession.isLegacy = true;
+  mockSession.scope = null;
   setActivePinia(createPinia());
   mockWsHandlers.clear();
   for (const stub of Object.values(api)) stub.mockReset();
@@ -221,7 +237,8 @@ describe('scoped gap recovery', () => {
     gap();
     await tick();
     expect(store.open).toBe(original);
-    expect(store.staleOnDisk).toBe(state !== 'live');
+    // A scoped edit without metadata/registration is fenced, never offered Keep mine.
+    expect(store.staleOnDisk).toBe(state === 'saving');
     expect(store.dirty).toBe(state === 'dirty');
     expect(store.saving).toBe(state === 'saving');
     expect(store.live).toBe(state === 'live' ? 'room-one' : null);
@@ -246,7 +263,8 @@ describe('scoped gap recovery', () => {
     await tick();
     expect(store.open).toBe(original);
     expect(store.dirty).toBe(true);
-    expect(store.staleOnDisk).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.fenceError).not.toBeNull();
     expect(store.draftTitle).toBe('My draft title');
   });
 
@@ -271,7 +289,8 @@ describe('scoped gap recovery', () => {
     await tick();
     expect(store.open?.path).toBe('two.md');
     expect(store.dirty).toBe(true);
-    expect(store.staleOnDisk).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.fenceError).not.toBeNull();
   });
 
   it('ignores foreign, obsolete, unscoped and legacy gaps', async () => {
@@ -326,7 +345,8 @@ describe('scoped gap recovery', () => {
     store.subscribe();
     api.doc.mockResolvedValue(detail('one.md'));
     await store.select('one.md');
-    store.markDirty();
+    // This case exercises read recovery, not edit admission without a registered lease.
+    store.dirty = true;
     gap();
     await tick();
     expect(store.dirty).toBe(true);
@@ -1858,5 +1878,962 @@ describe("deleting a document or a folder (§5.2)", () => {
     answer(gone);
     await deleting;
     expect(store.open).toBeNull();
+  });
+});
+
+
+describe("captured document mutation fences (runtime integration I8)", () => {
+  const path = "features/dash.md";
+  const fence: DocumentFence = { backend_epoch: "backend-a", expected_binding_generation: 4,
+    editor_id: "editor-a", client_instance_id: "client-a", sid: "sid-a", version: 10 };
+  const remote = (generation = 4): ProjectRemoteStatus => ({ project_id: "project_a", epoch: "epoch_a",
+    backend_epoch: "backend-a", persistent_id: "copy-id", identity_revision: 1,
+    config_fingerprint: "fp", url: "", enabled: false, has_token: false,
+    binding_generation: generation, state: "disabled", active_rooms: 0, pending_writes: 0 });
+
+  async function metadata(generation = 4) {
+    api.projectRemote.mockResolvedValue(remote(generation));
+    expect(await useSyncStore().loadRemote()).toBe(true);
+  }
+
+  async function editing() {
+    mockSession.isLegacy = false;
+    mockSession.scope = { project_id: "project_a", epoch: "epoch_a" };
+    await metadata();
+    const store = useDocsStore();
+    api.doc.mockResolvedValue(detail(path));
+    await store.select(path);
+    store.setLive("sid-a");
+    store.setEditorFence(fence);
+    return store;
+  }
+
+  function saved(version: number, sequence = 38) {
+    return { ...detail(path, "# Saved\n"), editor_id: "editor-a", backend_epoch: "backend-a",
+      binding_generation: 4, version, last_saved_version: sequence };
+  }
+
+  it("captures immutable path/live/version/fence before debounce, never latest G", async () => {
+    const store = await editing();
+    const ticket = store.markDirty()!;
+    expect(ticket.version).toBe(11);
+    expect(Object.isFrozen(ticket)).toBe(true);
+    expect(Object.isFrozen(ticket.fence)).toBe(true);
+    expect(Object.isFrozen(ticket.binding)).toBe(true);
+    store.setLive(null);
+    store.markDirty();
+    api.saveDoc.mockResolvedValue(saved(11));
+    expect(await store.save("# Saved\n", ticket)).toBe(true);
+    expect(api.saveDoc).toHaveBeenCalledWith(path, "# Saved\n", null, null, "sid-a",
+      { ...fence, version: 11 });
+    expect(store.dirty, "a later version is still owed").toBe(true);
+    expect(store.lastSaveReceipt).toEqual({ editor_id: "editor-a", backend_epoch: "backend-a",
+      binding_generation: 4, version: 11, last_saved_version: 38 });
+    expect(Object.isFrozen(store.lastSaveReceipt)).toBe(true);
+  });
+
+  it("keeps the registration ticket for final edits during a same-G pending refresh", async () => {
+    const store = await editing();
+    const sync = useSyncStore();
+    const registered = sync.capture();
+    // This is captured before registration/room attachment awaits, then handed back
+    // while same-G draining metadata is pending. Fresh admission must still refuse.
+    sync.remotePending = true;
+    expect(() => sync.capture()).toThrow("no longer current");
+    store.setEditorFence(fence, registered);
+    const capture = vi.spyOn(sync, "capture");
+    const ticket = store.markDirty()!;
+    expect(ticket).not.toBeNull();
+    expect(ticket.binding).toBe(registered);
+    expect(store.captureSave().binding).toBe(registered);
+    expect(capture).not.toHaveBeenCalled();
+    api.saveDoc.mockResolvedValue(saved(ticket.version));
+    expect(await store.save("# Final scribe Markdown\n", ticket)).toBe(true);
+    expect(api.saveDoc).toHaveBeenCalledWith(path, "# Final scribe Markdown\n", null, null, "sid-a",
+      { ...fence, version: ticket.version });
+    expect(store.lastSaveReceipt?.version).toBe(ticket.version);
+    expect(store.fenceError).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
+    await expect(store.createDocument("not-new-admission.md")).rejects.toThrow("no longer current");
+    expect(capture).toHaveBeenCalledTimes(1);
+    capture.mockRestore();
+  });
+
+  it("captures the compatibility registration ticket once, not again for each edit", async () => {
+    const store = await editing();
+    const sync = useSyncStore();
+    const capture = vi.spyOn(sync, "capture");
+    store.setEditorFence(fence);
+    expect(capture).toHaveBeenCalledTimes(1);
+    const registered = store.captureSave().binding;
+    sync.remotePending = true;
+    expect(store.markDirty()?.binding).toBe(registered);
+    expect(store.captureSave().binding).toBe(registered);
+    expect(capture).toHaveBeenCalledTimes(1);
+    capture.mockRestore();
+  });
+
+  it("refuses an invalidated registration ticket after G changes without recapturing latest G", async () => {
+    const store = await editing();
+    const sync = useSyncStore();
+    const registered = sync.capture();
+    store.setEditorFence(fence, registered);
+    const oldSave = store.markDirty()!;
+    await metadata(5);
+    const capture = vi.spyOn(sync, "capture");
+    expect(() => store.captureSave()).toThrow("no longer current");
+    expect(store.markDirty()).toBeNull();
+    expect(await store.save("# Old-G callback\n", oldSave)).toBe(false);
+    expect(await store.save("# No latest-G substitution\n")).toBe(false);
+    expect(() => store.setEditorFence({ ...fence, expected_binding_generation: 5 }, registered))
+      .toThrow("no longer current");
+    expect(capture).not.toHaveBeenCalled();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    capture.mockRestore();
+  });
+
+  const refresh = (store: ReturnType<typeof useDocsStore>, method: "select" | "reopen") =>
+    method === "select" ? store.select(path) : store.reopen();
+
+  it.each(["select", "reopen"] as const)("retains the same-path lease after clean %s but rejects old save callbacks", async method => {
+    const store = await editing();
+    const old = store.markDirty()!;
+    api.saveDoc.mockResolvedValue(saved(old.version));
+    expect(await store.save("# Saved before refresh\n", old)).toBe(true);
+    api.saveDoc.mockClear();
+    const registered = store.captureSave().binding;
+    const capture = vi.spyOn(useSyncStore(), "capture");
+    api.doc.mockResolvedValue(detail(path, "# Fresh server read\n"));
+    await refresh(store, method);
+    expect(store.open?.content).toBe("# Fresh server read\n");
+    expect(store.dirty).toBe(false);
+    expect(store.fenceError).toBeNull();
+    expect(await store.save("# Old debounce\n", old)).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    useSyncStore().remotePending = true;
+    const next = store.markDirty()!;
+    expect(next.binding).toBe(registered);
+    expect(next.fence).toEqual({ ...fence, version: old.version + 1 });
+    expect(next.revision).not.toBe(old.revision);
+    expect(capture).not.toHaveBeenCalled();
+    api.saveDoc.mockResolvedValue(saved(next.version));
+    expect(await store.save("# Edit after refresh\n", next)).toBe(true);
+    expect(api.saveDoc).toHaveBeenCalledWith(path, "# Edit after refresh\n", null, null, "sid-a", next.fence);
+    expect(store.lastSaveReceipt?.version).toBe(next.version);
+    capture.mockRestore();
+  });
+
+  it.each(["select", "reopen"] as const)("preserves the current document/edit/lease when same-path %s fails", async method => {
+    const store = await editing();
+    const old = store.markDirty()!;
+    const document = store.open;
+    store.saveError = "existing save failure";
+    store.staleOnDisk = true;
+    api.doc.mockRejectedValue(new ApiError(503, "read unavailable"));
+    await refresh(store, method);
+    expect(store.open).toBe(document);
+    expect(store.dirty).toBe(true);
+    expect(store.saveError).toBe("existing save failure");
+    expect(store.staleOnDisk).toBe(true);
+    expect(store.fenceError).toBeNull();
+    expect(await store.save("# Superseded callback\n", old)).toBe(false);
+    const next = store.captureSave();
+    expect(next.binding).toBe(old.binding);
+    expect(next.revision).not.toBe(old.revision);
+    api.saveDoc.mockResolvedValue(saved(next.version));
+    expect(await store.save("# Still owned by this lease\n", next)).toBe(true);
+  });
+
+  it.each(["select", "reopen"] as const)("does not clear or escape a typed fence through explicit %s", async method => {
+    const store = await editing();
+    const old = store.markDirty()!;
+    const document = store.open;
+    const refusal = new ApiError(409, "editor expired", "editor_lease_expired");
+    api.saveDoc.mockRejectedValue(refusal);
+    expect(await store.save("# Must stay visible\n", old)).toBe(false);
+    api.doc.mockClear();
+    api.doc.mockResolvedValue(detail(path, "# Disk is not recovery permission\n"));
+    await refresh(store, method);
+    expect(api.doc).not.toHaveBeenCalled();
+    expect(store.open).toBe(document);
+    expect(store.fenceError).toBe(refusal);
+    expect(store.saveError).toBe(t("docs.remoteEditor.blocked"));
+    expect(store.dirty).toBe(true);
+    expect(() => store.captureSave()).toThrow(refusal);
+    expect(await store.save("# No replay after reload\n", old)).toBe(false);
+    expect(api.saveDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["select", "reopen"] as const)("does not revive a stale-G registration on same-path %s", async method => {
+    const store = await editing();
+    const document = store.open;
+    await metadata(5);
+    api.doc.mockResolvedValue(detail(path, "# New-G disk read\n"));
+    await refresh(store, method);
+    expect(store.open).toBe(document);
+    expect(store.fenceError).not.toBeNull();
+    expect(store.markDirty()).toBeNull();
+    expect(await store.save("# No latest-G adoption\n")).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["select", "reopen"] as const)("preserves an edit and typed failure arriving during same-path %s", async method => {
+    const store = await editing();
+    const document = store.open;
+    let finish!: (value: DocDetail) => void;
+    api.doc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const reading = refresh(store, method);
+    const ticket = store.markDirty()!;
+    const refusal = new ApiError(409, "lease fenced during read", "unknown_editor");
+    api.saveDoc.mockRejectedValue(refusal);
+    expect(await store.save("# Typed during refresh\n", ticket)).toBe(false);
+    finish(detail(path, "# Delayed disk read\n"));
+    await reading;
+    expect(store.open).toBe(document);
+    expect(store.dirty).toBe(true);
+    expect(store.fenceError).toBe(refusal);
+    expect(store.saveError).toBe(t("docs.remoteEditor.blocked"));
+    expect(await store.save("# Still not a retry\n", ticket)).toBe(false);
+    expect(api.saveDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the parent capture a move fence before flush/release awaits without recapturing", async () => {
+    const store = await editing();
+    const mutation = store.captureMutation();
+    expect(Object.isFrozen(mutation)).toBe(true);
+    expect(Object.isFrozen(mutation.fence)).toBe(true);
+    expect(mutation.fence).toEqual({ backend_epoch: "backend-a", expected_binding_generation: 4 });
+    store.setEditorFence(null);
+    useSyncStore().remotePending = true;
+    const capture = vi.spyOn(useSyncStore(), "capture");
+    api.moveDoc.mockResolvedValue({ path: "moved.md", referrers: [] });
+    await store.rename("other.md", "moved.md", mutation);
+    expect(api.moveDoc).toHaveBeenCalledWith("other.md", "moved.md", mutation.fence);
+    expect(capture).not.toHaveBeenCalled();
+    capture.mockRestore();
+  });
+
+  it("rejects a pre-flush move ticket after G changes without substituting current G", async () => {
+    const store = await editing();
+    const mutation = store.captureMutation();
+    await metadata(5);
+    store.setEditorFence(null);
+    const capture = vi.spyOn(useSyncStore(), "capture");
+    expect(await store.rename("other.md", "moved.md", mutation)).toEqual([]);
+    expect(api.moveDoc).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(store.fenceError).not.toBeNull();
+    capture.mockRestore();
+  });
+
+  it("rejects a queued old-G callback without invoking HTTP or borrowing the new registration", async () => {
+    const store = await editing();
+    let finish!: (value: ReturnType<typeof saved>) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const firstTicket = store.markDirty()!;
+    const first = store.save("# One\n", firstTicket);
+    await tick();
+    const secondTicket = store.markDirty()!;
+    const second = store.save("# Two\n", secondTicket);
+    await metadata(5);
+    store.setEditorFence({ ...fence, expected_binding_generation: 5, editor_id: "editor-b" });
+    finish(saved(firstTicket.version));
+    expect(await first).toBe(false);
+    expect(await second).toBe(false);
+    expect(api.saveDoc).toHaveBeenCalledTimes(1);
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.fenceError).not.toBeNull();
+  });
+
+  it.each(["reload_required", "stale_binding_generation", "unknown_sid", "pending_edits",
+    "editor_lease_expired", "mutation_busy", "future_admission_code"])(
+    "keeps typed 409 %s separate from disk conflict and refuses Keep mine/adopt", async code => {
+      const store = await editing();
+      const ticket = store.markDirty()!;
+      const refusal = new ApiError(409, "admission refused", code);
+      api.saveDoc.mockRejectedValue(refusal);
+      expect(await store.save("# Mine\n", ticket)).toBe(false);
+      expect(store.fenceError).toBe(refusal);
+      expect(store.staleOnDisk).toBe(false);
+      expect(store.dirty).toBe(true);
+      expect(await store.saveOverwriting("# Mine\n")).toBe(false);
+      const content = store.open?.content;
+      store.adopt("# Mine\n", ticket);
+      await store.settle();
+      expect(store.open?.content).toBe(content);
+      expect(api.saveDoc).toHaveBeenCalledTimes(1);
+      expect(store.lastSaveReceipt).toBeNull();
+    },
+  );
+
+  it.each(["editor_id", "backend_epoch", "binding_generation", "version", "last_saved_version"] as const)(
+    "does not acknowledge missing or mismatched server receipt %s", async field => {
+      const store = await editing();
+      const ticket = store.markDirty()!;
+      const result: Record<string, unknown> = saved(ticket.version);
+      delete result[field];
+      api.saveDoc.mockResolvedValue(result);
+      expect(await store.save("# Saved\n", ticket)).toBe(false);
+      expect(store.lastSaveReceipt).toBeNull();
+      expect(store.dirty).toBe(true);
+      expect(store.staleOnDisk).toBe(false);
+    },
+  );
+
+  it("still permits a real disk conflict overwrite with the same captured lease/version/sid", async () => {
+    const store = await editing();
+    const ticket = store.markDirty()!;
+    api.saveDoc.mockRejectedValueOnce(new ApiError(409, "disk conflict"));
+    expect(await store.save("# Mine\n", ticket)).toBe(false);
+    expect(store.staleOnDisk).toBe(true);
+    expect(store.fenceError).toBeNull();
+    api.saveDoc.mockResolvedValueOnce(saved(ticket.version));
+    expect(await store.saveOverwriting("# Mine\n", ticket)).toBe(true);
+    expect(api.saveDoc).toHaveBeenLastCalledWith(path, "# Mine\n", null, null, "sid-a", ticket.fence);
+    expect(store.lastSaveReceipt?.last_saved_version).toBe(38);
+  });
+
+  it("adopts with the captured lease rather than replacing it after a binding change", async () => {
+    const store = await editing();
+    const ticket = store.markDirty()!;
+    await metadata(5);
+    store.setEditorFence({ ...fence, expected_binding_generation: 5, editor_id: "editor-b" });
+    store.adopt("# Kept local\n", ticket);
+    await store.settle();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    expect(store.dirty).toBe(true);
+    expect(store.lastSaveReceipt).toBeNull();
+  });
+
+  it("does not redirect a debounce ticket after navigation to a copied path/reloaded revision", async () => {
+    const store = await editing();
+    const ticket = store.markDirty()!;
+    await store.select(path);
+    store.markDirty();
+    expect(await store.save("# Old debounce\n", ticket)).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  const actions = ["createDocument", "create", "remove", "deleteFolder", "rename", "renameFolder", "setFolderStyle"] as const;
+  async function act(store: ReturnType<typeof useDocsStore>, action: typeof actions[number]) {
+    switch (action) {
+      case "createDocument": return store.createDocument("new.md", { open: false });
+      case "create": return store.create("new.md", { open: false });
+      case "remove": return store.remove("other.md");
+      case "deleteFolder": return store.deleteFolder("other");
+      case "rename": return store.rename("other.md", "moved.md");
+      case "renameFolder": return store.renameFolder("other", "moved", () => {});
+      case "setFolderStyle": return store.setFolderStyle("other", { color: "blue" });
+    }
+  }
+  function mutationStubs() {
+    api.createDoc.mockResolvedValue(detail("new.md"));
+    api.deleteDoc.mockResolvedValue({ deleted: true });
+    api.deleteDocFolder.mockResolvedValue({ documents: [] });
+    api.moveDoc.mockResolvedValue({ path: "moved.md", referrers: [] });
+    api.renameDocFolder.mockResolvedValue({ type: "done" });
+    api.setDocFolderStyle.mockResolvedValue({ path: "other", color: "blue", icon: null });
+  }
+  const mutationCalls = () => [api.createDoc, api.deleteDoc, api.deleteDocFolder,
+    api.moveDoc, api.renameDocFolder, api.setDocFolderStyle].flatMap(stub => stub.mock.calls);
+
+  it.each(["remove", "deleteFolder", "rename", "renameFolder"] as const)(
+    "makes %s wait for a save enqueued before its pending dirty heartbeat", async action => {
+      const store = await editing();
+      mutationStubs();
+      let finishHeartbeat!: () => void;
+      const heartbeat = new Promise<void>(resolve => { finishHeartbeat = resolve; });
+      const ticket = store.markDirty()!;
+      api.saveDoc.mockResolvedValue(saved(ticket.version));
+      const saving = store.save("# Before navigation\n", ticket, heartbeat);
+      await tick();
+      const mutation = act(store, action);
+      await tick();
+      expect(api.saveDoc).not.toHaveBeenCalled();
+      expect(mutationCalls()).toHaveLength(0);
+      finishHeartbeat();
+      expect(await saving).toBe(true);
+      await mutation;
+      expect(api.saveDoc).toHaveBeenCalledTimes(1);
+      expect(mutationCalls()).toHaveLength(1);
+    });
+
+  it("orders explicit overwrite behind its captured heartbeat and keeps settle aware of it", async () => {
+    const store = await editing();
+    let finishHeartbeat!: () => void;
+    const heartbeat = new Promise<void>(resolve => { finishHeartbeat = resolve; });
+    const ticket = store.markDirty()!;
+    api.saveDoc.mockResolvedValue(saved(ticket.version));
+    const saving = store.saveOverwriting("# Explicit disk-conflict resolution\n", ticket, heartbeat);
+    let settled = false;
+    const waiting = store.settle().then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    finishHeartbeat();
+    expect(await saving).toBe(true);
+    await waiting;
+    expect(api.saveDoc.mock.calls[0].at(-1)).toEqual(ticket.fence);
+  });
+
+  it.each(actions)("passes captured binding fence through %s without a document-specific lease", async action => {
+    const store = await editing();
+    mutationStubs();
+    await act(store, action);
+    expect(mutationCalls()).toHaveLength(1);
+    expect(mutationCalls()[0].at(-1)).toEqual({ backend_epoch: "backend-a", expected_binding_generation: 4 });
+  });
+
+  it.each(actions)("does not send unfenced %s from a scoped renderer with unavailable metadata", async action => {
+    mockSession.isLegacy = false;
+    mockSession.scope = { project_id: "project_a", epoch: "epoch_a" };
+    const store = useDocsStore();
+    mutationStubs();
+    try { await act(store, action); } catch { /* Dialog actions intentionally propagate refusals. */ }
+    expect(mutationCalls()).toHaveLength(0);
+    expect(store.fenceError).not.toBeNull();
+  });
+
+  it.each(actions)("classifies a typed %s refusal as a fence, not a disk conflict", async action => {
+    const store = await editing();
+    mutationStubs();
+    const refusal = new ApiError(409, "wrong generation", "stale_binding_generation");
+    for (const stub of [api.createDoc, api.deleteDoc, api.deleteDocFolder,
+      api.moveDoc, api.renameDocFolder, api.setDocFolderStyle]) stub.mockRejectedValue(refusal);
+    try { await act(store, action); } catch { /* Field dialogs propagate the typed refusal. */ }
+    expect(store.fenceError).toBe(refusal);
+    expect(store.staleOnDisk).toBe(false);
+    expect(await store.saveOverwriting("# Not an escape\n")).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it("refuses saves before registration, retaining dirty text and exposing no receipt", async () => {
+    const store = await editing();
+    store.setEditorFence(null);
+    expect(store.markDirty()).toBeNull();
+    expect(await store.save("# Pending registration\n")).toBe(false);
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it("cannot use an old document's editor lease for another document before registration", async () => {
+    const store = await editing();
+    api.doc.mockResolvedValue(detail("other.md"));
+    await store.select("other.md");
+    expect(store.markDirty()).toBeNull();
+    expect(await store.save("# Different document\n")).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it("invalidates an old same-G editor callback when its registration is released or replaced", async () => {
+    const store = await editing();
+    const ticket = store.markDirty()!;
+    store.setEditorFence(null);
+    store.setEditorFence({ ...fence, editor_id: "replacement", sid: "replacement-room" });
+    expect(await store.save("# Old room debounce\n", ticket)).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    expect(store.dirty).toBe(true);
+    expect(store.lastSaveReceipt).toBeNull();
+  });
+
+  it("never redisplays Keep mine for a disk notification after a typed admission refusal", async () => {
+    const store = await editing();
+    store.setLive(null);
+    store.subscribe();
+    store.markDirty();
+    api.saveDoc.mockRejectedValue(new ApiError(409, "reload", "reload_required"));
+    await store.save("# My draft\n");
+    mockWsHandlers.get("team.doc.changed")?.({ path, title: "Other", author: null });
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.dirty).toBe(true);
+  });
+
+  it.each(["remove", "deleteFolder"] as const)("captures %s before waiting for earlier saves", async action => {
+    const store = await editing();
+    mutationStubs();
+    let finish!: (value: ReturnType<typeof saved>) => void;
+    api.saveDoc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const ticket = store.markDirty()!;
+    const saving = store.save("# Saved\n", ticket);
+    await tick();
+    const removing = act(store, action);
+    // Install a rejection handler before the event loop can report an unhandled refusal.
+    const rejected = expect(removing).rejects.toThrow("no longer current");
+    await metadata(5);
+    finish(saved(ticket.version));
+    await saving;
+    await rejected;
+    expect(api.deleteDoc).not.toHaveBeenCalled();
+    expect(api.deleteDocFolder).not.toHaveBeenCalled();
+    expect(store.open?.path).toBe(path);
+  });
+
+  it("captures queued folder style changes before the first write completes", async () => {
+    const store = await editing();
+    let finish!: (value: DocFolderStyle) => void;
+    api.setDocFolderStyle.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const first = store.setFolderStyle("other", { color: "blue" });
+    await tick();
+    const second = store.setFolderStyle("other", { icon: "book" });
+    await metadata(5);
+    finish({ path: "other", color: "blue", icon: null });
+    expect(await first).toBe(false);
+    expect(await second).toBe(false);
+    expect(api.setDocFolderStyle).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back to legacy once a renderer has used an activated fence", async () => {
+    const store = await editing();
+    store.setEditorFence(null);
+    mockSession.isLegacy = true;
+    mockSession.scope = null;
+    useSyncStore().remote = null;
+    mutationStubs();
+    await expect(store.createDocument("new.md")).rejects.toThrow();
+    expect(api.createDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe("materialized editor proof (I8)", () => {
+  const path = "features/dash.md";
+  const sid = "sid-a";
+  const fence: DocumentFence = { backend_epoch: "backend-a", expected_binding_generation: 4,
+    editor_id: "editor-a", client_instance_id: "client-a", sid, version: 10 };
+  const lease = (changes: Partial<ProjectRemoteEditorLease> = {}): ProjectRemoteEditorLease => ({
+    editor_id: "editor-a", backend_epoch: "backend-a", binding_generation: 4,
+    document_path: path, client_instance_id: "client-a", version: 10, revision: 73,
+    last_saved_version: null, lease_expires_at: 12345, dirty: true, confirmed: false, ...changes,
+  });
+  const body = { backend_epoch: "backend-a", expected_binding_generation: 4,
+    document_path: path, client_instance_id: "client-a", sid, version: 10, revision: 73 };
+  const content = "# Собственный snapshot\r\n\r\n  exact bytes\n";
+  const confirmed = () => lease({ dirty: false, confirmed: true, last_saved_version: 91 });
+
+  async function editing(dirty = false) {
+    mockSession.isLegacy = false;
+    mockSession.scope = { project_id: "project_a", epoch: "epoch_a" };
+    api.projectRemote.mockResolvedValue({ project_id: "project_a", epoch: "epoch_a",
+      backend_epoch: "backend-a", binding_generation: 4, state: "connected" });
+    expect(await useSyncStore().loadRemote()).toBe(true);
+    const store = useDocsStore();
+    api.doc.mockResolvedValue(detail(path));
+    await store.select(path);
+    store.setLive(sid);
+    store.setEditorFence(fence);
+    if (dirty) store.markDirty();
+    const version = store.captureSave().version;
+    store.setEditorLease(lease({ version }));
+    api.materializeRemoteEditor.mockResolvedValue({ ...lease({ version }), proof_id: "proof-a" });
+    api.confirmRemoteEditorMaterialization.mockResolvedValue({ ...confirmed(), version });
+    return store;
+  }
+
+  it.each([false, true])("proves exact captured server revision without writing or marking clean (dirty=%s)", async dirty => {
+    const store = await editing(dirty);
+    const captured = store.captureSave();
+    const snapshot = vi.fn();
+    const original = store.open;
+    useSyncStore().remotePending = true; // same-G drain retains the original ticket
+    const capture = vi.spyOn(useSyncStore(), "capture");
+    const result = await store.proveMaterialization(captured, sid, content, snapshot);
+    const expected = { ...body, version: captured.version };
+    expect(api.materializeRemoteEditor).toHaveBeenCalledExactlyOnceWith("editor-a", expected);
+    expect(api.confirmRemoteEditorMaterialization).toHaveBeenCalledExactlyOnceWith("editor-a", {
+      ...expected, proof_id: "proof-a", content,
+    });
+    expect(vi.mocked(createApiClient).mock.calls[0]![0]?.scope).toEqual(mockSession.scope);
+    expect(capture).not.toHaveBeenCalled();
+    expect(snapshot.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(result).toEqual({ ...confirmed(), version: captured.version });
+    expect(store.dirty).toBe(dirty);
+    expect(store.open).toBe(original);
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(store.saving).toBe(false);
+    expect(store.staleOnDisk).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+    expect(api.docs).not.toHaveBeenCalled();
+    expect(api.doc).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the lease revision before any await, not CapturedDocSave.revision", async () => {
+    const store = await editing();
+    const captured = store.captureSave();
+    expect(captured.revision).not.toBe(73);
+    let finish!: (value: unknown) => void;
+    api.materializeRemoteEditor.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = store.proveMaterialization(captured, sid, content, () => undefined);
+    store.setEditorLease(lease({ revision: 74 }));
+    finish({ ...lease(), proof_id: "proof-a" });
+    await expect(pending).rejects.toMatchObject({ code: "stale_editor_version" });
+    expect(api.materializeRemoteEditor.mock.calls[0]![1]).toEqual(body);
+    expect(api.confirmRemoteEditorMaterialization).not.toHaveBeenCalled();
+    expect(store.fenceError).toBeNull();
+  });
+
+  it.each(["backend_epoch", "expected_binding_generation", "editor_id", "client_instance_id", "sid", "version", "path", "live", "revision"])(
+    "rejects an altered captured %s before requesting proof", async field => {
+      const store = await editing();
+      const captured = store.captureSave();
+      const changed = ["path", "live", "revision"].includes(field)
+        ? { ...captured, [field]: field === "revision" ? 999 : "other" }
+        : { ...captured, fence: { ...captured.fence!, [field]: ["version", "expected_binding_generation"].includes(field) ? 999 : "other" } };
+      await expect(store.proveMaterialization(changed, sid, content, () => undefined)).rejects.toBeInstanceOf(Error);
+      expect(api.materializeRemoteEditor).not.toHaveBeenCalled();
+      expect(api.confirmRemoteEditorMaterialization).not.toHaveBeenCalled();
+    });
+
+  it.each(["ticket", "confirm"])("rechecks frozen snapshot after %s await", async phase => {
+    const store = await editing();
+    let current = true;
+    const assertSnapshot = () => { if (!current) throw new Error("snapshot changed"); };
+    const method = phase === "ticket" ? api.materializeRemoteEditor : api.confirmRemoteEditorMaterialization;
+    method.mockImplementationOnce(async () => {
+      current = false;
+      return phase === "ticket" ? { ...lease(), proof_id: "proof-a" } : confirmed();
+    });
+    await expect(store.proveMaterialization(store.captureSave(), sid, content, assertSnapshot)).rejects.toThrow("snapshot changed");
+    if (phase === "ticket") expect(api.confirmRemoteEditorMaterialization).not.toHaveBeenCalled();
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["ticket", "confirm"])("cannot update or fence a replacement owner after %s await", async phase => {
+    const store = await editing();
+    const method = phase === "ticket" ? api.materializeRemoteEditor : api.confirmRemoteEditorMaterialization;
+    method.mockImplementationOnce(async () => {
+      store.setEditorFence({ ...fence, editor_id: "replacement" });
+      store.setEditorLease(lease({ editor_id: "replacement", revision: 90 }));
+      return phase === "ticket" ? { ...lease(), proof_id: "proof-a" } : confirmed();
+    });
+    await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toMatchObject({ code: "stale_editor_version" });
+    expect(store.fenceError).toBeNull();
+    expect(store.captureSave().fence?.editor_id).toBe("replacement");
+    expect(store.lastSaveReceipt).toBeNull();
+  });
+
+  it.each(["ticket", "confirm"])("rejects a late %s success after binding invalidation", async phase => {
+    const store = await editing();
+    const captured = store.captureSave();
+    const method = phase === "ticket" ? api.materializeRemoteEditor : api.confirmRemoteEditorMaterialization;
+    method.mockImplementationOnce(async () => {
+      api.projectRemote.mockResolvedValue({ project_id: "project_a", epoch: "epoch_a",
+        backend_epoch: "backend-a", binding_generation: 5, state: "connected" });
+      await useSyncStore().loadRemote();
+      return phase === "ticket" ? { ...lease(), proof_id: "proof-a" } : confirmed();
+    });
+    await expect(store.proveMaterialization(captured, sid, content, () => undefined)).rejects.toBeInstanceOf(Error);
+    expect(store.fenceError).toBeNull();
+    if (phase === "ticket") expect(api.confirmRemoteEditorMaterialization).not.toHaveBeenCalled();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending_edits", "unknown_sid", "unknown_editor", "editor_mismatch", "editor_lease_expired",
+    "stale_editor_version", "stale_backend_epoch", "stale_binding_generation", "mutation_busy", null]
+    .flatMap(code => (["ticket", "confirm"] as const).map(phase => ({ code, phase }))))(
+    "$phase $code proof refusal never offers Keep mine or retries/saves", async ({ code, phase }) => {
+      const store = await editing(true);
+      const refusal = new ApiError(409, "proof refused", code);
+      (phase === "ticket" ? api.materializeRemoteEditor : api.confirmRemoteEditorMaterialization).mockRejectedValueOnce(refusal);
+      await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toMatchObject({
+        status: 409, code: code ?? "pending_edits", isDiskConflict: false,
+      });
+      if (["pending_edits", "mutation_busy", "stale_editor_version"].includes(code ?? "pending_edits")) {
+        expect(store.fenceError).toBeNull();
+      } else expect(store.fenceError).not.toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(store.dirty).toBe(true);
+      expect(await store.saveOverwriting(content)).toBe(false);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+      expect(api.materializeRemoteEditor).toHaveBeenCalledTimes(1);
+      expect(api.confirmRemoteEditorMaterialization).toHaveBeenCalledTimes(phase === "ticket" ? 0 : 1);
+    });
+
+  it.each(["editor_id", "backend_epoch", "binding_generation", "document_path", "client_instance_id", "version", "revision", "proof_id"])(
+    "rejects a ticket with mismatched %s", async field => {
+      const store = await editing();
+      api.materializeRemoteEditor.mockResolvedValueOnce({ ...lease(), proof_id: "proof-a", [field]: field === "proof_id" ? "" : 999 });
+      await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toMatchObject({ code: "stale_editor_version" });
+      expect(api.confirmRemoteEditorMaterialization).not.toHaveBeenCalled();
+    });
+
+  it.each([{ editor_id: "other" }, { revision: 74 }, { version: 11 }, { confirmed: false },
+    { dirty: true }, { last_saved_version: null }, { last_saved_version: 0 }])(
+    "refuses malformed confirmation %j without adopting it", async changed => {
+      const store = await editing();
+      api.confirmRemoteEditorMaterialization.mockResolvedValueOnce({ ...confirmed(), ...changed });
+      await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toMatchObject({ code: "stale_editor_version" });
+      expect(store.lastSaveReceipt).toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it("propagates network/confirm errors without saving, normalizing, or retrying", async () => {
+    const store = await editing(true);
+    const failure = new Error("offline");
+    api.confirmRemoteEditorMaterialization.mockRejectedValueOnce(failure);
+    await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toBe(failure);
+    expect(store.dirty).toBe(true);
+    expect(store.staleOnDisk).toBe(false);
+    expect(store.lastSaveReceipt).toBeNull();
+    expect(api.materializeRemoteEditor).toHaveBeenCalledTimes(1);
+    expect(api.confirmRemoteEditorMaterialization).toHaveBeenCalledTimes(1);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending_edits", "mutation_busy", "stale_editor_version"]
+    .flatMap(code => (["ticket", "confirm"] as const).map(phase => ({ code, phase }))))(
+    "recovers from $phase $code with a newer server lease and own proof, never a save", async ({ code, phase }) => {
+      const store = await editing(true);
+      const captured = store.captureSave();
+      const document = store.open;
+      (phase === "ticket" ? api.materializeRemoteEditor : api.confirmRemoteEditorMaterialization)
+        .mockRejectedValueOnce(new ApiError(409, "peer-final-save not ready", code));
+      await expect(store.proveMaterialization(captured, sid, content, () => undefined)).rejects.toMatchObject({ code });
+      expect(store.fenceError).toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(await store.saveOverwriting(content)).toBe(false);
+      // The caller waits for peer-final-save/ACK and refreshes the neutral server DTO.
+      const fresh = lease({ version: captured.version, revision: 74 });
+      store.setEditorLease(fresh);
+      api.materializeRemoteEditor.mockResolvedValueOnce({ ...fresh, proof_id: "own-proof-after-peer-save" });
+      api.confirmRemoteEditorMaterialization.mockResolvedValueOnce({ ...fresh,
+        dirty: false, confirmed: true, last_saved_version: 92 });
+      const result = await store.proveMaterialization(captured, sid, content, () => undefined);
+      expect(result.last_saved_version).toBe(92);
+      expect(api.materializeRemoteEditor).toHaveBeenLastCalledWith("editor-a", {
+        ...body, version: captured.version, revision: 74,
+      });
+      expect(api.confirmRemoteEditorMaterialization).toHaveBeenLastCalledWith("editor-a", {
+        ...body, version: captured.version, revision: 74, proof_id: "own-proof-after-peer-save", content,
+      });
+      expect(store.open).toBe(document);
+      expect(store.dirty).toBe(true);
+      expect(store.lastSaveReceipt).toBeNull();
+      expect(store.fenceError).toBeNull();
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it.each(["clean", "dirty", "offline", "fenced"] as const)(
+    "retains the scoped %s live editor on external delete and exposes a terminal typed fence", async state => {
+      const store = await editing(state !== "clean");
+      store.subscribe();
+      if (state === "offline") store.saveError = "offline";
+      if (state === "fenced") {
+        api.materializeRemoteEditor.mockRejectedValueOnce(new ApiError(409, "expired", "editor_lease_expired"));
+        await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toThrow();
+      }
+      const document = store.open;
+      const dirty = store.dirty;
+      const previousFence = store.fenceError;
+      mockWsHandlers.get("team.doc.changed")?.({ path, title: null, author: "remote:peer", deleted: true });
+      expect(store.open).toBe(document);
+      expect(store.open?.content).toBe(document?.content);
+      expect(store.dirty).toBe(dirty);
+      expect(store.live).toBe(sid);
+      expect(store.fenceError).toMatchObject({ status: 409, code: previousFence ? "editor_lease_expired" : "unknown_sid" });
+      expect(store.staleOnDisk).toBe(false);
+      expect(store.lastSaveReceipt).toBeNull();
+      expect(await store.saveOverwriting(content)).toBe(false);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+      await tick();
+      expect(store.open).toBe(document);
+    });
+
+  it("does not replace retained scoped live source with a metadata read arriving after delete/reset", async () => {
+    const store = await editing(true);
+    store.subscribe();
+    const document = store.open;
+    let finish!: (fresh: DocDetail) => void;
+    api.doc.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    mockWsHandlers.get("team.doc.changed")?.({ path, title: "peer-save", author: "remote:peer", deleted: false });
+    mockWsHandlers.get("team.doc.changed")?.({ path, title: null, author: "remote:peer", deleted: true });
+    finish(detail(path, "# Deleted source from an obsolete read\n"));
+    await tick();
+    expect(store.open).toBe(document);
+    expect(store.dirty).toBe(true);
+    expect(store.live).toBe(sid);
+    expect(store.fenceError).toMatchObject({ code: "unknown_sid" });
+    expect(store.staleOnDisk).toBe(false);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  type RetainedState = "live" | "fenced" | "save-error" | "draining" | "paused" | "post-fence";
+  const phase = (state: "draining" | "paused" | "post-fence") => {
+    useSyncStore().bindingChange = { change_id: "change-a", expires_at: 9999999999,
+      state: state === "post-fence" ? "paused" : state,
+      binding_generation: state === "post-fence" ? 5 : 4, expected_generation: 4,
+      fenced: state === "post-fence", required_editor_acks: ["editor-a"], missing_acks: ["editor-a"], reason: null };
+  };
+  async function retained(state: RetainedState) {
+    const store = await editing();
+    if (state !== "live") {
+      store.setLive(null);
+      store.setEditorFence({ ...fence, sid: null });
+    }
+    if (state === "fenced") store.fenceError = new ApiError(409, "expired", "editor_lease_expired");
+    else if (state === "save-error") store.saveError = "offline";
+    else if (state !== "live") phase(state);
+    store.subscribe();
+    return store;
+  }
+  const externalFolder = (action: "rename" | "delete") => mockWsHandlers.get("team.doc.folder_changed")?.(
+    action === "rename"
+      ? { path: "moved", previous_path: "features", author: "remote:peer", deleted: false }
+      : { path: "features", previous_path: null, author: "remote:peer", deleted: true });
+
+  it.each((["live", "fenced", "save-error", "draining", "paused", "post-fence"] as const)
+    .flatMap(state => (["rename", "delete"] as const).map(action => ({ state, action }))))(
+    "retains clean/unconfirmed $state source on external folder $action with a typed blocker", async ({ state, action }) => {
+      const store = await retained(state);
+      const document = store.open;
+      const originalSid = store.live;
+      api.docs.mockResolvedValue(action === "rename" ? [entry("moved/dash.md")] : []);
+      externalFolder(action);
+      await tick();
+      expect(store.open).toBe(document);
+      expect(store.open?.path).toBe(path);
+      expect(store.open?.content).toBe(document?.content);
+      expect(store.dirty).toBe(false);
+      expect(store.live).toBe(originalSid);
+      expect(store.fenceError).toMatchObject({ status: 409,
+        code: state === "fenced" ? "editor_lease_expired" : state === "live" ? "unknown_sid" : "editor_mismatch" });
+      expect(store.staleOnDisk).toBe(false);
+      expect(api.doc).toHaveBeenCalledTimes(1);
+      expect(await store.saveOverwriting(content)).toBe(false);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it.each((["draining", "paused", "fenced", "save-error"] as const)
+    .flatMap(state => [false, true].map(deleted => ({ state, deleted }))))(
+    "does not reload/close ordinary scoped $state source on document event (deleted=$deleted)", async ({ state, deleted }) => {
+      const store = await retained(state);
+      const document = store.open;
+      mockWsHandlers.get("team.doc.changed")?.({ path, title: null, author: "remote:peer", deleted });
+      await tick();
+      expect(store.open).toBe(document);
+      expect(store.dirty).toBe(false);
+      expect(store.live).toBeNull();
+      expect(store.fenceError).not.toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(api.doc).toHaveBeenCalledTimes(1);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it.each(["rename", "delete"] as const)("retains dirty scoped live RAM on external folder %s without Keep mine", async action => {
+    const store = await retained("live");
+    store.markDirty();
+    const document = store.open;
+    api.docs.mockResolvedValue(action === "rename" ? [entry("moved/dash.md")] : []);
+    externalFolder(action);
+    await tick();
+    expect(store.open).toBe(document);
+    expect(store.dirty).toBe(true);
+    expect(store.live).toBe(sid);
+    expect(store.fenceError).toMatchObject({ code: "unknown_sid" });
+    expect(store.staleOnDisk).toBe(false);
+    expect(await store.saveOverwriting(content)).toBe(false);
+    expect(api.doc).toHaveBeenCalledTimes(1);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["rename", "delete"] as const)("rechecks phase after external folder %s listing await", async action => {
+    const store = await editing();
+    store.setLive(null);
+    store.setEditorFence({ ...fence, sid: null });
+    store.subscribe();
+    const document = store.open;
+    let finish!: (entries: DocEntry[]) => void;
+    api.docs.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    externalFolder(action);
+    phase("draining");
+    finish(action === "rename" ? [entry("moved/dash.md")] : []);
+    await tick();
+    expect(store.open).toBe(document);
+    expect(store.dirty).toBe(false);
+    expect(store.live).toBeNull();
+    expect(store.fenceError).toMatchObject({ code: "editor_mismatch" });
+    expect(store.staleOnDisk).toBe(false);
+    expect(api.doc).toHaveBeenCalledTimes(1);
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it.each(["draining", "paused", "fenced", "save-error", "post-fence"] as const)(
+    "gap recovery leaves retained ordinary scoped %s source untouched without a read", async state => {
+      const store = await retained(state);
+      const document = store.open;
+      mockWsHandlers.get("system.dropped")?.({ count: 1, resync: true }, mockSession.scope!);
+      await tick();
+      expect(store.open).toBe(document);
+      expect(store.dirty).toBe(false);
+      expect(store.live).toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(api.doc).toHaveBeenCalledTimes(1);
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it.each((["document", "gap"] as const).flatMap(channel =>
+    (["draining", "paused"] as const).flatMap(state => [false, true].map(deleted => ({ channel, state, deleted })))))(
+    "discards pretransition $channel read when $state starts before response (deleted=$deleted)", async ({ channel, state, deleted }) => {
+      const store = await editing();
+      store.setLive(null);
+      store.setEditorFence({ ...fence, sid: null });
+      store.subscribe();
+      const document = store.open;
+      let finish!: (document: DocDetail) => void;
+      let refuse!: (error: Error) => void;
+      api.doc.mockImplementationOnce(() => new Promise((resolve, reject) => { finish = resolve; refuse = reject; }));
+      if (channel === "document") {
+        mockWsHandlers.get("team.doc.changed")?.({ path, title: "changed", author: "remote:peer", deleted: false });
+      } else mockWsHandlers.get("system.dropped")?.({ count: 1, resync: true }, mockSession.scope!);
+      await tick();
+      phase(state);
+      if (deleted) refuse(new ApiError(404, "deleted"));
+      else finish(detail(path, "# Incoming source must not replace frozen RAM\n"));
+      await tick();
+      expect(store.open).toBe(document);
+      expect(store.dirty).toBe(false);
+      expect(store.live).toBeNull();
+      expect(store.staleOnDisk).toBe(false);
+      expect(store.fenceError).toMatchObject({ code: "editor_mismatch" });
+      expect(api.saveDoc).not.toHaveBeenCalled();
+    });
+
+  it.each(["rename", "delete"] as const)("still applies explicit own folder %s after releasing the lease", async action => {
+    const store = await editing();
+    store.setLive(null);
+    store.setEditorFence(null);
+    if (action === "delete") {
+      api.deleteDocFolder.mockResolvedValue({ path: "features", documents: [path] });
+      api.docs.mockResolvedValue([]);
+      await store.deleteFolder("features");
+      expect(store.open).toBeNull();
+    } else {
+      api.renameDocFolder.mockImplementationOnce(async (_path, _name, receive) => {
+        receive({ type: "renamed", path: "moved", previous_path: "features", moved: 1, documents: [] });
+        return { type: "done", path: "moved", previous_path: "features", moved: 1, updated: 0, links: 0, failed: 0 };
+      });
+      api.docs.mockResolvedValue([entry("moved/dash.md")]);
+      api.doc.mockResolvedValue(detail("moved/dash.md"));
+      await store.renameFolder("features", "moved", () => undefined);
+      expect(store.open?.path).toBe("moved/dash.md");
+    }
+    expect(store.fenceError).toBeNull();
+    expect(api.saveDoc).not.toHaveBeenCalled();
+  });
+
+  it("requires a server lease DTO and refuses a foreign or regressed lease", async () => {
+    const store = await editing();
+    expect(() => store.setEditorLease(lease({ editor_id: "other" }))).toThrow();
+    expect(() => store.setEditorLease(lease({ revision: 72 }))).toThrow();
+    store.setEditorFence(fence);
+    await expect(store.proveMaterialization(store.captureSave(), sid, content, () => undefined)).rejects.toMatchObject({ code: "stale_editor_version" });
+    expect(api.materializeRemoteEditor).not.toHaveBeenCalled();
   });
 });

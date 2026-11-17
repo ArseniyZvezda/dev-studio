@@ -8,10 +8,12 @@ export function isGlobalApiPath(path: string): boolean {
     || path === '/project/recent' || path.startsWith('/fs/') || path.startsWith('/runtime/')
     || path === '/updates' || path.startsWith('/updates/')
     || /^\/plugins\/[^/]+\/install-env$/.test(path)
-    // studio-design §5.1/§6: only the unmounted Remote router's existing paths.
+    // studio-design §5.1/§6: only the explicitly admitted Remote router paths.
     // Canonical UUIDs match api/remote.py; no decoding or namespace-wide bypass.
     || path === '/remote/servers'
-    || /^\/remote\/servers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?:verify|projects)(?![\s\S])/.test(path)
+    || /^\/remote\/servers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/(?:credential|recover|verify|projects))?(?![\s\S])/.test(path)
+    // studio-design §5.1/C9: exact local observation command, not an operations namespace.
+    || /^\/remote\/servers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/projects\/operations\/[A-Za-z0-9._-]{1,128}\/observe(?![\s\S])/.test(path)
 }
 
 function queryString(path: string, query?: Query): string {

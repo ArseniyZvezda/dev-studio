@@ -21,7 +21,7 @@
 import { Bot, GraduationCap, Trash2, User, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, shallowReactive, watch } from 'vue'
 
-import type { EffortSolverWeights, MemberKind, MemberUpdate, TeamMember } from '@/api/types'
+import type { MemberKind, MemberUpdate, TeamMember } from '@/api/types'
 import SkillPicker from '@/components/skills/SkillPicker.vue'
 import MemberIconPicker from '@/components/teams/MemberIconPicker.vue'
 import MemberMark from '@/components/teams/MemberMark.vue'
@@ -32,7 +32,6 @@ import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
 import ModelSelector from '@/components/ui/ModelSelector.vue'
 import { t } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
-import { DEFAULT_EFFORT_SOLVER_WEIGHTS, EFFORT_SOLVER_DIMENSIONS, validEffortSolverWeights } from '@/lib/effort-solver'
 import { skillChips, skillDisplayName } from '@/lib/skills'
 import { useSkillsStore } from '@/stores/skills'
 import { useSessionStore } from '@/stores/session'
@@ -64,7 +63,6 @@ interface Draft {
   agent: string
   model: string
   effort: string | null
-  effort_solver_weights: EffortSolverWeights
   allowed_tools: string[]
   skills: string[]
   required_skills: string[]
@@ -91,7 +89,6 @@ function draftOf(member: TeamMember): Draft {
     agent: member.agent ?? '',
     model: member.model,
     effort: member.effort,
-    effort_solver_weights: { ...(member.effort_solver_weights ?? DEFAULT_EFFORT_SOLVER_WEIGHTS) },
     allowed_tools: [...(member.allowed_tools ?? [])],
     skills: [...(member.skills ?? [])],
     required_skills: [...(member.required_skills ?? [])],
@@ -250,9 +247,6 @@ const patch = computed<MemberUpdate>(() => {
   if (current.model.trim() !== original.model) result.model = current.model.trim()
   // Null and "" both mean "the model decides"; only a real change is worth a request.
   if ((current.effort || null) !== (original.effort || null)) result.effort = current.effort || null
-  if (isEffortSolver.value && EFFORT_SOLVER_DIMENSIONS.some(key =>
-    current.effort_solver_weights[key] !== (original.effort_solver_weights ?? DEFAULT_EFFORT_SOLVER_WEIGHTS)[key],
-  )) result.effort_solver_weights = { ...current.effort_solver_weights }
   if (current.run_settings_override !== (original.run_settings_override ?? false))
     result.run_settings_override = current.run_settings_override
   if (current.run_settings_override && current.permission_mode !== original.permission_mode)
@@ -295,8 +289,7 @@ const dirty = computed(() => Object.keys(patch.value).length > 0)
 const validTurns = computed(() => !draft.value.run_settings_override || (
   Number.isInteger(draft.value.max_turns) && draft.value.max_turns >= 1 && draft.value.max_turns <= 1000
 ))
-const validWeights = computed(() => !isEffortSolver.value || validEffortSolverWeights(draft.value.effort_solver_weights))
-const valid = computed(() => draft.value.name.trim().length > 0 && validTurns.value && validWeights.value)
+const valid = computed(() => draft.value.name.trim().length > 0 && validTurns.value && (!isEffortSolver.value || draft.value.model.trim() !== 'auto'))
 
 /** Long enough that typing a role title is one save, short enough to feel immediate. */
 const SAVE_DELAY = 600
@@ -599,24 +592,6 @@ async function remove() {
         </p>
       </section>
 
-      <!-- §10.11: these relative weights belong only to the built-in Effort Solver. -->
-      <section v-if="isEffortSolver" class="space-y-2 border-t border-line-subtle pt-3">
-        <p class="text-small font-semibold tracking-wide text-faint uppercase">{{ t('effortSolver.weights') }}</p>
-        <div class="grid grid-cols-2 gap-2">
-          <label v-for="dimension in EFFORT_SOLVER_DIMENSIONS" :key="dimension" class="block">
-            <span class="mb-1 block text-small text-faint">{{ t(`effortSolver.dimensions.${dimension}`) }}</span>
-            <input
-              v-model.number="draft.effort_solver_weights[dimension]"
-              type="number"
-              min="0"
-              step="any"
-              :aria-label="t(`effortSolver.dimensions.${dimension}`)"
-              class="field"
-            />
-          </label>
-        </div>
-        <p class="text-small text-faint">{{ t('effortSolver.weightsHint') }}</p>
-      </section>
 
       <!-- Skills --------------------------------------------------------------- -->
       <!-- Chips from the draft, the picker from the folder (§10.10). A name the folder no longer
@@ -701,7 +676,7 @@ async function remove() {
           {{ t('teams.editor.agentSection') }}
         </p>
 
-        <ModelSelector class="w-full" :backend="draft.agent_backend" :model="draft.model" :options="options"
+        <ModelSelector class="w-full" :backend="draft.agent_backend" :model="draft.model" :options="options" :allow-auto="!isEffortSolver"
           @change="(backend, model) => { draft.agent_backend = backend ?? draft.agent_backend; draft.model = model ?? '' }" />
         <p v-if="modelNote" class="text-small text-faint">{{ modelNote }}</p>
         <p
@@ -853,7 +828,8 @@ async function remove() {
         >
           <template v-if="!draft.name.trim()">{{ t('teams.editor.nameNeeded') }}</template>
           <template v-else-if="!validTurns">{{ t('teams.settings.invalidTurns') }}</template>
-          <template v-else-if="!validWeights">{{ t('effortSolver.invalidWeights') }}</template>
+          <template v-else-if="isEffortSolver && draft.model.trim() === 'auto'">{{ t('effortSolver.noAuto') }}</template>
+          <template v-else-if="isEffortSolver && draft.model.trim() === 'auto'">{{ t('effortSolver.noAuto') }}</template>
           <template v-else-if="failed">{{ t('teams.editor.notSaved') }}</template>
           <template v-else-if="saving || dirty">{{ t('common.saving') }}</template>
           <!-- Not naming the file: a team's id and its filename are independent (see

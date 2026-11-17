@@ -499,8 +499,8 @@ export type TaskResultType = 'done' | 'question' | 'error'
 /** `human` members have no agent session — their tasks wait in an inbox (§10.2). */
 export type MemberKind = 'agent' | 'human'
 
-/** The four relative weights used by the built-in Effort Solver (§10.11). */
-export interface EffortSolverWeights {
+/** The four integer scores returned by the built-in Effort Solver (§10.11). */
+export interface EffortSolverScores {
   complexity: number
   creativity: number
   depth: number
@@ -509,7 +509,6 @@ export interface EffortSolverWeights {
 
 export interface TeamMember {
   builtin?: 'producer' | 'director' | 'effort_solver' | null
-  effort_solver_weights?: EffortSolverWeights | null
   id: string
   team_id: string
   name: string
@@ -529,6 +528,8 @@ export interface TeamMember {
   model: string
   /** How hard the model works per turn, or null to leave it to the model's own default. */
   effort: string | null
+  /** Built-in Effort Solver curve multiplier (§10.11); defaults to 1. */
+  effort_solver_curve_multiplier?: number
   allowed_tools: string[]
   /**
    * Skills from `.voxarium_studio/skills/` this member may use, by folder name (§10.10). Empty unless
@@ -1012,7 +1013,6 @@ export interface ActivityDay {
 }
 
 export interface MemberUpdate {
-  effort_solver_weights?: EffortSolverWeights | null
   name?: string
   role_title?: string
   kind?: MemberKind
@@ -1026,6 +1026,7 @@ export interface MemberUpdate {
   model?: string
   /** Null clears it back to the model's default — sent, not omitted (`exclude_unset`). */
   effort?: string | null
+  effort_solver_curve_multiplier?: number
   allowed_tools?: string[]
   /** The whole list as it should be. A name being *added* must be a skill the project has. */
   skills?: string[]
@@ -1121,6 +1122,35 @@ export interface DocDetail extends DocEntry {
   links: DocLink[]
   backlinks: DocBacklink[]
 }
+
+/** Captured before queue/debounce/await; never filled from the latest sync metadata (§5.3). */
+export interface DocumentFence {
+  readonly backend_epoch: string
+  readonly expected_binding_generation: number
+  readonly editor_id?: string | null
+  readonly client_instance_id?: string | null
+  readonly sid?: string | null
+  /** Local editor version, NOT the server's last_saved_version receipt. */
+  readonly version?: number | null
+}
+
+/** I4 server evidence returned only after a completed save; not client-supplied proof. */
+export interface DocumentSaveReceipt {
+  editor_id: string
+  backend_epoch: string
+  binding_generation: number
+  version: number
+  last_saved_version: number
+}
+
+/** Legacy writes have no receipt. A leased save returns all receipt fields together. */
+export type DocSaved = DocDetail & (DocumentSaveReceipt | {
+  editor_id?: never
+  backend_epoch?: never
+  binding_generation?: never
+  version?: never
+  last_saved_version?: never
+})
 
 export interface DocSearchResult {
   path: string
@@ -1352,7 +1382,201 @@ export interface SyncUpdate {
   token?: string
 }
 
+// ------------------------------------------------ project Remote (studio-design §5.2–5.3)
+// Local project DTOs, not Remote wire. Endpoint presence and backend release
+// gates are independent: typed clients do not grant Select/Preview/Enable access.
+
+export type ProjectRemoteState = SyncState
+  | 'binding_required' | 'migration_required' | 'quiescing' | 'blocked'
+
+/** Runtime epoch, backend lease epoch and persistent identity are different namespaces. */
+export interface ProjectRemoteStatus {
+  project_id: string
+  epoch: string
+  backend_epoch: string
+  persistent_id: string | null
+  identity_revision: number | null
+  config_fingerprint: string
+  url: string
+  enabled: boolean
+  has_token: boolean
+  profile_id?: string | null
+  binding_generation: number
+  space_instance_id?: string | null
+  state: ProjectRemoteState
+  reason?: string | null
+  active_rooms: number
+  pending_writes: number
+  /** Explicit null means no observed transition; absence is not idle evidence. */
+  binding_change?: RemoteJsonObject | null
+}
+
+/** I6 historical commit receipt; never relabel it with a newer backend epoch/G. */
+export interface ProjectRemoteCommitReceipt extends ProjectRemoteStatus {
+  committed: true
+  change_id: string
+  binding_change: { change_id: string; state: 'committed' }
+}
+
+export interface ProjectRemoteEditorRegister {
+  document_path: string
+  client_instance_id: string
+  backend_epoch: string
+  expected_binding_generation: number
+  sid?: string | null
+}
+
+/** Exact I4 lease DTO. last_saved_version is a server sequence, not local version. */
+export interface ProjectRemoteEditorLease extends Omit<DocumentSaveReceipt, 'last_saved_version'> {
+  /** Server lease CAS revision, not the local editor version or Remote document rev. */
+  revision: number
+  /** Null until the backend has initial-read or completed-save evidence. */
+  last_saved_version: number | null
+  document_path: string
+  client_instance_id: string
+  /** Unix timestamp in seconds, as emitted by I4 (not an ISO string). */
+  lease_expires_at: number
+  dirty: boolean
+  confirmed: boolean
+  /** Only ordinary clean-open registration may include this bound server read. */
+  loaded_document?: DocDetail
+}
+
+export interface ProjectRemoteEditorHeartbeat {
+  backend_epoch: string
+  expected_binding_generation: number
+  client_instance_id?: string | null
+  document_path?: string | null
+  sid?: string | null
+  dirty?: boolean | null
+  version?: number | null
+  last_saved_version?: number | null
+}
+
+export interface ProjectRemoteEditorClosed extends ProjectRemoteEditorLease { closed: true }
+
+/** I8 local proof: the original frozen editor tuple, with no clean claim or receipt. */
+export interface ProjectRemoteEditorMaterialization {
+  backend_epoch: string
+  expected_binding_generation: number
+  document_path: string
+  client_instance_id: string
+  sid: string
+  version: number
+  revision: number
+}
+
+export interface ProjectRemoteEditorMaterializationTicket extends ProjectRemoteEditorLease {
+  proof_id: string
+}
+
+export interface ProjectRemoteEditorMaterializationConfirm extends ProjectRemoteEditorMaterialization {
+  proof_id: string
+  content: string
+}
+
+export type ProjectRemoteOperation = 'edit_id' | 'select' | 'disable' | 'unbind' | 'migrate'
+export interface ProjectRemotePrepareRequest {
+  /** Captured backend lifetime, never substituted after a queued request. */
+  backend_epoch?: string
+  expected_revision: number
+  config_fingerprint: string
+  profile_id?: string | null
+  persistent_id: string
+  url?: string | null
+  operation: ProjectRemoteOperation
+  catalog_id?: string | null
+  catalog_instance_id?: string | null
+  migration_plan_id?: string | null
+}
+
+/** Sections whose internal schema is not frozen by §5.2 remain opaque JSON, not `any`. */
+export type RemoteJsonValue = null | boolean | number | string | RemoteJsonValue[] | { [key: string]: RemoteJsonValue }
+export type RemoteJsonObject = { [key: string]: RemoteJsonValue }
+
+export interface ProjectRemotePreparedChange {
+  change_id: string
+  expires_at: string | number
+  from: RemoteJsonObject
+  to: RemoteJsonObject
+  required_editor_acks: string[]
+  plan: RemoteJsonObject
+  conflicts: RemoteJsonObject[]
+}
+
+export interface ProjectRemoteQuiesceRequest { expected_generation: number }
+export interface ProjectRemoteDrainStatus {
+  state: 'draining' | 'ready' | 'blocked'
+  missing_acks: string[]
+  reason?: string | null
+}
+export interface ProjectRemoteEditorAckRequest {
+  editor_id: string
+  old_generation: number
+  last_saved_version: number
+}
+export interface ProjectRemoteConfirmation { url: string; persistent_id: string }
+export interface ProjectRemoteCommitRequest {
+  expected_revision: number
+  expected_generation: number
+  config_fingerprint: string
+  confirmation: ProjectRemoteConfirmation
+}
+export interface ProjectRemotePreview {
+  preview_id: string
+  fingerprint: string
+  counts: Record<string, number>
+  conflicts: RemoteJsonObject[]
+  expires_at: string | number
+}
+export interface ProjectRemoteEnableRequest {
+  expected_revision: number
+  expected_generation: number
+  preview_id: string
+  confirmation: ProjectRemoteConfirmation & { action: 'reconcile' }
+}
+export interface ProjectRemoteMigrationPlan {
+  migration_plan_id: string
+  legacy_url: string
+  legacy_selector: string
+  config_fingerprint: string
+  has_legacy_key: boolean
+  state: string
+}
+export interface ProjectRemoteMigrationProfileRequest {
+  config_fingerprint: string
+  profile_id?: string | null
+  name?: string | null
+  import_legacy_credential: boolean
+  confirmation: { url: string }
+}
+/** §5.2 does not yet freeze profile-command output fields; no credential DTO is inferred. */
+export type ProjectRemoteMigrationProfile = RemoteJsonObject
+export interface ProjectRemoteMigrationResolveRequest {
+  profile_id: string
+  expected_profile_revision: number
+  config_fingerprint: string
+}
+export interface ProjectRemoteMigrationResolution {
+  migration_plan_id: string
+  legacy_selector: string
+  catalog_id: string
+  space_instance_id: string
+  changes: RemoteJsonObject
+  conflicts: RemoteJsonObject[]
+}
+
+/** Fixed I4 refusal codes, distinct from an untyped disk conflict HTTP 409. */
+export type DocumentFenceErrorCode =
+  | 'reload_required' | 'stale_backend_epoch' | 'stale_binding_generation'
+  | 'unknown_editor' | 'editor_mismatch' | 'editor_lease_expired' | 'unknown_sid'
+  | 'pending_edits' | 'stale_editor_version' | 'invalid_editor' | 'use_remote_settings'
+  | 'mutation_busy'
+
+export type OrchestratorModels = Record<string, { '1': string; '2': string; '3': string }>
+
 export interface AppConfig {
+  orchestrator_models?: OrchestratorModels
   version: number
   /** User-wide preference; absent/null keeps the browser's startup language (§6.4). */
   language?: 'en' | 'ru' | null
@@ -1513,6 +1737,7 @@ export interface SettingsUpdate {
 
 /** Settings shared by every managed project, persisted in the user config (§5.1). */
 export interface ApplicationSettingsUpdate {
+  orchestrator_models?: OrchestratorModels
   theme?: Partial<Omit<ThemeConfig, 'accent'>>
   updates?: Partial<UpdatesConfig>
   node_cache_enabled?: boolean
@@ -1868,7 +2093,12 @@ export interface StatusInfo {
   event_seq: number
   ws_clients: number
   jobs: { id: string; kind: string; meta: Record<string, unknown> }[]
-  agent_backends: Record<string, { available: boolean; reason: string }>
+  agent_backends: Record<string, {
+    available: boolean
+    reason: string
+    /** Account quota consumed, from recent CLI telemetry (§6.1), not context usage. */
+    usage_limits?: { window: string; used_percent: number; resets_at: number | null }[]
+  }>
   vcs_backends: Record<
     string,
     { name: string; available: boolean; reason: string; active: boolean }

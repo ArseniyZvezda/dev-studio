@@ -22,6 +22,7 @@ with everything in it (:meth:`DocStore.delete_folder`).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -30,16 +31,21 @@ import secrets
 import threading
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from stat import S_ISREG
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote, urlsplit
 
 from ..core.paths import ProjectPaths
 from ..explorer.service import IMAGE_SUFFIXES, PathOutsideProject, remove_path
 from ..ws.bus import EventBus
 from ..ws.events import EventType
+
+if TYPE_CHECKING:
+    from ..sync.transitions import BindingTransitions, MutationAdmission
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +163,34 @@ class DocumentChangedOnDisk(Exception):
     parsed document in memory, so a blind write would silently replace the other change with
     a version of the file that predates it. Refusing costs a dialog; not refusing costs work.
     """
+
+
+class SnapshotChangedOnDisk(DocumentChangedOnDisk):
+    """The raw document corpus changed outside DocStore's mutation gate (§16.3)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DocSnapshot:
+    """Immutable raw Documents corpus, valid only inside ``final_snapshot`` (§16.3).
+
+    Paths are relative POSIX paths with their original suffix; bytes are not decoded or
+    newline-normalised. Assets and folder metadata are deliberately not synchronised.
+    """
+
+    docs: tuple[tuple[str, bytes], ...]
+    fingerprint: str
+    generation: int
+    _verify: Callable[[], None]
+    _advance: Callable[[], int]
+
+    def verify(self) -> None:
+        """Re-read content, refusing external edits even with unchanged size and mtime."""
+        self._verify()
+
+    def advance_generation(self) -> int:
+        """Verify immediately before asking the live fence to advance its generation."""
+        self.verify()
+        return self._advance()
 
 
 class FolderStyleUnreadable(Exception):
@@ -298,23 +332,106 @@ class FolderRename:
 
 
 class DocStore:
-    def __init__(self, paths: ProjectPaths, bus: EventBus | None = None) -> None:
+    """One resident context's Documents boundary (§16.3).
+
+    Async corpus mutations share ``transitions``. An explicit binding generation is
+    never silently adopted; ``None`` preserves local/in-process legacy calls. Image
+    uploads and external filesystem writers are outside this Markdown-only boundary.
+    """
+
+    def __init__(
+        self,
+        paths: ProjectPaths,
+        bus: EventBus | None = None,
+        *,
+        transitions: BindingTransitions | None = None,
+    ) -> None:
+        # sync.__init__ imports RemoteSync, which imports DocStore: keep direct DocStore
+        # imports usable without relying on AppContext having imported sync first.
+        from ..sync.transitions import BindingTransitions
+
         self.paths = paths
         self.bus = bus
+        self.transitions = transitions if transitions is not None else BindingTransitions()
         # A ``threading`` lock rather than an ``asyncio`` one because these methods are
         # synchronous and may be called from an anyio worker thread as well as from the event
         # loop. Every caller is on the loop today, so contention is nil — the lock is what
         # keeps that an implementation detail rather than a constraint.
         self._lock = threading.Lock()
         self._cached: _DocIndex | None = None
-        # Held from a folder rename's first check until the last of its links is mended, which
-        # is a task of its own — see :meth:`rename_folder`.
+        # Held through the rename's FS phase and all link mending, never through event
+        # publication: subscribers may synchronously await another rename/delete.
         self._folder_lock = asyncio.Lock()
         self._mending: set[asyncio.Task[None]] = set()
 
     @property
     def directory(self) -> Path:
         return self.paths.docs
+
+    def _snapshot_docs(self) -> tuple[tuple[str, bytes], ...]:
+        # No index/metadata signature: external writes may preserve both mtime and size.
+        # Fail closed on unreadable/vanishing documents instead of silently omitting them.
+        root = _plain(self.directory.resolve())
+        try:
+            self.directory.stat()
+        except FileNotFoundError:
+            return ()
+
+        def unreadable(exc: OSError) -> None:
+            raise exc
+
+        documents: list[tuple[str, bytes]] = []
+        # rglob suppresses scandir errors and could silently snapshot an incomplete tree.
+        for folder, _dirs, files in self.directory.walk(on_error=unreadable):
+            for name in files:
+                path = folder / name
+                if path.suffix.lower() not in ALLOWED_SUFFIXES:
+                    continue
+                if not S_ISREG(path.stat().st_mode):
+                    continue
+                resolved = _plain(path.resolve())
+                if root not in resolved.parents:
+                    raise PathOutsideProject(f"Document escapes the docs tree: {path}")
+                documents.append((path.relative_to(self.directory).as_posix(), path.read_bytes()))
+        return tuple(sorted(documents))
+
+    @staticmethod
+    def _snapshot_fingerprint(documents: tuple[tuple[str, bytes], ...]) -> str:
+        digest = hashlib.sha256(b"voxarium-doc-snapshot-v1\0")
+        for path, data in documents:
+            encoded = path.encode("utf-8", errors="surrogateescape")
+            # Length framing distinguishes concatenations and includes the exact path.
+            for part in (encoded, data):
+                digest.update(len(part).to_bytes(8, "big"))
+                digest.update(part)
+        return digest.hexdigest()
+
+    @asynccontextmanager
+    async def final_snapshot(self) -> AsyncIterator[DocSnapshot]:
+        """Drain admitted mutations and fence the final raw corpus (§16.3).
+
+        External editors cannot be locked out: verify before committing a binding and
+        automatically on successful exit. A failure must abort the caller's transition.
+        """
+        async with self.transitions.final_snapshot() as fence:
+            documents = self._snapshot_docs()
+            fingerprint = self._snapshot_fingerprint(documents)
+            active = True
+
+            def verify() -> None:
+                if not active:
+                    raise RuntimeError("The document snapshot fence is no longer active")
+                if self._snapshot_fingerprint(self._snapshot_docs()) != fingerprint:
+                    raise SnapshotChangedOnDisk("Documents changed during the final snapshot")
+
+            snapshot = DocSnapshot(
+                documents, fingerprint, fence.generation, verify, fence.advance_generation
+            )
+            try:
+                yield snapshot
+                snapshot.verify()
+            finally:
+                active = False
 
     # ------------------------------------------------------------------ paths
 
@@ -797,6 +914,7 @@ class DocStore:
         author: str | None = None,
         expected_updated_at: str | None = None,
         exclusive: bool = False,
+        expected_binding_generation: int | None = None,
     ) -> dict[str, object]:
         """Write a document, atomically.
 
@@ -811,62 +929,80 @@ class DocStore:
         down to a heading. Asked of the filesystem, so on Windows ``Notes.md`` is taken by
         ``notes.md`` as well.
         """
-        if len(content.encode("utf-8")) > MAX_DOC_BYTES:
-            raise ValueError(f"Document exceeds {MAX_DOC_BYTES} bytes")
-
-        path = self.resolve(relative)
-        if exclusive and path.exists():
-            raise FileExistsError(f"{self.relative(path)!r} already exists")
-        if expected_updated_at is not None and path.is_file():
-            # A live ``stat`` through ``_entry``, deliberately not the index: staleness is the
-            # one question that may never be answered from a cache, or a blind save clobbers
-            # the agent write it exists to refuse.
-            current = self._entry(path).updated_at
-            if current != expected_updated_at:
-                raise DocumentChangedOnDisk(
-                    f"{self.relative(path)!r} changed on disk at {current}; "
-                    "reload it before saving"
-                )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Written beside the target and moved onto it, so the file is never half-written
-        # (§7). The temporary file is cleaned up when that move fails — a read-only file or
-        # one locked by another program otherwise leaves ``spec.md.tmp`` in the user's docs
-        # folder, where it shows up in their next commit.
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        admission = await self.transitions.admit(expected_binding_generation)
         try:
-            tmp.write_text(content, encoding="utf-8", newline="\n")
-            tmp.replace(path)
-        except OSError:
-            tmp.unlink(missing_ok=True)
-            raise
-        self._invalidate()
+            async with admission.critical():
+                if len(content.encode("utf-8")) > MAX_DOC_BYTES:
+                    raise ValueError(f"Document exceeds {MAX_DOC_BYTES} bytes")
 
-        entry = self._entry(path)
+                path = self.resolve(relative)
+                if exclusive and path.exists():
+                    raise FileExistsError(f"{self.relative(path)!r} already exists")
+                if expected_updated_at is not None and path.is_file():
+                    # A live ``stat`` through ``_entry``, deliberately not the index: staleness is the
+                    # one question that may never be answered from a cache, or a blind save clobbers
+                    # the agent write it exists to refuse.
+                    current = self._entry(path).updated_at
+                    if current != expected_updated_at:
+                        raise DocumentChangedOnDisk(
+                            f"{self.relative(path)!r} changed on disk at {current}; "
+                            "reload it before saving"
+                        )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # Written beside the target and moved onto it, so the file is never half-written
+                # (§7). The temporary file is cleaned up when that move fails — a read-only file or
+                # one locked by another program otherwise leaves ``spec.md.tmp`` in the user's docs
+                # folder, where it shows up in their next commit.
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                try:
+                    tmp.write_text(content, encoding="utf-8", newline="\n")
+                    tmp.replace(path)
+                except OSError:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                self._invalidate()
+
+                entry = self._entry(path)
+                # The same shape a read returns, links and backlinks included. An editor that saves
+                # and then adopts this payload would otherwise lose both panels — and rebuilding them
+                # is precisely what a save should do, since a save is when the links changed.
+                index = self._index()
+                result = {
+                    **entry.to_json(),
+                    "content": content,
+                    "links": self._outgoing(entry.path, content, index),
+                    "backlinks": self._backlinks(entry.path, index),
+                }
+        finally:
+            admission.release()
+
         if self.bus is not None:
             await self.bus.publish(
                 EventType.TEAM_DOC_CHANGED,
                 {"path": entry.path, "title": entry.title, "author": author},
             )
         log.info("Document %s written by %s", entry.path, author or "the user")
-        # The same shape a read returns, links and backlinks included. An editor that saves
-        # and then adopts this payload would otherwise lose both panels — and rebuilding them
-        # is precisely what a save should do, since a save is when the links changed.
-        index = self._index()
-        return {
-            **entry.to_json(),
-            "content": content,
-            "links": self._outgoing(entry.path, content, index),
-            "backlinks": self._backlinks(entry.path, index),
-        }
+        return result
 
-    async def delete(self, relative: str, *, author: str | None = None) -> str:
-        path = self.resolve(relative)
-        if not path.is_file():
-            raise FileNotFoundError(f"No document {self.relative(path)!r}")
-        rel = self.relative(path)
-        path.unlink()
-        self._prune_empty_folders(path.parent)
-        self._invalidate()
+    async def delete(
+        self,
+        relative: str,
+        *,
+        author: str | None = None,
+        expected_binding_generation: int | None = None,
+    ) -> str:
+        admission = await self.transitions.admit(expected_binding_generation)
+        try:
+            async with admission.critical():
+                path = self.resolve(relative)
+                if not path.is_file():
+                    raise FileNotFoundError(f"No document {self.relative(path)!r}")
+                rel = self.relative(path)
+                path.unlink()
+                self._prune_empty_folders(path.parent)
+                self._invalidate()
+        finally:
+            admission.release()
 
         if self.bus is not None:
             await self.bus.publish(
@@ -876,7 +1012,14 @@ class DocStore:
         log.info("Document %s deleted by %s", rel, author or "the user")
         return rel
 
-    async def move(self, source: str, target: str, *, author: str | None = None) -> dict[str, object]:
+    async def move(
+        self,
+        source: str,
+        target: str,
+        *,
+        author: str | None = None,
+        expected_binding_generation: int | None = None,
+    ) -> dict[str, object]:
         """Rename or move a document.
 
         Wiki links address documents by name, so a rename can break the links pointing at
@@ -885,30 +1028,41 @@ class DocStore:
         rename does mend its links, for a reason that does not carry over to a document — see
         :meth:`rename_folder`.
         """
-        source_path = self.resolve(source)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"No document {self.relative(source_path)!r}")
-        target_path = self.resolve(target)
-        if target_path.exists():
-            raise FileExistsError(f"{self.relative(target_path)!r} already exists")
+        admission = await self.transitions.admit(expected_binding_generation)
+        try:
+            async with admission.critical():
+                source_path = self.resolve(source)
+                if not source_path.is_file():
+                    raise FileNotFoundError(f"No document {self.relative(source_path)!r}")
+                target_path = self.resolve(target)
+                if target_path.exists():
+                    raise FileExistsError(f"{self.relative(target_path)!r} already exists")
 
-        # Taken from the pre-move index on purpose: these are the documents pointing at the
-        # name that is about to stop existing.
-        referrers = self.backlinks(self.relative(source_path))
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.replace(target_path)
+                # Taken from the pre-move index on purpose: these are the documents pointing at the
+                # name that is about to stop existing.
+                referrers = self.backlinks(self.relative(source_path))
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.replace(target_path)
 
-        self._prune_empty_folders(source_path.parent)
-        self._invalidate()
+                self._prune_empty_folders(source_path.parent)
+                self._invalidate()
 
-        entry = self._entry(target_path)
+                entry = self._entry(target_path)
+                result = {
+                    **entry.to_json(),
+                    "moved_from": self.relative(source_path),
+                    "referrers": referrers,
+                }
+        finally:
+            admission.release()
+
         if self.bus is not None:
             await self.bus.publish(
                 EventType.TEAM_DOC_CHANGED,
                 {"path": entry.path, "title": entry.title, "author": author, "moved_from": source},
             )
         log.info("Document %s moved to %s by %s", source, entry.path, author or "the user")
-        return {**entry.to_json(), "moved_from": self.relative(source_path), "referrers": referrers}
+        return result
 
     # ------------------------------------------------------------------ folders
 
@@ -997,6 +1151,7 @@ class DocStore:
         changes: dict[str, str | None],
         *,
         author: str | None = None,
+        expected_binding_generation: int | None = None,
     ) -> dict[str, object]:
         """Change a folder's colour or icon, or give either back to the default.
 
@@ -1008,28 +1163,34 @@ class DocStore:
         Clearing the last key removes the file unless a legacy style would take its place
         on the next project open (block-editor spec §5.2).
         """
-        folder = self.resolve_folder(relative)
-        meta = folder / FOLDER_META_NAME
-        stored = _read_folder_meta(meta)
-        for key, value in changes.items():
-            if key == "color":
-                checked = None if value is None else _checked_folder_color(value)
-            elif key == "icon":
-                checked = None if value is None else _checked_icon_name(value)
-            else:
-                raise ValueError(f"A folder has no property {key!r}")
-            if checked is None:
-                stored.pop(key, None)
-            else:
-                stored[key] = checked
+        admission = await self.transitions.admit(expected_binding_generation)
+        try:
+            async with admission.critical():
+                folder = self.resolve_folder(relative)
+                meta = folder / FOLDER_META_NAME
+                stored = _read_folder_meta(meta)
+                for key, value in changes.items():
+                    if key == "color":
+                        checked = None if value is None else _checked_folder_color(value)
+                    elif key == "icon":
+                        checked = None if value is None else _checked_icon_name(value)
+                    else:
+                        raise ValueError(f"A folder has no property {key!r}")
+                    if checked is None:
+                        stored.pop(key, None)
+                    else:
+                        stored[key] = checked
 
-        if stored or (folder / LEGACY_FOLDER_META_NAME).is_file():
-            text = json.dumps(stored, indent=2, ensure_ascii=False) + "\n"
-            _write_atomically(meta, text.encode("utf-8"))
-        else:
-            meta.unlink(missing_ok=True)
+                if stored or (folder / LEGACY_FOLDER_META_NAME).is_file():
+                    text = json.dumps(stored, indent=2, ensure_ascii=False) + "\n"
+                    _write_atomically(meta, text.encode("utf-8"))
+                else:
+                    meta.unlink(missing_ok=True)
 
-        style = _folder_style(self.relative(folder), stored)
+                style = _folder_style(self.relative(folder), stored)
+        finally:
+            admission.release()
+
         if self.bus is not None:
             await self.bus.publish(
                 EventType.TEAM_DOC_FOLDER_CHANGED,
@@ -1039,7 +1200,12 @@ class DocStore:
         return style
 
     async def rename_folder(
-        self, relative: str, name: str, *, author: str | None = None
+        self,
+        relative: str,
+        name: str,
+        *,
+        author: str | None = None,
+        expected_binding_generation: int | None = None,
     ) -> FolderRename:
         """Rename a folder on disk, then mend every ``[[link]]`` the new name broke (§5.2).
 
@@ -1066,53 +1232,81 @@ class DocStore:
         client that stops listening does not stop it half-way through the referrers. Renames are
         serialised: a second one plans against a tree the first has finished mending.
         """
-        new_name = _checked_folder_name(name)
-        await self._folder_lock.acquire()
+        admission = await self.transitions.admit(expected_binding_generation)
+        folder_locked = False
+
+        def release_folder() -> None:
+            nonlocal folder_locked
+            if folder_locked:
+                folder_locked = False
+                self._folder_lock.release()
+
         try:
-            source = self.resolve_folder(relative)
-            previous_path = self.relative(source)
-            if new_name == source.name:
-                raise ValueError(f"{previous_path!r} is already called {new_name!r}")
-            target = source.parent / new_name
-            # `samefile` is the case-only rename on a case-insensitive filesystem: `Features`
-            # "exists" when renaming `features`, and it is the folder being renamed.
-            if target.exists() and not _same_file(source, target):
-                raise FileExistsError(f"{self.relative(target)!r} already exists")
+            new_name = _checked_folder_name(name)
+            await self._folder_lock.acquire()
+            folder_locked = True
 
-            # Taken before the rename on purpose: these are the answers every link gave while
-            # the old name still existed, which is what the mending has to preserve.
-            before = self._index()
-            await rename_directory(source, target)
-            self._invalidate()
-            after = self._index()
-            path = self.relative(target)
+            def rename() -> tuple[FolderRename, Callable[[str], str | None]]:
+                source = self.resolve_folder(relative)
+                previous_path = self.relative(source)
+                if new_name == source.name:
+                    raise ValueError(f"{previous_path!r} is already called {new_name!r}")
+                target = source.parent / new_name
+                # `samefile` is the case-only rename on a case-insensitive filesystem: `Features`
+                # "exists" when renaming `features`, and it is the folder being renamed.
+                if target.exists() and not _same_file(source, target):
+                    raise FileExistsError(f"{self.relative(target)!r} already exists")
 
-            mend = _link_mender(before, after, previous_path, path)
-            operation = FolderRename(
-                path=path,
-                previous_path=previous_path,
-                moved=sum(
-                    1
-                    for entry in before.entries
-                    if _moved(entry.path, previous_path, path) != entry.path
-                ),
-                plan=self._plan_relinks(after, mend, previous_path, path),
-            )
-            operation._put(
-                {
-                    "type": "renamed",
-                    **operation.summary(),
-                    "documents": [item.to_json() for item in operation.plan],
-                }
-            )
-            task = asyncio.create_task(self._mend(operation, mend, author))
+                # Taken before the rename on purpose: these are the answers every link gave while
+                # the old name still existed, which is what the mending has to preserve.
+                before = self._index()
+                _rename_directory_once(source, target)
+                self._invalidate()
+                after = self._index()
+                path = self.relative(target)
+
+                mend = _link_mender(before, after, previous_path, path)
+                operation = FolderRename(
+                    path=path,
+                    previous_path=previous_path,
+                    moved=sum(
+                        1
+                        for entry in before.entries
+                        if _moved(entry.path, previous_path, path) != entry.path
+                    ),
+                    plan=self._plan_relinks(after, mend, previous_path, path),
+                )
+                operation._put(
+                    {
+                        "type": "renamed",
+                        **operation.summary(),
+                        "documents": [item.to_json() for item in operation.plan],
+                    }
+                )
+                return operation, mend
+
+            operation, mend = await self._folder_mutation(admission, rename)
+            task = asyncio.create_task(self._mend(operation, mend, author, admission, release_folder))
         except BaseException:
-            self._folder_lock.release()
+            release_folder()
+            admission.release()
             raise
+
+        def completed(done: asyncio.Task[None]) -> None:
+            # Also handles cancellation before the continuation entered its try/finally.
+            release_folder()
+            admission.release()
+            self._mending.discard(done)
+            if done.cancelled():
+                operation._put(None)
+
         # Referenced until it ends: the event loop keeps only a weak reference to a task.
         self._mending.add(task)
-        task.add_done_callback(self._mending.discard)
-        log.info("Folder %s renamed to %s by %s", previous_path, path, author or "the user")
+        task.add_done_callback(completed)
+        log.info(
+            "Folder %s renamed to %s by %s",
+            operation.previous_path, operation.path, author or "the user",
+        )
         return operation
 
     def _plan_relinks(
@@ -1149,48 +1343,64 @@ class DocStore:
         return plan
 
     async def _mend(
-        self, operation: FolderRename, mend: Callable[[str], str | None], author: str | None
+        self,
+        operation: FolderRename,
+        mend: Callable[[str], str | None],
+        author: str | None,
+        admission: MutationAdmission,
+        release_folder: Callable[[], None],
     ) -> None:
-        """Rewrite each planned document's links — a frame per file — then say ``done``.
+        """Finish the admitted rename independently of its streaming consumer.
 
-        Owns the folder lock :meth:`rename_folder` took, and gives it back however this ends.
-        A file that cannot be written fails its own frame and the rest carry on: the folder
-        has already moved, so every link that *can* be mended is one fewer broken.
+        Serialize all mending with other folder operations, but defer notifications until
+        that lock is released: an awaited subscriber may itself rename/delete a folder.
+        The logical admission remains owned until this whole continuation is finished.
         """
         updated = failed = links = 0
+        changed_items: list[_Relink] = []
         try:
+            try:
+                for item in operation.plan:
+                    frame: dict[str, object] = {"type": "document", **item.to_json()}
+                    try:
+                        async with admission.critical():
+                            changed = _mend_file(self.directory / item.path, mend)
+                            if changed:
+                                self._invalidate()
+                    except OSError as exc:
+                        failed += 1
+                        frame.update(status="failed", error=_write_failure(exc))
+                    else:
+                        links += changed
+                        frame.update(
+                            status="updated" if changed else "unchanged", links=changed, error=None
+                        )
+                        if changed:
+                            updated += 1
+                            changed_items.append(item)
+                    operation._put(frame)
+                    # Keep per-file progress without holding the mutation critical lock.
+                    await asyncio.sleep(0)
+            finally:
+                self._invalidate()
+                release_folder()
+
+            # Preserve notification order, never holding either filesystem lock over publish.
             if self.bus is not None:
-                await self.bus.publish(
-                    EventType.TEAM_DOC_FOLDER_CHANGED,
-                    {
-                        "path": operation.path,
-                        "previous_path": operation.previous_path,
-                        "author": author,
-                    },
-                )
-            for item in operation.plan:
-                frame: dict[str, object] = {"type": "document", **item.to_json()}
-                try:
-                    changed = _mend_file(self.directory / item.path, mend)
-                except OSError as exc:
-                    failed += 1
-                    frame.update(status="failed", error=_write_failure(exc))
-                else:
-                    links += changed
-                    frame.update(
-                        status="updated" if changed else "unchanged", links=changed, error=None
+                with admission.publishing():
+                    await self.bus.publish(
+                        EventType.TEAM_DOC_FOLDER_CHANGED,
+                        {
+                            "path": operation.path,
+                            "previous_path": operation.previous_path,
+                            "author": author,
+                        },
                     )
-                    if changed:
-                        updated += 1
-                        if self.bus is not None:
-                            await self.bus.publish(
-                                EventType.TEAM_DOC_CHANGED,
-                                {"path": item.path, "title": item.title, "author": author},
-                            )
-                operation._put(frame)
-                # Nothing above waits on anything, so without this the response would carry
-                # every frame at once when the loop is over — progress that is only ever done.
-                await asyncio.sleep(0)
+                    for item in changed_items:
+                        await self.bus.publish(
+                            EventType.TEAM_DOC_CHANGED,
+                            {"path": item.path, "title": item.title, "author": author},
+                        )
             operation._put(
                 {
                     "type": "done",
@@ -1202,22 +1412,23 @@ class DocStore:
             )
             log.info(
                 "Mended %d link(s) in %d document(s) after renaming %s to %s; %d failed",
-                links,
-                updated,
-                operation.previous_path,
-                operation.path,
-                failed,
+                links, updated, operation.previous_path, operation.path, failed,
             )
         except Exception as exc:
             log.exception("Mending the links into %s failed", operation.path)
             operation._put({"type": "error", "error": str(exc) or type(exc).__name__})
         finally:
-            # However far it got: every file written so far is already a different tree.
-            self._invalidate()
+            release_folder()
+            admission.release()
             operation._put(None)
-            self._folder_lock.release()
 
-    async def delete_folder(self, relative: str, *, author: str | None = None) -> dict[str, object]:
+    async def delete_folder(
+        self,
+        relative: str,
+        *,
+        author: str | None = None,
+        expected_binding_generation: int | None = None,
+    ) -> dict[str, object]:
         """Delete a folder of the tree with everything in it (§5.2).
 
         Everything, not only its documents: the pictures beside them, its ``vxs-folder.json`` and
@@ -1239,35 +1450,62 @@ class DocStore:
         Other clients hear one ``team.doc.folder_changed`` with ``deleted`` set — also after a
         removal that stopped part-way, since something went.
         """
-        async with self._folder_lock:
-            folder = self.resolve_folder(relative)
-            path = self.relative(folder)
-            documents = [
-                entry.path for entry in self._index().entries if entry.path.startswith(f"{path}/")
-            ]
-            aside = folder.with_name(f".{folder.name}.deleting-{secrets.token_hex(4)}")
-            await rename_directory(folder, aside, doing="delete")
-            try:
-                remove_path(aside)
-            except OSError as exc:
-                where = "back where it was" if put_back(aside, folder) else f"in {aside.name!r}"
-                raise OSError(
-                    f"Could not delete everything in {path!r}: {exc.strerror or exc}. "
-                    f"What is left is {where}."
-                ) from exc
-            else:
-                self._prune_empty_folders(folder.parent)
-            finally:
-                self._invalidate()
-                if self.bus is not None:
-                    await self.bus.publish(
-                        EventType.TEAM_DOC_FOLDER_CHANGED,
-                        {"path": path, "previous_path": None, "author": author, "deleted": True},
-                    )
+        admission = await self.transitions.admit(expected_binding_generation)
+        changed = False
+        path = ""
+        documents: list[str] = []
+        try:
+            async with self._folder_lock:
+                def delete() -> dict[str, object]:
+                    nonlocal changed, path, documents
+                    folder = self.resolve_folder(relative)
+                    path = self.relative(folder)
+                    documents = [
+                        entry.path for entry in self._index().entries if entry.path.startswith(f"{path}/")
+                    ]
+                    aside = folder.with_name(f".{folder.name}.deleting-{secrets.token_hex(4)}")
+                    _rename_directory_once(folder, aside, doing="delete")
+                    changed = True
+                    try:
+                        remove_path(aside)
+                    except OSError as exc:
+                        where = "back where it was" if put_back(aside, folder) else f"in {aside.name!r}"
+                        raise OSError(
+                            f"Could not delete everything in {path!r}: {exc.strerror or exc}. "
+                            f"What is left is {where}."
+                        ) from exc
+                    else:
+                        self._prune_empty_folders(folder.parent)
+                    finally:
+                        self._invalidate()
+                    return {"path": path, "documents": documents}
+
+                result = await self._folder_mutation(admission, delete)
+        finally:
+            admission.release()
+            if changed and self.bus is not None:
+                await self.bus.publish(
+                    EventType.TEAM_DOC_FOLDER_CHANGED,
+                    {"path": path, "previous_path": None, "author": author, "deleted": True},
+                )
         log.info(
             "Folder %s deleted with %d document(s) by %s", path, len(documents), author or "the user"
         )
-        return {"path": path, "documents": documents}
+        return result
+
+    async def _folder_mutation[T](
+        self, admission: MutationAdmission, change: Callable[[], T]
+    ) -> T:
+        """Retry busy directory renames without sleeping under the common critical lock."""
+        for attempt in range(1, RENAME_ATTEMPTS + 1):
+            try:
+                async with admission.critical():
+                    return change()
+            except FolderInUse:
+                if attempt == RENAME_ATTEMPTS:
+                    raise
+                await asyncio.sleep(RENAME_RETRY_SECONDS)
+        raise AssertionError("No directory rename attempt was made")
 
     def _prune_empty_folders(self, folder: Path) -> None:
         """Remove *folder* and every parent it leaves empty, stopping at the docs root.
@@ -1503,23 +1741,30 @@ def _same_file(first: Path, second: Path) -> bool:
         return False
 
 
-async def rename_directory(source: Path, target: Path, *, doing: str = "rename") -> None:
-    """``os.rename``, tried again for a moment while the system says the folder is busy.
+def _rename_directory_once(source: Path, target: Path, *, doing: str = "rename") -> None:
+    try:
+        source.rename(target)
+    except PermissionError as exc:
+        raise FolderInUse(
+            f"Could not {doing} {source.name!r}: {exc.strerror or exc}. Something has "
+            "the folder or a file inside it open — an Explorer window, an editor, a "
+            "terminal. Close it and try again."
+        ) from exc
 
-    *doing* is what the refusal says could not be done — a delete renames the folder too, to move
-    it aside, and "could not rename" would be news to somebody who asked for a delete.
+
+async def rename_directory(source: Path, target: Path, *, doing: str = "rename") -> None:
+    """Retry a busy directory rename; retained for non-DocStore callers (SkillStore).
+
+    DocStore retries its whole planning/FS critical section instead, so Windows retry
+    sleeps do not block unrelated document mutations and each attempt uses a fresh tree.
     """
     for attempt in range(1, RENAME_ATTEMPTS + 1):
         try:
-            source.rename(target)
+            _rename_directory_once(source, target, doing=doing)
             return
-        except PermissionError as exc:
+        except FolderInUse:
             if attempt == RENAME_ATTEMPTS:
-                raise FolderInUse(
-                    f"Could not {doing} {source.name!r}: {exc.strerror or exc}. Something has "
-                    "the folder or a file inside it open — an Explorer window, an editor, a "
-                    "terminal. Close it and try again."
-                ) from exc
+                raise
             await asyncio.sleep(RENAME_RETRY_SECONDS)
 
 

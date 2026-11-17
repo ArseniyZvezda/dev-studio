@@ -15,9 +15,16 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import re
+import unicodedata
 from pathlib import PurePosixPath
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+CATALOG_API_VERSION = 2
+CAPABILITIES = (
+    "project_catalog", "explicit_project_create", "strict_connect",
+    "project_snapshot", "legacy_resolution",
+)
 
 # The same bounds the Studio's own DocStore enforces (``teams/docs.py``): the server never
 # stores a document a local Studio would refuse to write to disk.
@@ -31,11 +38,42 @@ MAX_SPACE_NAME = 64
 # wrong, stop retrying" from "the network dropped, try again".
 CLOSE_BAD_REQUEST = 4400
 CLOSE_UNAUTHORISED = 4401
+CLOSE_NOT_FOUND = 4404
 CLOSE_OVERLOADED = 4408
 
 
 class ProtocolError(ValueError):
     """A frame the server will not act on. Reported to the sender; the connection stays."""
+
+
+def check_project_id(raw: object) -> str:
+    """Exact canonical selector; never normalise an identity (dev spec §16.7)."""
+    if not isinstance(raw, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", raw) is None:
+        raise ProtocolError("Invalid project ID")
+    return raw
+
+
+def check_display_name(raw: object) -> str:
+    """Normalise labels only, refusing terminal controls before trimming (§16.7)."""
+    if not isinstance(raw, str):
+        raise ProtocolError("Invalid display name")
+    forbidden = "\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+    if any(ord(c) < 32 or 0x7f <= ord(c) <= 0x9f or c in forbidden for c in raw):
+        raise ProtocolError("Invalid display name")
+    name = unicodedata.normalize("NFC", raw).strip()
+    try:
+        size = len(name.encode("utf-8"))
+    except UnicodeError:
+        raise ProtocolError("Invalid display name") from None
+    if not 1 <= len(name) <= 120 or size > 480:
+        raise ProtocolError("Invalid display name")
+    return name
+
+
+def check_color(raw: object) -> str:
+    if not isinstance(raw, str) or re.fullmatch(r"#[0-9a-fA-F]{6}", raw) is None:
+        raise ProtocolError("Invalid color")
+    return raw.lower()
 
 
 def content_hash(content: str) -> str:

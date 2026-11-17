@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..automations.engine import AutomationEngine
 from ..automations.store import AutomationStore
@@ -24,6 +24,9 @@ from ..plugins import loader as plugin_loader
 from ..plugins.api import PluginHost
 from ..plugins.registry import PluginHook, Registry
 from ..sync import RemoteSync
+from ..sync.protocol import check_space_name, normalise_url
+from ..sync.service import ActivatedRemoteTarget, RemoteStartupBinding, preflight_remote_binding
+from ..sync.transitions import BindingTransitions
 from ..teams import skill as studio_skill
 from ..teams.authoring import ProjectAuthoring
 from ..teams.chat import ChatService
@@ -42,7 +45,314 @@ from .paths import ProjectPaths
 from .project import ensure_project, is_git_repo
 from .security import AuthSettings
 
+if TYPE_CHECKING:
+    from ..sync.profile_lifecycle import ProfileLifecycle
+    from ..sync.reservations import ReservationLease, ReservationOwner
+
 log = logging.getLogger(__name__)
+
+
+class _ProfileLease(Protocol):
+    def release(self) -> None: ...
+
+
+def _read_remote_sync_activation(paths: ProjectPaths) -> ActivatedRemoteTarget | None:
+    """Classify the owning I6 journal without repairing or enabling anything.
+
+    Completed evidence belongs to the exact canonical root, not to a private
+    binding row or today's portable config (runtime-integration-plan §2.3/3.5;
+    studio-design §7). In particular edit_id/unbind remove that row, and a VCS
+    checkout can restore sync.space: neither permits a legacy runner again.
+    Pending, corrupt and known-lost journals refuse through the same I2 seam.
+
+    I6 commits only disabled targets. A journal is not confirmed consent or an
+    I10 activation target: until that owner exists, even completed records must
+    remain blocked rather than fabricate a runner binding from private metadata.
+    A canonical config without legacy sync.space also refuses if the journal
+    was lost. Identity metadata WITH an explicit legacy space (including the
+    fresh empty default) remains genuinely unactivated legacy.
+    """
+    from ..sync.bindings import BindingError
+    from ..sync.transitions import read_binding_change_journals
+    from .config import _project_config_document
+
+    if read_binding_change_journals(paths.root):
+        raise BindingError("activation_unavailable")
+    try:
+        # Read exact disk bytes with the existing duplicate/merge-strict owner;
+        # load_config's defaults and the effective model cannot prove legacy.
+        raw, _, fingerprint = _project_config_document(paths)
+        if fingerprint is None or "sync" not in raw:
+            return None
+        settings = raw["sync"]
+        if (not isinstance(settings, dict)
+                or ("enabled" in settings and type(settings["enabled"]) is not bool)
+                or ("url" in settings and type(settings["url"]) is not str)):
+            raise BindingError("activation_unavailable")
+        if settings.get("url"):
+            normalise_url(settings["url"])
+        if "space" in settings:
+            if type(settings["space"]) is not str:
+                raise BindingError("activation_unavailable")
+            return None
+        # Canonical identity + sync/url/enabled without space is format evidence,
+        # not permission to connect. Partial target-bearing forms fail closed as
+        # well: missing identity/fields must not be repaired into legacy defaults.
+        if (raw.get("project_identity") is not None
+                or settings.get("url") or settings.get("enabled")):
+            raise BindingError("activation_unavailable")
+    except BindingError:
+        raise
+    except Exception:
+        raise BindingError("activation_unavailable") from None
+    return None
+
+
+class _ProfileRemoteSync(RemoteSync):
+    """Fence attach/reconnect without holding a thread lock across awaits (§5.2.1).
+
+    A failed start/stop retains its logical lease: only a successful runner stop
+    proves it cannot reconnect. RemoteSync's internal retries share that lease.
+    """
+
+    def __init__(
+        self,
+        paths: ProjectPaths,
+        config: Callable[[], AppConfig],
+        docs: DocStore,
+        bus: EventBus,
+        *,
+        lifecycle: Callable[[], ProfileLifecycle | None],
+        reservations: Callable[[], ReservationOwner | None] = lambda: None,
+        activation: Callable[[], ActivatedRemoteTarget | None] | None = None,
+        profile_reader: Callable[[str], Any] | None = None,
+    ) -> None:
+        super().__init__(paths, config, docs, bus)
+        self._profile_lifecycle = lifecycle
+        self._profile_lease: _ProfileLease | None = None
+        self._profile_transition = asyncio.Lock()
+        self._stopping_service = False
+        self._cleanup_failed = False
+        self._reservations = reservations
+        self._activation = (activation if activation is not None
+                            else lambda: _read_remote_sync_activation(paths))
+        self._activated_model_seen = False
+        self._reservation_owner: ReservationOwner | None = None
+        self._reservation_lease: ReservationLease | None = None
+        self._startup_binding: RemoteStartupBinding | None = None
+        from .paths import user_config_dir
+        from ..sync.profiles import RemoteProfiles
+        self._remote_home = user_config_dir()
+        self._profile_reader = profile_reader or RemoteProfiles().get
+
+    async def start(self) -> None:
+        async with self._profile_transition:
+            if self._cleanup_failed:
+                raise RuntimeError("sync_cleanup_required")
+            await super().start()
+
+    async def stop(self) -> None:
+        async with self._profile_transition:
+            self._stopping_service = True
+            try:
+                await super().stop()
+            except BaseException:
+                self._cleanup_failed = True
+                raise
+            else:
+                self._release_ownership()
+                self._cleanup_failed = False
+            finally:
+                self._stopping_service = False
+
+    async def reconfigure(self) -> dict[str, Any]:
+        # Serialize the entire stop/start pair, including watcher cleanup in stop.
+        # Private runner overrides do not reacquire this asyncio-only lock.
+        async with self._profile_transition:
+            if self._cleanup_failed:
+                raise RuntimeError("sync_cleanup_required")
+            if self._startup_binding is not None and self._runner is not None:
+                try:
+                    unchanged = self._preflight(self._activation()) == self._startup_binding
+                except Exception:
+                    unchanged = False
+                if unchanged:
+                    # Profile names/revisions are deliberately not transport
+                    # identity: a metadata refresh must not reconnect (§3.1).
+                    return self.status()
+            return await super().reconfigure()
+
+    async def _start_runner(self) -> None:
+        try:
+            target = self._activation()
+        except Exception:
+            self._activated_model_seen = True
+            target = None  # Unreadable activation never becomes legacy fallback.
+        if target is not None or self._activated_model_seen:
+            self._activated_model_seen = True
+            await self._start_activated(target)
+            return
+        # A repeated start must not overwrite a runner/lease that can still reconnect.
+        # Reconfigure already stops first, so ordinarily this branch does nothing.
+        if self._profile_lease is not None or self._runner is not None:
+            await self._stop_runner()
+        lifecycle = self._profile_lifecycle()
+        settings = self._config().sync
+        if lifecycle is not None and settings.enabled and settings.url:
+            try:
+                normalise_url(settings.url)
+                check_space_name(settings.space)
+            except ValueError:
+                # Let the base service report its existing unconfigured diagnostic.
+                # Invalid settings cannot start a runner; no key/network read here.
+                pass
+            else:
+                # Outside the validation catch: actual admission refusal must propagate.
+                self._profile_lease = lifecycle.attach(root=str(self.paths.root), url=settings.url)
+        await super()._start_runner()
+
+    def _may_inspect_token(self) -> bool:
+        # status()/status events must not bypass preflight and read a legacy key.
+        if self._activated_model_seen:
+            return False
+        try:
+            legacy = self._activation() is None
+        except Exception:
+            legacy = False
+        if not legacy:
+            self._activated_model_seen = True
+        return legacy
+
+    def _preflight(self, target: ActivatedRemoteTarget | None) -> RemoteStartupBinding:
+        return preflight_remote_binding(self.paths, self._config(), target,
+                                        home=self._remote_home, profile_reader=self._profile_reader)
+
+    def _activated_runner(self, binding: RemoteStartupBinding) -> Coroutine[Any, Any, None] | None:
+        """I10 seam, synchronous publication only; production R3 gate stays shut.
+
+        I2 never calls the v1 runner/token provider with a canonical binding.
+        There is deliberately no public flag to enable a v2 transport here.
+        """
+        return None
+
+    async def _start_activated(self, target: ActivatedRemoteTarget | None) -> None:
+        from ..sync.bindings import BindingError
+        from ..sync.reservations import ReservationError
+        from ..sync.state import SyncStateError
+
+        # Idempotent start reuses this consumer. Reconfigure explicitly stops it.
+        if self._startup_binding is not None and self._runner is not None:
+            return
+        if self._profile_lease is not None or self._runner is not None:
+            await self._stop_runner()
+        try:
+            binding = self._preflight(target)
+        except (BindingError, SyncStateError) as exc:
+            await self._set_status("blocked", exc.code)
+            return
+        if binding.checkpoint is None:
+            await self._set_status("blocked", "preview_required")
+            return
+        if not binding.enabled:
+            await self._set_status("disabled")
+            return
+        lifecycle, owner = self._profile_lifecycle(), self._reservations()
+        if lifecycle is None or owner is None:
+            await self._set_status("blocked", "consumer_lifecycle_unavailable")
+            return
+        lease = lifecycle.attach(root=binding.target.canonical_root, url=binding.target.url,
+                                 profile_id=binding.target.profile_id)
+        try:
+            reservation = owner.reserve(root=binding.target.canonical_root, url=binding.target.url,
+                                        persistent_id=binding.target.persistent_id, consumer=self)
+        except ReservationError as exc:
+            lease.release()  # Only THIS attempted attach, never the winner's capability.
+            await self._set_status("blocked", exc.code)
+            return
+        except BaseException:
+            lease.release()
+            raise
+        self._profile_lease = lease
+        self._reservation_owner, self._reservation_lease = owner, reservation
+        # No await between observation, admission/recheck and task publication.
+        # Pure profile label/revision changes intentionally do not affect this CAS.
+        rejected = None
+        try:
+            if self._preflight(target) != binding:
+                rejected = "binding_required"
+        except (BindingError, SyncStateError) as exc:
+            rejected = exc.code
+        if rejected is not None:
+            await self._stop_runner()
+            await self._set_status("blocked", rejected)
+            return
+        self._startup_binding = binding
+        work = self._activated_runner(binding)
+        if work is not None:
+            self._runner = asyncio.create_task(work, name="sync-remote")
+        else:
+            await self._set_status("blocked", "protocol_unavailable")
+            await self._stop_runner()
+
+    async def _stop_runner(self) -> None:
+        await super()._stop_runner()
+        if not self._stopping_service:
+            self._release_ownership()
+
+    def complete_disabled_binding_change(self, change_id: str) -> None:
+        """Retire THIS drained I5 boundary after durable I6 completion (§7).
+
+        Called synchronously after transitions.complete_commit under the owning
+        final commit section. The new generation is already published there, so
+        authenticate the receipt against its captured OLD generation, not the
+        new one. No stop/reconfigure, journal repair, credential access or base
+        migration occurs here; the caller publishes the disabled status event.
+        """
+        from ..sync.service import BindingDrainProof
+        from ..sync.transitions import BindingChangeError
+
+        proof = self._binding_proof
+        status = self.docs.transitions.change_status(change_id)
+        if (status["state"] != "committed" or not status["fenced"]
+                or type(proof) is not BindingDrainProof or proof._owner is not self
+                or proof.change_id != change_id
+                or proof.generation != self._binding_generation
+                or proof.generation != status["expected_generation"]
+                or proof.target != self._binding_target
+                or not proof.reconciled or not proof.runner_stopped or not proof.fenced
+                or proof.reason is not None or proof.corpus_fingerprint is None
+                or not self._binding_quiescing or not self._binding_fenced
+                or self._binding_draining or self._binding_failure or self._cleanup_failed
+                or self._stopping_service or self._config().sync.enabled is not False
+                or self._runner is not None or self._ws is not None or self._synced
+                or self._tasks or self._pending or self._pending_paths or self._skip
+                or self._live_writes or self._sessions or self._retained_evidence
+                or self._profile_lease is not None or self._reservation_lease is not None):
+            raise BindingChangeError("recovery_required")
+        # Old-target evidence is already durable. Shutdown must not rewrite the
+        # completed journal as a draining record. Preserve _state/_url/_space:
+        # the old checkpoint is not a base for the newly committed target.
+        self._activated_model_seen = True
+        self._binding_evidence_sink = None
+        self._binding_proof = None
+        self._binding_quiescing = False
+        self._binding_fenced = False
+        self._binding_target = None
+        self._binding_generation = None
+        self._binding_resumed.set()
+
+    def _release_ownership(self) -> None:
+        # Full stop retains ownership through watcher join too. Reconfigure has
+        # only runner cleanup and releases after that successful join.
+        if self._reservation_lease is not None:
+            assert self._reservation_owner is not None
+            self._reservation_owner.release(self._reservation_lease)
+            self._reservation_lease = None
+            self._reservation_owner = None
+        self._startup_binding = None
+        if self._profile_lease is not None:
+            self._profile_lease.release()
+            self._profile_lease = None
 
 
 class AppContext:
@@ -57,6 +367,14 @@ class AppContext:
         self.paths = paths
         self.config = config
         self.auth = auth
+        self.remote_profile_lifecycle: ProfileLifecycle | None = None
+        """The app-owned consumer guard, supplied before startup (§5.2.1)."""
+        self.remote_reservations: ReservationOwner | None = None
+        # I6 reads the existing private transition journal, never portable metadata
+        # or private selection alone. I10 may supply an actual activation target.
+        self.remote_sync_activation: Callable[[], ActivatedRemoteTarget | None] = (
+            lambda: _read_remote_sync_activation(self.paths)
+        )
 
         self.db = Database(paths.db_file)
         self.bus = bus or EventBus()
@@ -77,8 +395,16 @@ class AppContext:
             registry=self.registry,
             config=config,
         )
-        self.docs = DocStore(paths, self.bus)
-        self.sync = RemoteSync(paths, lambda: self.config, self.docs, self.bus)
+        # I3: one admission owner per resident Ctx, shared by every bound writer
+        # (remote-identity/runtime-integration-plan §§3.2–3.3).
+        self.remote_transitions = BindingTransitions()
+        self.docs = DocStore(paths, self.bus, transitions=self.remote_transitions)
+        self.sync = _ProfileRemoteSync(
+            paths, lambda: self.config, self.docs, self.bus,
+            lifecycle=lambda: self.remote_profile_lifecycle,
+            reservations=lambda: self.remote_reservations,
+            activation=lambda: self.remote_sync_activation(),
+        )
         """The connection to a Voxarium Studio Remote, when the project has one (§16)."""
         self.skills = SkillStore(paths, builtins=self._builtin_skills)
         """``.voxarium_studio/skills/`` — the Skills page's folder, and what members are given (§10.10)."""
@@ -170,6 +496,8 @@ class AppContext:
         return cls(paths, config, auth, bus=bus)
 
     async def startup(self) -> None:
+        if self.remote_profile_lifecycle is not None:
+            self.remote_profile_lifecycle.register_context(self)
         await asyncio.to_thread(self.docs.migrate_folder_styles)
         await self.db.create_all()
         await finish_data_migration(self)
@@ -220,6 +548,10 @@ class AppContext:
         await self.teams.cancel_commit_jobs()
         await self.jobs.shutdown()
         await self.db.close()
+        if self.remote_profile_lifecycle is not None:
+            # Failed cleanup stays in the app inventory until the WHOLE context
+            # is joined, not merely until its runner requested cancellation (I2).
+            self.remote_profile_lifecycle.unregister_context(self)
 
     # ---- plugin hooks (§9.7) ----
 

@@ -43,7 +43,7 @@ def build_subagent_tools(
                     description=required(args, "description"),
                     backend=optional(args, "backend"),
                     model=optional(args, "model"),
-                    # §10.11: no `effort` — Effort Solver computes it, and one sent by a
+                    # §10.11: no `effort` — Orchestrator computes it, and one sent by a
                     # caller that still remembers the old schema is not read.
                 )
             elif method == "list":
@@ -76,9 +76,9 @@ def build_subagent_tools(
         "spawn_subagent",
         "Start a Studio-managed subagent for a bounded part of your current task, on any "
         "registered agent backend. It shares your working directory and permitted write "
-        "scope. Give separate file ownership to parallel workers. Backend and model default "
-        "to your run; a different backend requires an explicit compatible model. You do not "
-        "choose its effort: Effort Solver scores the description and prompt and sets it, so "
+        "scope. Give separate file ownership to parallel workers. Backend and model policy default "
+        "to your run; Auto is independently evaluated for each worker, not copied from the parent selection. A different backend requires an explicit compatible model. You do not "
+        "choose its effort: Orchestrator scores the description and prompt and sets it, so "
         "make them complete. Returns its ID and chosen effort once that evaluation is done, "
         "without waiting for the work. Use wait_subagents before finish_task. "
         "Children cannot spawn children or change the task board.",

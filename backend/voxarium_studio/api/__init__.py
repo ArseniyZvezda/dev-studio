@@ -51,7 +51,7 @@ api_router.include_router(updates.router)
 # dependency also guards project handlers that do not themselves need a Ctx.
 api_router.include_router(project.projects_router)
 project_router = APIRouter(
-    prefix="/projects/{project_id}", dependencies=[Depends(get_ctx)],
+    prefix="/projects/{project_id}", dependencies=[Depends(get_ctx), Depends(sync.bind_http_editor_inventory)],
 )
 project_router.include_router(project.scoped_router)
 for module in (
@@ -60,6 +60,7 @@ for module in (
 ):
     project_router.include_router(module.router)
 project_router.include_router(memory.agents_router)
+project_router.include_router(sync.remote_router)
 # Environment builds are process-global; only project plugin operations/resources
 # are mirrored. Keep the legacy provisioning URL for existing callers (§2.1).
 project_plugins = APIRouter()

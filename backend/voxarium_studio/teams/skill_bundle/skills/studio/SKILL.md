@@ -88,8 +88,10 @@ ownership, expected result and checks. It starts immediately when an agent slot 
 and returns its `id` (pass it as `subagent_id` to controls); it does not create a task on the board or require a team route.
 The default backend and model are those of your run. You may choose another registered
 `backend`, but must also provide a compatible `model` when changing backends. You do not set
-a child's effort: the team's Effort Solver scores its `description` and `prompt` before it
-starts and chooses one of `low`, `medium`, `high`, `xhigh`, `max`, returned with the child and
+a child's effort: the team's Orchestrator evaluates its `description` and `prompt` before it
+starts and chooses one of `low`, `medium`, `high`, `xhigh`, `max`. It also chooses model
+strength 1–3; model `auto` follows the application's mapping for the selected backend.
+The resolved model and effort are returned with the child and
 shown by `list_subagents`. If that evaluation fails, no child is started — retry the call.
 
 Children share your working directory, checkout, permitted tools and declared write scope.

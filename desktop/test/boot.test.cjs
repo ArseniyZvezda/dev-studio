@@ -100,7 +100,7 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super(); this.options = options; this.id = calls.windows.length + 1;
-      this.destroyed = false; this.webContents = new Contents(); this.focused = false;
+      this.destroyed = false; this.contents = new Contents(); this.focused = false;
       this.children = new Set();
       const children = this.children;
       this.contentView = { get children() { return [...children]; },
@@ -108,6 +108,11 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
       calls.windows.push(this);
     }
     async loadFile() {}
+    get webContents() {
+      // Electron's native BrowserWindow is already gone in a 'closed' handler.
+      if (this.destroyed) throw new TypeError('Object has been destroyed');
+      return this.contents;
+    }
     async loadURL(url) {
       if (calls.failNextShellLoad) { calls.failNextShellLoad = false; throw new Error('shell load failed'); }
       await this.webContents.loadURL(url);
@@ -120,6 +125,8 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
       width: this.options.width, height: this.options.height }; }
     maximize() { this.maximized = true; }
     isFocused() { return this.focused; }
+    setOverlayIcon() { assert.equal(this.destroyed, false); }
+    flashFrame() { assert.equal(this.destroyed, false); }
     focus() {
       for (const window of calls.windows) window.focused = false;
       this.focused = true; this.focusCalls = (this.focusCalls || 0) + 1; this.emit('focus');
@@ -127,7 +134,7 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
     minimize() { this.minimized = true; }
     hide() {}
     getContentSize() { return this.contentSize || [1600, 1000]; }
-    destroy() { if (this.destroyed) return; this.destroyed = true; this.emit('closed'); this.webContents.close(); }
+    destroy() { if (this.destroyed) return; this.destroyed = true; this.contents.close(); this.emit('closed'); }
     close() {
       let prevented = false;
       this.emit('close', { preventDefault() { prevented = true; } });
@@ -193,9 +200,11 @@ async function boot({ existing = null, packaged = true, studioVersion = packaged
     './scripts/release.cjs': { sourceReleaseInfo: () => ({ version: studioVersion }) },
     './window-controls.cjs': { registerWindowControls: () => ({ registerWindow() {}, dispose() {} }) },
     './tray.cjs': { registerTray: () => ({ dispose() {} }) },
-    './producer-attention.cjs': { ...require('../producer-attention.cjs'), registerProducerAttention: ({ window }) => ({
-      set(value) { calls.attention.set(String(window.id), value); },
-    }) },
+    './producer-attention.cjs': { ...require('../producer-attention.cjs'), registerProducerAttention(options) {
+      const attention = require('../producer-attention.cjs').registerProducerAttention({ ...options, platform: 'win32' });
+      const id = String(options.window.id);
+      return { ...attention, set(value) { calls.attention.set(id, value); attention.set(value); } };
+    } },
     './startup.cjs': { registerStartup() {} },
     './update-feed.cjs': { configureUpdateFeed() {} },
     './updates.cjs': { registerUpdates: options => { calls.updates.push(options); return { dispose() {} }; } },
@@ -596,13 +605,14 @@ test('failed second shell cleans only its registry and native listeners, leaving
   f.failNextShellLoad = true;
   await assert.rejects(f.controller.createWindow(), /shell load failed/);
   const failed = f.windows.at(-1);
+  const failedContents = failed.contents; // Fixture-only access after native destruction.
   assert.equal(failed.isDestroyed(), true);
   assert.equal(failed.listenerCount('resize'), 0);
-  assert.equal(failed.webContents.listenerCount('will-navigate'), 0);
-  assert.equal(failed.webContents.listenerCount('will-redirect'), 0);
+  assert.equal(failedContents.listenerCount('will-navigate'), 0);
+  assert.equal(failedContents.listenerCount('will-redirect'), 0);
   assert.deepEqual(f.controller.registry.snapshot(), before);
   assert.equal(f.controller.getWindow(failed.id), undefined);
-  assert.throws(() => f.invoke('studio:tabs-bootstrap', failed.webContents), /Untrusted/);
+  assert.throws(() => f.invoke('studio:tabs-bootstrap', failedContents), /Untrusted/);
   assert.equal(f.invoke('studio:tabs-bootstrap', incumbent.webContents).role, 'shell');
   assert.equal(f.invoke('studio:startup', f.views[0].webContents).supported, true);
   assert.equal((await f.invoke('studio:update', f.views[0].webContents, 'state')).supported, true);
@@ -725,25 +735,33 @@ test('production controller detach/return uses its hidden shell factory without 
   const f = await boot(); t.after(() => f.app.emit('will-quit'));
   const registry = f.controller.registry, source = f.controller.getActiveWindow();
   const original = registry.snapshot().tabs[0], view = f.views[0], contents = view.webContents;
+  const sourceShell = source.webContents;
   const request = () => {
     const tab = registry.getTab(original.tabId), window = registry.getWindow(tab.ownerWindowId);
     return { windowId: window.windowId, windowRevision: window.revision, tabId: tab.tabId, tabRevision: tab.revision };
   };
   const initialWindows = f.windows.length, projectPages = f.pages.filter(url => url.includes('/p/'));
-  const detached = await f.invoke('studio:tabs-detach', source.webContents, request());
+  const detached = await f.invoke('studio:tabs-detach', sourceShell, request());
   const target = f.controller.getWindow(detached.ownerWindowId);
+  const targetShell = target.webContents;
   assert.equal(f.windows.length, initialWindows + 1);
   assert.equal(target.showCalls, 1, 'prepared hidden shell is shown only by successful commit');
   assert.equal(target.children.has(view), true); assert.equal(source.children.has(view), false);
   assert.equal(f.focusedContents, contents);
   assert.equal(registry.getWindow(String(source.id)), null);
   assert.equal(source.isDestroyed(), true, 'last-tab transfer uses empty-shell cleanup');
+  assert.throws(() => source.webContents, /Object has been destroyed/);
+  for (const event of ['will-navigate', 'will-redirect']) assert.equal(sourceShell.listenerCount(event), 0);
+  for (const event of ['resize', 'move', 'focus', 'maximize', 'unmaximize', 'close']) {
+    assert.equal(source.listenerCount(event), 0);
+  }
   const returnTarget = await f.controller.createWindow();
   const { token } = f.invoke('studio:tabs-transfer-begin', target.webContents, request());
   const returned = await f.invoke('studio:tabs-transfer', target.webContents, { ...request(), token,
     targetWindowId: String(returnTarget.id), targetWindowRevision: registry.getWindow(String(returnTarget.id)).revision });
   assert.equal(returned.ownerWindowId, String(returnTarget.id)); assert.equal(returnTarget.children.has(view), true);
   assert.equal(target.isDestroyed(), true, 'return also closes only the emptied source');
+  for (const event of ['will-navigate', 'will-redirect']) assert.equal(targetShell.listenerCount(event), 0);
   assert.equal(f.views[0], view); assert.equal(view.webContents, contents); assert.equal(contents.isDestroyed(), false);
   assert.deepEqual(f.pages.filter(url => url.includes('/p/')), projectPages);
   assert.equal(f.views.length, 1); assert.equal(f.ensured.length, 1); assert.equal(f.projects.length, 1);

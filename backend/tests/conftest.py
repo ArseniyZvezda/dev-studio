@@ -168,7 +168,7 @@ def no_commit_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def canned_effort_solver(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Answer every Effort Solver evaluation with fixed scores by default (§10.11).
+    """Answer every Orchestrator evaluation with fixed choices by default (§10.11).
 
     A task whose effort is unset ("Auto") is scored when its run starts, and in the suite
     the Solver member sits on the same stub backend as everyone else, which answers in
@@ -184,7 +184,7 @@ def canned_effort_solver(monkeypatch: pytest.MonkeyPatch) -> None:
             return True, "canned"
 
         async def run(self, request):
-            answer = '{"complexity": 3, "creativity": 2, "depth": 3, "coverage": 9}'
+            answer = '{"model": 2, "effort": 2}'
             yield AgentEvent(kind="result", text=answer, data={}, is_final=True)
 
     monkeypatch.setattr(effort_solver_runner, "get_backend", lambda _name: Canned())

@@ -13,7 +13,9 @@ import { computed, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { ThemeConfig } from '@/api/types'
+import OrchestratorSettings from '@/components/settings/OrchestratorSettings.vue'
 import StartupSettings from '@/components/settings/StartupSettings.vue'
+import RemoteServersSettings from '@/components/settings/RemoteServersSettings.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import { LOCALES, locale, setLocale, t, type Locale, type MessageKey } from '@/i18n'
@@ -49,7 +51,9 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-language', titleKey: 'settings.language.title' },
   { id: 'settings-appearance', titleKey: 'settings.appearance.title' },
   { id: 'settings-explorer', titleKey: 'settings.explorer.title' },
+  { id: 'settings-orchestrator', titleKey: 'settings.orchestrator.title' },
   { id: 'settings-execution', titleKey: 'settings.execution.title' },
+  { id: 'settings-remote-servers', titleKey: 'settings.remoteServers.title' },
   { id: 'settings-updates', titleKey: 'settings.updates.title' },
 ]
 
@@ -556,6 +560,8 @@ async function setNodeCache(value: boolean) {
             </label>
           </section>
 
+          <section id="settings-orchestrator" class="vxs-enter scroll-mt-4"><OrchestratorSettings /></section>
+
           <section id="settings-execution" class="vxs-enter scroll-mt-4">
             <h2 class="mb-2 font-medium">{{ t('settings.execution.title') }}</h2>
             <div class="vxs-card space-y-3 rounded-lg border border-card bg-surface p-4 shadow-card">
@@ -576,6 +582,10 @@ async function setNodeCache(value: boolean) {
               </label>
 
             </div>
+          </section>
+
+          <section id="settings-remote-servers" class="vxs-enter scroll-mt-4">
+            <RemoteServersSettings />
           </section>
 
           <section id="settings-updates" class="vxs-enter scroll-mt-4">

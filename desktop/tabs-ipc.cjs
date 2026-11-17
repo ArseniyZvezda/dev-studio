@@ -149,9 +149,13 @@ function copyPage(value) {
 function publicBinding(project) {
   return { root: project.root, project_id: project.project_id, epoch: project.epoch };
 }
-function publicTab(tab) {
+function publicTab(tab, taskCounts = null) {
+  // Copy only the two read-only summary fields; never expose the cache itself.
+  const task_counts = taskCounts && Number.isSafeInteger(taskCounts.in_progress) && taskCounts.in_progress >= 0
+    && Number.isSafeInteger(taskCounts.needs_review) && taskCounts.needs_review >= 0
+    ? { in_progress: taskCounts.in_progress, needs_review: taskCounts.needs_review } : null;
   return { tabId: tab.tabId, project: publicBinding(tab.project), ownerWindowId: tab.ownerWindowId,
-    revision: tab.revision, state: tab.state, transferGeneration: tab.transferGeneration };
+    revision: tab.revision, state: tab.state, transferGeneration: tab.transferGeneration, task_counts };
 }
 function publicWindow(window) {
   return { windowId: window.windowId, revision: window.revision, tabIds: [...window.tabIds],
@@ -197,11 +201,13 @@ function publicWindow(window) {
  */
 function registerTabsIpc({ ipcMain, registry,
   shellURL = pathToFileURL(path.join(__dirname, 'shell.html')).href, prepareClose,
-  shellServices, setMenuOpen, tabDrag, beforePublish = () => {}, onWindowEmpty = () => {}, onPageChanged = () => {},
+  shellServices, setMenuOpen, tabDrag, beforePublish = () => {}, getTaskCounts = () => null,
+  onWindowEmpty = () => {}, onPageChanged = () => {},
   closeTimeout = 30000, pageRestoreTimeout = 30000 } = {}) {
   if (!ipcMain || !registry) throw new TypeError('ipcMain and registry are required');
   if (prepareClose !== undefined && typeof prepareClose !== 'function') throw new TypeError('Invalid close callback');
   if (typeof onPageChanged !== 'function') throw new TypeError('Invalid page callback');
+  if (typeof getTaskCounts !== 'function') throw new TypeError('Invalid task counts callback');
   if (typeof onWindowEmpty !== 'function' || !Number.isSafeInteger(closeTimeout) || closeTimeout <= 0) {
     throw new TypeError('Invalid close options');
   }
@@ -304,7 +310,8 @@ function registerTabsIpc({ ipcMain, registry,
     }
     const error = windows.get(authorization.windowId)?.error;
     return { role: 'shell', window: publicWindow(window), ...(error ? { error } : {}),
-      tabs: window.tabIds.map(id => registry.getTab(id)).filter(tab => tab?.ownerWindowId === window.windowId).map(publicTab) };
+      tabs: window.tabIds.map(id => registry.getTab(id)).filter(tab => tab?.ownerWindowId === window.windowId)
+        .map(tab => publicTab(tab, getTaskCounts(tab))) };
   }
 
   function authorizedContents() {

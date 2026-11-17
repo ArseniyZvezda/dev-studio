@@ -17,7 +17,7 @@ module.exports = {
   ...metadata.build,
   // App-level tab controller and the VS-21-derived native terminal helper (§5.3).
   files: [...metadata.build.files, 'tabs.cjs', 'tabs-ipc.cjs', 'tab-drag.cjs', 'native-terminal.cjs',
-    'session-state.cjs', 'project-events.cjs', 'project-notifications.cjs'],
+    'session-state.cjs', 'project-events.cjs', 'project-notifications.cjs', 'task-counts.cjs'],
   extraResources: [...metadata.build.extraResources,
     { from: 'native-terminal.ps1', to: 'native-terminal.ps1' }],
   publish: feed ? [feed] : null,

@@ -28,13 +28,13 @@
  * through whatever version control the project is under; nothing here names git.
  *
  * The file list folds under its heading like the Status column's other lists, and starts folded
- * (`lib/fold-state.ts`); the count, the refresh button, a load error and the Commit section stay
+ * (`lib/fold-state.ts`); the count, a load error and the Commit section stay
  * in view either way.
  *
  * Selection is owned by the parent: picking a file swaps what the main pane shows, and
  * that is a decision about the dialog rather than about this list.
  */
-import { ChevronDown, FileDiff, GitCommitHorizontal, Loader2, RefreshCw, Sparkles } from 'lucide-vue-next'
+import { ChevronDown, FileDiff, GitCommitHorizontal, Loader2, Sparkles } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
@@ -283,9 +283,9 @@ const commitNote = computed(() => {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 w-full flex-col bg-canvas">
+  <section class="flex w-full flex-col" data-status-files>
     <!-- A subsection of the Status column (§10.4), worded like the ones above it. -->
-    <header class="flex shrink-0 items-center gap-1 px-3 pt-2 pb-1">
+    <header class="flex items-center">
       <button
         type="button"
         class="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm py-0.5 text-small font-medium text-faint hover:bg-hover hover:text-primary"
@@ -300,20 +300,10 @@ const commitNote = computed(() => {
         <span v-if="changes" class="font-mono">{{ rows.length }}</span>
         <ChevronDown class="vxs-chevron ml-auto size-3.5 shrink-0" :class="open ? 'rotate-180' : ''" />
       </button>
-      <button
-        class="grid size-5 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"
-        :title="t('tasks.changes.refresh')"
-        :disabled="loading"
-        @click="load"
-      >
-        <Loader2 v-if="loading" class="size-3.5 animate-spin" />
-        <RefreshCw v-else class="size-3.5" />
-      </button>
     </header>
 
-    <!-- Folded, the list gives its height up and the Commit section stays at the bottom:
-         the draft is where a reviewer ends, wherever the list was left. -->
-    <div class="min-h-0 flex-1 overflow-y-auto py-1">
+    <!-- Folded, the file list takes no space within the shared Status scroll area. -->
+    <div>
       <p v-if="error" class="px-3 py-2 text-small text-danger">{{ error }}</p>
       <p v-else-if="changes?.error" class="px-3 py-2 text-small text-warning">
         {{ changes.error }}
@@ -437,9 +427,9 @@ const commitNote = computed(() => {
       </template>
     </div>
 
-    <!-- The draft, pinned under the list so it stays in reach however long the list is. -->
+    <!-- The commit draft follows the file subsection in Status. -->
     <section
-      class="flex shrink-0 flex-col gap-2 border-t border-line px-3 py-2"
+      class="mt-3 flex flex-col gap-2 border-t border-line py-2"
       :aria-label="t('tasks.commit.heading')"
     >
       <header class="flex items-center gap-1.5">

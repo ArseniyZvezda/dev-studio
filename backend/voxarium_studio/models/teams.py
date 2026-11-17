@@ -9,12 +9,18 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
+from pydantic import Field as PydanticField
 from sqlalchemy import JSON, Column, Text
 from sqlmodel import Field, SQLModel
 
 from .base import EnumString, UtcDateTime, new_id, utcnow
+
+
+EffortSolverCurveMultiplier = Annotated[
+    float, PydanticField(strict=True, gt=0, allow_inf_nan=False),
+]
 
 
 class TaskStatus(StrEnum):
@@ -150,15 +156,17 @@ class TeamMember(SQLModel, table=True):
     """
 
     model: str = "sonnet"
+    """Concrete model id, or ``auto`` to follow Orchestrator on each new run (§10.11).
+
+    The built-in Orchestrator itself must use an explicit model to avoid recursion.
+    """
     effort: str | None = None
     """How hard the model works per turn — ``low`` … ``max``, or null for the model's own
     default. Nullable on purpose: "not chosen" and "chosen as low" are different states,
     and only the first should follow the model when it changes."""
 
-    effort_solver_weights: dict[str, float] | None = Field(
-        default=None, sa_column=Column(JSON, nullable=True, info={"migration_default": "NULL"}),
-    )
-    """Effort Solver's custom component weights (§10.11); null uses built-in defaults."""
+    effort_solver_curve_multiplier: EffortSolverCurveMultiplier = Field(default=1.0)
+    """Legacy curve scale retained for stored rosters; not used by Orchestrator (§10.11)."""
 
     allowed_tools: list[str] = Field(
         default_factory=lambda: ["Read", "Grep", "Glob"], sa_column=Column(JSON)
@@ -484,7 +492,7 @@ class AgentChat(SQLModel, table=True):
     producer_policy: str = "careful"
     """Per-conversation decision policy; existing chats default to Careful (§10.11)."""
     producer_effort_mode: str = "agent"
-    """Agent inherits the assignee's effort; Auto runs Effort Solver before creation (§10.11)."""
+    """Agent inherits the assignee's effort; Auto runs Orchestrator before creation (§10.11)."""
     estimate_task_cost_usd: float = 150.0
     """Estimated API cost ceiling per task, checked before Producer continuations (§10.11)."""
     producer_state: str = "off"

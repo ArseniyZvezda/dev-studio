@@ -60,6 +60,35 @@ async def _frames(operation: FolderRename) -> list[dict[str, object]]:
     return [frame async for frame in operation.frames()]
 
 
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+async def test_busy_folder_retry_does_not_hold_the_common_mutation_section(
+    docs: AppContext, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    """A Windows retry delay must not park an unrelated in-process document save."""
+    busy = asyncio.Event()
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        busy.set()
+        raise docs_module.FolderInUse("synthetic busy folder")
+
+    monkeypatch.setattr(docs_module, "_rename_directory_once", refuse)
+    monkeypatch.setattr(docs_module, "RENAME_RETRY_SECONDS", 60)
+    change = (docs.docs.rename_folder("features", "mechanics") if operation == "rename"
+              else docs.docs.delete_folder("features"))
+    task = asyncio.create_task(change)
+    try:
+        await asyncio.wait_for(busy.wait(), 2)
+        await asyncio.wait_for(docs.docs.write("unrelated.md", "# Agent save\n"), 2)
+        assert docs.remote_transitions.active_mutations == 1
+        assert docs.docs.read("unrelated.md")["content"] == "# Agent save\n"
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert docs.remote_transitions.active_mutations == 0
+    assert docs.docs.resolve("features/dash.md").exists()
+
+
 def _content(ctx: AppContext, path: str) -> str:
     return str(ctx.docs.read(path)["content"])
 

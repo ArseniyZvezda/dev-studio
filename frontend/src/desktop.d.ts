@@ -1,5 +1,5 @@
 import type { RendererCloseRequest, RendererCloseAck } from '@/desktop/close-barrier'
-import type { DirectoryListing, PathInspection, PickerStatus, PickResult, RecentProject, UpdateStatus } from '@/api/types'
+import type { DirectoryListing, PathInspection, PickerStatus, PickResult, ProjectTaskCounts, RecentProject, UpdateStatus } from '@/api/types'
 
 /** Durable page only: no project handle, epoch, credentials or editor state (§5.3.6). */
 export interface DesktopPageDescriptor {
@@ -45,6 +45,8 @@ export interface DesktopTabSnapshot {
   readonly state: 'loading' | 'ready' | 'crashed' | 'closing'
   readonly revision: number
   readonly transferGeneration: number
+  /** Main-owned, project-scoped summary; null/absent means not available yet (§5.3). */
+  readonly task_counts?: Readonly<ProjectTaskCounts> | null
 }
 
 export interface DesktopTabsWindowSnapshot {

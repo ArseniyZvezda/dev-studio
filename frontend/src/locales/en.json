@@ -1,12 +1,10 @@
 {
   "effortSolver": {
-    "name": "Effort Solver",
-    "evaluatingTask": "Effort Solver is scoring this task…",
-    "evaluating": "Effort Solver is scoring this subagent…",
-    "weights": "Effort Solver weights",
-    "weightsHint": "Higher weights give a criterion more influence. Higher complexity, creativity and depth increase effort; higher coverage reduces it. The result is normalized to 1–5.",
-    "invalidWeights": "Use non-negative finite weights, with at least one greater than zero.",
-    "builtin": "Built-in Effort Solver: always an AI agent and cannot be deleted.",
+    "name": "Orchestrator",
+    "weight": "Weight",
+    "evaluatingTask": "Orchestrator is scoring this task…",
+    "evaluating": "Orchestrator is scoring this subagent…",
+    "builtin": "Built-in Orchestrator: always an AI agent and cannot be deleted.",
     "dimensions": {
       "complexity": "Complexity",
       "creativity": "Creativity",
@@ -19,7 +17,10 @@
       "3": "High",
       "4": "XHigh",
       "5": "Max"
-    }
+    },
+    "modelStrength": "Model strength",
+    "autoModel": "Auto — follow Orchestrator",
+    "noAuto": "Orchestrator must use a specific model, not Auto."
   },
   "modelEffort": {
     "default": "Auto",
@@ -192,7 +193,23 @@
       "qwen": "Qwen Code",
       "ready": "Ready",
       "unavailable": "Backend unavailable",
-      "unknown": "Backend status is not available yet. Waiting for the next check."
+      "unknown": "Backend status is not available yet. Waiting for the next check.",
+      "limitRemaining": "{window}: {percent} remaining",
+      "resetsIn": "Resets in: {time}",
+      "resetDays": "{days}d {hours}h",
+      "resetHours": "{hours}h {minutes}m",
+      "resetMinutes": "{minutes}m",
+      "resetSoon": "<1m",
+      "limitsUnknown": "Quota unavailable: waiting for recent CLI usage data (not reported by every backend).",
+      "windows": {
+        "primary": "Primary window",
+        "secondary": "Secondary window",
+        "five_hour": "5 hours",
+        "seven_day": "7 days",
+        "seven_day_opus": "7 days (Opus)",
+        "seven_day_sonnet": "7 days (Sonnet)",
+        "overage": "Extra usage"
+      }
     },
     "connection": {
       "live": "Live — receiving events",
@@ -483,6 +500,12 @@
     "emptyState": {
       "title": "No document open",
       "hint": "Pick a document on the left. Agents write specs and test plans here, and everyone else works against them."
+    },
+    "remoteEditor": {
+      "proofRequired": "This live editor has not confirmed its frozen text yet. Keep it open while the final room save is acknowledged, or resolve the connection or save error.",
+      "blocked": "The editor could not confirm its saved text. Keep this page open and resolve the connection or save error before continuing.",
+      "resumeRequired": "The binding changed. This editor stays paused; explicitly reopen it after reviewing the saved text.",
+      "receiptRequired": "This live editor has no backend save receipt. Keep it open; the binding change remains blocked."
     },
     "saveState": {
       "saved": "All changes saved",
@@ -1043,7 +1066,7 @@
       "effort": "Effort",
       "sameAsMember": "Same as the member",
       "sameAsMemberValue": "Same as the member ({value})",
-      "effortSolverAtStart": "Same as the member (Auto): Effort Solver chooses the effort when the task starts"
+      "effortSolverAtStart": "Same as the member (Auto): Orchestrator chooses the effort when the task starts"
     },
     "changes": {
       "touched": "Files touched",
@@ -1129,7 +1152,7 @@
       "tokensSpent": "Tokens spent: {tokens}",
       "tokensSpentHint": "Total tokens spent on this task across all runs: input, cached input and output. Updates as the runtime reports usage.",
       "isolatedWorktree": "isolated worktree",
-      "effortSolverAtStart": "Auto: Effort Solver chooses the effort when the task starts"
+      "effortSolverAtStart": "Auto: Orchestrator chooses the effort when the task starts"
     },
     "runSettings": {
       "effort": "{effort} effort",
@@ -1488,8 +1511,8 @@
       "maxTurnsOverride": "Max turns Override",
       "inheritedRunSettings": "From Team Settings: {mode} · Max turns: {turns}",
       "effort": "Effort",
-      "effortDefault": "Model default in chats; Effort Solver chooses for each task when it starts",
-      "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows the model default in chats; for a task, Effort Solver chooses the effort when the task starts.",
+      "effortDefault": "Model default in chats; Orchestrator chooses for each task when it starts",
+      "effortHint": "How hard the model works per turn. Higher costs more tokens and time; lower suits short, well-scoped tasks. Unset follows the model default in chats; for a task, Orchestrator chooses the effort when the task starts.",
       "soloMode": "Solo Mode — one task at a time",
       "soloModeHint": "A released task waits in Pending while another of this member's tasks is in progress, and starts by itself when that one ends — lowest number first. Off, every released task runs at once.",
       "isolate": "Isolate in a separate checkout",
@@ -2452,7 +2475,7 @@
         "agent": "Agent",
         "auto": "Auto",
         "agentHint": "New tasks use their assignee’s default effort.",
-        "autoHint": "Effort Solver evaluates each new task’s title and description, then calculates its effort using the configured weights."
+        "autoHint": "Orchestrator independently selects model strength (1–3) and reasoning effort (1–5) for each new task."
       },
       "estimateUsd": "Estimate Task Cost in US dollars",
       "estimateHint": "Approximate API cost per task. During review, the Producer checks the remaining budget and moves work that cannot fit into new tasks. Default: $150.",
@@ -2460,6 +2483,76 @@
     }
   },
   "sync": {
+    "project": {
+      "previewGate": "Preview requires current selected-profile/incarnation metadata and a compatible read-only backend. Missing metadata is not permission to infer a binding.",
+      "title": "Server project",
+      "hint": "Global servers and personal keys are managed in Settings → Remote servers. Catalog actions below never connect editors automatically.",
+      "loadServers": "Load saved servers",
+      "server": "Saved server",
+      "loadCatalog": "Load catalog",
+      "catalogGate": "Catalog, Create and Select are unavailable until an explicit catalog read succeeds for a usable profile. Verification alone is not catalog access.",
+      "select": "Review Select",
+      "selectTitle": "Select this server project?",
+      "selectHint": "Accept the exact server URL and ID as this working copy’s destination. Existing editors must finish saving and acknowledge the barrier. The commit stays disabled; Select does not Enable, move documents or join rooms.",
+      "selectConfirm": "Confirm Select",
+      "selected": "Server project selected. Sync remains disabled; Preview and Enable are separate actions.",
+      "more": "Load more",
+      "create": "Create on server",
+      "createHint": "Creates a server project only. It does not Select or Enable. An uncertain result must be observed explicitly; never retry automatically.",
+      "createId": "Exact server project ID",
+      "createName": "Server display name",
+      "observe": "Observe original Create",
+      "newCreate": "Start a separate Create intent",
+      "preview": "Read-only Preview",
+      "previewResult": "Read-only comparison received ({conflicts} conflicts). No documents were changed and sync is still disabled.",
+      "enable": "Enable sync",
+      "enableGate": "Enable is unavailable in this build: compatible runtime, editor, R3 and credential-security release checks are not all confirmed. Preview is not consent to sync. Legacy migration/recovery is not available here.",
+      "loading": "Waiting for the server operation…",
+      "unavailable": "This action is unavailable or blocked by backend prerequisites. Nothing was enabled; no legacy fallback or automatic retry is performed.",
+      "outcome": {
+        "created": "Created on server only. Load the catalog explicitly to review Select.",
+        "found": "Original ID found. This is not proof of creation or permission to Select automatically.",
+        "conflict": "ID already exists. Nothing was selected; no automatic lookup or retry.",
+        "unknown": "Create outcome is unknown. Keep the original intent and use Observe; do not repeat Create.",
+        "rejected": "Create was rejected. Nothing was selected and the original operation is retained.",
+        "absent": "Original ID is absent at observation time. This does not release the intent or permit automatic retry."
+      }
+    },
+    "identity": {
+      "offlineAttempt": "Network sync remains blocked. You may explicitly attempt a local ID change while this working copy is disabled and idle. Backend prepare, editor drain, CAS and recovery checks still decide whether it can proceed; this does not grant Enable permission.",
+      "lastObserved": "Last observed ID",
+      "intro": "Edit only this working copy's persistent project ID. This does not rename or create a project on Remote.",
+      "current": "Current project ID",
+      "missing": "No project ID",
+      "newId": "New project ID",
+      "noServer": "No server selected",
+      "status": "Sync status",
+      "invalid": "Use 1–64 lowercase ASCII characters: start with a–z or 0–9, then a–z, 0–9, dot, underscore or hyphen. Spaces and uppercase are not converted.",
+      "review": "Review ID change",
+      "confirmTitle": "Change the local project ID?",
+      "confirmHint": "Confirm the exact ID and server below. Editors must finish saving and acknowledge the barrier. Sync will be disabled and local Remote consent cleared. Documents, paths, runtime binding, MCP and jobs are not moved or replaced.",
+      "confirm": "Confirm local ID change",
+      "refresh": "Refresh status",
+      "draining": "Waiting for editors and sync to finish…",
+      "committing": "Committing the local ID… Do not close this form; cancellation is no longer available.",
+      "blocked": "Blocked — review the cause before continuing",
+      "bindingRequired": "Server selection and confirmation required",
+      "migrationRequired": "Legacy migration is required. This form cannot bypass it.",
+      "pendingEdits": "Unsaved or unacknowledged editors/rooms block the change. Keep the text open and finish saving; there is no force-discard action. Cancel this change before trying again.",
+      "reloadRequired": "An older or unknown editor client blocks the change. Cancel, then close or reload that client after preserving its unsaved text.",
+      "recoveryRequired": "Sync is paused or recovery is required. No automatic resume or retry is performed. Review the binding before continuing.",
+      "duplicate": "Another local working copy owns this server/ID binding. Its jobs were not stopped.",
+      "conflict": "The project observation or binding changed (409). No automatic retry or adoption of a newer generation. Cancel any pending change, refresh and review again.",
+      "failed": "The change was not confirmed. Cancel any pending change and refresh its status before trying again.",
+      "commitUnknown": "The commit outcome could not be confirmed. Do not repeat it automatically. Refresh and review the stored ID and sync status; recovery may be required.",
+      "unavailable": "Project identity status is unavailable. Open a project-scoped tab and refresh; no generation is assumed.",
+      "cancelled": "The ID change was cancelled. Sync may remain paused if the barrier had already fenced; refresh before continuing.",
+      "cancelling": "Requesting cancellation… A pending prepare will only be cancelled, never committed.",
+      "cancelFailed": "Cancellation was not confirmed. Keep this form open and retry Cancel; sync may remain paused.",
+      "paused": "The ID change was cancelled after fencing. Sync remains paused; explicit recovery is required, not automatic resume.",
+      "saved": "Local project ID saved. Sync is disabled; no Remote project was renamed, created or joined.",
+      "closed": "Personal keys are managed separately in Settings → Remote servers. No project form stores a key."
+    },
     "conflict": "“{path}” changed here and on the server at the same time. The server’s version was kept; yours is now “{copy}”.",
     "room": {
       "label": "Editing together",
@@ -2501,6 +2594,91 @@
     "maintenance": "Project cache and execution"
   },
   "settings": {
+    "orchestrator": {
+      "title": "Orchestrator models",
+      "hint": "Global model-strength mapping for every project. Auto agent models follow Orchestrator; each cell must name a specific model.",
+      "strength": "Strength",
+      "cell": "Strength {strength}, {backend}"
+    },
+    "remoteServers": {
+      "mutationGate": "Personal key, URL and deletion commands can be blocked until legacy inventory and consumer drain are proven. A saved profile or successful Verify does not enable a project or release those safety gates.",
+      "credentials": {
+        "manage": "Personal key",
+        "title": "Server personal key",
+        "hint": "Enter an already issued personal key. An empty field keeps the saved key. Saving does not verify the server or connect a project.",
+        "key": "New personal key",
+        "save": "Save key",
+        "saving": "Saving…",
+        "cancel": "Cancel",
+        "forget": "Forget saved key",
+        "forgetTitle": "Forget the saved personal key?",
+        "forgetWarning": "This removes only the locally stored key. It does not remove a key supplied by the environment, revoke the Remote key or delete the profile or projects. The effective source is shown in the returned profile metadata.",
+        "forgetCancel": "Keep saved key",
+        "forgetConfirm": "Forget saved key",
+        "stale": "This response cannot be applied. Close this form and refresh the list before continuing.",
+        "conflict": "The server profile or credential binding has changed. Close this form, refresh the list and start again.",
+        "inUse": "The server profile is in use. No key change was confirmed. Close this form, review its consumers and refresh the list before continuing.",
+        "notDrained": "Active consumers have not finished their work. No key change was confirmed. Close this form and refresh the list after they finish.",
+        "invalid": "The personal key request is invalid. No key change was confirmed.",
+        "unavailable": "Personal key management is temporarily unavailable. No success was confirmed.",
+        "failed": "Could not change the personal key. No success was confirmed."
+      },
+      "add": "Add server",
+      "rename": "Rename",
+      "metadata": {
+        "addTitle": "Add server",
+        "renameTitle": "Rename server",
+        "name": "Name",
+        "url": "Server URL",
+        "create": "Add server",
+        "save": "Save name",
+        "cancel": "Cancel",
+        "saving": "Saving…",
+        "invalid": "Enter a valid name and server URL. URLs must not include credentials, a query or a fragment.",
+        "collision": "A server with this URL already exists. Close this form and refresh the list.",
+        "conflict": "The server profile has changed. Close this form, refresh the list and start again.",
+        "unavailable": "Server profiles are temporarily unavailable. No success was confirmed.",
+        "failed": "Could not save the server profile. No success was confirmed.",
+        "stale": "This response cannot be applied. Close this form and refresh the list before continuing.",
+        "keylessHint": "This saves a profile without a personal key. It does not verify the server or connect a project."
+      },
+      "title": "Remote servers",
+      "hint": "This list shows saved profile metadata only, not a live connection. Choose Verify to explicitly check a server using its saved personal key.",
+      "refresh": "Refresh list",
+      "loading": "Loading remote servers…",
+      "loadError": "Could not load remote servers.",
+      "empty": "No remote server profiles saved.",
+      "verifying": "Verifying…",
+      "busy": "A server operation is in progress. Wait for it to finish.",
+      "verify": "Verify",
+      "verifyError": "Could not verify the remote server.",
+      "noChecked": "No last verification result available.",
+      "checkedAt": "Last checked: {time}",
+      "checkedUser": "Verified user: {user}",
+      "unknownUser": "User unknown",
+      "unknownTime": "Time unknown",
+      "insecureTitle": "Verify over unencrypted HTTP?",
+      "insecureWarning": "This server uses HTTP outside loopback. Verification will send your personal key in plaintext. Anyone able to intercept the traffic could read and use it. Continue only if you accept this risk.",
+      "insecureConfirm": "Send key and verify",
+      "cancel": "Cancel",
+      "credential": {
+        "stored": "Personal key stored",
+        "missing": "Personal key missing",
+        "environment": "Personal key from environment"
+      },
+      "status": {
+        "unavailable": "Connection status unknown",
+        "unchecked": "Not yet verified",
+        "checking": "Verification in progress",
+        "valid": "Verification succeeded",
+        "unauthorised": "Verification failed: access denied",
+        "offline": "Server unreachable at last check",
+        "incompatible": "Incompatible server at last check",
+        "insecure_blocked": "Verification blocked: insecure HTTP",
+        "error": "Verification failed"
+      },
+      "lastResult": "Last verification result"
+    },
     "scopeHint": "Application preferences shared by all projects on this computer.",
     "commitDescription": {
       "title": "Commit descriptions",

@@ -1,6 +1,6 @@
 [project]
 name = "voxarium_studio_remote"
-version = "0.1.0"
+version = "0.2.0"
 description = "Voxarium Studio Remote — the shared server local Studios synchronise through"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "typer>=0.15",
+    "prompt-toolkit>=3.0.43,<4",
     # The room's copy of a document being edited live is a Yjs document (dev spec §16.4).
     # pycrdt is the Yrs binding Jupyter collaborates through; the server only ever applies
     # and re-encodes updates with it, it never reads the document's structure.
@@ -21,6 +22,7 @@ dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 voxarium-studio-remote = "voxarium_studio_remote.cli:main"
+voxarium-remote-admin = "voxarium_studio_remote.admin:main"
 
 [build-system]
 requires = ["hatchling"]

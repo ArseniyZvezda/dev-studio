@@ -12,7 +12,7 @@ from voxarium_studio.teams.backends.base import AgentEvent
 from voxarium_studio.teams.effort_solver import DEFAULT_SYSTEM_PROMPT
 
 
-SCORES = {"complexity": 9, "creativity": 6, "depth": 8, "coverage": 8}
+SCORES = {"model": 2, "effort": 4}
 
 
 class SolverBackend:
@@ -66,8 +66,11 @@ async def test_evaluation_uses_only_title_and_description_with_solver_settings(m
     monkeypatch.setattr(runner, "get_backend", get_backend)
     solution = await runner.solve_effort(member, "Исправить прыжок", "Jump once on Space.", max_message_bytes=12345)
     assert selected == ["test_solver"]
-    assert solution.scores.model_dump() == SCORES
-    assert solution.effort == 3 and solution.effort_level == "high"
+    assert solution.model == 2
+    assert solution.result_data() == {"model": 2, "effort": 4, "effort_level": "xhigh"}
+    assert solution.effort == 4 and solution.effort_level == "xhigh"
+    assert solution.weight is None
+    assert solution.curve_multiplier == 1
     request = backend.request
     assert json.loads(request.prompt) == {"title": "Исправить прыжок", "description": "Jump once on Space."}
     assert request.system_prompt == DEFAULT_SYSTEM_PROMPT
@@ -83,14 +86,25 @@ async def test_evaluation_uses_only_title_and_description_with_solver_settings(m
     assert backend.closed and not request.workdir.exists()
 
 
-async def test_custom_prompt_and_weights_are_applied(member, monkeypatch):
+async def test_custom_prompt_is_applied(member, monkeypatch):
     member.responsibility = "Score only the supplied task, using the four required integer keys."
-    member.effort_solver_weights = {"complexity": 0, "creativity": 0, "depth": 0, "coverage": 1}
     backend = SolverBackend()
     monkeypatch.setattr(runner, "get_backend", lambda _name: backend)
     solution = await runner.solve_effort(member, "Title", "Brief")
     assert backend.request.system_prompt == member.responsibility
-    assert solution.effort == 2 and solution.effort_level == "medium"
+    assert solution.effort == 4 and solution.effort_level == "xhigh"
+
+
+async def test_legacy_curve_multiplier_does_not_change_direct_selection(member, monkeypatch):
+    member.effort_solver_curve_multiplier = 0.5
+    backend = SolverBackend()
+    monkeypatch.setattr(runner, "get_backend", lambda _name: backend)
+    solution = await runner.solve_effort(member, "Title", "Brief")
+    assert solution.weight is None
+    assert solution.model == 2
+    assert solution.effort == 4 and solution.effort_level == "xhigh"
+    assert backend.request.effort == "high"
+    assert json.loads(backend.request.prompt) == {"title": "Title", "description": "Brief"}
 
 
 async def test_usage_reconciles_repeated_assistant_frames_and_final_result_once(member, monkeypatch):
@@ -117,18 +131,18 @@ async def test_usage_reconciles_repeated_assistant_frames_and_final_result_once(
 
 async def test_text_response_is_used_when_result_has_no_text(member, monkeypatch):
     backend = SolverBackend([
-        AgentEvent(kind="text", text="```json\n" + json.dumps(SCORES) + "\n```"),
+        AgentEvent(kind="text", text=json.dumps(SCORES)),
         AgentEvent(kind="result", text="", is_final=True),
     ])
     monkeypatch.setattr(runner, "get_backend", lambda _name: backend)
-    assert (await runner.solve_effort(member, "Title", "Brief")).effort == 3
+    assert (await runner.solve_effort(member, "Title", "Brief")).effort == 4
 
 
 @pytest.mark.parametrize("events", [
     [],
     [AgentEvent(kind="result", text="not json")],
-    [AgentEvent(kind="result", text=json.dumps({**SCORES, "depth": 0}))],
-    [AgentEvent(kind="result", text=json.dumps({**SCORES, "depth": True}))],
+    [AgentEvent(kind="result", text=json.dumps({**SCORES, "effort": 0}))],
+    [AgentEvent(kind="result", text=json.dumps({**SCORES, "model": True}))],
 ])
 async def test_invalid_model_outputs_do_not_get_a_fallback_effort(member, monkeypatch, events):
     backend = SolverBackend(events)
@@ -175,4 +189,25 @@ async def test_cancellation_propagates_and_closes_stream(member, monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert backend.closed and not backend.request.workdir.exists()
+
+
+async def test_auto_evaluator_is_rejected_before_any_backend_call(member, monkeypatch):
+    member.model = "auto"
+    monkeypatch.setattr(runner, "get_backend", lambda _: pytest.fail("must not start recursive evaluator"))
+    with pytest.raises(ValueError, match="cannot use model auto"):
+        await runner.solve_effort(member, "Title", "Brief")
+
+
+@pytest.mark.parametrize("text", [
+    '{"complexity": 9, "creativity": 6, "depth": 8, "coverage": 8}',
+    '```json\n{"model": 2, "effort": 4}\n```',
+    '{"model": 2, "effort": 4, "weight": 0.8}',
+    '{"model": 1, "model": 2, "effort": 4}',
+])
+async def test_active_evaluator_does_not_accept_legacy_scores_or_markdown(member, monkeypatch, text):
+    backend = SolverBackend([AgentEvent(kind="result", text=text)])
+    monkeypatch.setattr(runner, "get_backend", lambda _: backend)
+    with pytest.raises(ValueError):
+        await runner.solve_effort(member, "Title", "Brief")
     assert backend.closed and not backend.request.workdir.exists()

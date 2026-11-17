@@ -11,19 +11,36 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 
 from ..core.security import UNTRUSTED_FILE_HEADERS
 from ..explorer.service import PathOutsideProject
 from ..teams.docs import MAX_ASSET_BYTES, DocumentChangedOnDisk, FolderInUse, FolderStyleUnreadable
 from .deps import Ctx
+from .sync import FencedRoute, activated_model, bind_http_editor_inventory
 
-router = APIRouter(prefix="/docs", tags=["docs"])
+router = APIRouter(prefix="/docs", tags=["docs"], route_class=FencedRoute,
+                   dependencies=[Depends(bind_http_editor_inventory)])
 
 
-class DocWrite(BaseModel):
+class DocumentFence(BaseModel):
+    """Captured arguments, never supplied from current metadata by a late callback.
+
+    Optional only for genuinely unactivated legacy HTTP clients (studio-design §5.3).
+    REST integrations pass epoch/G; browser saves additionally carry their lease.
+    """
+
+    expected_binding_generation: StrictInt | None = None
+    backend_epoch: str | None = None
+    editor_id: str | None = None
+    sid: str | None = None
+    client_instance_id: str | None = None
+    version: StrictInt | None = None
+
+
+class DocWrite(DocumentFence):
     content: str
     author: str | None = None
     """Member id when a person writes as themselves; null means the user."""
@@ -39,13 +56,13 @@ class DocWrite(BaseModel):
     such instead of as an edit made from outside the room."""
 
 
-class DocMove(BaseModel):
+class DocMove(DocumentFence):
     source: str
     target: str
     author: str | None = None
 
 
-class FolderStyleUpdate(BaseModel):
+class FolderStyleUpdate(DocumentFence):
     """A patch to a folder's look: a key sent as null goes back to the default, one left out
     is left alone (block-editor spec §5.2)."""
 
@@ -55,7 +72,7 @@ class FolderStyleUpdate(BaseModel):
     author: str | None = None
 
 
-class FolderRenameRequest(BaseModel):
+class FolderRenameRequest(DocumentFence):
     path: str
     """The folder, relative to the docs root — ``features`` or ``features/combat``."""
     name: str
@@ -63,10 +80,30 @@ class FolderRenameRequest(BaseModel):
     author: str | None = None
 
 
-class FolderDeleteRequest(BaseModel):
+class FolderDeleteRequest(DocumentFence):
     path: str
     """The folder, relative to the docs root. It goes with everything in it."""
     author: str | None = None
+
+
+def _http_generation(ctx: Any, payload: DocumentFence, path: str, *, browser_save: bool = False) -> int | None:
+    active = activated_model(ctx)
+    sid = payload.sid
+    expected = payload.expected_binding_generation
+    if sid is not None:
+        ctx.sync.validate_live_write(path, sid, expected_binding_generation=expected,
+                                     editor_id=payload.editor_id)
+        if not active and payload.editor_id is None:
+            # Genuine legacy collab is preserved, but its explicitly supplied
+            # sid still captures the room's G; unknown sid never becomes REST.
+            expected = ctx.sync._sessions[sid].binding_generation
+            sid = None
+    return ctx.docs.transitions.require_http(
+        expected, backend_epoch=payload.backend_epoch,
+        editor_id=payload.editor_id, document_path=path,
+        client_instance_id=payload.client_instance_id, sid=sid,
+        require_editor=browser_save,
+    )
 
 
 @router.get("")
@@ -191,7 +228,11 @@ def _matches_etag(header: str | None, etag: str) -> bool:
 @router.post("/move")
 async def move_doc(payload: DocMove, ctx: Ctx) -> dict[str, Any]:
     try:
-        return await ctx.docs.move(payload.source, payload.target, author=payload.author)
+        path = ctx.docs.relative(ctx.docs.resolve(payload.source))
+        generation = _http_generation(ctx, payload, path)
+        with ctx.docs.transitions.http_mutation_guard(lambda: _http_generation(ctx, payload, path)):
+            return await ctx.docs.move(payload.source, payload.target, author=payload.author,
+                                       expected_binding_generation=generation)
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -214,7 +255,11 @@ async def style_doc_folder(payload: FolderStyleUpdate, ctx: Ctx) -> dict[str, An
     sent = payload.model_fields_set
     changes = {key: getattr(payload, key) for key in ("color", "icon") if key in sent}
     try:
-        return await ctx.docs.set_folder_style(payload.path, changes, author=payload.author)
+        path = ctx.docs.relative(ctx.docs.resolve_folder(payload.path))
+        generation = _http_generation(ctx, payload, path)
+        with ctx.docs.transitions.http_mutation_guard(lambda: _http_generation(ctx, payload, path)):
+            return await ctx.docs.set_folder_style(payload.path, changes, author=payload.author,
+                                                   expected_binding_generation=generation)
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -244,7 +289,11 @@ async def rename_doc_folder(payload: FolderRenameRequest, ctx: Ctx) -> Streaming
     documents changed — is published there by the store.
     """
     try:
-        operation = await ctx.docs.rename_folder(payload.path, payload.name, author=payload.author)
+        path = ctx.docs.relative(ctx.docs.resolve_folder(payload.path))
+        generation = _http_generation(ctx, payload, path)
+        with ctx.docs.transitions.http_mutation_guard(lambda: _http_generation(ctx, payload, path)):
+            operation = await ctx.docs.rename_folder(payload.path, payload.name, author=payload.author,
+                                                     expected_binding_generation=generation)
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -276,7 +325,11 @@ async def delete_doc_folder(payload: FolderDeleteRequest, ctx: Ctx) -> dict[str,
     what is left went.
     """
     try:
-        return await ctx.docs.delete_folder(payload.path, author=payload.author)
+        path = ctx.docs.relative(ctx.docs.resolve_folder(payload.path))
+        generation = _http_generation(ctx, payload, path)
+        with ctx.docs.transitions.http_mutation_guard(lambda: _http_generation(ctx, payload, path)):
+            return await ctx.docs.delete_folder(payload.path, author=payload.author,
+                                                expected_binding_generation=generation)
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -302,17 +355,60 @@ async def read_doc(path: str, ctx: Ctx) -> dict[str, Any]:
 
 
 @router.put("/{path:path}")
-async def write_doc(path: str, payload: DocWrite, ctx: Ctx) -> dict[str, Any]:
-    if payload.collab_session:
-        ctx.sync.note_live_write(path, payload.collab_session, payload.content)
+async def write_doc(path: str, payload: DocWrite, request: Request, ctx: Ctx) -> dict[str, Any]:
+    save = None
+    live_marker = None
+    old_marker = None
     try:
-        return await ctx.docs.write(
-            path,
-            payload.content,
-            author=payload.author,
-            expected_updated_at=payload.expected_updated_at,
-            exclusive=payload.exclusive,
-        )
+        relative = ctx.docs.relative(ctx.docs.resolve(path))
+        if payload.collab_session is not None:
+            if payload.sid is not None and payload.sid != payload.collab_session:
+                raise HTTPException(409, {"code": "unknown_sid", "details": {}})
+            payload.sid = payload.collab_session
+        # Explicit collab metadata is never downgraded, including preactivation.
+        if payload.sid is not None:
+            ctx.sync.validate_live_write(relative, payload.sid,
+                                         expected_binding_generation=payload.expected_binding_generation,
+                                         editor_id=payload.editor_id)
+        generation = _http_generation(ctx, payload, relative,
+                                      browser_save=activated_model(ctx) and "origin" in request.headers)
+        if payload.editor_id is not None:
+            save = ctx.docs.transitions.begin_editor_save(
+                payload.editor_id, payload.backend_epoch, generation,
+                document_path=relative, client_instance_id=payload.client_instance_id,
+                sid=payload.sid, version=payload.version,
+            )
+        def mark_live_write() -> None:
+            nonlocal old_marker, live_marker
+            if payload.sid is not None:
+                old_marker = ctx.sync._live_writes.get(relative)
+                ctx.sync.note_live_write(relative, payload.sid, payload.content,
+                                         expected_binding_generation=generation, editor_id=payload.editor_id)
+                live_marker = ctx.sync._live_writes.get(relative)
+
+        # Publish the room marker only inside the admitted FS critical phase,
+        # after the final lease check. Rejected waiters cannot restore one
+        # another's rejected markers, and the bus still sees the marker first.
+        with ctx.docs.transitions.http_mutation_guard(
+            lambda: _http_generation(ctx, payload, relative), save=save,
+            before_mutation=mark_live_write,
+        ):
+            result = await ctx.docs.write(
+                path,
+                payload.content,
+                author=payload.author,
+                expected_updated_at=payload.expected_updated_at,
+                exclusive=payload.exclusive,
+                expected_binding_generation=generation,
+            )
+        if save is not None:
+            receipt = ctx.docs.transitions.record_saved(save)
+            result.update({key: receipt[key] for key in (
+                "editor_id", "backend_epoch", "binding_generation", "version", "last_saved_version",
+            )})
+            save = None
+        live_marker = None
+        return result
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (DocumentChangedOnDisk, FileExistsError) as exc:
@@ -321,12 +417,31 @@ async def write_doc(path: str, payload: DocWrite, ctx: Ctx) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if save is not None:
+            ctx.docs.transitions.fail_editor_save(save)
+        if live_marker is not None and ctx.sync._live_writes.get(relative) is live_marker:
+            if old_marker is None:
+                ctx.sync._live_writes.pop(relative, None)
+            else:
+                ctx.sync._live_writes[relative] = old_marker
 
 
 @router.delete("/{path:path}", status_code=200)
-async def delete_doc(path: str, ctx: Ctx) -> dict[str, Any]:
+async def delete_doc(
+    path: str, ctx: Ctx,
+    expected_binding_generation: int | None = Query(default=None),
+    backend_epoch: str | None = None, editor_id: str | None = None,
+    client_instance_id: str | None = None, sid: str | None = None,
+) -> dict[str, Any]:
     try:
-        return {"path": await ctx.docs.delete(path), "deleted": True}
+        relative = ctx.docs.relative(ctx.docs.resolve(path))
+        fence = DocumentFence(expected_binding_generation=expected_binding_generation,
+                              backend_epoch=backend_epoch, editor_id=editor_id,
+                              client_instance_id=client_instance_id, sid=sid)
+        generation = _http_generation(ctx, fence, relative)
+        with ctx.docs.transitions.http_mutation_guard(lambda: _http_generation(ctx, fence, relative)):
+            return {"path": await ctx.docs.delete(path, expected_binding_generation=generation), "deleted": True}
     except PathOutsideProject as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:

@@ -5,4 +5,4 @@ deployed alone, in a container, and what it shares with the Studio is a wire pro
 (:mod:`voxarium_studio_remote.protocol`), not code.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

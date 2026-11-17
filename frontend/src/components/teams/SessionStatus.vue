@@ -6,8 +6,8 @@
  * Sub-agents first — how many are running and how the rest ended — then the skills and MCP
  * servers the session was handed, the files the task declared it would write (its lock set,
  * §10.5, repeated from the brief side so it sits right above what was actually written), then
- * the files it touched (the default slot, `TaskChanges`, which keeps its own scroller and
- * commit draft under the rest). Every list starts folded to its heading and count
+ * the files it touched (the default slot, `TaskChanges`, in the same scrollable Status
+ * content). Every list starts folded to its heading and count
  * (`lib/fold-state.ts`). The skills and servers are folded from the transcript (`lib/session-status.ts`), so they read the same for Claude Code, Codex and
  * Qwen Code, and follow a live run over the socket like the transcript does.
  */
@@ -81,9 +81,8 @@ function serverDot(server: SessionMcpServer): string {
       </span>
     </header>
 
-    <!-- Capped and scrolling on its own: the files below are the list a reviewer works
-         through, and twenty skills must not push them out of the column. -->
-    <div class="max-h-[45%] shrink-0 space-y-3 overflow-y-auto border-b border-line px-3 py-2">
+    <!-- §10.4: all Status subsections share one scroll area, including Files touched. -->
+    <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-2" data-status-content>
       <SubagentSummary :entries="subagents" />
 
       <div data-status-skills>
@@ -178,9 +177,7 @@ function serverDot(server: SessionMcpServer): string {
           </p>
         </template>
       </div>
-    </div>
 
-    <div class="min-h-0 flex-1">
       <slot />
     </div>
   </section>

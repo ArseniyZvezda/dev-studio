@@ -177,11 +177,13 @@ optgroup {
 
 header.vxs-pane {
   background: var(--vxs-header-fill);
+  border-radius: var(--vxs-radius-md);
+  border-bottom-width: 0;
 }
 
 .vxs-main {
   min-height: 0;
-  padding: 6px 10px 6px 4px;
+  padding: 6px 10px 0 0;
   background: var(--vxs-page-fill);
 }
 

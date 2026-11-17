@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from ..build_info import build_info, changelog_path
 from ..core.config import (
@@ -27,7 +27,8 @@ from ..core.application_config import (
     save_application_config,
 )
 from ..core.context import AppContext
-from ..core.prompts import SPECS
+from ..core.prompts import SPECS, AgentPromptsConfig
+from ..core.project_identity import identity_migration_plan
 from ..core.task_counts import read_task_counts
 from ..core.workspace import (
     ProjectNotFound,
@@ -39,6 +40,7 @@ from ..core.workspace import (
     workspace_activity,
 )
 from ..teams.backends.base import available_backends, get_backend
+from ..teams.backend_usage import get_usage_limits
 from ..vcs import candidate_backends
 from .deps import Ctx
 
@@ -48,23 +50,68 @@ scoped_router = APIRouter(tags=["project"])
 projects_router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+class ThemeUpdate(ThemeConfig):
+    # §5.2.1: reject unknown request fields, without tightening historical disk
+    # schemas. Inherit their fields/validators; free-form maps stay free-form.
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class ApplicationThemeUpdate(ApplicationThemeConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class ConcurrencyUpdate(ConcurrencyConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class AgentPromptsUpdate(AgentPromptsConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class TeamsUpdate(TeamsConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    prompts: AgentPromptsUpdate = Field(default_factory=AgentPromptsUpdate)
+
+
+class DocsUpdate(DocsConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class UpdatesUpdate(UpdatesConfig):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+def _validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
+    # §10.11: share disk/runtime validation; never accept a recursive Auto cell.
+    return ApplicationConfig(orchestrator_models=value).orchestrator_models
+
+
+OrchestratorModelsUpdate = Annotated[
+    dict[str, dict[str, str]], BeforeValidator(_validate_orchestrator_models),
+]
+
+
 class SettingsUpdate(BaseModel):
     """A patch, not a replacement — see :func:`update_settings` for why that matters."""
+
+    # Identity/target edits must not sneak through the compatibility PUT (§5.2.1).
+    model_config = ConfigDict(extra="forbid")
 
     project_name: str | None = None
     project_code: str | None = None
     """Short code in front of every task id (§10.2). ``""`` clears it back to the derived
     one — the only field here where an empty string is a value rather than a mistake."""
 
-    theme: ThemeConfig | None = None
-    concurrency: ConcurrencyConfig | None = None
-    teams: TeamsConfig | None = None
-    docs: DocsConfig | None = None
-    updates: UpdatesConfig | None = None
+    theme: ThemeUpdate | None = None
+    concurrency: ConcurrencyUpdate | None = None
+    teams: TeamsUpdate | None = None
+    docs: DocsUpdate | None = None
+    updates: UpdatesUpdate | None = None
     node_cache_enabled: bool | None = None
     show_data_dir: bool | None = None
     language: Literal["en", "ru"] | None = None
     respond_language: str | None = None
+    orchestrator_models: OrchestratorModelsUpdate | None = None
 
 
 class ApplicationSettingsUpdate(BaseModel):
@@ -72,12 +119,13 @@ class ApplicationSettingsUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    theme: ApplicationThemeConfig | None = None
-    updates: UpdatesConfig | None = None
+    theme: ApplicationThemeUpdate | None = None
+    updates: UpdatesUpdate | None = None
     node_cache_enabled: bool | None = None
     show_data_dir: bool | None = None
     language: Literal["en", "ru"] | None = None
     respond_language: str | None = None
+    orchestrator_models: OrchestratorModelsUpdate | None = None
 
 
 class OpenProjectRequest(BaseModel):
@@ -106,9 +154,9 @@ class ProjectSettingsUpdate(BaseModel):
     project_name: str | None = None
     project_code: str | None = None
     theme: ProjectThemeUpdate | None = None
-    concurrency: ConcurrencyConfig | None = None
-    teams: TeamsConfig | None = None
-    docs: DocsConfig | None = None
+    concurrency: ConcurrencyUpdate | None = None
+    teams: TeamsUpdate | None = None
+    docs: DocsUpdate | None = None
 
 
 @router.get("/project")
@@ -116,6 +164,7 @@ async def get_project(ctx: Ctx) -> dict[str, Any]:
     return {
         "root": str(ctx.paths.root),
         "name": ctx.config.project_name or ctx.paths.root.name,
+        "persistent_id": ctx.config.project_identity.id if ctx.config.project_identity else None,
         "data_dir": str(ctx.paths.data),
         "is_git_repo": ctx.is_git_repo,
         "vcs": ctx.vcs.to_json() if ctx.vcs is not None else None,
@@ -131,6 +180,14 @@ async def get_project(ctx: Ctx) -> dict[str, Any]:
             "pipelines": len(ctx.pipelines.list()),
         },
     }
+
+
+@router.get("/remote/migration")
+@scoped_router.get("/remote/migration")
+async def get_identity_migration(ctx: Ctx, response: Response) -> dict[str, Any]:
+    """S1 diagnostics only: no profiles, resolution, sync or apply (§16.8)."""
+    response.headers["Cache-Control"] = "no-store"
+    return identity_migration_plan(ctx.paths).model_dump(mode="json")
 
 
 @scoped_router.get("/project")
@@ -196,6 +253,9 @@ async def open_another_project(payload: OpenProjectRequest, request: Request) ->
         ) from exc
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError:
+        # §5.2.1: stored config may contain rejected credentials, even in identity.
+        raise HTTPException(status_code=400, detail="Invalid project configuration.") from None
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Could not open the project: {exc}") from exc
     return await get_project(ctx)
@@ -222,6 +282,8 @@ async def ensure_open_project(payload: EnsureProjectRequest, request: Request) -
         raise HTTPException(409, f"{exc} is not a Voxarium Studio project yet.") from exc
     except ProjectNotFound as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ValidationError:
+        raise HTTPException(400, "Invalid project configuration.") from None
     except (OSError, ValueError) as exc:
         raise HTTPException(400, f"Could not open the project: {exc}") from exc
     metadata = await get_project(scope.ctx)
@@ -394,6 +456,9 @@ async def _save_settings(
     if payload.respond_language is not None:
         application.respond_language = payload.respond_language
         application_changed = True
+    if payload.orchestrator_models is not None:
+        application.orchestrator_models = payload.orchestrator_models
+        application_changed = True
 
     apply_application_config(draft, application)
     if project_changed:
@@ -429,7 +494,10 @@ async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
     backends = {}
     for name in available_backends():
         available, reason = get_backend(name).is_available()
-        backends[name] = {"available": available, "reason": reason}
+        backends[name] = {
+            "available": available, "reason": reason,
+            "usage_limits": get_usage_limits(name),
+        }
 
     # Whether each system's command-line tool is installed — what a commit node needs
     # before it will do anything, and the same shape as the agent backends above.
@@ -464,7 +532,12 @@ async def reload_everything(request: Request, ctx: Ctx) -> dict[str, Any]:
         async with _settings_lock(request):
             scoped = hasattr(request.state, "project_scope")
             application = ApplicationConfig.from_effective(ctx.config) if scoped else None
-            ctx.reload_config()
+            try:
+                ctx.reload_config()
+            except ValidationError:
+                # §5.2.1: only config validation is redacted, not plugin/sync errors.
+                # The outer 400 handler can safely stringify this fixed message.
+                raise ValueError("Invalid project configuration.") from None
             if application is not None:
                 # A project reload is not a global-preferences reload (§5.3.3).
                 apply_application_config(ctx.config, application)

@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import Callable
+import os
 import re
+import stat
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -12,10 +18,43 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .paths import ProjectPaths, current_data_path
 from .prompts import AgentPromptsConfig
+from .project_identity import ProjectIdentity
 
 log = logging.getLogger(__name__)
 
 CONFIG_VERSION = 1
+
+
+def default_orchestrator_models() -> dict[str, dict[str, str]]:
+    """Concrete catalog choices for the global strength table (§10.11)."""
+    return {
+        "claude_code": {"1": "claude-haiku-4-5", "2": "claude-opus-5-5", "3": "claude-fable-5-2"},
+        "codex": {"1": "gpt-6.1-terra", "2": "gpt-6.1-sol", "3": "gpt-6-astra"},
+        "qwen": {"1": "qwen3-coder-flash", "2": "qwen3-coder-plus", "3": "qwen3.8-max"},
+    }
+
+
+def validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
+    """Reject partial tables and recursive/backend-default selections (§10.11).
+
+    The catalog is advisory: explicit future/custom model ids remain usable.
+    Extra backends may supply their own complete three-tier column.
+    """
+    if not isinstance(value, dict) or not {"claude_code", "codex", "qwen"} <= value.keys():
+        raise ValueError("Orchestrator models must include every built-in backend")
+    result = {}
+    for backend, tiers in value.items():
+        if (not isinstance(backend, str) or not backend.strip()
+                or not isinstance(tiers, dict) or set(tiers) != {"1", "2", "3"}):
+            raise ValueError("Each Orchestrator backend must define strengths 1, 2 and 3")
+        result[backend] = {}
+        for strength, model in tiers.items():
+            if (not isinstance(model, str) or not model.strip()
+                    or model.strip().lower() in {"auto", "default"}
+                    or not re.fullmatch(r"[A-Za-z0-9._:/+-]+", model)):
+                raise ValueError("Orchestrator mappings require nonempty concrete model ids, not auto")
+            result[backend][strength] = model
+    return result
 
 #: What a project code may look like once uppercased — 1–6 alphanumerics with at least one
 #: letter (§10.2). The letter is not decoration: a task is displayed as ``<code>-<number>``
@@ -125,7 +164,7 @@ class ConcurrencyConfig(BaseModel):
     gpu: int = Field(default=1, ge=1)
     cpu: int = Field(default=4, ge=1)
     io: int = Field(default=8, ge=1)
-    agents: int = Field(default=2, ge=1)
+    agents: int = Field(default=8, ge=1)
 
     def as_dict(self) -> dict[str, int]:
         # Keyed by ``ResourceClass`` — note the singular "agent", which is what
@@ -470,7 +509,16 @@ class AppConfig(BaseModel):
     """UI language; null allows first-use migration from this browser's choice (§6.4)."""
     respond_language: str = "English"
     """Free-form global language for prompt {language} substitutions (§6.4)."""
+    orchestrator_models: dict[str, dict[str, str]] = Field(default_factory=default_orchestrator_models)
+    """Global-only mapping from backend and strength 1–3 to concrete model (§10.11)."""
+
+    @field_validator("orchestrator_models", mode="before")
+    @classmethod
+    def valid_orchestrator_models(cls, value: Any) -> dict[str, dict[str, str]]:
+        return validate_orchestrator_models(value)
     project_name: str | None = None
+    # Metadata only until guarded v2 cutover (§5.2.1); never seed IDs while reading.
+    project_identity: ProjectIdentity | None = None
     project_code: str | None = None
     """Short code every task id is displayed with — ``VS`` in ``VS-01`` (§10.2).
 
@@ -567,6 +615,8 @@ def load_config(paths: ProjectPaths, *, migrate_application: bool = False) -> Ap
     )
 
     raw, successfully_read = _read_project_config(paths)
+    # This new setting has never been project-owned, even before global migration.
+    raw.pop("orchestrator_models", None)
     if application_config_file().exists():
         # Ignore obsolete global values before validation: an old text size or update
         # interval outside today's bounds does not invalidate this project's own data.
@@ -584,9 +634,23 @@ def _read_project_config(paths: ProjectPaths) -> tuple[dict[str, Any], bool]:
     if not paths.config_file.exists():
         return fallback, False
     try:
-        raw = yaml.safe_load(paths.config_file.read_text(encoding="utf-8")) or {}
+        content = paths.config_file.read_text(encoding="utf-8")
+        try:
+            raw = yaml.safe_load(content)
+        except ValueError:
+            # SafeLoader's timestamp constructor can raise datetime ValueError.
+            # Translate only the parse boundary, never identity/model validation
+            # or errors raised while reading the file (VS-106).
+            raise yaml.YAMLError("Invalid YAML value") from None
+        raw = raw or {}
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        log.warning("Could not read %s (%s) — falling back to defaults", paths.config_file, exc)
+        # Exception text/attributes can contain YAML excerpts, bytes or secrets.
+        # Keep this diagnostic to fixed categories; never attach exception info.
+        category = (
+            "read_error" if isinstance(exc, OSError) else
+            "unicode_error" if isinstance(exc, UnicodeError) else "yaml_error"
+        )
+        log.warning("Could not read %s (%s) — falling back to defaults", paths.config_file, category)
         return fallback, False
     if not isinstance(raw, dict):
         log.warning("%s is not a mapping — falling back to defaults", paths.config_file)
@@ -602,7 +666,7 @@ def _project_fields(raw: dict[str, Any]) -> dict[str, Any]:
         payload["theme"] = (
             {"accent": theme["accent"]} if isinstance(theme, dict) and "accent" in theme else {}
         )
-    for key in ("language", "respond_language", "updates", "node_cache_enabled"):
+    for key in ("language", "respond_language", "updates", "node_cache_enabled", "remote_servers", "orchestrator_models"):
         payload.pop(key, None)
     if isinstance(payload.get("explorer"), dict):
         payload["explorer"] = {
@@ -611,11 +675,232 @@ def _project_fields(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+class ProjectConfigError(ValueError):
+    """Secret-free guarded project publication refusal (studio-design §7)."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class ProjectConfigSnapshot:
+    """Strict project-only snapshot; globals are not read or migrated."""
+
+    config: AppConfig
+    fingerprint: str | None
+
+
+def _project_config_bytes(paths: ProjectPaths) -> bytes | None:
+    content = None
+    failed = False
+    observed = False
+    try:
+        info = paths.config_file.lstat()
+        observed = True
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            failed = True
+        else:
+            content = paths.config_file.read_bytes()
+    except FileNotFoundError:
+        # lstat distinguishes missing from a dangling link. A file which
+        # vanished after successful lstat is unavailable, not a fresh store.
+        if not observed:
+            try:
+                paths.config_file.lstat()
+            except FileNotFoundError:
+                return None
+            except OSError:
+                pass
+        failed = True
+    except OSError:
+        failed = True
+    if failed:
+        raise ProjectConfigError("config_store_unavailable")
+    return content
+
+
+def _project_config_document(paths: ProjectPaths) -> tuple[dict[str, Any], AppConfig, str | None]:
+    from .application_config import _ApplicationMutationLoader
+
+    content = _project_config_bytes(paths)
+    if content is None:
+        return {}, AppConfig(project_name=paths.root.name), None
+    result = None
+    try:
+        # Publication must never select a duplicate key/merge winner or repair
+        # malformed YAML with load_config's diagnostic fallback (§7).
+        raw = yaml.load(content.decode("utf-8"), Loader=_ApplicationMutationLoader)
+        if (not isinstance(raw, dict)
+                or ("theme" in raw and not isinstance(raw["theme"], dict))):
+            raise ValueError
+        config = AppConfig.model_validate(_project_fields(raw))
+        result = raw, config, hashlib.sha256(content).hexdigest()
+    except (ValueError, TypeError, yaml.YAMLError, RecursionError):
+        pass
+    if result is None:
+        raise ProjectConfigError("invalid_config")
+    return result
+
+
+def read_project_config_snapshot(paths: ProjectPaths) -> ProjectConfigSnapshot:
+    """Read validated exact disk bytes; no defaults-on-error or home I/O."""
+    _, config, fingerprint = _project_config_document(paths)
+    return ProjectConfigSnapshot(config, fingerprint)
+
+
+def _valid_config_fingerprint(value: str | None) -> bool:
+    return value is None or (isinstance(value, str) and len(value) == 64
+                             and all(c in "0123456789abcdef" for c in value))
+
+
+def _write_project_document_in_transaction(
+    paths: ProjectPaths, payload: dict[str, Any], *, expected_fingerprint: str | None,
+    before_replace: Callable[[], None] | None = None,
+) -> str:
+    """Atomic project publication; caller owns application_config_transaction.
+
+    Recheck bytes immediately before replace too: external FS/VCS writers do
+    not participate in our OS lock. Atomic rename is the commit point; cleanup
+    errors cannot undo it or report a committed identity as an uncommitted one.
+    """
+    temporary = None
+    result = None
+    code = "config_store_unavailable"
+    try:
+        content = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, indent=2).encode("utf-8")
+        fingerprint = hashlib.sha256(content).hexdigest()
+        paths.data.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="wb", dir=paths.config_file.parent,
+                                         prefix=".project-config-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            if stream.write(content) != len(content):
+                raise OSError("Incomplete project config write")
+            stream.flush()
+            os.fsync(stream.fileno())
+        current = _project_config_bytes(paths)
+        current_fingerprint = hashlib.sha256(current).hexdigest() if current is not None else None
+        if current_fingerprint != expected_fingerprint:
+            raise ProjectConfigError("config_revision_conflict")
+        if before_replace is not None:
+            before_replace()
+            # The callback may perform slow corpus/private/profile reads.
+            # External FS/VCS writers do not honor our transaction; their
+            # project bytes must still win over this prepared replacement.
+            current = _project_config_bytes(paths)
+            current_fingerprint = hashlib.sha256(current).hexdigest() if current is not None else None
+            if current_fingerprint != expected_fingerprint:
+                raise ProjectConfigError("config_revision_conflict")
+        temporary.replace(paths.config_file)
+        result = fingerprint
+    except ProjectConfigError as error:
+        code = error.code
+    except (OSError, ValueError, TypeError, RuntimeError, yaml.YAMLError):
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    if result is None:
+        raise ProjectConfigError(code)
+    return result
+
+
+def _commit_disabled_identity_in_transaction(
+    paths: ProjectPaths, *, identity: ProjectIdentity, url: str,
+    expected_fingerprint: str | None,
+    before_replace: Callable[[], None] | None = None,
+) -> ProjectConfigSnapshot:
+    """I6 commit point, AFTER durable journal, under lifecycle → config ownership.
+
+    No nested OS lock. The existing project config is the source of truth and
+    revision advances exactly once. Selection/private CAS follows separately;
+    this function never enables sync or writes consent (integration plan §3.4).
+    """
+    from ..sync.protocol import normalise_url
+
+    validated = None
+    try:
+        if (not isinstance(identity, ProjectIdentity) or not isinstance(url, str)
+                or not _valid_config_fingerprint(expected_fingerprint)):
+            raise ValueError
+        candidate = ProjectIdentity.model_validate(identity.model_dump())
+        if url and normalise_url(url) != url:
+            raise ValueError
+        validated = candidate
+    except (ValueError, TypeError, RuntimeError):
+        pass
+    if validated is None:
+        raise ProjectConfigError("invalid_identity_commit")
+    raw, config, fingerprint = _project_config_document(paths)
+    if fingerprint != expected_fingerprint:
+        raise ProjectConfigError("config_revision_conflict")
+    revision = config.project_identity.revision if config.project_identity else 0
+    if validated.revision != revision + 1:
+        raise ProjectConfigError("config_revision_conflict")
+    config.project_identity = validated
+    config.sync = SyncConfig(enabled=False, url=url)
+    # Overlay only this operation's fields; unknown unrelated settings survive.
+    payload = _project_fields(raw)
+    payload["project_identity"] = validated.model_dump(mode="json")
+    payload["sync"] = {"enabled": False, "url": url}
+    committed = _write_project_document_in_transaction(paths, payload, expected_fingerprint=fingerprint,
+                                                       before_replace=before_replace)
+    return ProjectConfigSnapshot(config, committed)
+
+
+def commit_disabled_identity(
+    paths: ProjectPaths, *, identity: ProjectIdentity, url: str,
+    expected_fingerprint: str | None,
+) -> ProjectConfigSnapshot:
+    """Standalone guarded publication; coordinator uses the internal seam."""
+    from .application_config import application_config_transaction
+
+    result = None
+    code = "config_store_unavailable"
+    try:
+        with application_config_transaction():
+            result = _commit_disabled_identity_in_transaction(
+                paths, identity=identity, url=url, expected_fingerprint=expected_fingerprint,
+            )
+    except ProjectConfigError as error:
+        code = error.code
+    except (OSError, ValueError, TypeError, RuntimeError):
+        pass
+    if result is None:
+        raise ProjectConfigError(code)
+    return result
+
+
 def save_config(paths: ProjectPaths, config: AppConfig) -> None:
-    """Write only project-owned fields; global saves use application_config (§5.2)."""
-    paths.data.mkdir(parents=True, exist_ok=True)
-    payload = _project_fields(config.model_dump(mode="json", exclude_none=True))
-    text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, indent=2)
-    tmp = paths.config_file.with_suffix(".yaml.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(paths.config_file)
+    """Save settings, never replace an activated identity with a stale snapshot.
+
+    Short shared transaction serializes settings and identity commit. Legacy
+    space survives until explicit cutover; afterwards its canonical *absence*
+    is preserved along with current identity, URL, enabled flag and revision.
+    """
+    from .application_config import application_config_transaction
+
+    with application_config_transaction():
+        raw, current, fingerprint = _project_config_document(paths)
+        payload = _project_fields(config.model_dump(mode="json", exclude_none=True))
+        if fingerprint is not None:
+            # Identity is never an ordinary setting, including metadata-only S1.
+            if current.project_identity is None:
+                payload.pop("project_identity", None)
+            else:
+                payload["project_identity"] = current.project_identity.model_dump(mode="json")
+                # An explicit legacy selector remains legacy. Only the guarded
+                # commit removes it; settings cannot resurrect it afterwards.
+                if isinstance(raw.get("sync"), dict) and "space" not in raw["sync"]:
+                    payload["sync"] = dict(raw["sync"])
+        _write_project_document_in_transaction(paths, payload, expected_fingerprint=fingerprint)
+        if fingerprint is not None:
+            # Settings APIs publish this same draft back into the resident Ctx.
+            # Keep its protected metadata coherent with what we actually saved.
+            config.project_identity = current.project_identity
+            if (current.project_identity is not None and isinstance(raw.get("sync"), dict)
+                    and "space" not in raw["sync"]):
+                config.sync = current.sync.model_copy(deep=True)

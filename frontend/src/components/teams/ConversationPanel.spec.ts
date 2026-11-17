@@ -152,8 +152,8 @@ describe('the transcript widget', () => {
     const html = await renderFeed([first, second, event, answer], level, 'in_progress', chat, true)
     expect(html.match(/data-task-creation/g)).toHaveLength(2)
     expect(html.match(/data-task-evaluation/g)).toHaveLength(1)
-    expect(html.match(/aria-label="Effort Solver"/g)).toHaveLength(1)
-    expect(html).toContain('Effort Solver is scoring this task')
+    expect(html.match(/aria-label="Orchestrator"/g)).toHaveLength(1)
+    expect(html).toContain('Orchestrator is scoring this task')
     const headers = foldHeaders(html)
     expect(headers).toHaveLength(2)
     expect(headers[0]).toContain('First task')
@@ -169,7 +169,7 @@ describe('the transcript widget', () => {
       ['done', true, { ...spawned, text: 'Created VS-01', data: { tool_use_id: 'create_a' } }],
     ] as const) {
       const html = await renderFeed([create, ...(result ? [result] : [])], 'default', status, true, auto)
-      expect(html).not.toContain('Effort Solver is scoring')
+      expect(html).not.toContain('Orchestrator is scoring')
       expect(html).not.toContain('data-task-evaluation')
       expect(foldHeaders(html)[0]).toContain('Create movement')
     }
@@ -196,7 +196,7 @@ describe('the transcript widget', () => {
     const html = await renderFeed(studioFeed(), level, 'in_progress', chat)
     expect(html).toContain('data-subagent-spawn')
     expect(html).toContain('Review dash.ts')
-    expect(html).toContain('Effort Solver is scoring this subagent')
+    expect(html).toContain('Orchestrator is scoring this subagent')
     expect(html).not.toContain('data-spawn-evaluation')
     expect(foldHeaders(html)[1]).toMatch(/^<div\b/)
   })
@@ -209,7 +209,7 @@ describe('the transcript widget', () => {
     ] as const) {
       const html = await renderFeed(studioFeed(result), level, status, chat)
       expect(html).toContain('data-subagent-spawn')
-      expect(html).not.toContain('Effort Solver is scoring')
+      expect(html).not.toContain('Orchestrator is scoring')
       expect(html).not.toContain('data-spawn-evaluation')
       expect(html).not.toContain('Complexity')
       expect(foldHeaders(html)[1]).toMatch(/^<div\b/)
@@ -234,7 +234,7 @@ describe('the transcript widget', () => {
     expect(html.match(/data-transcript-fold/g)).toHaveLength(4)
     expect(html.match(/data-subagent-spawn/g)).toHaveLength(2)
     expect(html.match(/data-spawn-evaluation/g)).toHaveLength(2)
-    expect(html).not.toContain('Effort Solver is scoring')
+    expect(html).not.toContain('Orchestrator is scoring')
     const headers = foldHeaders(html)
     expect(headers.map((header) => header.startsWith('<div'))).toEqual([true, true, true, true])
     for (const index of [0, 3]) {
@@ -256,13 +256,13 @@ describe('the transcript widget', () => {
     expect(html).not.toContain('value="compact"')
   })
 
-  it('draws the Effort Solver evaluation of an Auto task at its start, outside a chat too', async () => {
+  it('draws the Orchestrator evaluation of an Auto task at its start, outside a chat too', async () => {
     const evaluation = message({
       role: 'system', kind: 'effort_solver', text: 'high',
       data: { scores: { complexity: 6, creativity: 3, depth: 5, coverage: 8 }, effort: 3, effort_level: 'high' },
     })
     const html = await renderFeed([evaluation, message({ text: 'Starting.' })], 'default')
-    expect(html).toContain('aria-label="Effort Solver"')
+    expect(html).toContain('aria-label="Orchestrator"')
     expect(html).toContain('Complexity')
     expect(html).toContain('Starting.')
   })

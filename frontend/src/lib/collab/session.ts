@@ -18,7 +18,9 @@ import * as Y from 'yjs'
 
 import { withTokenParam } from '@/api/auth'
 import { scopedWsUrl } from '@/api/project-scope'
+import type { DocumentFence } from '@/api/types'
 import { ProjectSession, rendererSession, type ProjectScope } from '@/session/project-session'
+import type { RemoteBindingTicket } from '@/stores/sync'
 
 export interface CollabUser {
   id: string
@@ -54,6 +56,10 @@ export interface OpenOptions {
   path: string
   /** Immutable renderer binding; the same path in another project is another session (§5.3.2). */
   session?: ProjectSession
+  /** Captured with the editor lease BEFORE any await (studio-design §5.3). */
+  fence?: DocumentFence
+  /** The same captured remote observation; never capture a replacement during join. */
+  ticket?: RemoteBindingTicket
   /** Builds the update an empty room is seeded with, from the file's Markdown (`seed.ts`). */
   seed: (markdown: string) => Uint8Array
   socket?: () => SocketLike
@@ -107,8 +113,15 @@ function parse(data: unknown): Frame | null {
 
 export class CollabSession {
   readonly awareness: Awareness
+  /** Original lease plus this room's sid, for final Markdown saves/heartbeats. */
+  readonly fence: Readonly<DocumentFence> | undefined
   /** True once anything in the room changed after this editor joined it. */
   changed = false
+
+  // I8 tickets cover observed room frames, not merely changes visible in Markdown.
+  // Even a duplicate/no-op update revokes the backend anchor and our snapshot.
+  private proofRevision = 0
+  get materializationRevision(): number { return this.proofRevision }
 
   private isScribe: boolean
   private ended = false
@@ -133,7 +146,9 @@ export class CollabSession {
     readonly projectSession: ProjectSession = rendererSession,
     readonly scope: ProjectScope | null = projectSession.scope,
     private readonly assertCurrent: () => void = projectSession.capture(),
+    fence?: DocumentFence,
   ) {
+    this.fence = fence && Object.freeze({ ...fence, sid })
     this.isScribe = scribe
     this.awareness = new Awareness(doc)
     doc.on('update', this.onDocUpdate)
@@ -193,6 +208,7 @@ export class CollabSession {
    * the document, and destroying it under a live editor is not a thing either survives.
    */
   close(): void {
+    this.proofRevision += 1
     if (!this.ended) {
       // Said while the socket is still open, so the others drop this cursor at once
       // instead of when the server notices the socket has gone. Before `ended` is set:
@@ -219,6 +235,7 @@ export class CollabSession {
     try {
       switch (frame.t) {
         case 'update':
+          this.proofRevision += 1
           Y.applyUpdate(this.doc, fromBase64(String(frame.update)), ROOM)
           break
         case 'awareness':
@@ -245,6 +262,7 @@ export class CollabSession {
   /** The socket closed without `close()` having been called. */
   end(reason: EndReason): void {
     if (this.ended) return
+    this.proofRevision += 1
     this.ended = true
     for (const handler of [...this.endHandlers]) handler(reason)
   }
@@ -255,7 +273,7 @@ export class CollabSession {
     // logs each one as an error. The close itself arrives through `onclose` a moment later.
     if (this.socket.readyState !== undefined && this.socket.readyState !== OPEN) return
     try {
-      this.socket.send(JSON.stringify({ ...frame, ...this.scope }))
+      this.socket.send(JSON.stringify({ ...frame, ...this.fence, ...this.scope }))
     } catch {
       // A socket that is closing reports it through `onclose`; nothing to add here.
     }
@@ -283,6 +301,7 @@ export class CollabSession {
 
   private readonly onDocUpdate = (update: Uint8Array, origin: unknown): void => {
     if (this.ended || !this.current()) return
+    this.proofRevision += 1
     if (origin !== ROOM) this.send({ t: 'update', update: toBase64(update) })
     this.changed = true
     for (const handler of this.changeHandlers) handler()
@@ -312,10 +331,24 @@ export class CollabSession {
 export function openSession(options: OpenOptions): Promise<CollabSession | null> {
   const path = options.path
   const binding = options.session ?? rendererSession
-  const assertCurrent = binding.capture()
+  const assertProject = binding.capture()
+  const ticket = options.ticket
+  const fence = options.fence && Object.freeze({ ...options.fence })
+  // A ticket is optional for pre-activation legacy callers. When supplied it must
+  // belong to this renderer/lease, not a later target's metadata (§5.3 / I8).
+  const assertCurrent = () => {
+    assertProject()
+    ticket?.assertCurrent()
+    if (ticket && (!binding.matches(ticket.runtime_scope)
+      || !fence || fence.backend_epoch !== ticket.backend_epoch
+      || fence.expected_binding_generation !== ticket.expected_binding_generation)) {
+      throw new Error('Collaboration fence does not match the captured remote binding')
+    }
+  }
   // Validate even when a caller supplies a transport. No scoped room may fall back
   // to /ws/collab because its project has not bootstrapped yet (§5.3.2).
   scopedWsUrl(binding, true)
+  assertCurrent()
   const scope = binding.scope
   return new Promise((resolve) => {
     const doc = new Y.Doc()
@@ -366,7 +399,7 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
     }
     const send = (frame: Frame): void => {
       if (!current()) return
-      try { socket.send(JSON.stringify({ ...frame, ...scope })) }
+      try { socket.send(JSON.stringify({ ...frame, ...fence, ...scope })) }
       catch { fail() }
     }
 
@@ -392,6 +425,7 @@ export function openSession(options: OpenOptions): Promise<CollabSession | null>
         binding,
         scope,
         assertCurrent,
+        fence,
       )
       resolve(session)
     }

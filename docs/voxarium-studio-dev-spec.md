@@ -220,6 +220,9 @@ Renderer изолирован: Node integration выключен, context isolat
 кнопки исключены из drag-области. Панель доступна и на экранах загрузки/ошибки/входа,
 в обычном браузере не отображается. Закрытие окна не означает выход (§5.3);
 общее подтверждение остановки активных задач относится только к явному «Выход».
+В установленной desktop-сборке DevTools доступны по `F12` и `Ctrl+Shift+I`
+(`Cmd+Shift+I` на macOS): открываются отдельным окном для renderer с фокусом
+(проект, оболочка или экран запуска), повторное нажатие закрывает инспектор.
 Навигация внутри окна ограничена origin Studio; внешние HTTP(S)
 и mailto ссылки передаются системному браузеру. Остальные протоколы блокируются.
 Разрешения браузера запрещены, кроме записи в буфер обмена (`clipboard-sanitized-write`)
@@ -440,6 +443,157 @@ loopback — на Studio, открытой в сеть, окно появило�
 пользовательским и проектным файлами.
 
 
+#### 5.2.1 Remote identity и персональные профили — будущая модель (VS-92)
+
+**Статус: согласованный контракт следующей реализации, не работающий v1 и не разрешение
+на миграцию/deploy.** Основание — согласование VS-91:
+[Studio](../.voxarium_studio/docs/remote-identity/studio-design.md) §§3–9,
+[Remote](../.voxarium_studio/docs/remote-identity/server-design.md) §§2–7 и
+[Android](../.voxarium_studio/docs/remote-identity/android-design.md) §§3–8.
+Действующие настройки v1 описаны в §16.5; новый wire — §16.7. Ни новые local CRUD,
+ни catalog/admin RPC, ни формат хранения ниже этим документом не объявляются доступными.
+
+- Переносимый `<managed-project>/.voxarium_studio/config.yaml` получает
+  `project_identity: {id, revision}`. `id` — редактируемый локальный `persistent_id`,
+  **точно равный Remote space selector**; `revision >= 1` меняется при изменении назначения.
+  Новый локальный проект получает случайный lowercase UUID v4 с дефисами, не slug от имени.
+  Диагностическое чтение ничего не генерирует. `project_name`, `project_code`, имя папки
+  и серверный `display_name` — независимые подписи/locator, не identity.
+- В проекте остаются несекретные `sync.url` и `sync.enabled`; после подтверждённой
+  миграции `sync.space` удаляется, adapter вычисляет space из единственного `project_identity.id`.
+  URL включает deployment prefix. `profile_id`, ключ, account и локальное согласие в проект
+  не записываются. Новый/мигрированный/перепривязанный проект сначала disabled.
+- **Settings → Remote-серверы** хранит metadata глобально:
+  `ApplicationConfig.remote_servers[] = {profile_id,name,url,revision}` в пользовательском
+  `config.yaml`. Один профиль на точный normalized URL в Studio home; дубликат — 409,
+  не перезапись ключа. Имя профиля редактируется без reconnect. URL aliases не сливаются;
+  смена endpoint используемого профиля требует нового профиля и явной перепривязки.
+- Личный `remote-keys.json` v2 хранит `{version:2,profiles:{profile_id:{url,token,revision}}}`;
+  lookup проверяет profile_id **и** URL. Это plaintext личного файла с owner-only защитой,
+  не обещание шифрованного vault. GET/status/config/export/logs не возвращают token.
+  Замена/удаление credential используемого профиля требует drain всех consumers.
+  `VOXARIUM_STUDIO_REMOTE_TOKEN` в новом flow допустим только с явным совпавшим
+  `VOXARIUM_STUDIO_REMOTE_URL`, не сохраняется и не рассылается другим серверам.
+- Машинный `remote-bindings.json` в user config directory хранит по canonical root
+  выбранные profile_id/URL/persistent_id, identity_revision, incarnation и состояние
+  `selected` либо `confirmed`. Только confirmed exact tuple/revision разрешает автостарт.
+  Копия/clone с enabled=true без private binding требует Select/Preview/Enable заново.
+  Базы — `sync/v2/<sha256(canonical_root,url,persistent_id)>/state.json` с полным tuple,
+  incarnation/cursor/bases внутри; hash не заменяет проверку tuple. Старое состояние
+  сохраняется отдельно. Android намеренно допускает несколько профилей одного URL
+  с account/incarnation partitions; это не новая модель Studio и не RBAC.
+
+Новый локальный API Studio отделён от Remote wire: глобальные `/api/remote/servers`
+(GET/POST), `/{profile_id}` (PATCH/DELETE), `/{profile_id}/credential` (PUT/DELETE),
+`/{profile_id}/verify` (POST), `/{profile_id}/projects` (GET/POST) работают с личными
+профилями, не с активной вкладкой. Verify — HTTP health/me, без WS/create.
+Локальные additions VS-134: POST `/{profile_id}/recover` — подтверждённый
+discard-uncertain profile recovery, POST `/{profile_id}/projects/operations/{operation_id}/observe`
+— отдельный GET-only по Remote Create observation. Их payload/status и single-kind PATCH
+нормативно определены таблицами ниже; ни один не является серверным wire endpoint.
+Проектный префикс `P=/api/projects/{runtime_project_id}` остаётся runtime-scoped:
+GET `P/remote`, POST `P/remote/prepare`, POST `P/remote/changes/{change_id}/quiesce`,
+`/editor-ack`, `/commit` и DELETE `P/remote/changes/{change_id}` (cancel),
+POST `P/remote/reconcile-preview`, POST `P/remote/enable`. Editor leases регистрируются
+POST `P/remote/editors`, heartbeat — POST `P/remote/editors/{editor_id}/heartbeat`,
+закрываются DELETE `P/remote/editors/{editor_id}` после подтверждённого save.
+Миграция: GET `P/remote/migration` (локальный план без сети), отдельные POST
+`P/remote/migration/{migration_plan_id}/profile` и `/resolve`, затем guarded migrate.
+Точные payload/preconditions — Studio design §5; это **будущие** API, не команды для v1.
+Local cursor/next_cursor — alias Remote after/next_after; local operation_id — журнал,
+не поле Remote POST и не server replay. Local validation 422/CAS 409 и `{code,details}`
+не смешиваются с Remote errors §16.7. Общий settings PUT не обходит эти транзакции.
+
+Согласованный локальный increment C0/C9: [Studio design §5.1](../.voxarium_studio/docs/remote-identity/studio-design.md) и [план активации C0/C9](../.voxarium_studio/docs/remote-identity/catalog-api-activation-plan.md). Полные таблицы ниже — будущий контракт Studio, не новые серверные routes.
+
+**Локальное уточнение VS-134 (C0; нормативно для будущих C6/C7/C9).** Только глобальный API Studio; это не изменение Remote wire и не утверждение о mounting. `B=/api/remote/servers`, `S=B/{profile_id}`; profile_id — canonical UUID, expected_revision — strict integer ≥1 (не bool), неизвестные поля/лишний body/query отклоняются до dispatch. Все ответы, включая auth/validation/errors, — `Cache-Control:no-store`; credential/URL из browser payload не подменяют сохранённый exact binding.
+
+| Метод / локальный путь | Строгий вход | Успешный HTTP / ответ и эффект |
+| --- | --- | --- |
+| GET `B` | Без body/query | 200 `{items:ServerProfile[]}`; metadata-only, verification ровно `{state:"unavailable"}` при отсутствии применимого результата, без Verify/clock/сети/записей. |
+| POST `B` | `{name,url}` | 201 secret-free ServerProfile; keyless, уникальный normalized URL, без подключения проекта. |
+| PATCH `S` | **Один вид**: `{expected_revision,name}` **либо** `{expected_revision,url,clear_credential:true}` | 200 secret-free ServerProfile с новой revision. Name-only без reconnect; URL-only только при допустимых consumers, с revoke binding/journal/очисткой stored key. Name+URL, пустой patch и clear_credential вне URL-варианта — 422 до любых writes. UI не делает hidden split одного Apply; два изменения — отдельные явные действия/подтверждения со свежим CAS. Composite atomic PATCH вне increment. |
+| PUT `S/credential` | `{expected_revision,token}`, непустой secret | 200 metadata результата S2 (has_token/revision), без token; drain/CAS обязательны. |
+| DELETE `S/credential` | `{expected_revision}` | 200 secret-free metadata; удаляет только stored key, не ENV/Remote user/project. ENV остаётся effective source либо environment_unbound даёт typed отказ, не ложный source none. |
+| POST `S/recover` | `{expected_revision,confirmation:{profile_id,action:"discard_uncertain_credential"}}` | 200 `{profile:ServerProfile\|null}`; подтверждённое удаление uncertain stored credential через S2 recover, не восстановление/повтор старого key. null только при доказанном отсутствии metadata. |
+| POST `S/verify` | `{expected_revision}` | 200 VerificationResult `{state,checked_at,user,wire_protocol,catalog_version?,error_code?}` при возврате facade; только HTTP health/me, не Create/WS. Typed exceptions не становятся успешной verification. |
+| DELETE `S` | `{expected_revision}` | 204 без body, только без bindings/active consumers; не изменяет project configs. |
+| GET `S/projects` | Только query `cursor?` (canonical after ID), без body | 200 `{items:CatalogProject[],next_cursor:ID\|null}`; revision захватывает backend, не browser CAS. Не вызывает явную команду Verify/Select/Create; собственный health/me/version/binding preflight каталога сохраняется. |
+| POST `S/projects` | `{id,display_name,operation_id,expected_revision}` | 201/200 **только** result envelope по таблице ниже; C8 owner и durable reservation. Remote body только `{id,display_name}`. |
+| POST `S/projects/operations/{operation_id}/observe` | `{expected_revision}`; без id/url/key | 200 result envelope found/absent при успешном observation; отдельная явная команда `CatalogCreateService.recover_create`, не GET handler и не повтор Create. Remote traffic только health/me + GET **исходного** ID из reservation, без POST/WS/writes проекта. |
+
+Operation_id — локальный exact `[A-Za-z0-9._-]{1,128}`, не Remote field. ID/display_name валидируются по Studio design §6 / dev spec §16.7; name/url — существующими S2 validators. Невалидная форма confirmation — 422; структурно валидные, но несовпавшие profile_id/action — typed 409 до S2 recovery. Recovery требует предупреждения и отдельного подтверждения очистки uncertain key, того же CAS/drain/authoritative guard. Startup/GET не recover-ят, malformed journal сохраняется с отказом; ENV не меняется. Это **не** cold Create recovery.
+
+**Result envelope фиксирован:** всегда ровно `{state,project,error_code}`, все три поля обязательны, включая null; без selection/ownership/retry booleans, raw message/body/request_id. Строка code — только fixed sanitized vocabulary, не произвольная серверная строка. Это mapping **возвращённого CreateResult**, не перехват исключений.
+
+| CreateResult.state | Локальный HTTP | project | error_code / смысл |
+| --- | --- | --- | --- |
+| `created` | 201 | Exact validated CatalogProject исходного ID | null; даже 201 не Select/Enable. |
+| `conflict` | 200 | null | `project_exists`; никакого auto GET/POST/Select победителя гонки. |
+| `unknown` | 200 | null | Fixed sanitized code: `create_unknown`, `transport_unavailable`, `invalid_response`, `version_mismatch`, `redirect_refused`, `temporarily_unavailable` либо `remote_error`; неоднозначность не разрешает повтор. |
+| `rejected` | 200 | **null** | Только `invalid_id`, `invalid_display_name`, `invalid_request`, `unauthorised`, `project_not_found`, `metadata_conflict`, `snapshot_changed`, `payload_too_large` либо fallback `remote_error`; без retry, Select или освобождения operation. |
+| `found` | 200 | Exact validated CatalogProject исходного ID | null; только observation, не авторство/привязка; Select — отдельное будущее действие. |
+| `absent` | 200 | null | `project_not_found`; не освобождает operation, не разрешает auto POST. |
+
+Первичный Create возвращает первые четыре исхода; found/absent возникают после отдельного явного observe. Повтор того же Create с тем же exact input и живым неизменившимся binding возвращает последний сохранённый result (включая rejected и found/absent после явного observe), без нового transport send; другой profile/revision/body под тем же operation_id — typed 409 operation_conflict, не новый intent. Guards/journal failures могут вместо result дать typed exception. Ни rejected, ни остальные outcomes не освобождают reservation; исправленный Create требует нового явного действия и нового operation_id, не автоматического retry. Observe никогда не запускается автоматически после rejected/conflict/unknown; явно вызванный observe заново проверяет **живой** binding и читает исходный ID, может вернуть found/absent, но не делает Select. После restart/loss live proof любая durable запись, включая created/rejected/found, даёт `credential_binding_unproven` до credential/transport calls; revision/source/has_token не доказывают continuity.
+
+**Boundary exceptions отдельно:** локальный envelope `{code,details}` (fixed codes, sanitized details), не `{state,project,error_code}`. Вход/валидация — 422; profile/operation not found — 404; CAS/collision/in-use/not-drained/recovery-required/conflicting confirmation/operation_conflict/operation_in_progress/credential_binding_unproven — typed 409; unavailable lifecycle/store/journal/admission capacity — typed 503. Malformed recovery journal — typed 503 profile_recovery_unavailable, без удаления/repair. Remote/transport/version/capability/response exceptions — существующий typed 502 mapping (unauthorised → remote_unauthorised); auth Studio — 401/403, unsupported method — 405. Не превращать эти исключения в rejected/unknown/absent, не заворачивать ошибки в HTTP200. Cancellation сохраняет cancellation и reservation, не синтетический success.
+
+**Server status matrix — только обработанный ответ целевого Remote POST, после успешных guards/health/me:** не переопределяет Remote errors/wire. Если facade бросил исключение до возврата CreateResult (включая post-await guard/secret/journal failure), применяется boundary mapping выше, а не эта таблица.
+
+| Ответ Remote POST / отдельного observation GET | Возвращённый локальный result |
+| --- | --- |
+| POST 201 + валидный project исходного ID | created →201. Невалидный 201 →unknown/200 с fixed invalid_response (protocol mismatch →version_mismatch), если facade вернул result, а не exception. |
+| POST 400 invalid_id/invalid_display_name/invalid_request | rejected →200, project=null, только соответствующий fixed code. |
+| POST 401 unauthorised | rejected →200 с unauthorised; не локальная Studio 401 и не отказ health/me. |
+| POST 404 project_not_found | rejected →200; **не absent**. |
+| POST 409 project_exists | conflict →200. |
+| POST 409 metadata_conflict/snapshot_changed | rejected →200, не conflict и не Select. |
+| POST 413 payload_too_large | rejected →200. |
+| POST 503 temporarily_unavailable | unknown →200, не доказанный отказ/разрешение retry. |
+| POST неожиданный status (включая 200/204/500) | unknown →200 с remote_error; redirects/transport failure — fixed code только если возвращён CreateResult, иначе typed boundary exception. |
+| POST 400/401/404/409/413 с malformed envelope/неизвестным или несовпавшим code | rejected →200 с **remote_error**, не raw code; malformed 409 не project_exists/conflict. |
+| Observe GET исходного ID 200 + валидный project / 404 project_not_found | found/absent →200; только exact project GET 404 означает absent. |
+| Health/me error (включая 401/404/503), observation GET иной error/невалидный ответ | Typed boundary failure, не rejected/absent/unknown outcome; никакого implicit POST. |
+
+**Targeted acceptance будущей реализации (не выполненные проверки VS-134):**
+- Table-driven C9: все шесть states, обязательные три поля/null, 201 только created; перечисленные POST 400/401/404/409 (все три codes)/413/503, unexpected 200/204/500, malformed error envelopes и invalid 201. Проверить phase distinction: health/me 401/404/503 и GET error — typed failures; GET exact 404 — absent, POST 404 — rejected.
+- Rejected и повтор: одинаковый operation/input → тот же rejected/200, project=null, fixed code, POST counter=1, новые GET/Verify/Select/retry/release counters=0; другой body/profile/revision →409 до credential lookup. Проверить durable reservation осталась и после rejected, response failure/cancel/restart; cold repeat/observe →409 credential_binding_unproven, credential/transport counters=0.
+- Отдельный explicit observe — только health/me + GET reservation ID; found/absent не bind/enable/release. Raw canary в server message/code/request_id/exception не выходит в DTO/logs/repr/chains; unknown code →remote_error. Все boundary 404/409/422/502/503 и Studio 401/403/405 остаются typed no-store, не HTTP200 outcome.
+- C7: missing/mismatched confirmation, stale CAS, in-use/not-drained/unknown consumers, partial writes, corrupt journal, absent metadata, ENV-bound/unbound; recovery не возвращает key и не делает network. C6/C7: name+URL/лишние поля/empty patch/неверный clear_credential →422 с **нулём writes**; UI не подменяет Apply двумя hidden requests.
+
+
+**Новое решение VS-123 — отсутствие результата проверки сохранённого сервера.**
+GET `/api/remote/servers` показывает «Статус подключения неизвестен» и возвращает
+обязательный `verification={state:"unavailable"}` без `checked_at`, `user`, `capabilities`;
+это не `null`, не omitted, не `unchecked`/`error` и не свидетельство состояния сети или доступа.
+GET не вызывает Verify, clock или transport, не хранит status и не вводит новый cache.
+Будущий отдельный adapter rows→`ServerProfile` поверх VS-122 разрешён для
+`stored`/`environment`/`missing`; ENV-unbound остаётся typed `metadata_unavailable`,
+не `missing`, credential DTO не расширяется. Corruption stores, pending и races остаются
+fail-closed, не маскируются этим `unavailable`. Исторические VS-119/VS-121/VS-122
+не объявляются реализацией нового DTO: это решение VS-123 для отдельной будущей
+реализации, без mounting/runtime/wire.
+
+Изменение ID/URL, Select, disable/unbind/migrate выполняется через prepare с CAS
+identity revision/config fingerprint/generation → quiesce **всех** editor leases Ctx
+(включая legacy и фоновые вкладки) → flush Markdown старого binding, ACK, leave → fence
+старых sid/callbacks/runner → atomic commit конфигурации disabled. Dirty/offline/timeout/
+неизвестный editor блокирует commit, не разрешает discard. Job engine и другие проекты
+не останавливаются. После fence старые leases не оживают даже при отмене; нужен безопасный
+resume. Journal/change_id восстанавливает partial commit fail-closed, не откатывает уже
+принятые Remote записи. Новый Select не переименовывает серверный ID; Create — отдельная
+операция, не side effect Select. Preview локального Markdown против read-only snapshot
+показывает uploads/downloads/deletes/conflicts; только новое подтверждение и повторная
+проверка fingerprints позволяют Enable. Ручная/VCS смена config вызывает pause/review,
+не reconfigure с replay старой очереди.
+
+После активации модели все browser HTTP document/folder mutations несут
+`expected_binding_generation`, editor — editor_id, collab — sid. Stale generation/unknown
+sid отклоняются **до DocStore.write**, не превращаются в обычный save; старый HTTP без
+generation получает reload_required. Legacy/scoped GET sync остаётся read-only status,
+а старый PUT sync не обходит barrier (`use_remote_settings`). Bound MCP/agent DocStore
+остаётся в своём Ctx и сериализуется барьером. UI reload metadata не rebind ProjectSession.
 
 ### 5.3 Desktop-вкладки: единый контракт изоляции и окон (VS-20, 2026-11-13)
 
@@ -615,6 +769,14 @@ SPA со своими Pinia/router/WS/plugin cache; binding фиксируетс
 Неактивные вкладки остаются живыми, без ввода поверх активной. Main удерживает views и
 не допускает показа одного view в двух окнах.
 
+Сводка задач на вкладке (VS-148) заменяет надпись `Ready`: после имени проекта идут
+число задач `in_progress` с жёлтым кружком и число `needs_review` с синим кружком.
+Считаются все команды проекта; каждый настоящий ноль отображается как `0` с серым кружком,
+в том числе два нуля у пустого проекта. Main читает существующий scoped task-counts API
+для всех открытых вкладок независимо от фокуса и передаёт сводки shell, не меняя topology
+revision; shell не заводит проектные stores/WS. Недоступная сводка — прочерк и серый кружок,
+не ложный ноль. Служебные состояния loading/pending/crashed/closing остаются видимыми.
+
 Перенос — main-coordinated транзакция: проверенные source/target shell, одноразовый
 короткоживущий token, tab revision и сериализация с close/другими transfer. Source остаётся
 логическим владельцем до attach ACK **того же** contents в target; затем один atomic commit
@@ -751,6 +913,22 @@ Electron. Проверяются тот же contents/editor/сессия и н�
 сохраняются. Это доступность локального бэкенда, а не индикатор выполняемой задачи:
 например, для Qwen проверяется наличие CLI, а авторизация — только при запуске, что
 уточняется в сообщении статуса.
+
+После имени каждого бэкенда отображается остаток доступных окон лимита в процентах,
+более приглушённым серым текстом (VS-154). Несколько окон разделяются `/`; подсказка
+называет каждое окно и поясняет, что это оставшаяся, а не использованная доля квоты.
+Интерфейс вычисляет остаток как `100 - used_percent`; контракт телеметрии сохраняет расход.
+Под каждым окном с известным `resets_at` подсказка показывает оставшееся время:
+`Resets in: 1d 3h` (в русском интерфейсе — `Сброс через: 1д 3ч`). Меньше суток —
+часы и минуты, меньше часа — минуты, меньше минуты — `<1m` / `<1м`.
+Отсчёт обновляется каждые 15 секунд; истёкшее окно скрывается без подстановки новой квоты.
+`GET /api/status` возвращает `usage_limits` из последних данных CLI: Claude Code —
+`rate_limit.utilization`, Codex — `token_count.rate_limits`. Это квота аккаунта,
+общая для резидентных проектов, а не заполненность контекста или статистика задачи.
+Чтение статуса не запускает агентов и не обращается к провайдеру. До получения
+телеметрии, после 15 минут без обновления, сброса окна или разрыва связи показывается
+`—`, а не выдуманный ноль. Qwen пока не передаёт процент квоты и показывает `—`.
+Снимки хранятся только в памяти процесса; после перезапуска нужны новые данные CLI.
 
 ### 6.2 Explorer (v1 scope)
 
@@ -1712,10 +1890,10 @@ task-инструменты рантайма не использовать; ес
 без инструментов Студии — тоже. Субагент наследует промпт родителя вместе с этим фрагментом,
 но его собственная вводная оставляет делегирование родителю.
 
-**Effort субагента выбирает Effort Solver** (2026-11-12, по просьбе пользователя). Перед
-каждым запуском через `spawn_subagent` сервер вызывает встроенного Effort Solver команды
-(§10.11): `description` передаётся как заголовок, `prompt` — как описание, веса и модель
-Solver читаются заново при каждом вызове. Субагент запускается с вычисленным `low`,
+**Effort и Auto-модель субагента выбирает Orchestrator** (2026-11-12, по просьбе пользователя). Перед
+каждым запуском через `spawn_subagent` сервер вызывает встроенного Orchestrator команды
+(§10.11): `description` передаётся как заголовок, `prompt` — как описание, настройки Orchestrator читаются заново при каждом вызове;
+Auto-модель определяется по выбранной силе и глобальной таблице backend (§10.11). Субагент запускается с вычисленным `low`,
 `medium`, `high`, `xhigh` или `max`, значение сохраняется в `TaskSubagent.effort`.
 Параметра `effort` у инструмента нет: родитель effort не выбирает и свой не передаёт, а
 значение, присланное по прежней схеме, не читается. Правило действует при любом бэкенде
@@ -1723,7 +1901,7 @@ Solver читаются заново при каждом вызове. Суба�
 (Qwen Code, §10.6) получает значение и сообщает, что оно не применяется, — как и для
 effort задачи.
 
-- Некорректный ответ, ошибка или тайм-аут Solver не запускают субагента и не подставляют
+- Некорректный ответ, ошибка или тайм-аут Orchestrator не запускают субагента и не подставляют
   значение по умолчанию: инструмент возвращает ошибку, вызов можно повторить.
 - Оценка идёт вне блокировки прогона, чтобы медленный ответ не задерживал остановку и
   закрытие, и внутри слота родителя — второй слот при лимите 1 дал бы тупик. Запуск,
@@ -1738,8 +1916,8 @@ effort задачи.
   `spawn_subagent` и `list_subagents` и показан в каждой строке списка субагентов (§10.4)
   единым виджетом Effort только для чтения. У собственных субагентов рантайма и у строк,
   сохранённых без effort, он неизвестен и не рисуется.
-- Четыре исходные оценки возвращаются только в ответе `spawn_subagent` — полем
-  `effort_solver` (`scores`, `effort` 1–5, `effort_level`) рядом со строкой субагента — и
+- Сила модели и выбранный effort возвращаются только в ответе `spawn_subagent` — полем
+  `effort_solver` (`model` 1–3, `effort` 1–5, `effort_level`) рядом со строкой субагента — и
   показываются в строке этого вызова в переписке (§10.4, 2026-11-12, по просьбе
   пользователя). Намеренное ограничение: в `TaskSubagent` они не сохраняются, `list_subagents`
   и список субагентов показывают только итоговый effort.
@@ -1798,7 +1976,7 @@ effort задачи.
   - **Скилл — не настройка**, в отличие от фрагментов: как и описания инструментов, это их контракт с моделью, и меняется он в одном коммите с ними. `test_studio_skill.py` держит их вместе: инструмент, не названный в `SKILL.md`, роняет тест. Переопределения удалённых фрагментов в `config.yaml` не мигрируются — преемника с тем же смыслом у них нет; ключ игнорируется при загрузке и уходит при следующем сохранении.
 - `AgentDefinition(description, prompt, tools, model, ...)` — механизм SDK для **саб-агентов внутри одной сессии** (Claude сам решает, когда делегировать). В v1 не используется как основа иерархии Teams — основа иерархии здесь всегда наш собственный Task Board (§10.2/10.4). `AgentDefinition` можно рассмотреть позже как *дополнительный* режим: например, дать сессии «Тимлида» доступ к остальным участникам как к SDK-саб-агентам, чтобы он мог делегировать автономнее, без явного создания задачи пользователем на каждый шаг — это отдельное расширение, не замена Task Board.
 - Ресурсы: официальный ориентир — **~1 GiB RAM и 1 CPU на активного агента** как стартовая точка планирования → нужен лимит одновременно активных участников (аналогично `resource_class`-семафорам в §8.2, тот же Job Engine).
-  - **Лимит — `concurrency.agents`, по умолчанию 2, и правится в Project Settings → ИИ-агенты → «Параллельных сессий»** (дополнено с кодом 2026-10-25, по запросу пользователя). Сохранение применяется без перезапуска (`JobEngine.update_limits`): подъём лимита сразу запускает то, что стояло в очереди. Слот делят прогоны задач и ходы чата (§10.9).
+  - **Лимит — `concurrency.agents`, по умолчанию 8, и правится в Project Settings → ИИ-агенты → «Параллельных сессий»** (дополнено с кодом 2026-10-25, по запросу пользователя). Сохранение применяется без перезапуска (`JobEngine.update_limits`): подъём лимита сразу запускает то, что стояло в очереди. Слот делят прогоны задач и ходы чата (§10.9).
   - **Ожидание слота говорит о себе в транскрипте** (`teams/slots.py`). Слот берётся, когда задача уже `in_progress` и строка `workdir` записана, поэтому прогон, вставший в очередь за лимитом, выглядел зависшим на «Starting in …» — например, когда третья задача ждала, пока две держали оба слота. Теперь перед ожиданием пишется запись `kind="queued"` («Waiting for a free agent slot: 2 of 2 in use…», `data.limit`), а при получении слота — вторая, с длительностью ожидания (`data.waited_s`). Обе — хвостовая строка карточки и диалога, пока сессии нет. Прогон, получивший слот сразу, не пишет ничего. Статус задачи не меняется: она уже выпущена и ждёт только ресурса, а `in_progress` — то, что видят solo-режим и Start.
 - Нужен `ANTHROPIC_API_KEY` (или иной способ авторизации Claude Code) в окружении процесса Студии — это пункт первичной настройки приложения (Settings).
 
@@ -1922,6 +2100,9 @@ Tasks не требуется. Выключение прекращает тол�
 колонки. Перетаскивание карточки в Waiting — это релиз в `pending`, единственный из трёх
 статусов, в который человек переводит карточку руками; меню карточки по-прежнему предлагает
 все семь статусов, так что ручной перевод в `needs_review` или `blocked` никуда не делся.
+
+Цвет `needs_review` — синий во всех темах и обеих палитрах статусов (VS-148), в том числе
+у карточек, бейджей и в тройке цветов заголовка Waiting; жёлтый обозначает работу, не ревью.
 
 **Архив.** Задачу из `done` можно убрать с доски кнопкой **Archive** на самой карточке —
 флаг `archived` на строке (`PATCH …/tasks/{id}` с `archived: true`). Архивировать можно
@@ -2406,17 +2587,17 @@ Default, где та же работа свёрнута в блоки.
 рамкой; все остальные инструменты Студии рисуются стандартным цветом вместе с обычными
 вызовами в **Tools used: N**. Соседние обычные вызовы до и после выделенного блока — свои
 блоки. Строка `spawn_subagent` вместо
-гаечного ключа несёт иконку робота, и сразу под ней — карточка оценки Effort Solver (четыре
-оценки и итоговый effort, §10.3), прочитанная из результата вызова на любом уровне; пока
-задача или беседа идёт, а ответа ещё нет, вместо карточки — строка «Effort Solver оценивает
+гаечного ключа несёт иконку робота, и сразу под ней — карточка оценки Orchestrator (сила
+модели и итоговый effort, §10.3), прочитанная из результата вызова на любом уровне; пока
+задача или беседа идёт, а ответа ещё нет, вместо карточки — строка «Orchestrator оценивает
 субагента…». Ошибка запуска или результат без оценок карточки не рисуют. Каждый
 `spawn_subagent` — отдельный блок, даже рядом с другим запуском или `create_task`;
 его заголовок несёт робота. Он **всегда развёрнут и не сворачивается** на Default и Verbose,
-чтобы процесс Effort Solver был виден без щелчка (2026-11-12, по просьбе пользователя).
+чтобы процесс Orchestrator был виден без щелчка (2026-11-12, по просьбе пользователя).
 Каждый `create_task` также получает собственный **постоянно раскрытый** блок, даже рядом
 с другим созданием: иконка страницы с карандашом, в заголовке — название задачи из `title`
-(2026-11-13, по просьбе пользователя). В Producer Auto внутри него видны ожидание Effort Solver
-и затем четыре оценки с итоговым effort, прочитанные из результата вызова, как у субагента.
+(2026-11-13, по просьбе пользователя). В Producer Auto внутри него видны ожидание Orchestrator
+и затем сила модели с итоговым effort, прочитанные из результата вызова, как у субагента.
 При Agent и обычном создании не показывается вымышленное вычисление: политика оценки не меняется.
 Ошибка, остановленный вызов или старый ответ без оценок не создают карточку. Результат Auto
 возвращает JSON с `task_id`, `display_id`, `title`, пояснением `message` и `effort_solver`;
@@ -2505,7 +2686,7 @@ Verbose, а не запись в журнал: в ленте она ничего
 заменила колонку Files touched и включает её последним подразделом; выше идут:
 - **делегированная работа** — сколько субагентов и рабочих процессов идёт и чем закончились
   остальные, список по щелчку (раньше — строка шапки над транскриптом, `SubagentSummary`);
-  строка Studio-субагента показывает и effort, выбранный для него Effort Solver (§10.3);
+  строка Studio-субагента показывает и effort, выбранный для него Orchestrator (§10.3);
 - **скиллы сессии** — `used` (агент загрузил скилл вызовом `Skill`; у Codex бэкенд так же
   называет чтение известного `SKILL.md`), `loaded` (его `SKILL.md` передан сессии при старте,
   `required_context`), `available` (назван агенту, но не открыт), `missing` (назначен
@@ -3001,11 +3182,10 @@ MCP-сервер, `voxarium_studio`, но in-process: он собирается 
 Долгий прогон сейчас можно только смотреть и отменять. Remote Control — механизм самого
 Claude Code — даёт третий вариант: сессия становится видимой и управляемой на claude.ai/code
 и в мобильном приложении Claude, то есть уходящую не туда задачу можно развернуть с телефона,
-а не дожидаться конца, чтобы вернуть её на ревью. В карточке задачи (`TaskDetail`) это кнопка
-и поле со ссылкой — **фиксированный блок в футере, под полем заметки и над кнопками
-жизненного цикла**. Не в транскрипте: пока сессия идёт, лента растёт и уносит ссылку из виду
-ровно тогда, когда она нужна. У задачи человека агентской сессии нет вообще, поэтому блока на
-ней нет вовсе — это честнее навсегда выключенной кнопки, занимающей место.
+а не дожидаться конца, чтобы вернуть её на ревью. Во всех местах, где используется карточка
+задачи (`TaskDetail`), это **отдельная кнопка в общем заголовке слева от Edit и Close**:
+по нажатию под ней открывается выпадающее меню. Постоянного виджета в футере нет.
+У задачи человека агентской сессии нет вообще, поэтому кнопка на ней отсутствует.
 
 **Слэш-команда `/remote-control` здесь не работает — и это не обходной путь, а другой вход в
 то же самое.** Команда объявлена в CLI как `local-jsx`: она рисует интерфейс в терминале,
@@ -3032,10 +3212,10 @@ Claude Code — даёт третий вариант: сессия станов�
 посередине неё. Бэкенд, который так нельзя, просто не публикует `SessionControl`, и
 оркестратор сообщает, что управлять нечем.
 
-**Кнопка и поле стоят одной строкой**: кнопка слева, ссылка справа. Ссылка сессии длиннее
-рейла в любом случае — поэтому рядом с полем есть «скопировать» и «открыть», а два ряда
-покупали ей несколько лишних символов ценой строки высоты в блоке, который висит над
-кнопками действий всё время, пока задача открыта.
+В меню доступны включение/выключение Remote Control и, при наличии ссылки сессии,
+поле ссылки с действиями «скопировать» и «открыть». Подключение доступно только во время
+живого прогона, не во время сжатия контекста; недоступность поясняется в меню. Это управление
+сессией Claude Code, а не межклиентная AI-функция Remote.
 
 #### Сообщение работающей сессии
 
@@ -3433,7 +3613,7 @@ Estimate Task Cost и Effort. В шапке каждой карточки Active
 для страницы и обычного чата; переход между ними не запускает и не останавливает агентов.
 Переписка с Продюсером в этом режиме использует тот же виджет, что и карточка задачи
 (§10.4), с выбором Default / Verbose, автопрокруткой и переходом к последнему
-сообщению. Утверждение плана, результат Effort Solver и резюме сжатой истории видны
+сообщению. Утверждение плана, результат Orchestrator и резюме сжатой истории видны
 при любой детализации. Поле ответа и вложения относятся к выбранной беседе.
 
 Под настройками показан единый `TokenUsageChip` «Всего за сессию»: расход выбранной
@@ -3471,60 +3651,68 @@ Estimate Task Cost и Effort. В шапке каждой карточки Active
 его актуальность относительно состояния доски. Начальный вопрос о цели может предшествовать
 плану; обычные старые беседы принимают этот контракт после первой записи чек-листа.
 
-**Effort: Agent / Auto** сохраняется для беседы в `AgentChat.producer_effort_mode`;
-новые и существующие беседы по умолчанию используют **Agent**. В Agent новые задачи,
-создаваемые продюсером, сохраняются с `TeamTask.effort=null` и при запуске наследуют
-дефолтный effort исполнителя по обычным правилам §10.3. В **Auto** перед созданием каждой
-новой задачи сервер вызывает встроенного агента **Effort Solver**. Он получает только
-заголовок и описание будущей задачи и возвращает JSON с четырьмя независимыми целыми
-оценками от 1 до 10: `complexity`, `creativity`, `depth`, `coverage`. Контекст проекта,
-история беседы и инструменты не входят в этот запрос. Producer не выбирает effort и не
-передаёт его в `create_task`; старое переданное значение не заменяет вычисление.
-Некорректный ответ, ошибка, тайм-аут или отмена Solver не создают задачу и не подставляют
-значение по умолчанию. Вызов выполняется до выделения номера задачи и вне транзакции БД.
+**Orchestrator: модель и effort** (VS-184, 2026-11-17). Встроенный агент
+**Orchestrator** заменяет прежний Effort Solver. Он получает только заголовок и описание
+оцениваемой работы, без контекста проекта, истории и инструментов, и возвращает строго
+JSON с двумя целыми полями: `model` от 1 до 3 и `effort` от 1 до 5. Лишние поля,
+дробные числа, строки и bool недопустимы. Модель и effort оцениваются независимо:
+минимальная достаточная сила модели не заменяется повышением effort.
 
-Математический скрипт `teams/effort_solver.py` принимает эти четыре оценки как JSON,
-включая JSON внутри Markdown-блока, и вычисляет целый результат 1–5:
-`round(1 + (wc*(complexity-1) + wr*(creativity-1) + wd*(depth-1) +
-wv*(10-coverage)) / (9*(wc+wr+wd+wv)/4))` с ограничением результата диапазоном 1–5.
-Веса по умолчанию: Complexity **1.5**, Creativity **1.5**, Depth **3**, Coverage **2.5**
-(с 2026-11-12, по просьбе пользователя; прежние — 2, 1.5, 3, 2); делитель при этих весах
-по-прежнему равен **19.125**. Округление соответствует Python `round`.
-Веса конечные, неотрицательные, с положительной суммой; делитель пересчитывается при их
-изменении. Поэтому общий масштаб весов не меняет результат, а их соотношение задаёт
-вклад компонентов. Большая Coverage уменьшает effort. Пример `9, 6, 8, 8` даёт **3**
-(при прежних весах — 4). Новые умолчания получает Solver с `effort_solver_weights: null`;
-сохранённые явно веса не меняются, а уже вычисленный effort задач не пересчитывается.
-Значения преобразуются в **1=Low, 2=Mid, 3=High, 4=XHigh, 5=Max**; в задаче сохраняются
-соответствующие `low`, `medium`, `high`, `xhigh`, `max` как переопределение `TeamTask.effort`
-для запуска и продолжения. Скрипт также доступен через
-`python -m voxarium_studio.effort_solver` с JSON на stdin; `--weights` принимает JSON
-с переопределениями весов.
+Сила модели: **1** — рутинная работа, простые правки и извлечение данных;
+**2** — нетривиальная разработка, анализ, планирование и дизайн с несколькими ограничениями;
+**3** — сложная абстракция, архитектура, тонкие проблемы и новые тесно связанные решения.
+Effort выбирается напрямую: **1=Low, 2=Mid, 3=High, 4=XHigh, 5=Max**;
+в runtime это `low`, `medium`, `high`, `xhigh`, `max`. Прежние четыре оценки,
+нормализованный вес и множитель кривой больше не участвуют в новых решениях.
+Стандартный system prompt — заданный пользователем Orchestrator Agent; собственные
+backend, модель, effort и пользовательский system prompt агента настраиваются отдельно.
+Для Orchestrator нельзя выбирать модель `auto`, иначе получилась бы рекурсия.
 
-В каждой команде существует неудаляемый агент **Effort Solver**, локальный id
-`studio-effort-solver`, признак `builtin: effort_solver`. Он добавляется и в существующие
-команды; удаление из YAML восстанавливает его с сохранёнными настройками. API запрещает
-удаление и смену типа на Person, а импорт YAML нормализует тип до `agent`. Стандартный
-system prompt — заданная роль Effort Solver Agent с критериями Complexity, Creativity,
-Depth, Coverage и единственным JSON-ответом. Модель, backend, собственный effort и
-system prompt настраиваются в редакторе агента. Только у него доступна секция весов
-`effort_solver_weights`, сохраняемая вместе с участником в БД и YAML; `null` означает
-стандартные веса. У других участников эти настройки недоступны и отклоняются API.
+**Settings → Orchestrator** содержит глобальную таблицу `orchestrator_models`:
+строки — уровни **1–3**, столбцы — бэкенды; ячейка — конкретная модель.
+На диске это словарь `backend → {"1": model, "2": model, "3": model}` в пользовательском
+`config.yaml` (§5.2), не в `.voxarium_studio/config.yaml` управляемого проекта.
+Пустая ячейка, `auto` и неполные уровни запрещены. Начальные соответствия Claude:
+Haiku / Opus / Fable; Codex: Terra / Sol / Astra. Для Qwen доступны его модели.
+Изменение таблицы применяется к следующим решениям во всех резидентных проектах,
+не меняя уже запущенную сессию.
 
-Успешная оценка сохраняется в беседе Producer как отдельная запись `kind="effort_solver"`
-вместе с созданной задачей и передаётся через WebSocket. Блок виден на обычном уровне
-детализации, выделен фиолетовым и показывает только четыре исходных значения и итоговый
-Effort. Сырые ответы модели, размышления и служебные события Solver в диалог не выводятся.
-Стоимость, число ходов и токены успешной оценки входят в общий расход беседы Producer;
-повторные кадры одной оценки и итоговый usage не учитываются дважды.
-Настройка меняется между ходами, в том числе на паузе, сама не запускает агента и не меняет
-effort уже существующих задач. Текущий режим и правило автоматического расчёта передаются в контекст
-каждого хода; дочернее делегирование исполнителей сохраняет обычные правила §10.3.
+В редакторе агента модель **Auto** (`model="auto"`) означает следовать Orchestrator:
+выбранная сила преобразуется через таблицу для backend исполнителя; в CLI всегда
+поступает конкретная модель, никогда строка `auto`. Конкретная модель остаётся
+явным выбором пользователя, пустое значение сохраняет прежний runtime default.
+Переопределения модели и effort независимы: фиксированный effort не отключает
+выбор Auto-модели, а фиксированная модель не отключает Auto-effort.
+Одна работа, требующая обеих оценок, оценивается одним вызовом.
 
-Тот же Solver с теми же весами оценивает каждого субагента задачи при `spawn_subagent` —
-всегда, независимо от этого режима (§10.3). Там результат задаёт effort субагента и виден
-в списке субагентов и в строке вызова `spawn_subagent` (§10.4), а отдельный блок в
-переписке не создаётся.
+Режим **Effort: Agent / Auto** сохраняется в `AgentChat.producer_effort_mode`;
+по умолчанию **Agent**. В Agent задачи наследуют effort исполнителя по §10.3.
+В Auto `create_task` вызывает Orchestrator до выделения номера и вне транзакции,
+сохраняет выбранный effort в задаче и использует выбранную силу при Auto-модели.
+Producer не выбирает effort сам. Некорректный ответ, ошибка, тайм-аут или отмена
+не создают задачу и не подставляют неоценённое значение по умолчанию.
+
+В каждой команде Orchestrator неудаляем и всегда `kind="agent"`.
+Для совместимости сохраняются локальный id `studio-effort-solver`,
+`builtin: effort_solver`, вид записи и ключ результата `effort_solver`.
+Миграция меняет прежние стандартные имя, роль и system prompt, сохраняя
+пользовательские настройки и связи существующего агента. Отсутствующий в YAML
+агент восстанавливается; дубликат новой встроенной роли не создаётся.
+
+Результат `{model, effort, effort_level}` показывается фиолетовой карточкой
+**Orchestrator**: сила модели и итоговый effort вместо прежних четырёх оценок.
+Исторические записи со `scores`, `weight` и `curve_multiplier` остаются читаемыми,
+но не используются для новых вычислений. Сырые ответы, размышления и служебные
+события в диалог не выводятся. Расход успешной оценки учитывается один раз у
+владельца вызова: Producer или родительской задачи.
+
+Каждого Studio-субагента Orchestrator оценивает при запуске независимо от режима
+Producer (§10.3). Effort всегда выбирается оценкой; модель следует таблице только
+для Auto-политики, явная конкретная модель сохраняется. Продолжение существующей
+сессии задачи сохраняет выбранные для неё конкретную модель и effort. В обычном чате
+и в собственных ходах Producer Auto-модель оценивается для нового входного сообщения;
+смена конкретной модели сбрасывает runtime session id, сохраняя историю беседы.
+Оценка выполняется до сжатия контекста, чтобы и оно никогда не отправляло `auto` в CLI.
 
 **Estimate Task Cost** — положительная конечная сумма в долларах США, по умолчанию **$150**
 для новых и существующих бесед. Значение сохраняется в `AgentChat.estimate_task_cost_usd`
@@ -3616,6 +3804,15 @@ Constraints, Starting Work и Task Review; Scope Deviation Policy требует
 `{language}`; подстановка языка выполняется при запуске хода Producer Mode. Этот текст
 отсутствует в постоянной identity и файле named agent, чтобы не дублироваться и не включать
 режим в обычной беседе. В активный Producer-чат он передаётся один раз.
+
+Producer Mode task granularity: prefer a small number of cohesive board tasks per
+session Plan item. A large number is permitted but strongly discouraged, with no fixed
+numerical cap: the more tasks an item already has, the stronger the justification
+required for each additional task. First reuse or consolidate existing tasks; add a
+new one only for essential work that cannot be covered that way, explaining why it
+is indispensable. Count new, reused and corrective tasks together, including completed
+tasks. Do not split or rewrite Plan items to evade this increasing restraint. This is
+a system-prompt and Producer-skill instruction, not a board API restriction.
 
 Для обычной беседы с ним доступна кнопка **Start Producer Mode** — как в попапе, так и на Chats.
 Беседы страницы Producer сохраняют включённый режим и там, без кнопок Start/Stop.
@@ -4112,6 +4309,12 @@ members:
 
 ## 16. Онлайн-синхронизация: Voxarium Studio Remote (2026-11-10, по просьбе пользователя)
 
+**Версии:** §16.1–16.5 описывают работающий v1, если явно не указано иное.
+§16.7–16.9 и §5.2.1 — согласованная **будущая** identity/catalog v2 модель (VS-91/VS-92),
+не утверждение о наличии endpoints, CRUD, мигратора или нового Admin в текущем пакете.
+Они заменяют v1 auto-create/выбор по имени только после отдельной реализации и приёмки.
+§16.4 (Markdown-only rooms/no-write-on-open), §16.6 и desktop §5.3 сохраняют силу.
+
 Несколько человек работают над одним проектом, каждый — в своей локальной Студии рядом со
 своей рабочей копией. Чтобы они видели правки друг друга в **Documents** сразу, а не после
 коммита, между Студиями стоит отдельный сервер — **remote**:
@@ -4165,7 +4368,8 @@ members:
 - Пользователь — это имя и цвет курсора. Цвет назначает сервер (по кругу из палитры), чтобы
   у человека он был одинаковым во всех редакторах.
 - **Пространство (space)** — один общий набор документов; одно пространство на проект.
-  Создаётся при первом подключении к нему. **Ограничение, принятое сознательно:** любой
+  В v1 создаётся при первом подключении по имени; будущий v2 (§16.7) это запрещает.
+  **Ограничение, принятое сознательно:** любой
   пользователь с действующим ключом может подключиться к любому пространству сервера —
   ролей и списков доступа нет (как и RBAC в §14). Сервер предполагается командным, не
   публичным.
@@ -4195,8 +4399,9 @@ members:
   узнаёт о них тем же `team.doc.changed`, что и о записи агента.
 - База лежит **в каталоге настроек пользователя** (`sync/<хеш пути проекта>.json`), не в
   `.voxarium_studio/`: она описывает одну рабочую копию, и закоммиченная досталась бы всем.
-  У пространства есть идентификатор, выданный при создании; сервер с заменённой базой
-  объявит другой, и клиент начнёт сравнение с нуля.
+  В v1 у пространства есть UUID incarnation, выданный при создании. В будущем v2
+  canonical ID/selector и storage_epoch разделены: mismatch/rollback требуют blocked
+  recovery (§16.7), не автоматического сравнения с нуля и push прежней очереди.
 
 **Разрешение расхождений** (файл изменён и здесь, и на сервере, вне живой комнаты) — ничего
 не теряется ни в одном случае:
@@ -4274,6 +4479,9 @@ Yjs-документ, через который правки и курсоры �
 
 ### 16.5 Настройки и состояние
 
+Ниже — **v1**. Будущий split global profiles/project binding заменяет его по §5.2.1;
+старые GET/PUT `/api/sync` не являются API новой identity-транзакции.
+
 - **Адрес сервера и пространство — настройки проекта** (`sync` в `config.yaml`,
   коммитятся): коллеге, получившему проект, остаётся ввести только свой ключ.
 - **Ключ — личный**: `remote-keys.json` в каталоге настроек пользователя (§5.2), по адресу
@@ -4302,6 +4510,219 @@ Yjs-документ, через который правки и курсоры �
   проверки версии схемы пока нет, есть только версия протокола.
 - **Взаимодействие с VCS.** Синхронизированные правки лежат у всех как незакоммиченные
   изменения; кто и когда их коммитит, Студия не решает.
+
+### 16.7 Remote v2: identity, каталог и безопасное подключение (VS-92, VS-180)
+
+Это нормативный контракт из трёх designs VS-91, ссылки в §5.2.1. VS-180 поставляет
+серверный candidate Remote v2 и Admin, **не общий rollout**. Studio I9–I16/L и Android
+не принимаются этой поставкой; production deploy/миграция здесь не выполняются.
+Remote остаётся отдельным пакетом, без импорта Studio. Wire v2 объявлен в обеих Python-копиях:
+на Remote `PROTOCOL_VERSION=2`, в Studio `WIRE_V2_VERSION=2`, но используемый старым
+runner `PROTOCOL_VERSION=LEGACY_RUNNER_PROTOCOL_VERSION=1` и URL `/api/v1/sync` намеренно
+сохранены до отдельной приёмки I9–I16/L. Таким образом декларации v2 **не активируют**
+неполный runner; Remote отказывает ему до lookup/записей. `catalog_api=2`, schema migration
+version и SSH `admin_rpc_version=1` — независимые версии, не версия пакета/EXE.
+
+**Identity:** canonical `Project.id = persistent_id = query space = hello.space.id =
+spaces.id = docs.space_id`. Серверный ID неизменяем; локальное редактирование означает
+выбор/создание другого назначения, не rename/merge/move данных. `display_name` — неуникальная
+подпись, в UI всегда рядом с полным ID. Локальный project_name не меняется при Select.
+ID — exact canonical ASCII `^[a-z0-9][a-z0-9._-]{0,63}$`, без trim/lower/slugify на API;
+невалидный ввод отклоняется. Новое имя проекта/пользователя — NFC + явный trim,
+1–120 Unicode code points и ≤480 UTF-8 bytes, без C0/C1/DEL, newline и bidi override/isolate.
+Исторические подписи миграции сохраняются буквально с отметкой. Цвет — lowercase `#rrggbb`.
+Один decode транспортом, без повторного decode; duplicate space/неизвестные query поля — 400.
+
+`storage_epoch` — отдельный opaque UUID hex поколения данных; при Create генерируется
+Remote независимо от ID. Локальный Studio `space_instance_id` (и catalog_instance_id
+в prepare) — только adapter alias epoch 1:1, не дополнительное wire-поле. Backend epoch,
+binding_generation и room.epoch — другие сущности. Namespace Remote данных включает
+normalized URL (с prefix), ID и проверенную incarnation; account проверяется отдельно.
+Ни display_name, ни похожий URL не разрешают merge баз/очередей.
+
+Все `/api/v2/*` требуют только `Authorization: Bearer <personal key>` до lookup/выдачи
+каталога; без query/body/cookie fallback и передачи ключа через redirect на другой URL.
+TLS или loopback SSH tunnel обязательны. Любой active key имеет командный доступ ко всем
+проектам, включая explicit Create; **нет RBAC/owner/per-space ACL**. User administration
+остаётся за SSH, не становится публичным HTTP CRUD; browser CORS/static не добавляются.
+
+| Будущий маршрут | Точный wire-контракт |
+| --- | --- |
+| GET `/healthz` | Без auth: service/version/protocol + `supported_protocols:[2]`, `catalog_api:2`; без пользователей/схемы/секретов |
+| GET `/api/v2/me` | `{protocol:2,catalog_api:2,capabilities:["project_catalog","explicit_project_create","strict_connect","project_snapshot","legacy_resolution"],user:{id,display_name,color}}` |
+| GET `/api/v2/projects?limit=100&after=<ID>` | `{protocol:2,projects:[Project],next_after:ID\|null}`; keyset ASCII id, limit 1–200, after — валидный, не обязательно существующий ID; между страницами нет snapshot, dedup по ID/refresh при гонке |
+| GET `/api/v2/projects/{id}` | `{protocol:2,project:Project}` или 404 project_not_found; exact ID |
+| POST `/api/v2/projects` | **Только `{id,display_name}`**, body ≤2 KiB; 201 `{protocol:2,project:Project}`, Location на GET; пустой проект seq=0; занятый ID всегда 409 project_exists |
+| GET `/api/v2/projects/{id}/snapshot` | Read-only согласованные страницы документов/tombstones, формат ниже; без room/WS/create |
+| GET `/api/v2/legacy-spaces/resolve?name=<exact-old-selector>` | `{protocol:2,legacy_space_name,project:Project}` или 404 legacy_space_not_found; exact сохранённый mapping без trim/lower/fuzzy; только явная миграция, не fallback connect |
+| WS `/api/v2/sync?space=<ID>` | Lookup-only существующего ID; никакого auto-create на upgrade/hello/sync/join/put/delete/reconnect |
+
+`Project = {id,display_name,storage_epoch,metadata_revision,created_at}`.
+metadata_revision ≥1 — CAS подписи, не docs seq. Тексты, hashes ключей, SSH-параметры,
+списки пользователей и роли в каталоге отсутствуют. Публичного delete проекта/rename ID/
+move данных этот increment не добавляет; подпись меняет оператор по SSH с revision CAS.
+REST errors: `{error:{code,message,request_id}}`; 400 invalid_id/invalid_display_name/
+invalid_request, 401 unauthorised (+ WWW-Authenticate), 404 project_not_found/
+legacy_space_not_found, 409 project_exists/metadata_conflict/snapshot_changed,
+413 payload_too_large, 503 temporarily_unavailable. Неизвестные поля/неверные типы
+отклоняются, bool не integer; сообщения безопасны, без raw input/headers/секретов.
+
+**Create ≠ Select ≠ Enable.** Только explicit Create вызывает POST; конфликт двух Create
+даёт ровно один 201, другой 409, без suffix/overwrite. Timeout/обрыв после POST — unknown
+outcome: GET **исходного ID**, показать карточку и запросить отдельный Select. Даже найденный
+проект/победитель гонки не привязывается автоматически. При 404 повтор того же Create —
+только новое действие пользователя. Ни новый случайный ID, ни слепой повтор, ни initial
+documents не допустимы. operation_id Studio — лишь локальный журнал, не Remote request
+field, не гарантия server replay; повтор занятого body тоже 409. Select сохраняет disabled,
+затем отдельные Preview/Enable (§5.2.1), не автоматический push.
+Это описание Remote POST, не HTTP mapping локального Studio API. Локальный
+`CreateResult` имеет **шесть** outcomes: created →201; conflict/unknown/rejected/found/absent
+→200 с фиксированным `{state,project,error_code}` (§5.2.1). Rejected: project=null,
+только fixed sanitized code, без retry/Select/освобождения operation; POST 404 не absent,
+POST 503 не rejected. Boundary exceptions сохраняют typed 409/503 и остальные статусы,
+не превращаются в outcome. Wire/protocol, credential continuity и cold fail-closed не меняются.
+
+**Snapshot:** первый GET `?limit=20` читает epoch/seq и страницу в одной короткой SQLite
+read-транзакции; ответ `{protocol:2,snapshot:{id,storage_epoch,seq},documents:[{path,content,
+hash,rev,deleted,updated_by,updated_at}],next_after:null|path}`. Включены tombstones,
+порядок binary path; limit 1–100, ответ ≤4 MiB UTF-8 JSON (один документ уже ≤1 MB).
+Бюджет считается по фактическому compact UTF-8 JSONResponse, не по искусственному
+ASCII-экранированию Unicode. Патологический, но допустимый текст с обязательными JSON
+escapes (например 1 MB NUL) может один превысить 4 MiB: тогда snapshot явно отказывает
+413 payload_too_large, без усечения/пропуска документа, изменения source или partial success;
+preview/Enable остаются закрыты. Это ограничение read-only preview, не новая нормализация
+Markdown и не разрешение удалять/перезаписывать такой документ.
+Курсор — последний реально выданный path, byte budget не пропускает документ.
+Продолжение передаёт after + expected_seq + expected_epoch первой страницы; изменение
+seq/epoch — 409 snapshot_changed без частичного success, неверные параметры — 400.
+Первая страница также может принять expected_epoch. Клиент отбрасывает только временный
+preview, не drafts/base/очередь; после ограниченных повторов сообщает о меняющемся проекте.
+Snapshot не lock/history; транзакция не держится через сетевые awaits. Перед Enable снова
+проверяются epoch/seq/fingerprints и сохраняется CAS/conflict-safe reconciliation §16.3,
+не безусловный overwrite. Нет snapshot capability — нет Enable.
+
+Hello v2: `{t:"hello",protocol:2,user:{id,display_name,color},space:{id,display_name,
+storage_epoch},seq}`; user.display_name также в presence/room карточках, авторство — по
+user ID. **До любого sync/put/delete/join** клиент сравнивает protocol, exact ожидаемый ID,
+verified me.user.id с hello.user.id, epoch и cursor. ID/account mismatch — terminal error,
+не привязка к ответу. Epoch mismatch либо `hello.seq < saved_cursor` даже при прежней epoch
+блокируют старые pending/rooms: сохранить Markdown, bases/cursor/drafts/очередь отдельно,
+затем read-only snapshot/full reconciliation и явное Preview/Enable. Не reset cursor
+с auto-push и не replay старой очереди в другую identity. Пустой/битый hello не новый сервер.
+Сравнение seq не доказывает обнаружение **всех** откатов backup; при намеренном destructive
+restore оператор обязан назначить новые epoch. Обычный backup epoch сохраняет.
+
+WS принимает handshake перед различимым отказом, но до hello/Hub: 4401 unauthorised,
+4400 invalid_request/invalid_id, 4404 project_not_found; причины фиксированные безопасные.
+На этих кодах auto retry прекращается, предлагается исправление/Select, не Create.
+4408 overload сохраняется. Остальные document/CAS/room frames сохраняют смысл §16.3–16.4:
+Yjs не персистируется, чистое открытие/transfer ничего не пишет.
+
+### 16.8 Переход v1 → v2 и сохранность данных
+
+**Fail-closed без name-based compatibility:** новый клиент на старом Remote может только
+HTTP Verify health/me; catalog/create/select/enable закрыты, v1 WS fallback запрещён.
+Новый Remote отвечает legacy GET `/api/v1/me` с protocol=2 и безопасной собственной
+legacy-карточкой; authenticated WS `/api/v1/sync` закрывает 4400 protocol_upgrade_required
+**до lookup/create/Hub**. Неизвестный wire — unsupported_protocol с сохранением local state.
+Старый клиент + старый сервер остаются v1 с риском auto-create; новый Admin EXE сам по себе
+сервер не обновляет. Capabilities проверяются явно, не угадываются из package version/404.
+
+Миграция — **отдельная явно разрешённая offline-операция**, не startup Store, discovery,
+GET/diagnostics, import settings или открытие проекта. Новый binary отказывается писать
+старую/неизвестную schema до явной migration; старый binary на новой schema запрещён.
+
+- Remote сохраняет каждый прежний `spaces.id` **байт-в-байт**: canonical ID = старый UUID
+  v1 hello.space.id; initial storage_epoch = **тот же старый UUID**. Не форматировать hex
+  дефисами, не подставлять прежнее name. Old name становится display_name и exact legacy
+  mapping, никогда sync alias. Не менять FK, seq, docs path/content/hash/rev/deleted/
+  updated_by/updated_at/created_at; сохранить пустые и tombstone-only spaces.
+- Пользователи сохраняют UUID/hash/цвет/timestamps/revoked_at; old name остаётся immutable
+  legacy CLI handle и исходной подписью, у новых handle=UUID. Добавляются deleted_at,
+  credential_version=1, metadata_revision=1; token_hash nullable UNIQUE non-null.
+  Невалидные исторические подписи помечаются без автоправки; повреждённые ID/FK/rev — fail,
+  не repair по догадке. Миграция одной транзакцией, повтор целевой schema — no-op.
+- Studio сначала строит план без сети/записей, отдельно получает подтверждение создания/
+  выбора профиля и импорта legacy URL-key без перезаписи чужого ключа. Затем exact legacy
+  resolve новым каталогом, показать UUID mapping, отдельный prepare/quiesce/commit.
+  Offline/нет каталога/неоднозначно — migration_required, старые config/base нетронуты;
+  v1 WS для выяснения existence запрещён. Пустой legacy selector не становится default/slug.
+  Scalar sync.space удаляется только вместе с успешной записью identity, конфликт двух
+  источников блокирует. Base импортируется лишь при доказанных root/URL/mapping/epoch;
+  copy-on-write/checkpoint с проверкой перед отказом от старой, без cross-target replay.
+  Миграция оставляет disabled; подтверждение каждой машины/root и Preview обязательны.
+- Android сохраняет credentialId/Keystore aliases, mirror/bases/cursor, pending, newer drafts,
+  conflicts и raw room recovery byte-exact с provenance в URL+ID+account/incarnation
+  partitions. Неизвестное соответствие — archive/recovery, не удаление и не отправка в новый
+  space. Мигрированная очередь сама по себе не разрешение отправки; rollback/downgrade
+  не переинтерпретирует новые данные старым клиентом.
+
+**Безопасный порядок будущего rollout:** сначала реализовать/проверить совместимые Studio,
+Android и Admin и подготовить обновления всех клиентов; до cutover не включать v2 на v1.
+После **отдельного разрешения production migration/deploy** согласовать окно недоступности,
+flush/materialize активные rooms и сохранить recovery, остановить Remote/новые подключения.
+Подтвердить container/volume/data path/version; создать согласованный SQLite backup через
+backup API либо после остановки/checkpoint, не копию одного db при живом WAL. Backup
+защитить как credential store. На копии dry-run: integrity/FK, counts всех spaces/docs/users,
+seq/rev/безопасные контрольные суммы без hashes ключей. Мигрировать транзакционно,
+проверить сохранность, сохранить mapping/report без секретов; лишь затем открыть v2
+сервер и подключать **обновлённые** клиенты с явной локальной миграцией/Select/Preview.
+Старым клиентам временный отказ предпочтительнее смешивания v1/v2 комнаты.
+Rollback — остановка и восстановление **целого** v1 backup, не старый binary на новой DB;
+после новых записей нужен отдельный recovery/export и подтверждение их возможной потери.
+VS-92 никаких migration, запусков, сборок, установки или deploy не выполняет.
+
+### 16.9 Admin и ограничения Android
+
+Admin расширяет существующий SSH/container boundary, не вводит RBAC/public admin HTTP.
+Работает по immutable user UUID с CAS metadata_revision/credential_version, не по имени
+или позиции списка. Add создаёт UUID/random key, в БД **только SHA-256**; edit меняет подпись/
+цвет без изменения авторства; rotate уничтожает старое credential и завершает старые
+сессии, для revoked требует явного восстановления. Revoke уничтожает hash, сохраняет
+пользователя/документы; delete — необратимый logical tombstone с сохранением ID/авторства,
+без удаления docs/spaces. Повтор revoke/delete идемпотентен; deleted нельзя rotate/edit.
+Удаление последнего пользователя допустимо с предупреждением: SSH создаст нового.
+
+Новый CLI `admin-rpc` — JSON stdin/stdout через SSH `-T`/docker exec -i без TTY и payload
+в argv, envelope `{admin_rpc_version:1,request_id,operation,payload}` → result либо error.
+Allowlist capabilities, users.list/get/create/update/rotate/revoke/delete, projects.list/update,
+migration.inspect (read-only); реальная migration отдельно. Нет RPC — только старое
+read-only отображение, не shell/SQL обход/автоустановка. Mutations не повторяются из-за
+sudo probe/timeout. Перед rotate/delete — полный UUID и второе подтверждение, default cancel.
+Unknown outcome add/rotate → GET по UUID, не auto-retry; потерянный secret не replay-ится.
+Для Add Admin **до отправки** генерирует request_id и отдельный user_id=UUID v4 hex,
+передаёт user_id в users.create; Remote проверяет UUID и атомарно отклоняет занятый ID
+без импорта/перезаписи. Поэтому UUID известен даже при потерянном ответе. Обычный CLI
+без предложенного ID генерирует UUID на сервере; GET по ID не восстанавливает secret.
+
+**Copy только в одноразовом issue view** после commit add/rotate, ключ скрыт по умолчанию;
+Reveal/Copy явные, по выходу/через 60 с reference очищается best effort. List/get не возвращают
+key/hash; старый ключ нельзя восстановить/показать, Copy не запускает скрытый rotate.
+Никаких plaintext/зашифрованных recoverable ключей в Remote DB, connection profiles,
+temp/logs/errors/argv/history/EXE. Secret-bearing stdout парсится отдельно от generic
+show_result, raw stderr/timeout exceptions не публикуются. Clipboard — OS API в процессе,
+без secret в shell; предупреждение о history/cloud, через 60 с очищать только неизменённую
+нашу запись. Нельзя обещать zeroization Python памяти или удаление clipboard history.
+
+Будущий security guard проверяет active + credential_version перед каждым входящим frame
+и queued outbound; проверка/mutation сериализованы с credential commit без await между
+ними. После commit revoke/delete/rotate новые операции старого binding запрещены;
+idle socket закрывается ≤30 с, 4401, с штатным leave/awareness/scribe cleanup. Уже принятый
+frame/отправленные bytes не отзываются. Это **не нынешняя гарантия v1**. Revoke не ждёт
+flush dirty room и не даёт отозванному ключу финальный put; durable Yjs не добавляется.
+
+Android identity/UI изменения **не открывают editor writes**: новый covered source отзывает
+прежнюю acceptance/fingerprint, даже UI-only. Сохраняются пять gates schemaParity,
+roomInterop, noWriteOnOpen, scribeAckOrdering, recoveryConflict; missing report → writes=false,
+stale/invalid/evidence mismatch → build error, не ручная правка hash/флаг обхода. Нужны новая
+независимая source/evidence/APK приёмка и полный pipeline без skip/filter/hand-edited assets.
+Сохраняются preflight schema/color guards до live binding, IME/recovery-before-dispose,
+generation fences и ACK ordering; ENQUEUED не durability ACK, offline только reader.
+**INTEROP-01 остаётся FAIL_UPSTREAM** (Studio-only color round-trip теряет видимые пробелы),
+не PASS/«нормализация»/skip. Исторические device seams не доказывают единый enabled
+APK+WebView+настоящий Remote/Studio E2E, arbitrary Markdown, OS kill/power-loss/OEM matrix.
+Новые стенды/APK проверки требуют отдельной задачи, не выполняются переносом документации.
+Все ограничения §16.6 и desktop §5.3 остаются; schema parity не выводится из wire v2.
 
 ---
 

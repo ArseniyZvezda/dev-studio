@@ -17,7 +17,7 @@ import secrets
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
-from .store import Store, UserRow
+from .store import CredentialInvalid, Store, UserRow
 
 TOKEN_PREFIX = "vxs_"
 
@@ -34,15 +34,22 @@ class Credentials:
 @dataclass(frozen=True, slots=True)
 class User:
     id: str
-    name: str
+    display_name: str
     color: str
+    credential_version: int = 1
+
+    @property
+    def name(self) -> str:
+        """Compatibility for internal callers, never the immutable legacy CLI handle."""
+        return self.display_name
 
     @classmethod
     def from_row(cls, row: UserRow) -> "User":
-        return cls(id=row.id, name=row.name, color=row.color)
+        return cls(id=row.id, display_name=row.display_name, color=row.color,
+                   credential_version=row.credential_version)
 
     def to_json(self) -> dict[str, str]:
-        return {"id": self.id, "name": self.name, "color": self.color}
+        return {"id": self.id, "display_name": self.display_name, "color": self.color}
 
 
 class Authenticator(Protocol):

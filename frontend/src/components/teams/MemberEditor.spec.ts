@@ -1,7 +1,7 @@
 import { createRenderer, h, nextTick, reactive, ssrContextKey } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EffortSolverWeights, MemberKind, MemberUpdate, TeamMember } from '@/api/types'
+import type { MemberKind, MemberUpdate, TeamMember } from '@/api/types'
 import MemberEditor from './MemberEditor.vue'
 
 const mocks = vi.hoisted(() => ({ saveMember: vi.fn() }))
@@ -57,7 +57,12 @@ function member(): TeamMember {
 }
 
 interface EditorState {
-  draft: { name: string; role_title: string; required_skills: string[]; required_documents: string[]; effort_solver_weights: EffortSolverWeights }
+  draft: {
+    name: string; role_title: string; required_skills: string[]; required_documents: string[]
+    model: string
+  }
+  isEffortSolver: boolean
+  valid: boolean
   kindDisabled: (kind: MemberKind) => boolean
   dirty: boolean
   saving: boolean
@@ -103,42 +108,44 @@ describe('member editor autosave', () => {
     vi.useRealTimers()
   })
 
-  it('keeps Effort Solver an agent and persists its independent weight settings', async () => {
-    const { app, state, roster } = await mount({ builtin: 'effort_solver' })
+  it('keeps Orchestrator an agent without weight settings', async () => {
+    const { app, state } = await mount({ builtin: 'effort_solver' })
     expect(state.kindDisabled('human')).toBe(true)
     expect(state.kindDisabled('agent')).toBe(false)
-    expect(state.draft.effort_solver_weights).toEqual({ complexity: 1.5, creativity: 1.5, depth: 3, coverage: 2.5 })
-    state.draft.effort_solver_weights.depth = 4.5
-    await nextTick()
-    await vi.advanceTimersByTimeAsync(600)
-    await settle()
-    expect(mocks.saveMember).toHaveBeenCalledExactlyOnceWith('team__artist', {
-      effort_solver_weights: { complexity: 1.5, creativity: 1.5, depth: 4.5, coverage: 2.5 },
-    })
-    expect(roster.member.effort_solver_weights?.depth).toBe(4.5)
-    expect(state.dirty).toBe(false)
+    expect(state.draft).not.toHaveProperty('effort_solver_weights')
     app.unmount()
   })
 
-  it('holds invalid weights until the user enters a valid set', async () => {
-    const { app, state } = await mount({ builtin: 'effort_solver' })
-    state.draft.effort_solver_weights = { complexity: 0, creativity: 0, depth: 0, coverage: 0 }
+  it('does not expose or save obsolete curve settings', async () => {
+    const { app, state } = await mount({ builtin: 'effort_solver', effort_solver_curve_multiplier: 2 })
+    expect(state.draft).not.toHaveProperty('effort_solver_curve_multiplier')
+    state.draft.name = 'Updated'
     await nextTick()
+    await vi.advanceTimersByTimeAsync(600)
+    await settle()
+    expect(mocks.saveMember).toHaveBeenCalledExactlyOnceWith('team__artist', { name: 'Updated' })
+    app.unmount()
+  })
+
+  it('allows Auto for agents but never for Orchestrator itself', async () => {
+    const { app, state } = await mount({ builtin: 'effort_solver' })
+    state.draft.model = 'auto'
+    await nextTick()
+    expect(state.valid).toBe(false)
     await vi.advanceTimersByTimeAsync(600)
     expect(mocks.saveMember).not.toHaveBeenCalled()
-    state.draft.effort_solver_weights.depth = 1
+    app.unmount()
+    const other = await mount()
+    other.state.draft.model = 'auto'
     await nextTick()
     await vi.advanceTimersByTimeAsync(600)
     await settle()
-    expect(mocks.saveMember).toHaveBeenCalledExactlyOnceWith('team__artist', {
-      effort_solver_weights: { complexity: 0, creativity: 0, depth: 1, coverage: 0 },
-    })
-    app.unmount()
+    expect(mocks.saveMember).toHaveBeenCalledExactlyOnceWith('team__artist', { model: 'auto' })
+    other.app.unmount()
   })
 
-  it('never sends solver weights for an ordinary member', async () => {
+  it('saves ordinary member settings', async () => {
     const { app, state } = await mount()
-    state.draft.effort_solver_weights.depth = 9
     state.draft.name = 'Updated'
     await nextTick()
     await vi.advanceTimersByTimeAsync(600)

@@ -65,7 +65,7 @@ function teamsFixture() {
     error: null as string | null, compressingTaskId: null, cancellingCompressionTaskId: null,
     loadOptions: vi.fn(), managerOf: () => null, isHuman: () => false,
     updateTask: vi.fn(async (_id: string, changes: TaskUpdate) => { Object.assign(task, changes); return true }),
-    act: vi.fn(), messageTask: vi.fn(),
+    act: vi.fn(), messageTask: vi.fn(), remoteControl: vi.fn(),
   })
 }
 async function mount() {
@@ -95,6 +95,39 @@ async function pick(input: HTMLInputElement) {
   input.dispatchEvent(new Event('change', { bubbles: true }))
   await flush()
 }
+
+describe('task brief Markdown', () => {
+  it('renders formatting and keeps the original Markdown in the editor', async () => {
+    task.brief = '# Goal\n\n**Important** and *useful* with `code`.\n\n- First\n- Second\n\n[Guide](https://example.com)\n\n```ts\nconst ready = true\n```'
+    await mount()
+    const brief = root.querySelector('.markdown-body')!
+    expect(brief.querySelector('h1')?.textContent).toBe('Goal')
+    expect(brief.querySelector('strong')?.textContent).toBe('Important')
+    expect(brief.querySelector('em')?.textContent).toBe('useful')
+    expect(brief.querySelector('code')?.textContent).toBe('code')
+    expect(brief.querySelectorAll('li')).toHaveLength(2)
+    expect(brief.querySelector('a')?.getAttribute('href')).toBe('https://example.com')
+    expect(brief.querySelector('pre code')?.textContent).toBe('const ready = true')
+    await edit()
+    expect(root.querySelector<HTMLTextAreaElement>('form textarea')?.value).toBe(task.brief)
+    expect(teams.updateTask).not.toHaveBeenCalled()
+  })
+
+  it('updates rendered text, escapes HTML and rejects unsafe links', async () => {
+    task.brief = '<script>alert(1)</script>\n\n[unsafe](javascript:alert)'
+    await mount()
+    const brief = root.querySelector('.markdown-body')!
+    expect(brief.querySelector('script')).toBeNull()
+    expect(brief.querySelector('a')).toBeNull()
+    expect(brief.textContent).toContain('<script>alert(1)</script>')
+    task.brief = '**Updated**'
+    await flush()
+    expect(brief.querySelector('strong')?.textContent).toBe('Updated')
+    task.brief = ''
+    await flush()
+    expect(brief.textContent).toBe('—')
+  })
+})
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -284,5 +317,37 @@ describe('mounted TaskDetail close guard', () => {
     await flush()
     expect(await rendererCloseBarrier.prepare()).toBe(false)
     expect(root.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Review stays')
+  })
+})
+
+// §10.8: all TaskDetail hosts share the header dropdown, never a footer widget.
+describe('remote control placement', () => {
+  it('puts the dropdown before edit and close, and routes toggles to the current task', async () => {
+    task.is_running = true
+    await mount()
+    const header = root.querySelector('header')!
+    const actions = [...header.querySelectorAll<HTMLButtonElement>('button')]
+    const remote = actions.findIndex(element => element.title === t('taskDetail.remote.title'))
+    const edit = actions.findIndex(element => element.title === t('taskDetail.header.edit'))
+    const close = actions.findIndex(element => element.title === t('common.close'))
+    expect(remote).toBeGreaterThanOrEqual(0)
+    expect(remote).toBeLessThan(edit)
+    expect(edit).toBeLessThan(close)
+    expect(root.querySelector('footer')?.textContent).not.toContain(t('taskDetail.remote.title'))
+    expect(root.querySelector('[role=menu]')).toBeNull()
+    actions[remote]!.click()
+    await flush()
+    const toggle = root.querySelector<HTMLButtonElement>('[role=menuitemcheckbox]')!
+    expect(toggle.disabled).toBe(false)
+    toggle.click()
+    await flush()
+    expect(teams.remoteControl).toHaveBeenCalledWith('task', true)
+  })
+
+  it('does not offer session controls for a human task', async () => {
+    task.assignee = { kind: 'human' } as NonNullable<Task['assignee']>
+    await mount()
+    expect(root.querySelector(`button[title="${t('taskDetail.remote.title')}"]`)).toBeNull()
+    expect(root.querySelector('footer')?.textContent).not.toContain(t('taskDetail.remote.title'))
   })
 })

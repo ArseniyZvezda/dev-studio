@@ -985,7 +985,7 @@ async def test_a_run_queued_behind_the_agent_limit_says_so_and_then_starts(
         dev = await session.get(TeamMember, DEV)
         dev.solo_mode = False
         session.add(dev)
-    assert teams.jobs.limits["agent"] == 2, "the default this test is about"
+    teams.jobs.update_limits({"agent": 2})
     tasks = [await _dev_task(teams, name) for name in ("a", "b", "c")]
     for task in tasks:
         await release(teams, task.id)
@@ -1265,6 +1265,7 @@ async def test_raising_the_agent_limit_starts_a_queued_run_at_once(
     """The Settings field's promise: the waiting run goes on the save, not on a restart.
     `update_limits` is what `PUT /api/settings` calls with a concurrency patch."""
     gates, _prompts = await _hold_dev_runs(teams, "held_raise")
+    teams.jobs.update_limits({"agent": 2})
     async with teams.db.session() as session:
         dev = await session.get(TeamMember, DEV)
         dev.solo_mode = False
@@ -2526,6 +2527,17 @@ def test_the_sample_roster_names_what_each_member_does(project: Path, client) ->
     assert members[QA]["avatar_icon"] == "bug"
 
 
+def test_member_model_auto_is_explicit_and_does_not_change_backend(client, project):
+    url = f"/api/teams/{TEAM}/members/{DEV}"
+    before = client.get(f"/api/teams/{TEAM}").json()["members"]
+    backend = next(m["agent_backend"] for m in before if m["id"] == DEV)
+    result = client.patch(url, json={"model": "auto"})
+    assert result.status_code == 200
+    assert result.json()["model"] == "auto" and result.json()["agent_backend"] == backend
+    roster = yaml.safe_load((project / ".voxarium_studio/teams/default-team.yaml").read_text("utf-8"))
+    assert next(m for m in roster["members"] if m["id"] == "dev")["model"] == "auto"
+
+
 # ------------------------------------------------------------------ model and effort
 
 
@@ -3080,7 +3092,7 @@ async def test_the_roster_is_projected_into_claude_code_agents(teams: AppContext
     await teams.teams.sync_agent_definitions()
 
     written = _definitions(teams)
-    assert set(written) == {DESIGNER_AGENT, "igor", "producer", "effort-solver"}, "agents only, including built-in agents"
+    assert set(written) == {DESIGNER_AGENT, "igor", "producer", "orchestrator"}, "agents only, including built-in agents"
     assert f"name: {DESIGNER_AGENT}" in written[DESIGNER_AGENT]
     assert f"voxarium_studio_member: {DESIGNER}" in written[DESIGNER_AGENT], "ours to rewrite"
     assert "Game Designer" in written[DESIGNER_AGENT]

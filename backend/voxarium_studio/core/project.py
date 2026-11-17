@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from .config import DEFAULT_GITIGNORE, DEFAULT_PLASTIC_IGNORE, AppConfig, load_config, save_config
-from .paths import ProjectPaths
+from .paths import ProjectPaths, has_project_data
+from .project_identity import ProjectIdentity
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +136,15 @@ def init_project(root: str | Path, *, with_samples: bool = True) -> ProjectPaths
     if not paths.root.is_dir():
         raise NotADirectoryError(f"Managed project path is not a directory: {paths.root}")
 
+    # Reject invalid stored settings before any init writes (§5.2.1). Inspect
+    # legacy data in place; preference migration belongs to the successful open.
+    inspection = ProjectPaths.for_inspection(paths.root)
+    if inspection.config_file.exists():
+        load_config(inspection)
+
+    # An existing data directory without config is still a legacy project, not
+    # permission to invent its identity on open/re-init (§5.2.1, §16.8).
+    new_project = not has_project_data(paths.root)
     paths.migrate_data_dir()
     for directory in paths.all_dirs:
         directory.mkdir(parents=True, exist_ok=True)
@@ -170,7 +181,8 @@ def init_project(root: str | Path, *, with_samples: bool = True) -> ProjectPaths
                 stream.write(separator + "\n".join(missing) + "\n")
 
     if not paths.config_file.exists():
-        save_config(paths, AppConfig(project_name=paths.root.name))
+        identity = ProjectIdentity(id=str(uuid4()), revision=1) if new_project else None
+        save_config(paths, AppConfig(project_name=paths.root.name, project_identity=identity))
 
     if with_samples:
         sample_pipeline = paths.pipelines / "prompt-to-voxel-asset.yaml"

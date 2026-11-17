@@ -19,7 +19,7 @@ from voxarium_studio.ws.events import EventType
 from test_producer import DEV, PRODUCER, TEAM, ProducerBackend, allow, finished, opened, producer, tools_for
 
 
-SCORES = {"complexity": 9, "creativity": 6, "depth": 8, "coverage": 8}
+SCORES = {"model": 2, "effort": 4}
 SOLVER = f"{TEAM}__studio-effort-solver"
 
 
@@ -114,7 +114,7 @@ async def test_auto_uses_solver_even_for_stale_toolsets_and_explicit_choices(pro
     assert not result.get("is_error"), result
     async with producer.db.session() as session:
         task = (await session.exec(select(TeamTask))).one()
-    assert task.effort == "high"
+    assert task.effort == "xhigh"
     assert len(solver.requests) == 1
     assert solver.requests[0].member.id == SOLVER
     assert "Implement movement" in solver.requests[0].prompt
@@ -123,14 +123,14 @@ async def test_auto_uses_solver_even_for_stale_toolsets_and_explicit_choices(pro
                 if message.kind == "effort_solver"]
     assert len(messages) == 1
     assert messages[0].text == ""
-    assert messages[0].data["scores"] == SCORES
-    assert messages[0].data["effort"] == 3
-    assert messages[0].data["effort_level"] == "high"
+    assert messages[0].data["model"] == 2
+    assert messages[0].data["effort"] == 4
+    assert messages[0].data["effort_level"] == "xhigh"
     assert messages[0].data["task_id"] == task.id
     assert all("Private assessment" not in message.text for message in await producer.chats.messages(chat.id))
 
 
-@pytest.mark.parametrize("mode, expected", [("agent", "medium"), ("auto", "high")])
+@pytest.mark.parametrize("mode, expected", [("agent", "medium"), ("auto", "xhigh")])
 async def test_task_execution_uses_agent_default_or_solver_effort(producer, solver, mode, expected):
     chat = await opened(producer)
     await producer.chats.producer.set_effort_mode(chat.id, mode)
@@ -145,7 +145,7 @@ async def test_task_execution_uses_agent_default_or_solver_effort(producer, solv
     assert not result.get("is_error"), result
     async with producer.db.session() as session:
         task = (await session.exec(select(TeamTask))).one()
-    assert task.effort == ("high" if mode == "auto" else None)
+    assert task.effort == ("xhigh" if mode == "auto" else None)
     assert len(solver.requests) == (1 if mode == "auto" else 0)
     await allow(producer, task)
     await producer.teams.start_task(task.id)
@@ -155,23 +155,43 @@ async def test_task_execution_uses_agent_default_or_solver_effort(producer, solv
     assert (await producer.teams._reload(task.id)).effort == task.effort
 
 
-async def test_each_new_task_reads_the_solvers_current_weights(producer, solver):
+async def test_each_new_task_is_scored_independently(producer, solver):
     chat = await opened(producer)
     await producer.chats.producer.set_effort_mode(chat.id, "auto")
     tools = await tools_for(producer, chat)
     arguments = {"assignee_id": DEV, "title": "Implement movement", "brief": "Arrow keys move the player."}
     assert not (await tools["create_task"](arguments)).get("is_error")
-    async with producer.db.session() as session:
-        member = await session.get(TeamMember, SOLVER)
-        member.effort_solver_weights = {"complexity": 0, "creativity": 0, "depth": 0, "coverage": 1}
-        session.add(member)
+    solver.answer = json.dumps(dict(model=1, effort=2))
     assert not (await tools["create_task"]({**arguments, "title": "Implement jumping"})).get("is_error")
     assert len(solver.requests) == 2
     async with producer.db.session() as session:
         tasks = list((await session.exec(select(TeamTask).order_by(TeamTask.number))).all())
-    assert [task.effort for task in tasks] == ["high", "medium"]
+    assert [task.effort for task in tasks] == ["xhigh", "medium"]
     assert [message.data["effort"] for message in await producer.chats.messages(chat.id)
-            if message.kind == "effort_solver"] == [3, 2]
+            if message.kind == "effort_solver"] == [4, 2]
+
+
+@pytest.mark.parametrize("override", [None, "specific-model"])
+async def test_producer_auto_shares_model_evaluation_with_task_effort(producer, solver, monkeypatch, override):
+    monkeypatch.setattr(orchestrator_module, "resolve_model", lambda backend, strength: f"selected-{strength}")
+    chat = await opened(producer)
+    await producer.chats.producer.set_effort_mode(chat.id, "auto")
+    async with producer.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+        member.model = "auto"
+        session.add(member)
+    task = await producer.teams.create_task(
+        team_id=TEAM, assignee_id=DEV, created_by=PRODUCER,
+        title="Implement movement", brief="Instructions", producer_chat_id=chat.id, model=override,
+    )
+    assert task.model == (override or "selected-2")
+    assert task.effort == "xhigh"
+    await allow(producer, task)
+    await producer.teams.start_task(task.id)
+    await finished(producer, task.id)
+    request = next(r for r in ProducerBackend.requests if r.session_key == task.id)
+    assert request.model == request.member.model == task.model
+    assert len(solver.requests) == 1, "the task must not evaluate the same assignment again"
 
 
 async def test_successful_evaluations_add_usage_once_to_chat_without_exposing_raw_telemetry(producer, solver):
@@ -197,7 +217,8 @@ async def test_successful_evaluations_add_usage_once_to_chat_without_exposing_ra
     messages = [message for message in await producer.chats.messages(chat.id) if message.kind == "effort_solver"]
     assert len(messages) == 2
     assert all(message.text == "" for message in messages)
-    assert all(set(message.data) == {"scores", "effort", "effort_level", "task_id"} for message in messages)
+    assert all(set(message.data) == {"model", "effort", "effort_level", "task_id"}
+               for message in messages)
 
 
 async def test_create_task_result_and_chat_event_share_the_evaluated_task(producer, solver, monkeypatch):
@@ -228,7 +249,7 @@ async def test_create_task_result_and_chat_event_share_the_evaluated_task(produc
                         "Draft held in Todo. Include it in propose_producer_plan: Careful requires the user's "
                         "plan approval; Independent validates and releases that plan automatically. "
                         "Refer to it by that id when you mention it to anyone."),
-            "effort_solver": {"scores": SCORES, "effort": 3, "effort_level": "high"},
+            "effort_solver": {"model": 2, "effort": 4, "effort_level": "xhigh"},
         }
         assert published[-1]["data"] == {**payload["effort_solver"], "task_id": task.id}
     assert len(solver.requests) == len(published) == 2
@@ -255,7 +276,7 @@ async def test_solver_failure_leaves_no_task_or_success_block(producer, solver, 
     if failure == "invalid_json":
         solver.answer = "I think this is a simple task."
     elif failure == "out_of_range":
-        solver.answer = json.dumps({**SCORES, "depth": 11})
+        solver.answer = json.dumps({**SCORES, "effort": 6})
     else:
         solver.error = "Solver unavailable"
     result = await (await tools_for(producer, chat))["create_task"](
@@ -358,7 +379,7 @@ async def test_effort_mode_survives_stop_start_and_reaches_next_turn(producer):
     assert (await producer.chats.get_chat(chat.id)).producer_effort_mode == "auto"
     context = json.loads(await producer.chats.producer.context(chat.id))
     assert context["effort_mode"] == "auto"
-    assert "Effort Solver" in context["effort_instructions"]
+    assert "Orchestrator" in context["effort_instructions"]
     assert '"effort_mode": "auto"' in ProducerBackend.requests[-1].prompt
     await producer.chats.producer.disable(chat.id)
     await producer.chats.producer.enable(chat.id, effort_mode="agent")

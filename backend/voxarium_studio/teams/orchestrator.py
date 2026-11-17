@@ -77,8 +77,8 @@ from .backends.base import (
 )
 from .backends.recovery import recovery_prompt
 from .docs import DocStore
-from .effort_solver import EFFORT_SOLVER_ID
-from .effort_solver_runner import solve_effort
+from .effort_solver import EFFORT_SOLVER_ID, resolve_model
+from .effort_solver_runner import EffortSolution, solve_effort
 from .file_observer import FileObserver
 from .memory import MemoryStore, memory_prompt
 from .project_skills import MemberSkills, Skill, SkillStore
@@ -700,7 +700,7 @@ class TeamOrchestrator:
                         raise DelegationLimitError("Delegation depth limit reached")
                     solver = await session.get(TeamMember, f"{team_id}__{EFFORT_SOLVER_ID}")
                     if solver is None:
-                        raise RuntimeError("The built-in Effort Solver is missing. Reload the team and retry.")
+                        raise RuntimeError("The built-in Orchestrator is missing. Reload the team and retry.")
             if solver is not None:
                 solution = await solve_effort(
                     solver, title, brief, max_message_bytes=self.config.teams.max_message_bytes,
@@ -732,13 +732,18 @@ class TeamOrchestrator:
                 # Delegation by an assignee and manual task overrides keep their normal rules.
                 if producer_chat.producer_effort_mode == "auto":
                     if solution is None:
-                        raise RuntimeError("Producer effort mode changed. Retry task creation for Effort Solver.")
+                        raise RuntimeError("Producer effort mode changed. Retry task creation for Orchestrator.")
                     effort = solution.effort_level
+                    # §10.11: one evaluation chooses both values. A concrete task model
+                    # remains an override; an Auto assignee gets its own task selection.
+                    selected_backend = agent_backend or assignee.agent_backend
+                    model_policy = model or (assignee.model if selected_backend == assignee.agent_backend else "")
+                    if model_policy == "auto":
+                        model = resolve_model(selected_backend, solution.model)
                     solver_message = AgentChatMessage(
                         chat_id=producer_chat.id, member_id=producer_chat.member_id,
                         role="assistant", kind="effort_solver", text="",
-                        data={"scores": solution.scores.model_dump(), "effort": solution.effort,
-                              "effort_level": solution.effort_level},
+                        data=solution.result_data(),
                     )
                     session.add(solver_message)
                     producer_chat.last_message_at = solver_message.created_at
@@ -834,7 +839,8 @@ class TeamOrchestrator:
         # receiving a TeamTask, and failed creation never supplies a success card.
         if effort_solver_result is not None and solver_message is not None:
             effort_solver_result.update({
-                key: solver_message.data[key] for key in ("scores", "effort", "effort_level")
+                key: solver_message.data[key]
+                for key in ("model", "effort", "effort_level")
             })
         return created
 
@@ -1615,7 +1621,14 @@ class TeamOrchestrator:
         async def run(_handle: JobHandle) -> None:
             await self._publish_task_changed(task_id)
             async with self.jobs.slot("agents"):
-                await self._compress_context(get_backend(request.member.agent_backend), request, force=True)
+                backend = get_backend(request.member.agent_backend)
+                # §10.11: a member may switch to Auto after the recorded dialogue was
+                # produced. Manual compaction is also a model call: resolve that policy
+                # before summarizing, and keep an already-pinned task model unchanged.
+                if request.model == "auto":
+                    await self._solve_task_selection(task, request, backend)
+                request.member = request.member.model_copy(update={"model": request.model})
+                await self._compress_context(backend, request, force=True)
 
         if member.id in self.removing_members:
             raise ValueError("This member is being removed. Wait for the team to refresh.")
@@ -2479,7 +2492,7 @@ class TeamOrchestrator:
             # run will use, and the header chip alongside the cost is the visible surface.
             run_model = task.model or (member.model if run_backend == member.agent_backend else "")
             run_effort = task.effort or member.effort
-            if task.agent_backend or task.model or task.effort:
+            if (task.agent_backend or task.model or task.effort) and run_model != "auto":
                 spent = f"backend {run_backend}, model {run_model or 'default'}"
                 if run_effort:
                     spent += f", effort {run_effort}"
@@ -2632,13 +2645,14 @@ class TeamOrchestrator:
             # Says so in the transcript when the run has to queue behind `concurrency.agents`:
             # the task already reads In progress, and a silent wait looks like a hang.
             async with agent_slot(self.jobs, self.record_message, task_id, member_id) as lease:
-                # §10.3, §10.11: an effort nobody chose ("Auto" on the card) is the Effort
-                # Solver's to pick, once, when the session is about to start — inside this
-                # slot, as the Producer's and a subagent's evaluations are. Failure raises
-                # into the run's error path: no session starts on a substituted default.
-                if request.effort is None and getattr(backend, "supports_effort", True):
-                    request.effort = await self._solve_task_effort(task, member_id)
-                self.subagents.open_run(request, lease, run_id)
+                # §10.3, §10.11: one Orchestrator evaluation resolves whichever settings
+                # are Auto, inside the slot as Producer/subagent evaluations are. Failure
+                # raises into the run's error path; no substituted runtime defaults.
+                model_policy = "auto" if member.model == "auto" and run_backend == member.agent_backend else run_model
+                if request.model == "auto" or (request.effort is None and getattr(backend, "supports_effort", True)):
+                    await self._solve_task_selection(task, request, backend)
+                request.member = request.member.model_copy(update={"model": request.model})
+                self.subagents.open_run(request, lease, run_id, model_policy=model_policy)
                 try:
                     limit = await self._consume(backend, request, task_id, member_id)
                     if limit is None:
@@ -2704,26 +2718,33 @@ class TeamOrchestrator:
             finally:
                 self._ending.discard(task_id)
 
-    async def _solve_task_effort(self, task: TeamTask, member_id: str) -> str:
-        """Score a task left on "Auto" and keep the level as its override (§10.3, §10.11).
-
-        Stored on the row like the Producer's Auto result, so a resume, a continuation or
-        a rerun after review keeps the effort the first run had; putting the slider back on
-        "From member" asks the Solver again at the next start. The scores go into the task's
-        transcript, and the evaluation's spend into the task's totals.
-        """
+    async def solve_selection(self, team_id: str, title: str, brief: str) -> EffortSolution:
+        """Evaluate one new assignment/input; callers own persistence and spend (§10.11)."""
         async with self.db.session() as session:
-            solver = await session.get(TeamMember, f"{task.team_id}__{EFFORT_SOLVER_ID}")
+            solver = await session.get(TeamMember, f"{team_id}__{EFFORT_SOLVER_ID}")
         if solver is None:
-            raise RuntimeError("The built-in Effort Solver is missing. Reload the team and retry.")
+            raise RuntimeError("The built-in Orchestrator is missing. Reload the team and retry.")
         try:
-            solution = await solve_effort(
-                solver, task.title, task.brief, max_message_bytes=self.config.teams.max_message_bytes,
+            return await solve_effort(
+                solver, title, brief, max_message_bytes=self.config.teams.max_message_bytes,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            raise RuntimeError(f"Effort Solver could not choose this task's effort: {exc}") from exc
+            raise RuntimeError(f"Orchestrator could not evaluate this assignment: {exc}") from exc
+
+    async def _solve_task_selection(self, task: TeamTask, request: AgentRunRequest, backend: Any) -> None:
+        """Resolve Auto once per task and pin it for resumes/continuations (§10.11).
+
+        Explicit effort is never overwritten merely because the model needs selection.
+        Backends without effort still need evaluation when their model is Auto.
+        """
+        solution = await self.solve_selection(task.team_id, task.title, task.brief)
+        selected: dict[str, Any] = {}
+        if request.model == "auto":
+            selected["model"] = resolve_model(request.member.agent_backend, solution.model)
+        if request.effort is None and getattr(backend, "supports_effort", True):
+            selected["effort"] = solution.effort_level
         # Tokens and cost only: the task's `num_turns` means "a session has worked here" and
         # decides whether a fresh start is handed the saved history (§10.6).
         spent = {key: int(solution.usage.get(key) or 0) for key in (
@@ -2733,19 +2754,29 @@ class TeamOrchestrator:
         cost = float(solution.usage.get("total_cost_usd") or 0)
         async with self.db.session() as session:
             await session.exec(update(TeamTask).where(TeamTask.id == task.id).values(
-                effort=solution.effort_level,
+                **selected,
                 total_cost_usd=TeamTask.total_cost_usd + cost,
                 **{key: getattr(TeamTask, key) + value for key, value in spent.items()},
             ))
-        task.effort = solution.effort_level
+        for key, value in selected.items():
+            setattr(task, key, value)
+            setattr(request, key, value)
+        # Keep the request's member concrete too: backend adapters and compaction may
+        # inspect it in addition to the already-resolved request settings.
+        request.member = request.member.model_copy(update={"model": request.model})
         await self.record_message(
-            task.id, member_id, role="system", kind="effort_solver",
-            text=f"Effort Solver set this task's effort to {solution.effort_level}.",
-            data={"scores": solution.scores.model_dump(), "effort": solution.effort,
-                  "effort_level": solution.effort_level},
+            task.id, request.member.id, role="system", kind="effort_solver",
+            text="Orchestrator selected this task's automatic runtime settings.",
+            data=solution.result_data(),
         )
+        if "model" in selected:
+            await self.record_message(
+                task.id, request.member.id, role="system", kind="model",
+                text=f"Orchestrator selected model {request.model}.",
+                data={"backend": request.member.agent_backend, "model": request.model,
+                      "effort": request.effort, "source": "orchestrator"},
+            )
         await self._publish_task_changed(task.id)
-        return solution.effort_level
 
     async def _consume(
         self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str

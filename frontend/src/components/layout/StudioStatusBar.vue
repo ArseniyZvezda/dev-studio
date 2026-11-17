@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** Project-local readiness and connection indicators (§6.1), shared across routes. */
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 import { t } from '@/i18n'
 import { formatTime } from '@/lib/status'
@@ -9,9 +9,11 @@ import { useVcsStore, vcsIndicator } from '@/stores/vcs'
 
 const session = useSessionStore()
 const vcs = useVcsStore()
+const now = ref(Date.now())
 let statusTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   statusTimer = setInterval(() => {
+    now.value = Date.now()
     // The project menu still uses the current project's task counts (§5.1).
     void session.refreshTaskCounts()
     if (session.connection === 'open') void session.refreshStatus()
@@ -22,6 +24,19 @@ watch(() => session.connection, (connection) => {
   if (connection === 'open') void session.refreshStatus()
 }, { immediate: true })
 
+/** §6.1: compact quota countdown, independent of status-request success. */
+function resetCountdown(reset: number | null): string | null {
+  if (typeof reset !== 'number' || !Number.isFinite(reset) || reset * 1000 <= now.value) return null
+  const minutes = Math.floor((reset * 1000 - now.value) / 60_000)
+  if (minutes >= 1440) return t('nav.agentBackends.resetDays', {
+    days: Math.floor(minutes / 1440), hours: Math.floor(minutes % 1440 / 60),
+  })
+  if (minutes >= 60) return t('nav.agentBackends.resetHours', {
+    hours: Math.floor(minutes / 60), minutes: minutes % 60,
+  })
+  return minutes > 0 ? t('nav.agentBackends.resetMinutes', { minutes }) : t('nav.agentBackends.resetSoon')
+}
+
 // §6.1: the backend's monochrome mark carries readiness; the whole row explains it.
 const agentBackends = computed(() => (['claude_code', 'codex', 'qwen'] as const).map((id) => {
   const label = t(`nav.agentBackends.${id}`)
@@ -29,11 +44,39 @@ const agentBackends = computed(() => (['claude_code', 'codex', 'qwen'] as const)
   const reason = info?.reason || t(info
     ? info.available ? 'nav.agentBackends.ready' : 'nav.agentBackends.unavailable'
     : 'nav.agentBackends.unknown')
+  // §6.1: unknown quotas are not zero; only recent provider telemetry is shown.
+  const limits = (info?.usage_limits ?? []).filter(limit =>
+    Number.isFinite(limit.used_percent) && limit.used_percent >= 0 && limit.used_percent <= 100
+    && !(typeof limit.resets_at === 'number' && Number.isFinite(limit.resets_at) && limit.resets_at >= 0 && limit.resets_at * 1000 <= now.value),
+  )
+  const remainingPercent = (used: number) => `${Math.round(100 - used)}%`
+  const windowLabels: Record<string, string> = {
+    primary: t('nav.agentBackends.windows.primary'),
+    secondary: t('nav.agentBackends.windows.secondary'),
+    five_hour: t('nav.agentBackends.windows.five_hour'),
+    seven_day: t('nav.agentBackends.windows.seven_day'),
+    seven_day_opus: t('nav.agentBackends.windows.seven_day_opus'),
+    seven_day_sonnet: t('nav.agentBackends.windows.seven_day_sonnet'),
+    overage: t('nav.agentBackends.windows.overage'),
+  }
+  const usage = limits.length ? limits.map(limit => remainingPercent(limit.used_percent)).join(' / ') : '—'
+  const usageTitle = limits.length
+    ? limits.map(limit => {
+      const remaining = t('nav.agentBackends.limitRemaining', {
+        window: windowLabels[limit.window] ?? limit.window,
+        percent: remainingPercent(limit.used_percent),
+      })
+      const countdown = resetCountdown(limit.resets_at)
+      return countdown ? `${remaining}\n${t('nav.agentBackends.resetsIn', { time: countdown })}` : remaining
+    }).join('\n')
+    : t('nav.agentBackends.limitsUnknown')
   return {
     id,
     label,
     reason,
-    title: `${label}\n${reason}`,
+    usage,
+    usageTitle,
+    title: `${label}\n${reason}\n${usageTitle}`,
     color: !info ? 'var(--vxs-warning)' : info.available ? 'var(--vxs-success)' : 'var(--vxs-danger)',
   }
 }))
@@ -131,7 +174,8 @@ const vcsLine = computed(() =>
   <footer class="studio-statusbar text-small text-secondary" :aria-label="t('nav.statusBar')">
     <div v-for="backend in agentBackends" :key="backend.id" class="status-item" :title="backend.title">
       <AgentBackendIcon :backend="backend.id" class="size-3 shrink-0" :style="{ color: backend.color }" />
-      {{ backend.label }}<span class="sr-only">{{ backend.reason }}</span>
+      {{ backend.label }}<span class="backend-usage text-faint" :aria-label="backend.usageTitle">{{ backend.usage }}</span>
+      <span class="sr-only">{{ backend.reason }}</span>
     </div>
     <RouterLink to="/vcs" class="status-item hover:text-primary" :title="vcsLine.title">
       <span class="size-2 rounded-full" :style="{ background: vcsLine.color }" />
@@ -155,6 +199,7 @@ const vcsLine = computed(() =>
   padding: 4px 12px;
 }
 .status-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.backend-usage { font-variant-numeric: tabular-nums; }
 .connection { margin-inline-start: auto; }
 .connection .vxs-dot-live { animation-duration: 2s; }
 @media (max-width: 600px) {

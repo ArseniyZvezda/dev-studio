@@ -24,7 +24,7 @@ from voxarium_studio_remote.protocol import (
     PROTOCOL_VERSION,
     content_hash,
 )
-from voxarium_studio_remote.store import Store, UnknownUser, UserExists
+from voxarium_studio_remote.store import Store, UserExists
 
 
 @pytest.fixture
@@ -77,8 +77,11 @@ class Peer:
 
 @contextmanager
 def connect(client: TestClient, token: str, space: str = "game") -> Iterator[Peer]:
+    created = client.post("/api/v2/projects", json={"id": space, "display_name": space},
+                          headers={"Authorization": f"Bearer {token}"})
+    assert created.status_code in (201, 409)
     with client.websocket_connect(
-        f"/api/v1/sync?space={space}", headers={"Authorization": f"Bearer {token}"}
+        f"/api/v2/sync?space={space}", headers={"Authorization": f"Bearer {token}"}
     ) as socket:
         yield Peer(socket)
 
@@ -120,14 +123,14 @@ def test_identity_endpoint_judges_a_key(client: TestClient, store: Store) -> Non
 
 
 def test_a_bad_key_is_closed_with_its_own_code(client: TestClient, store: Store) -> None:
-    with client.websocket_connect("/api/v1/sync?space=game") as socket:
+    with client.websocket_connect("/api/v2/sync?space=game") as socket:
         with pytest.raises(WebSocketDisconnect) as closed:
             socket.receive_json()
     assert closed.value.code == CLOSE_UNAUTHORISED
 
     token = issue(store, "alice")
     with client.websocket_connect(
-        "/api/v1/sync?space=../etc", headers={"Authorization": f"Bearer {token}"}
+        "/api/v2/sync?space=../etc", headers={"Authorization": f"Bearer {token}"}
     ) as socket:
         with pytest.raises(WebSocketDisconnect) as closed:
             socket.receive_json()
@@ -138,8 +141,7 @@ def test_revoking_and_rotating_a_key(client: TestClient, store: Store) -> None:
     token = issue(store, "alice")
     store.revoke_user("alice")
     assert client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
-    with pytest.raises(UnknownUser):
-        store.revoke_user("alice")
+    assert store.revoke_user("alice").revoked_at is not None
 
     fresh = new_token()
     store.set_token_hash("alice", hash_token(fresh))
@@ -160,7 +162,7 @@ def test_a_write_reaches_the_other_studio_and_a_late_one(client: TestClient, sto
 
         change = b.expect("change")
         assert change["path"] == "design/dash.md" and change["content"] == "# Dash\n"
-        assert change["rev"] == 1 and change["by"]["name"] == "alice"
+        assert change["rev"] == 1 and change["by"]["display_name"] == "alice"
 
     # Somebody who was not connected learns it from their cursor, with nothing to replay.
     with connect(client, bob) as late:
@@ -408,13 +410,13 @@ def test_presence_names_who_is_here_and_what_they_have_open(
         rev = open_document(a)
         with connect(client, bob) as b:
             peers = a.expect("presence")["peers"]
-            assert [peer["user"]["name"] for peer in peers] == ["alice", "bob"]
+            assert [peer["user"]["display_name"] for peer in peers] == ["alice", "bob"]
             b.send(t="join", sid="b1", path="doc.md", client_id=22, base_rev=rev)
             b.expect("joined")
             peers = a.expect("presence")["peers"]
             assert peers[1]["docs"] == ["doc.md"] and peers[0]["docs"] == []
         # Bob's socket closing is a leave, without his having said so.
         peers = a.expect("presence")["peers"]
-        assert [peer["user"]["name"] for peer in peers] == ["alice"]
+        assert [peer["user"]["display_name"] for peer in peers] == ["alice"]
         hub = client.app.state.hub
         assert hub._spaces["game"].rooms == {}

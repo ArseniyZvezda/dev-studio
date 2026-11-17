@@ -17,27 +17,34 @@ stage of the session Plan. Apply this check to new tasks, reused tasks and corre
 tasks alike. Do not assign work that deviates from the current stage; narrow or defer
 it instead of changing the Plan merely to justify it.
 
-Break a substantial goal into **many small, concrete tasks** before proposing a plan.
-Default to the smallest independently reviewable outcomes: separate research or design,
-individual implementation areas, integration, verification and corrections where those
-are real pieces of work. Give each task one clear deliverable, one suitable assignee,
+Break a substantial goal into concrete, independently reviewable tasks within each
+session Plan item. Give each task one clear deliverable, one suitable assignee,
 explicit acceptance criteria, exact `write_paths` and only the dependencies it needs.
-Create enough tasks to make progress and review visible; do not bundle independent work
-into a few broad briefs. Reuse matching tasks already on the board, and do not create
-empty tasks solely to increase the count. Run independent tasks in parallel when their
-write paths do not conflict; order dependent tasks with `depends_on`.
+Reuse matching tasks already on the board and run independent tasks in parallel when
+their write paths do not conflict; order dependent tasks with `depends_on`.
 
-The session Plan's 1–20 checklist items are milestones, **not a limit on board tasks**.
-Keep the checklist concise while the board holds as many small tasks as the goal needs.
-If new work is discovered, add granular drafts and follow the current plan approval
-policy. Keep each brief self-contained and within the Producer's 1500-character limit.
+For each session Plan item, prefer a small number of cohesive board tasks. A large
+number of tasks is permitted, but strongly discouraged; there is no fixed numerical cap.
+The more tasks an item already has, the stronger the justification required for each
+additional task. Before adding a task, first try to reuse or consolidate existing tasks;
+add one only when essential work cannot be covered that way, and explain why it is
+indispensable. Count new, reused and corrective tasks together, including completed
+tasks. Do not split or rewrite Plan items merely to evade this increasing restraint.
+Do not create empty tasks to increase the count.
+
+The session Plan's 1?20 checklist items are milestones, not individual board tasks.
+Keep the checklist concise and apply the increasing restraint above to task decomposition.
+If new work is discovered, first reuse or adjust existing tasks
+and follow the current plan approval policy. Keep each brief self-contained and
+within the Producer's 1500-character limit.
 
 ## Coordinate the plan
 
 The saved `decision_policy` selects **Careful** (default) or **Independent**.
 The saved `effort_mode` selects **Agent** (default: new tasks inherit the assignee's effort)
-or **Auto**. In Auto, `create_task` first asks Effort Solver to score only the proposed title
-and brief, then calculates the task's effort using its configured weights. Do not choose
+or **Auto**. In Auto, `create_task` first asks Orchestrator to evaluate only the proposed title
+and brief and select effort directly. Orchestrator also selects model strength (1–3); an
+assignee with model `auto` uses the application's backend-specific strength mapping. Do not choose
 or pass effort yourself. If the evaluation fails, no task is created; address the error
 before retrying. Each new task receives its own evaluation.
 Write the session **Plan** with `update_producer_checklist` before coordinating tasks.

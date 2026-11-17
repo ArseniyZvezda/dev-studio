@@ -43,3 +43,17 @@ describe('model selector', () => {
     expect(html).toContain('<input')
   })
 })
+
+
+describe('Orchestrator Auto model choice', () => {
+  it('offers literal auto as a listed choice only when enabled by the agent editor', async () => {
+    const html = await renderToString(createSSRApp(ModelSelector, {
+      backend: 'codex', model: 'auto', options, allowAuto: true,
+    }))
+    expect(html).toContain('value="auto"')
+    expect(html).toContain('<select')
+    expect(html).not.toContain('<input')
+    const explicit = await markup('codex', 'gpt-test')
+    expect(explicit).not.toContain('value="auto"')
+  })
+})

@@ -159,7 +159,7 @@
   /* Pink is also `blocked` on the task board, and deliberately: both mean "this is waiting
      on a person", which is the one thing the shared vocabulary exists to make read alike. */
   --vxs-status-paused: var(--vxs-pink);
-  --vxs-status-review: var(--vxs-amber);
+  --vxs-status-review: var(--vxs-info);
   --vxs-status-blocked: var(--vxs-pink);
 
   /* ---------------------------------------------------------------- markdown text colour
@@ -414,7 +414,7 @@
   --vxs-status-cached: #56b4e9;
   --vxs-status-paused: #cc79a7;
   --vxs-status-blocked: #cc79a7;
-  --vxs-status-review: #e69f00;
+  --vxs-status-review: var(--vxs-info);
 }
 
 [data-theme='light'][data-status-palette='accessible'] {
@@ -423,7 +423,7 @@
   --vxs-danger: #b34a00;
   --vxs-info: #005b8f;
   --vxs-status-cached: #2b8fc6;
-  --vxs-status-review: #b07800;
+  --vxs-status-review: var(--vxs-info);
 }
 
 /* -------------------------------------------------------------------- fonts knob */

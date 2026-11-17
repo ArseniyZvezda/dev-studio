@@ -28,6 +28,28 @@ from voxarium_studio.teams.docs import DocStore
 
 
 @pytest.fixture
+async def persistent_identity_http(project: Path, tmp_path: Path):
+    """Two fixture roots share portable metadata, never a runtime binding (§5.2.1)."""
+    paths = ProjectPaths.for_project(project)
+    config = yaml.safe_load(paths.config_file.read_text(encoding="utf-8"))
+    config["project_identity"] = {"id": "fixture.shared-project", "revision": 1}
+    config["sync"] = {"enabled": False, "url": "", "space": ""}
+    paths.config_file.write_text(yaml.safe_dump(config), encoding="utf-8")
+    # Copy before either context starts: no open SQLite database or live watcher is copied.
+    copied = tmp_path / "copied-game"
+    shutil.copytree(project, copied)
+    app = create_app(str(project))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+        ) as http:
+            a, b = await _open(http, project), await _open(http, copied)
+            assert not _ctx(app, a).config.sync.enabled
+            assert not _ctx(app, b).config.sync.enabled
+            yield app, http, a, b
+
+
+@pytest.fixture
 async def scoped_http(project: Path):
     app = create_app(str(project))
     app.state.rename_frame_sent = asyncio.Event()
@@ -102,6 +124,92 @@ async def test_ensure_does_not_select_and_legacy_reuses_same_resident(
         metadata = await http.get(_url(scope, "project"))
         assert metadata.status_code == 200, metadata.text
         assert Path(metadata.json()["root"]) == Path(scope["root"])
+
+
+async def test_copied_persistent_identity_keeps_distinct_runtime_scopes(
+    persistent_identity_http,
+) -> None:
+    """Portable identity is not the resident registry key (dev spec §5.3.2)."""
+    app, http, a, b = persistent_identity_http
+    ca, cb = _ctx(app, a), _ctx(app, b)
+    assert a["project_id"] != b["project_id"]
+    assert a["epoch"] == b["epoch"]
+    assert a["root"] != b["root"]
+    assert ca is not cb
+    assert len(app.state.project_registry) == len(app.state.project_roots) == 2
+    for scope in (a, b):
+        before = _ctx(app, scope).paths.config_file.read_bytes()
+        metadata = await http.get(_url(scope, "project"))
+        assert metadata.status_code == 200, metadata.text
+        body = metadata.json()
+        assert body["persistent_id"] == "fixture.shared-project"
+        assert body["config"]["project_identity"] == {
+            "id": "fixture.shared-project", "revision": 1,
+        }
+        assert all(body[key] == scope[key] for key in ("project_id", "epoch", "root"))
+        assert _ctx(app, scope).paths.config_file.read_bytes() == before
+        reopened = await _open(http, Path(scope["root"]))
+        assert all(reopened[key] == scope[key] for key in ("project_id", "epoch", "root"))
+    assert app.state.ctx is ca
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["scoped-reload", "legacy-reload"])
+async def test_identity_metadata_reload_preserves_descriptor_epoch_and_context(
+    persistent_identity_http, legacy: bool,
+) -> None:
+    app, http, a, b = persistent_identity_http
+    ca, cb = _ctx(app, a), _ctx(app, b)
+    descriptor = app.state.project_registry[a["project_id"]]
+    registry = dict(app.state.project_registry)
+    roots = dict(app.state.project_roots)
+    config = yaml.safe_load(ca.paths.config_file.read_text(encoding="utf-8"))
+    config["project_identity"] = {"id": "fixture.changed-project", "revision": 2}
+    ca.paths.config_file.write_text(yaml.safe_dump(config), encoding="utf-8")
+    url = "/api/settings/reload" if legacy else _url(a, "settings/reload")
+    response = await http.post(url)
+    assert response.status_code == 200, response.text
+    for url in ("/api/project", _url(a, "project")):
+        metadata = await http.get(url)
+        assert metadata.status_code == 200, metadata.text
+        assert metadata.json()["persistent_id"] == "fixture.changed-project"
+        assert metadata.json()["config"]["project_identity"]["revision"] == 2
+    assert (await http.get(_url(b, "project"))).json()["persistent_id"] == "fixture.shared-project"
+    assert app.state.project_registry[a["project_id"]] is descriptor
+    assert app.state.project_registry == registry
+    assert app.state.project_roots == roots
+    assert _ctx(app, a) is ca
+    assert _ctx(app, b) is cb
+    assert app.state.ctx is ca
+    reopened = await _open(http, Path(a["root"]))
+    assert all(reopened[key] == a[key] for key in ("project_id", "epoch", "root"))
+    assert descriptor.epoch == a["epoch"]
+    assert descriptor.root == ca.paths.root
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["scoped-settings", "legacy-settings"])
+@pytest.mark.parametrize("patch", [
+    {"project_identity": {"id": "fixture.forbidden", "revision": 2}},
+    {"project_identity": None},
+    {"persistent_id": "fixture.forbidden"},
+], ids=["replace-identity", "clear-identity", "metadata-alias"])
+async def test_settings_cannot_mutate_persistent_identity(
+    persistent_identity_http, legacy: bool, patch: dict,
+) -> None:
+    """S1 exposes identity only as metadata; settings are not a mutation API."""
+    app, http, a, b = persistent_identity_http
+    configs = {scope["project_id"]: _ctx(app, scope).paths.config_file.read_bytes() for scope in (a, b)}
+    url = "/api/settings" if legacy else _url(a, "settings")
+    response = await http.put(url, json={"project_name": "must-not-be-applied", **patch})
+    assert response.status_code == 422, response.text
+    for scope in (a, b):
+        resident = _ctx(app, scope)
+        assert resident.paths.config_file.read_bytes() == configs[scope["project_id"]]
+        assert resident.config.project_identity.model_dump() == {
+            "id": "fixture.shared-project", "revision": 1,
+        }
+        metadata = await http.get(_url(scope, "project"))
+        assert metadata.json()["persistent_id"] == "fixture.shared-project"
+        assert metadata.json()["name"] != "must-not-be-applied"
 
 
 async def test_concurrent_docs_and_settings_are_project_local(

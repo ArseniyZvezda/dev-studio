@@ -11,6 +11,8 @@ import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 
 import { ProjectSession } from '@/session/project-session'
+import type { DocumentFence } from '@/api/types'
+import type { RemoteBindingTicket } from '@/stores/sync'
 
 import {
   CollabSession,
@@ -433,5 +435,131 @@ describe('project-scoped collab binding (§5.3.2)', () => {
       socket!.onclose!({ code: 1008 })
       expect(await pending).toBeNull()
     } finally { vi.unstubAllGlobals() }
+  })
+})
+
+/** Mirrors an I7 ticket: a barrier phase at the SAME G keeps it valid for final
+ * saves; fence/commit invalidates it. No new metadata is read by the session. */
+function capturedRemote(binding: ProjectSession, generation = 7) {
+  let current = true
+  const ticket: RemoteBindingTicket = Object.freeze({
+    runtime_scope: binding.scope!, backend_epoch: 'mutation-epoch',
+    expected_binding_generation: generation,
+    assertCurrent: () => { if (!current) throw new Error('stale remote binding') },
+  })
+  const fence: DocumentFence = {
+    backend_epoch: ticket.backend_epoch, expected_binding_generation: generation,
+    editor_id: 'editor-A', client_instance_id: 'browser-A',
+  }
+  return { ticket, fence, invalidate: () => { current = false } }
+}
+
+describe('captured remote collab fence (I8, studio-design §5.3)', () => {
+  it('captures the join before transport/debounce, then keeps the lease and assigned sid for updates', async () => {
+    const binding = projectSession('A'); const socket = new ScopedSocket()
+    const captured = capturedRemote(binding); const original = { ...captured.fence }
+    const options = { path: 'same.md', session: binding, socket: () => socket,
+      seed: seeder().seed, fence: captured.fence, ticket: captured.ticket }
+    const opening = openSession(options)
+    // A caller mutating/replacing its options cannot relabel an outstanding join.
+    Object.assign(captured.fence, { expected_binding_generation: 8, editor_id: 'editor-new' })
+    options.fence = { ...original, expected_binding_generation: 9 }
+    socket.onopen!()
+    expect(socket.sent[0]).toMatchObject({ t: 'join', ...original })
+    socket.deliver({ t: 'joined', seeded: false, sid: 'old-sid', content: '# old', ...binding.scope })
+    expect(socket.sent[1]).toMatchObject({ t: 'seed', ...original })
+    socket.deliver({ t: 'seeded', ok: true, ...binding.scope })
+    const session = (await opening)!
+    expect(session.fence).toEqual({ ...original, sid: 'old-sid' })
+    expect(Object.isFrozen(session.fence)).toBe(true)
+    session.doc.getText('body').insert(0, 'final ')
+    expect(socket.sent.filter(frame => frame.t === 'update')).toHaveLength(1)
+    expect(socket.sent.at(-1)).toMatchObject({ t: 'update', ...original, sid: 'old-sid' })
+    session.close()
+  })
+
+  it('refuses a delayed old-G join without creating a replacement session', async () => {
+    const binding = projectSession('A'); const socket = new ScopedSocket()
+    const captured = capturedRemote(binding); const factory = vi.fn(() => socket)
+    const opening = openSession({ path: 'same.md', session: binding, socket: factory,
+      seed: seeder().seed, ...captured })
+    captured.invalidate()
+    socket.onopen!()
+    expect(await opening).toBeNull()
+    expect(socket.sent).toEqual([]); expect(socket.closed).toBe(true)
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(() => openSession({ path: 'same.md', session: binding, socket: factory,
+      seed: seeder().seed, ...captured })).toThrow('stale remote binding')
+    expect(factory).toHaveBeenCalledTimes(1)
+  })
+
+  it('fences late updates/scribe callbacks but retains the Y.Doc until explicit final-save cleanup', async () => {
+    const binding = projectSession('A'); const socket = new ScopedSocket(); const roomDoc = roomDocument('screen')
+    const captured = capturedRemote(binding)
+    const opening = openSession({ path: 'same.md', session: binding, socket: () => socket,
+      seed: seeder().seed, ...captured })
+    socket.onopen!(); socket.deliver({ ...joinedFrame(binding, roomDoc), scribe: false })
+    const session = (await opening)!; const destroy = vi.spyOn(session.doc, 'destroy')
+    const ended = vi.fn(); const appointed = vi.fn()
+    session.onEnd(ended); session.onScribe(appointed)
+    const delayedReceive = socket.onmessage!; const count = socket.sent.length
+    captured.invalidate()
+    roomDoc.getText('body').insert(0, 'foreign ')
+    delayedReceive({ data: JSON.stringify({ t: 'update', update: toBase64(Y.encodeStateAsUpdate(roomDoc)), ...binding.scope }) })
+    delayedReceive({ data: JSON.stringify({ t: 'scribe', ...binding.scope }) })
+    session.doc.getText('body').insert(0, 'unsaved ')
+    expect(text(session)).toBe('unsaved screen')
+    expect(destroy).not.toHaveBeenCalled(); expect(socket.sent).toHaveLength(count)
+    expect(appointed).not.toHaveBeenCalled(); expect(session.scribe).toBe(false)
+    expect(ended).toHaveBeenCalledExactlyOnceWith('offline'); expect(socket.closed).toBe(true)
+    session.close(); expect(destroy).toHaveBeenCalledOnce(); roomDoc.destroy()
+  })
+
+  it('keeps offline screen edits without reconnecting or claiming that closing the socket saved them', async () => {
+    const binding = projectSession('A'); const socket = new ScopedSocket(); const roomDoc = roomDocument('screen')
+    const captured = capturedRemote(binding); const factory = vi.fn(() => socket)
+    const opening = openSession({ path: 'same.md', session: binding, socket: factory, seed: seeder().seed, ...captured })
+    socket.onopen!(); socket.deliver(joinedFrame(binding, roomDoc))
+    const session = (await opening)!; const destroy = vi.spyOn(session.doc, 'destroy')
+    const count = socket.sent.length
+    socket.onclose!({ code: 1006 })
+    session.doc.getText('body').insert(0, 'offline ')
+    expect(text(session)).toBe('offline screen'); expect(destroy).not.toHaveBeenCalled()
+    expect(socket.sent).toHaveLength(count); expect(factory).toHaveBeenCalledOnce()
+    expect(session.fence).toMatchObject({ expected_binding_generation: 7 })
+    session.close(); roomDoc.destroy()
+  })
+
+  it('rejects a foreign ticket or a lease relabelled with newer G before creating a socket', () => {
+    const binding = projectSession('A'); const other = projectSession('B')
+    const captured = capturedRemote(other); const factory = vi.fn(() => new ScopedSocket())
+    const options = { path: 'same.md', session: binding, socket: factory, seed: seeder().seed, ...captured }
+    expect(() => openSession(options)).toThrow('does not match')
+    const own = capturedRemote(binding)
+    expect(() => openSession({ ...options, ...own, fence: { ...own.fence, expected_binding_generation: 8 } })).toThrow('does not match')
+    expect(factory).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('materialization room frame revision (I8)', () => {
+  it('invalidates even a duplicate update without writing or destroying the room', async () => {
+    const binding = projectSession('A'); const socket = new ScopedSocket(); const roomDoc = roomDocument('screen')
+    const captured = capturedRemote(binding)
+    const opening = openSession({ path: 'same.md', session: binding, socket: () => socket,
+      seed: seeder().seed, ...captured })
+    socket.onopen!(); socket.deliver(joinedFrame(binding, roomDoc))
+    const session = (await opening)!
+    const before = session.materializationRevision
+    const changed = vi.fn(); session.onChange(changed)
+    session.receive({ t: 'update', update: toBase64(Y.encodeStateAsUpdate(roomDoc)), ...binding.scope })
+    expect(session.materializationRevision).toBeGreaterThan(before)
+    expect(changed).not.toHaveBeenCalled()
+    expect(text(session)).toBe('screen')
+    expect(session.doc.isDestroyed).toBe(false)
+    const observed = session.materializationRevision
+    session.end('offline')
+    expect(session.materializationRevision).toBeGreaterThan(observed)
+    session.close(); roomDoc.destroy()
   })
 })

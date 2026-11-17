@@ -50,6 +50,7 @@ import {
 } from '@/lib/editor/image-drop'
 import { uploadDocAsset } from '@/api/client'
 import type { CollabSession } from '@/lib/collab/session'
+import type { CapturedDocSave } from '@/stores/docs'
 import { parseDocument, serializeDocument, type DocumentEnvelope } from '@/lib/md/document'
 import { mdastToProseMirror, proseMirrorToMdast, type PmNode } from '@/lib/md/prosemirror'
 import type { Node as PmDocNode } from '@tiptap/pm/model'
@@ -62,6 +63,9 @@ const props = defineProps<{
   documents: { path: string; title: string }[]
   /** The live room this editor is in, if any (dev spec §16.4). Never changes once mounted. */
   collab?: CollabSession | null
+  /** Captured synchronously with the edit, never when its debounce fires (I8). */
+  captureSave?: () => CapturedDocSave | null
+  frozen?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -74,7 +78,7 @@ const emit = defineEmits<{
    */
   dirty: [path: string]
   /** Markdown ready to write. Debounced, on blur, and on Ctrl+S. */
-  change: [markdown: string, path: string]
+  change: [markdown: string, path: string, ticket?: CapturedDocSave | null]
   save: []
   headings: [headings: Heading[]]
   /** Position of the heading the reader is under, for the outline's highlight (§6). */
@@ -113,7 +117,12 @@ let envelope: DocumentEnvelope = { frontmatter: '', eol: '\n', finalNewline: tru
  */
 let unsaved = false
 let autosave: ReturnType<typeof setTimeout> | null = null
+let pendingTicket: CapturedDocSave | null | undefined
 let outlineTimer: ReturnType<typeof setTimeout> | null = null
+// A materialization belongs to this actual editor tree, not just its Markdown bytes.
+// Remote edits can change Yjs/PM state while serializing to identical Markdown (I8).
+let materializationGeneration = 0
+let mounted = true
 
 // Read once: the parent re-keys the component when the room changes.
 const collab = props.collab ?? null
@@ -215,6 +224,7 @@ function onDragLeave(event: DragEvent) {
  * column, which is the trick the gutter already uses to find the row beside the pointer.
  */
 function onDrop(event: DragEvent) {
+  if (props.frozen) { event.preventDefault(); return }
   dragDepth = 0
   dropping.value = false
   const files = [...(event.dataTransfer?.files ?? [])]
@@ -237,6 +247,7 @@ function onDrop(event: DragEvent) {
 if (collab) envelope = parseDocument(props.source).envelope
 
 const editor = useEditor({
+  editable: !props.frozen,
   // Bound to a room there is no initial content: the binding fills the editor from the
   // room's document, and content given here as well would be inserted into it a second time.
   content: collab ? undefined : initialContent(props.source),
@@ -255,6 +266,7 @@ const editor = useEditor({
               // would have may be gone. Should the job come to us, the file is owed them.
               onDisk = null
               roomAhead = true
+              emit('dirty', props.path)
               if (collab.scribe) owe()
             } else {
               firstDrawn = editor.value?.state.doc ?? null
@@ -282,6 +294,9 @@ const editor = useEditor({
     unsaved = true
     emit('dirty', props.path)
     schedule()
+  },
+  onTransaction: ({ transaction }) => {
+    if (transaction.docChanged) materializationGeneration += 1
   },
   onBlur: ({ event }) => {
     // A native window/tab transfer also blurs the editor, but must leave its debounce,
@@ -312,6 +327,8 @@ const {
 } = useBlockDrag(editor, container)
 
 const toolbar = useSelectionToolbar(editor)
+
+watch(() => props.frozen, frozen => editor.value?.setEditable(!frozen, false))
 
 /** §4.5: the block's own menu, opened by right-click or by the gutter handle. */
 const menu = ref<{ model: BlockMenuModel; at: { x: number; y: number } } | null>(null)
@@ -354,6 +371,7 @@ function closeMenu(): void {
 }
 
 function onTransform(target: Parameters<typeof applyTransform>[2]): void {
+  if (props.frozen) return
   const instance = editor.value
   const row = menu.value?.model.row
   if (instance && row) applyTransform(instance, row, target)
@@ -407,7 +425,10 @@ function knownOnDisk(): string | null {
  * racing. Everyone else only notes that the room is ahead of what they last wrote.
  */
 function roomChanged(): void {
+  materializationGeneration += 1
   roomAhead = true
+  // Every lease owns unsaved RAM, including the non-scribe. Silence is not clean evidence.
+  emit('dirty', props.path)
   if (collab?.scribe) owe()
 }
 
@@ -417,6 +438,7 @@ const offScribe = collab?.onScribe(() => {
 })
 
 function schedule(): void {
+  pendingTicket = props.captureSave?.()
   if (autosave) clearTimeout(autosave)
   autosave = setTimeout(flush, AUTOSAVE_DELAY_MS)
 }
@@ -448,9 +470,8 @@ function flush(): void {
     // opened — by anyone, in any number of windows — is never written (§8.2).
     if (markdown === knownOnDisk()) return
     onDisk = markdown
-    emit('dirty', props.path)
   }
-  emit('change', markdown, props.path)
+  emit('change', markdown, props.path, pendingTicket)
 }
 
 /**
@@ -458,11 +479,47 @@ function flush(): void {
  * while the preceding save was in flight (dev spec §5.3). Reading this never writes Markdown.
  */
 function hasPendingWork(): boolean {
-  if (!editor.value || !rendered || pendingUploads || autosave || unsaved) return true
+  if (!editor.value || !rendered || pendingUploads || autosave || unsaved || dragging.value) return true
   if (!roomAhead) return false
   // A non-scribe cannot flush somebody else's save. Only allow close once the local file
   // caught up; the room protocol has no persisted-update acknowledgement to trust instead.
   return serialize() !== props.source
+}
+
+/** I8: read the frozen, rendered tree WITHOUT the save-side effects of takeMarkdown.
+ * Non-scribes may be ahead of their local source: only their OWN backend proof can
+ * accept that state. The caller settles queued saves/heartbeats before capturing.
+ */
+function captureMaterialization(): Readonly<{ content: string; assertCurrent(): void; accept(): void }> {
+  const instance = editor.value
+  const document = instance?.state.doc
+  const generation = materializationGeneration
+  const roomRevision = collab?.materializationRevision
+  const path = props.path
+  let accepted = false
+  const assertCurrent = () => {
+    if (!mounted || !instance || instance.isDestroyed || editor.value !== instance
+      || (!accepted && instance.isEditable) || !rendered || instance.state.doc !== document
+      || generation !== materializationGeneration || props.path !== path
+      || collab?.materializationRevision !== roomRevision
+      || pendingUploads || dragging.value || instance.view.dragging || autosave || unsaved) {
+      throw new Error(t('docs.remoteEditor.blocked'))
+    }
+  }
+  assertCurrent()
+  const content = serialize()
+  assertCurrent()
+  return Object.freeze({ content, assertCurrent, accept: () => {
+    assertCurrent()
+    if (instance!.isEditable) throw new Error(t('docs.remoteEditor.blocked'))
+    // Receipt acceptance acknowledges this snapshot only. Never replace source,
+    // DOM, PM or Yjs state and never manufacture a save from a clean open (§8.2).
+    roomAhead = false
+    // Existing desktop close guards can thaw after prepare when another guard
+    // vetoes. Their final validation still checks tree identity/generation; only
+    // the already-accepted proof may be checked after thaw, never pending proof.
+    accepted = true
+  } })
 }
 
 /** Drop the pending debounce without writing — what an explicit save supersedes. */
@@ -531,6 +588,7 @@ function onKeydown(event: KeyboardEvent): void {
 // A pending edit must not be lost to navigation; the parent also calls `flush` before it
 // switches documents.
 onBeforeUnmount(() => {
+  mounted = false
   if (outlineTimer) clearTimeout(outlineTimer)
   offRoomChange?.()
   offScribe?.()
@@ -599,7 +657,10 @@ function elementAt(pos: number): HTMLElement | null {
 defineExpose({
   flush,
   hasPendingWork,
+  captureMaterialization,
   takeMarkdown,
+  /** Freeze input in place: no remount, source replacement or Y.Doc destruction. */
+  freeze: (frozen: boolean) => editor.value?.setEditable(!frozen, false),
   /**
    * Throw away what is in the editor and take `source` as it stands — the answer to the
    * §14.5 prompt, and the one path allowed to discard unsaved edits, because the user chose
@@ -647,7 +708,7 @@ defineExpose({
          to live outside it. Behind nothing and clickable through — it is a hint, not a
          target. -->
     <div
-      v-if="gutter && !dragging"
+      v-if="gutter && !dragging && !frozen"
       class="block-hover"
       :style="{
         top: `${gutter.top}px`,
@@ -662,7 +723,7 @@ defineExpose({
          Its x comes from the measured column (`--vxs-doc-column-left`); the offset that
          hangs it off that edge stays in CSS, beside the button sizes it depends on. -->
     <div
-      v-if="gutter && !dragging"
+      v-if="gutter && !dragging && !frozen"
       class="block-gutter"
       :style="{
         top: `${gutter.top}px`,
@@ -714,11 +775,11 @@ defineExpose({
       }"
     />
 
-    <SlashMenu :state="slash" />
-    <WikiMenu :state="wiki" />
+    <SlashMenu v-if="!frozen" :state="slash" />
+    <WikiMenu v-if="!frozen" :state="wiki" />
 
     <BlockMenu
-      v-if="menu"
+      v-if="menu && !frozen"
       :model="menu.model"
       :at="menu.at"
       @close="closeMenu"
@@ -726,7 +787,7 @@ defineExpose({
     />
 
     <SelectionToolbar
-      v-if="editor && toolbar.position.value && !slash.open"
+      v-if="editor && toolbar.position.value && !slash.open && !frozen"
       :editor="editor"
       :position="toolbar.position.value"
       :editing-link="toolbar.editingLink.value"

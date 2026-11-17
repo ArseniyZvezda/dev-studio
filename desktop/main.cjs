@@ -227,6 +227,17 @@ async function startBackendImpl() {
 function openExternal(url) {
   if (navigationKind(url) === 'external') shell.openExternal(url).catch(() => {});
 }
+// DevTools remain available in packaged builds without an application menu (§2.7).
+function enableDeveloperTools(contents) {
+  contents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+    const key = input.key.toLowerCase();
+    if (key !== 'f12' && !(key === 'i' && (input.control || input.meta) && input.shift && !input.alt)) return;
+    event.preventDefault();
+    if (contents.isDevToolsOpened()) contents.closeDevTools();
+    else contents.openDevTools({ mode: 'detach' });
+  });
+}
 // Same SPA assets, separate checked document/IPC role (§5.3.4). The bootstrap
 // entry chooses shell before importing project stores, sockets or plugins.
 const SHELL_URL = `${ORIGIN}/?desktopShell=1`;
@@ -238,7 +249,7 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
   const windows = new Map();
   const windowLoads = new Map();
   const menuWindows = new Set(), viewBindings = new WeakMap();
-  let bridge, drag, session, disposed = false, disposal, activation, windowCreation;
+  let bridge, drag, session, taskCounts, disposed = false, disposal, activation, windowCreation;
   const pageWaiters = new Set();
   function pagesChanged() {
     session?.changed();
@@ -251,11 +262,12 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
   }
   const pendingCloses = new Map();
   const nativeAdapter = createElectronAdapter({ WebContentsView,
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), devTools: true },
     configureProjectView(view, binding) {
       viewBindings.set(view, binding);
       const release = bridge.registerProjectView(view, binding);
       const contents = view.webContents;
+      enableDeveloperTools(contents);
       const external = (event, address) => {
         if (navigationKind(address) === 'external') { event.preventDefault(); openExternal(address); }
       };
@@ -341,7 +353,11 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
       cancel: (...args) => drag.cancel(...args),
       setGeometry: (...args) => drag.setGeometry(...args),
     },
-    beforePublish() { for (const id of windows.keys()) layoutMenu(id); },
+    getTaskCounts: tab => taskCounts?.getCounts(tab) ?? null,
+    beforePublish() {
+      taskCounts?.refresh();
+      for (const id of windows.keys()) layoutMenu(id);
+    },
     shellServices: createShellServices({ fetch, token: () => process.env.VOXARIUM_STUDIO_TOKEN }),
     setMenuOpen(id, open) {
       if (open === menuWindows.has(id)) return;
@@ -357,6 +373,11 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
       else native?.webContents.focus();
     },
   });
+  taskCounts = require('./task-counts.cjs').createTaskCounts({ fetch,
+    token: () => process.env.VOXARIUM_STUDIO_TOKEN,
+    getTabs: () => registry.snapshot().tabs, onChange: () => bridge.publishState(),
+  });
+  taskCounts.start();
   drag = require('./tab-drag.cjs').createTabDrag({ registry, screen,
     getWindows: () => [...windows.values()],
     authorizeSource: (event, request) => bridge.authorizeDrag(event, request),
@@ -370,9 +391,12 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
         minWidth: Math.min(900, geometry.width), minHeight: Math.min(600, geometry.height) } : {}),
       title: productName, show: false, frame: false, backgroundColor: '#14161b', icon: appIcon,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'),
-        nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+        nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, devTools: true },
     });
     const id = String(native.id);
+    // Capture while live: 'closed' runs after BrowserWindow's native object is
+    // destroyed (including empty-source cleanup after live transfer, §5.3.4–5).
+    const shellContents = native.webContents;
     let registered = false, releaseShell;
     // Shell navigation cannot become a project/remote renderer with shell rights.
     const guard = (event, address) => {
@@ -394,20 +418,21 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
       releaseShell = bridge.registerWindow(native);
       drag.registerWindow(native);
       native.once('closed', () => { if (windows.get(id) === native) windows.delete(id); });
-      native.webContents.on('will-navigate', guard);
-      native.webContents.on('will-redirect', guard);
+      shellContents.on('will-navigate', guard);
+      shellContents.on('will-redirect', guard);
       native.once('closed', () => {
         menuWindows.delete(id); native.removeListener('resize', resize);
         for (const event of ['move', 'focus', 'maximize', 'unmaximize']) native.removeListener(event, changed);
         native.removeListener('close', close);
-        native.webContents.removeListener('will-navigate', guard);
-        native.webContents.removeListener('will-redirect', guard);
+        shellContents.removeListener('will-navigate', guard);
+        shellContents.removeListener('will-redirect', guard);
       });
       native.on('resize', resize);
       for (const event of ['move', 'focus', 'maximize', 'unmaximize']) native.on(event, changed);
       native.on('close', close);
-      native.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
-      configureContents(native.webContents);
+      shellContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
+      enableDeveloperTools(shellContents);
+      configureContents(shellContents);
       configureWindow(native);
       const loaded = native.loadURL(shellURL);
       windowLoads.set(id, loaded);
@@ -504,6 +529,7 @@ function createDesktopController({ backend, canonicalizeRoot, shellURL = SHELL_U
     dispose() {
       if (disposed) return disposal;
       disposed = true;
+      taskCounts.stop();
       for (const waiter of [...pageWaiters]) waiter.finish(new Error('Desktop disposed'));
       session.dispose();
       disposal = drag.dispose();
@@ -521,7 +547,8 @@ async function boot() {
   Menu.setApplicationMenu(null);
   splash = new BrowserWindow({ width: 460, height: 300, frame: false, resizable: false,
     center: true, show: false, backgroundColor: '#17191e', title: productName, icon: appIcon,
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, devTools: true } });
+  enableDeveloperTools(splash.webContents);
   splash.once('ready-to-show', () => splash.show());
   await splash.loadFile(path.join(__dirname, 'splash.html'), { query: { message: messages.loading } });
   splash.show();
@@ -537,14 +564,15 @@ async function boot() {
       }
     },
     configureWindow(native) {
+      const windowId = String(native.id);
       const producerAttention = require('./producer-attention.cjs').registerProducerAttention({
         window: native,
         appOwned: true,
         icon: nativeImage.createFromPath(path.join(__dirname, 'assets/notification.png')).resize({ width: 16, height: 16 }),
         description: () => currentMessages().producerWaiting,
       });
-      attentionWindows.set(String(native.id), producerAttention);
-      native.once('closed', () => { producerAttention.dispose?.(); attentionWindows.delete(String(native.id)); });
+      attentionWindows.set(windowId, producerAttention);
+      native.once('closed', () => { producerAttention.dispose?.(); attentionWindows.delete(windowId); });
       controls.registerWindow(native, { tray: {
         hide: () => { if (!native.isDestroyed()) native.hide(); },
         setLocale: locale => appTray.setLocale?.(locale),

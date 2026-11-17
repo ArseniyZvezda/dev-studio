@@ -96,6 +96,44 @@ function fixture(options = {}) {
   return { ipc, registry, controller, windows, tabs, calls, w1, w2, release1, addTab, addWindow, windowRequest, tabRequest };
 }
 
+test('shell snapshots project main-owned task counts without mutating topology or leaking cache fields', () => {
+  let value = null;
+  const calls = [], f = fixture({ getTaskCounts(tab) { calls.push(tab.tabId); return value; } });
+  const a = f.addTab('A'), b = f.addTab('B', '2');
+  try {
+    const initial = f.registry.snapshot();
+    const before = JSON.stringify({ windows: initial.windows.map(({ native, ...window }) => window),
+      tabs: initial.tabs.map(({ view, ...tab }) => tab) });
+    assert.equal(f.ipc.request(C.bootstrap, f.w1.webContents).tabs[0].task_counts, null);
+    value = { in_progress: 2, needs_review: 1, token: 'SECRET', otherProject: b.tab.project };
+    const shell = f.ipc.request(C.state, f.w1.webContents);
+    assert.deepEqual(shell.tabs[0].task_counts, { in_progress: 2, needs_review: 1 });
+    shell.tabs[0].task_counts.in_progress = 999;
+    assert.equal(value.in_progress, 2, 'public DTO is a copy, not the cache');
+    calls.length = 0;
+    assert.equal(f.ipc.request(C.bootstrap, a.view.webContents).tab.task_counts, null);
+    assert.deepEqual(calls, [], 'project bootstrap cannot query the main summary cache');
+    f.controller.publishState();
+    assert.deepEqual(f.w1.webContents.sent.at(-1)[1].tabs[0].task_counts, { in_progress: 2, needs_review: 1 });
+    assert.deepEqual(f.w2.webContents.sent.at(-1)[1].tabs[0].task_counts, { in_progress: 2, needs_review: 1 });
+    assert.equal(a.view.webContents.sent.at(-1)[1].tab.task_counts, null);
+    value = { in_progress: 0, needs_review: 0 };
+    assert.deepEqual(f.ipc.request(C.state, f.w1.webContents).tabs[0].task_counts, value);
+    value = { in_progress: -1, needs_review: 2 };
+    assert.equal(f.ipc.request(C.state, f.w1.webContents).tabs[0].task_counts, null);
+    const after = f.registry.snapshot();
+    assert.equal(JSON.stringify({ windows: after.windows.map(({ native, ...window }) => window),
+      tabs: after.tabs.map(({ view, ...tab }) => tab) }), before);
+    assert.equal(Object.hasOwn(a.tab, 'task_counts'), false);
+  } finally { f.controller.dispose(); }
+});
+
+test('shell task counts default to unknown, not fabricated zero counts', () => {
+  const f = fixture(); f.addTab('A');
+  try { assert.equal(f.ipc.request(C.bootstrap, f.w1.webContents).tabs[0].task_counts, null); }
+  finally { f.controller.dispose(); }
+});
+
 async function liveFixture({ coreOptions = {}, ...options } = {}) {
   const ipc = ipcFixture(), views = [], nativeCalls = [], created = [], releases = new Map();
   let controller;

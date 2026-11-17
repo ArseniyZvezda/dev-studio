@@ -28,17 +28,18 @@ from typing import Any, Callable
 
 from pycrdt import Doc
 
-from .auth import User
+from .auth import CredentialInvalid, User
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
     check_content,
     check_path,
+    check_project_id,
     content_hash,
     decode_update,
     encode_update,
 )
-from .store import DocRow, SpaceRow, Store
+from .store import DocRow, ProjectRow, Store
 
 log = logging.getLogger(__name__)
 
@@ -60,12 +61,19 @@ class Connection:
         self.sessions: dict[str, RoomSession] = {}
         self.queue: asyncio.Queue[str | None] = asyncio.Queue()
         self.overloaded = False
+        self.closed = False
+
+    def discard(self) -> None:
+        """Do not release queued data after revocation (dev spec §16.9)."""
+        self.closed = True
+        while not self.queue.empty():
+            self.queue.get_nowait()
 
     def send(self, message: dict[str, Any]) -> None:
-        if self.overloaded:
+        if self.overloaded or self.closed:
             return
         if self.queue.qsize() >= MAX_QUEUED_FRAMES:
-            log.warning("Connection %s (%s) fell too far behind; closing it", self.id, self.user.name)
+            log.warning("Connection %s (user %s) fell too far behind; closing it", self.id, self.user.id)
             self.overloaded = True
             self.queue.put_nowait(None)
             return
@@ -107,9 +115,10 @@ class Room:
 
 
 class SpaceHub:
-    def __init__(self, row: SpaceRow) -> None:
+    def __init__(self, row: ProjectRow) -> None:
         self.id = row.id
-        self.name = row.name
+        self.display_name = row.display_name
+        self.storage_epoch = row.storage_epoch
         self.connections: list[Connection] = []
         self.rooms: dict[str, Room] = {}
 
@@ -131,25 +140,35 @@ class Hub:
 
     # ------------------------------------------------------------------ connections
 
-    def connect(self, user: User, space_name: str) -> Connection:
-        space = self._spaces.get(space_name)
-        if space is None:
-            space = self._spaces[space_name] = SpaceHub(self.store.space(space_name))
-        connection = Connection(user, space)
-        space.connections.append(connection)
-        connection.send(
-            {
-                "t": "hello",
-                "protocol": PROTOCOL_VERSION,
-                "user": user.to_json(),
-                "space": {"id": space.id, "name": space.name},
-                "seq": self.store.seq(space.id),
-            }
-        )
-        self._broadcast_presence(space)
-        return connection
+    def connect(self, user: User, project_id: str) -> Connection:
+        """Lookup only, and fence the authentication→registration race (§16.7–16.9)."""
+        project_id = check_project_id(project_id)
+        with self.store.credential_guard(user.id, user.credential_version) as current_user:
+            user = User.from_row(current_user)
+            row = self.store.project(project_id)
+            space = self._spaces.get(project_id)
+            if space is None:
+                space = self._spaces[project_id] = SpaceHub(row)
+            space.display_name = row.display_name
+            connection = Connection(user, space)
+            space.connections.append(connection)
+            connection.send(
+                {
+                    "t": "hello",
+                    "protocol": PROTOCOL_VERSION,
+                    "user": user.to_json(),
+                    "space": {"id": row.id, "display_name": row.display_name,
+                              "storage_epoch": row.storage_epoch},
+                    "seq": self.store.seq(space.id),
+                }
+            )
+            self._broadcast_presence(space)
+            return connection
 
     def disconnect(self, connection: Connection) -> None:
+        if connection.closed and connection not in connection.space.connections:
+            return
+        connection.discard()
         space = connection.space
         for session in list(connection.sessions.values()):
             self._leave(session)
@@ -158,10 +177,18 @@ class Hub:
         self._broadcast_presence(space)
         if not space.connections:
             # Nothing in a space outlives its connections except what the store holds.
-            self._spaces.pop(space.name, None)
+            self._spaces.pop(space.id, None)
 
     def handle(self, connection: Connection, raw: str) -> None:
         """Act on one frame. A frame that cannot be acted on is answered, never fatal."""
+        # BEGIN IMMEDIATE serialises the entire synchronous handler with mutations from
+        # independent CLI connections, not merely the check with the following write.
+        with self.store.credential_guard(connection.user.id, connection.user.credential_version):
+            if connection.closed:
+                raise CredentialInvalid()
+            self._handle(connection, raw)
+
+    def _handle(self, connection: Connection, raw: str) -> None:
         try:
             message = json.loads(raw)
         except ValueError:
@@ -435,7 +462,10 @@ class Hub:
             entry["docs"].update(session.room.path for session in connection.sessions.values())
         return [
             {**entry, "docs": sorted(entry["docs"])}
-            for entry in sorted(people.values(), key=lambda item: item["user"]["name"].lower())
+            for entry in sorted(
+                people.values(),
+                key=lambda item: (item["user"]["display_name"].lower(), item["user"]["id"]),
+            )
         ]
 
     def _broadcast_presence(self, space: SpaceHub) -> None:

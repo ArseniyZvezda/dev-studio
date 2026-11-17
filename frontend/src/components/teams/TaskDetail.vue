@@ -26,10 +26,8 @@ import {
   ArrowRight,
   Ban,
   Check,
-  Copy,
   Minimize2,
   LoaderCircle,
-  ExternalLink,
   FileText,
   GitBranch,
   Hand,
@@ -40,9 +38,7 @@ import {
   Play,
   RotateCcw,
   Send,
-  Smartphone,
   Trash2,
-  Unplug,
   X,
 } from 'lucide-vue-next'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -63,10 +59,12 @@ import SessionStatus from '@/components/teams/SessionStatus.vue'
 import SubagentSummary from '@/components/teams/SubagentSummary.vue'
 import TaskChanges from '@/components/teams/TaskChanges.vue'
 import TaskDiff from '@/components/teams/TaskDiff.vue'
+import TaskRemoteControl from '@/components/teams/TaskRemoteControl.vue'
 import TaskWritePaths from '@/components/teams/TaskWritePaths.vue'
 import AttachmentPicker from '@/components/ui/AttachmentPicker.vue'
 import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 import ModelEffortSlider from '@/components/ui/ModelEffortSlider.vue'
+import MarkdownText from '@/components/ui/MarkdownText.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TokenUsageChip from '@/components/ui/TokenUsageChip.vue'
@@ -427,24 +425,6 @@ const remoteHint = computed(() => {
   return t('taskDetail.remote.ready')
 })
 
-const copied = ref(false)
-const linkField = ref<HTMLInputElement | null>(null)
-let copyReset: ReturnType<typeof setTimeout> | undefined
-
-async function copyLink(): Promise<void> {
-  const url = remoteLink.value
-  if (!url) return
-  try {
-    await navigator.clipboard.writeText(url)
-    copied.value = true
-    clearTimeout(copyReset)
-    copyReset = setTimeout(() => (copied.value = false), 1500)
-  } catch {
-    // No clipboard permission (or an insecure context): select it so the user still can.
-    linkField.value?.select()
-  }
-}
-
 // ---------------------------------------------------------------- waiting out a usage limit
 
 /**
@@ -602,7 +582,6 @@ watch(
     editing.value = false
     confirmingRemoval.value = false
     confirmingReset.value = false
-    copied.value = false
     draft.value = draftOf()
   },
 )
@@ -912,6 +891,16 @@ async function complete() {
               </span>
             </p>
           </div>
+          <!-- §10.8: one header control in every task surface, no persistent footer widget. -->
+          <TaskRemoteControl
+            v-if="!isHuman"
+            :task-id="task.id"
+            :remote-link="remoteLink"
+            :can-connect="canRemoteControl"
+            :hint="remoteHint"
+            :busy="teams.busy"
+            @toggle="teams.remoteControl(task.id, $event)"
+          />
           <button
             class="grid size-6 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"
             :class="editing ? 'bg-hover text-primary' : ''"
@@ -1175,7 +1164,7 @@ async function complete() {
             <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
               {{ t('taskDetail.sections.brief') }}
             </p>
-            <p class="whitespace-pre-wrap">{{ task.brief || '—' }}</p>
+            <MarkdownText :text="task.brief || '—'" />
             <AttachmentPicker :key="task.id" :model-value="task.attachments ?? []" :disabled="teams.busy" @busy="briefUploading = $event" @update:model-value="teams.updateTask(task.id, { attachments: $event.map(entry => entry.reference) })" />
           </section>
 
@@ -1294,73 +1283,6 @@ async function complete() {
       </ConversationPanel>
 
       <footer class="space-y-2 border-t border-line p-2">
-        <!-- Fixed here rather than up in the transcript: the link is what
-             the panel is open for while a session is live, and that is exactly when the
-             transcript is scrolling it out of sight. A person's task has no session to hand
-             over, so on those the block is absent rather than permanently disabled. -->
-        <section v-if="!isHuman" class="rounded-md bg-inset p-2">
-          <p class="mb-1 text-small font-semibold tracking-wide text-faint uppercase">
-            {{ t('taskDetail.remote.title') }}
-          </p>
-          <!-- One row: the button first, because on a task with no link yet it is the only
-               thing here that does anything, and the field beside it takes what is left. A
-               session URL is longer than the ~340px rail whatever it is given, which is what
-               the copy and open buttons next to it are for. -->
-          <div class="flex items-center gap-2">
-            <button
-              v-if="!remoteLink"
-              class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
-              :disabled="teams.busy || !canRemoteControl"
-              :title="remoteHint"
-              @click="teams.remoteControl(task.id, true)"
-            >
-              <Smartphone class="size-3.5" /> {{ t('taskDetail.remote.connect') }}
-            </button>
-            <button
-              v-else
-              class="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 hover:bg-hover disabled:opacity-50"
-              :disabled="teams.busy"
-              :title="t('taskDetail.remote.disconnectHint')"
-              @click="teams.remoteControl(task.id, false)"
-            >
-              <Unplug class="size-3.5" /> {{ t('taskDetail.remote.disconnect') }}
-            </button>
-
-            <div class="flex min-w-0 flex-1 items-center gap-1">
-              <input
-                ref="linkField"
-                readonly
-                :value="remoteLink ?? ''"
-                :title="remoteLink ?? ''"
-                :placeholder="t('taskDetail.remote.noLink')"
-                class="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-small outline-none focus:border-accent"
-                :class="remoteLink ? '' : 'text-faint'"
-                @focus="linkField?.select()"
-              />
-              <button
-                class="grid size-6 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary disabled:opacity-40"
-                :disabled="!remoteLink"
-                :title="copied ? t('common.copied') : t('taskDetail.remote.copyLink')"
-                @click="copyLink"
-              >
-                <Check v-if="copied" class="vxs-pop size-3.5 text-success" />
-                <Copy v-else class="size-3.5" />
-              </button>
-              <a
-                v-if="remoteLink"
-                :href="remoteLink"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="grid size-6 shrink-0 place-items-center rounded-sm text-faint hover:bg-hover hover:text-primary"
-                :title="t('taskDetail.remote.openLink')"
-              >
-                <ExternalLink class="size-3.5" />
-              </a>
-            </div>
-          </div>
-          <p class="mt-1 text-small text-faint">{{ remoteHint }}</p>
-        </section>
-
         <!-- The review box takes files as well as words (§10.4): dropped onto it, pasted
              into it with Ctrl+V, or picked with the clip. Each is uploaded as it arrives and
              shown as a chip; the review names them when it is sent. The drop target is the

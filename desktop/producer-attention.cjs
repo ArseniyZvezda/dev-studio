@@ -1,5 +1,8 @@
 // Native taskbar overlay is durable attention; focusing only stops the flash (§10.11).
 function registerProducerAttention({ window, icon, description, platform = process.platform, appOwned = false }) {
+  // 'closed' runs after the native window is destroyed (§5.3.5). Keep the
+  // emitter while live so cleanup never reads BrowserWindow.webContents then.
+  const contents = window.webContents;
   let waiting = false;
   let disposed = false;
   const refresh = () => {
@@ -28,16 +31,16 @@ function registerProducerAttention({ window, icon, description, platform = proce
     disposed = true;
     window.removeListener('focus', focus);
     window.removeListener('closed', dispose);
-    window.webContents.removeListener('did-start-navigation', navigate);
-    window.webContents.removeListener('render-process-gone', crashed);
+    contents.removeListener('did-start-navigation', navigate);
+    contents.removeListener('render-process-gone', crashed);
   };
   window.on('focus', focus);
   window.once('closed', dispose);
   // Legacy renderer-owned state resets on replacement. App-owned attention is
   // independent of the shell renderer's reload/crash lifecycle (§5.3).
   if (!appOwned) {
-    window.webContents.on('did-start-navigation', navigate);
-    window.webContents.on('render-process-gone', crashed);
+    contents.on('did-start-navigation', navigate);
+    contents.on('render-process-gone', crashed);
   }
   return { set, refresh, dispose };
 }

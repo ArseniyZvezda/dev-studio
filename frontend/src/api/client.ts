@@ -32,6 +32,30 @@ import type {
   CreateEntryRequest,
   DeleteRequest,
   DocDetail,
+  DocSaved,
+  DocumentFence,
+  ProjectRemoteStatus,
+  ProjectRemoteCommitReceipt,
+  ProjectRemoteEditorRegister,
+  ProjectRemoteEditorHeartbeat,
+  ProjectRemoteEditorLease,
+  ProjectRemoteEditorMaterialization,
+  ProjectRemoteEditorMaterializationTicket,
+  ProjectRemoteEditorMaterializationConfirm,
+  ProjectRemoteEditorClosed,
+  ProjectRemotePrepareRequest,
+  ProjectRemotePreparedChange,
+  ProjectRemoteQuiesceRequest,
+  ProjectRemoteDrainStatus,
+  ProjectRemoteEditorAckRequest,
+  ProjectRemoteCommitRequest,
+  ProjectRemotePreview,
+  ProjectRemoteEnableRequest,
+  ProjectRemoteMigrationPlan,
+  ProjectRemoteMigrationProfileRequest,
+  ProjectRemoteMigrationProfile,
+  ProjectRemoteMigrationResolveRequest,
+  ProjectRemoteMigrationResolution,
   DocEntry,
   DocFolderDeleted,
   DocFolderRenameDone,
@@ -111,6 +135,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly detail: string,
+    readonly code: string | null = null,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(detail)
     this.name = 'ApiError'
@@ -120,7 +146,24 @@ export class ApiError extends Error {
   get isAuthFailure(): boolean {
     return this.status === 401
   }
+
+  /** Admission refusals are never an invitation to overwrite or adopt a newer G. */
+  get isFenceConflict(): boolean {
+    return this.status === 409 && this.code !== null && documentFenceErrorCodes.has(this.code)
+  }
+
+  /** Legacy disk/name conflicts have no typed admission code (studio-design §5.3). */
+  get isDiskConflict(): boolean {
+    return this.status === 409 && this.code === null
+  }
 }
+
+const documentFenceErrorCodes = new Set([
+  'reload_required', 'stale_backend_epoch', 'stale_binding_generation', 'mutation_busy',
+  'unknown_editor', 'editor_mismatch', 'editor_lease_expired', 'unknown_sid',
+  'unknown_collab_session', 'pending_edits', 'stale_editor_version', 'invalid_editor',
+  'use_remote_settings',
+])
 
 export function sessionContextPath(target: ContextTarget): string {
   return 'chatId' in target
@@ -207,23 +250,40 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     }
 
     if (!response.ok) {
-      throw new ApiError(response.status, await readErrorDetail(response))
+      throw await readApiError(response)
     }
     if (response.status === 204) return undefined as T
     return await json<T>(response)
   }
 
-  async function readErrorDetail(response: Response): Promise<string> {
+  async function readApiError(response: Response): Promise<ApiError> {
     try {
       const payload = await json<unknown>(response)
-      const detail = (payload as { detail?: unknown }).detail
-      if (typeof detail === 'string') return detail
-      if (detail) return JSON.stringify(detail)
+      if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+        const { detail } = payload as { detail?: unknown }
+        // I4 uses a top-level envelope; accept FastAPI's nested form as well.
+        const envelope = typeof detail === 'object' && detail !== null && !Array.isArray(detail)
+          ? detail : payload
+        const { code, details } = envelope as { code?: unknown; details?: unknown }
+        if (typeof code === 'string') {
+          return new ApiError(response.status, typeof detail === 'string' ? detail : code, code,
+            typeof details === 'object' && details !== null && !Array.isArray(details)
+              ? details as Record<string, unknown> : {})
+        }
+        if (typeof detail === 'string') return new ApiError(response.status, detail)
+        if (detail) return new ApiError(response.status, JSON.stringify(detail))
+      }
     } catch (cause) {
       if (cause instanceof StaleProjectResponseError) throw cause
       /* fall through to the status text */
     }
-    return response.statusText || `HTTP ${response.status}`
+    return new ApiError(response.status, response.statusText || `HTTP ${response.status}`)
+  }
+
+  /** Project-only local surface; constructing a client never invokes or activates it. */
+  function remoteRequest<T>(method: string, path = '', body?: unknown): Promise<T> {
+    if (session.isLegacy) return Promise.reject(new ApiError(409, 'reload_required', 'reload_required'))
+    return request<T>(method, `/remote${path}`, { body, cache: 'no-store' })
   }
 
   /** Absolute URL for a raw project file — used for `<img>` and download links. */
@@ -277,7 +337,7 @@ export function createApiClient(session: ProjectSession = rendererSession) {
       if (cause instanceof StaleProjectResponseError) throw cause
       throw new ApiError(0, cause instanceof Error ? cause.message : t('api.networkError'))
     }
-    if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+    if (!response.ok) throw await readApiError(response)
     return await json<TaskAttachment>(response)
   }
 
@@ -291,7 +351,7 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     const body = new FormData()
     body.append('file', file)
     const response = await fetchBound('/attachments', { method: 'POST', headers: authHeaders(), body })
-    if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+    if (!response.ok) throw await readApiError(response)
     return await json<UploadedAttachment>(response)
   }
 
@@ -320,7 +380,7 @@ export function createApiClient(session: ProjectSession = rendererSession) {
       if (cause instanceof StaleProjectResponseError) throw cause
       throw new ApiError(0, cause instanceof Error ? cause.message : t('api.networkError'))
     }
-    if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+    if (!response.ok) throw await readApiError(response)
     return await json<DocAssetAdded>(response)
   }
 
@@ -372,19 +432,20 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     path: string,
     name: string,
     onFrame: (frame: DocFolderRenameFrame) => void,
+    fence?: DocumentFence,
   ): Promise<DocFolderRenameDone> {
     let response: Response
     try {
       response = await fetchBound('/docs/folders/rename', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, name }),
+        body: JSON.stringify({ path, name, ...fence }),
       })
     } catch (cause) {
       if (cause instanceof StaleProjectResponseError) throw cause
       throw new ApiError(0, cause instanceof Error ? cause.message : t('api.networkError'))
     }
-    if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+    if (!response.ok) throw await readApiError(response)
     if (!response.body) throw new ApiError(0, t('api.renameNoBody'))
 
     // Filled in by the callback, which is why it is an object: a `let` assigned inside a closure
@@ -428,7 +489,7 @@ export function createApiClient(session: ProjectSession = rendererSession) {
       if (cause instanceof StaleProjectResponseError) throw cause
       throw new ApiError(0, cause instanceof Error ? cause.message : t('api.networkError'))
     }
-    if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response))
+    if (!response.ok) throw await readApiError(response)
     try { return await response.arrayBuffer() }
     finally { guards.get(response)?.() }
   }
@@ -776,6 +837,39 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     sync: () => request<SyncStatus>('GET', '/sync'),
     updateSync: (body: SyncUpdate) => request<SyncStatus>('PUT', '/sync', { body }),
 
+    // studio-design §5.2: project observation/leases exist at I4; the remaining
+    // commands are transport contracts only, consumed after their release gates.
+    projectRemote: () => remoteRequest<ProjectRemoteStatus>('GET'),
+    registerRemoteEditor: (body: ProjectRemoteEditorRegister) =>
+      remoteRequest<ProjectRemoteEditorLease>('POST', '/editors', body),
+    heartbeatRemoteEditor: (editorId: string, body: ProjectRemoteEditorHeartbeat) =>
+      remoteRequest<ProjectRemoteEditorLease>('POST', `/editors/${encodeURIComponent(editorId)}/heartbeat`, body),
+    materializeRemoteEditor: (editorId: string, body: ProjectRemoteEditorMaterialization) =>
+      remoteRequest<ProjectRemoteEditorMaterializationTicket>('POST', `/editors/${encodeURIComponent(editorId)}/materialization`, body),
+    confirmRemoteEditorMaterialization: (editorId: string, body: ProjectRemoteEditorMaterializationConfirm) =>
+      remoteRequest<ProjectRemoteEditorLease>('POST', `/editors/${encodeURIComponent(editorId)}/materialization/confirm`, body),
+    deleteRemoteEditor: (editorId: string, body: ProjectRemoteEditorHeartbeat) =>
+      remoteRequest<ProjectRemoteEditorClosed>('DELETE', `/editors/${encodeURIComponent(editorId)}`, body),
+    prepareRemoteChange: (body: ProjectRemotePrepareRequest) =>
+      remoteRequest<ProjectRemotePreparedChange>('POST', '/prepare', body),
+    quiesceRemoteChange: (changeId: string, body: ProjectRemoteQuiesceRequest) =>
+      remoteRequest<ProjectRemoteDrainStatus>('POST', `/changes/${encodeURIComponent(changeId)}/quiesce`, body),
+    ackRemoteEditor: (changeId: string, body: ProjectRemoteEditorAckRequest) =>
+      remoteRequest<void>('POST', `/changes/${encodeURIComponent(changeId)}/editor-ack`, body),
+    commitRemoteChange: (changeId: string, body: ProjectRemoteCommitRequest) =>
+      remoteRequest<ProjectRemoteCommitReceipt>('POST', `/changes/${encodeURIComponent(changeId)}/commit`, body),
+    cancelRemoteChange: (changeId: string) =>
+      remoteRequest<void>('DELETE', `/changes/${encodeURIComponent(changeId)}`),
+    previewRemoteReconciliation: () =>
+      remoteRequest<ProjectRemotePreview>('POST', '/reconcile-preview'),
+    enableProjectRemote: (body: ProjectRemoteEnableRequest) =>
+      remoteRequest<ProjectRemoteStatus>('POST', '/enable', body),
+    remoteMigration: () => remoteRequest<ProjectRemoteMigrationPlan>('GET', '/migration'),
+    selectRemoteMigrationProfile: (planId: string, body: ProjectRemoteMigrationProfileRequest) =>
+      remoteRequest<ProjectRemoteMigrationProfile>('POST', `/migration/${encodeURIComponent(planId)}/profile`, body),
+    resolveRemoteMigration: (planId: string, body: ProjectRemoteMigrationResolveRequest) =>
+      remoteRequest<ProjectRemoteMigrationResolution>('POST', `/migration/${encodeURIComponent(planId)}/resolve`, body),
+
     // ------------------------------------------------------------ project docs
     docs: () => request<DocEntry[]>('GET', '/docs'),
     doc: (path: string) => request<DocDetail>('GET', `/docs/${encodePath(path)}`),
@@ -795,13 +889,15 @@ export function createApiClient(session: ProjectSession = rendererSession) {
        * from outside that would end the room for everyone in it.
        */
       collabSession: string | null = null,
+      fence?: DocumentFence,
     ) =>
-      request<DocDetail>('PUT', `/docs/${encodePath(path)}`, {
+      request<DocSaved>('PUT', `/docs/${encodePath(path)}`, {
         body: {
           content,
           author,
           expected_updated_at: expectedUpdatedAt,
           collab_session: collabSession,
+          ...fence,
         },
       }),
     /**
@@ -809,14 +905,20 @@ export function createApiClient(session: ProjectSession = rendererSession) {
      * expectation replaces what is there, which is right for a save and loses a document for a
      * "New document" given a name that is taken.
      */
-    createDoc: (path: string, content: string) =>
-      request<DocDetail>('PUT', `/docs/${encodePath(path)}`, {
-        body: { content, exclusive: true },
+    createDoc: (path: string, content: string, fence?: DocumentFence) =>
+      request<DocSaved>('PUT', `/docs/${encodePath(path)}`, {
+        body: { content, exclusive: true, ...fence },
       }),
-    deleteDoc: (path: string) =>
-      request<{ path: string; deleted: boolean }>('DELETE', `/docs/${encodePath(path)}`),
-    moveDoc: (source: string, target: string) =>
-      request<DocMoveResult>('POST', '/docs/move', { body: { source, target } }),
+    deleteDoc: (path: string, fence?: DocumentFence) =>
+      request<{ path: string; deleted: boolean }>('DELETE', `/docs/${encodePath(path)}`, {
+        query: fence === undefined ? undefined : {
+          backend_epoch: fence.backend_epoch,
+          expected_binding_generation: fence.expected_binding_generation,
+          editor_id: fence.editor_id, client_instance_id: fence.client_instance_id, sid: fence.sid,
+        },
+      }),
+    moveDoc: (source: string, target: string, fence?: DocumentFence) =>
+      request<DocMoveResult>('POST', '/docs/move', { body: { source, target, ...fence } }),
     searchDocs: (q: string) => request<DocSearchResult[]>('GET', '/docs/search', { query: { q } }),
     /**
      * The whole corpus's link graph, for the side panel's picture (§5). Declared before the
@@ -826,15 +928,15 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     docsGraph: () => request<DocGraph>('GET', '/docs/graph'),
     /** The folders of the tree that have a colour or an icon — no others are listed (§5.2). */
     docFolders: () => request<DocFolderStyle[]>('GET', '/docs/folders'),
-    setDocFolderStyle: (body: DocFolderStyleUpdate) =>
-      request<DocFolderStyle>('POST', '/docs/folders/style', { body }),
+    setDocFolderStyle: (body: DocFolderStyleUpdate, fence?: DocumentFence) =>
+      request<DocFolderStyle>('POST', '/docs/folders/style', { body: { ...body, ...fence } }),
     renameDocFolder,
     /**
      * Delete a folder with everything in it. 409 means the system would not let go of it and
      * nothing was removed; a 500 may have stopped part-way.
      */
-    deleteDocFolder: (path: string) =>
-      request<DocFolderDeleted>('POST', '/docs/folders/delete', { body: { path } }),
+    deleteDocFolder: (path: string, fence?: DocumentFence) =>
+      request<DocFolderDeleted>('POST', '/docs/folders/delete', { body: { path, ...fence } }),
 
     // ------------------------------------------------------------ MCP servers (§10.7)
     /**

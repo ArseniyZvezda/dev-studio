@@ -26,7 +26,6 @@ import { t } from '@/i18n'
 import { statusLabel } from '@/lib/status'
 import { tokenDirections, type TokenDirections } from '@/lib/token-directions'
 import { rendererSession } from '@/session/project-session'
-import { useSessionStore } from '@/stores/session'
 import { useTeamsStore } from '@/stores/teams'
 
 const teams = useTeamsStore()
@@ -40,7 +39,6 @@ const doneUsage = computed(() => {
   }
   return sums
 })
-const session = useSessionStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -79,19 +77,11 @@ watch(
   },
 )
 
-/** Surfaced from `GET /api/status` so an unusable backend is visible before a run is
- *  started rather than after it fails. */
-const backendState = computed(() => {
-  const backends = session.status?.agent_backends ?? {}
-  return Object.entries(backends).map(([name, info]) => ({ name, ...info }))
-})
-
 let initialLoad: Promise<void> = Promise.resolve()
 onMounted(() => { initialLoad = loadPage() })
 async function loadPage() {
   teams.subscribe()
   await teams.load()
-  await session.refreshStatus()
   initialLoadComplete = true
 
   consumeAssign()
@@ -259,15 +249,6 @@ async function setAutostartTasks(event: Event) {
           :show-archived="showArchived"
           @select="teams.selectTask($event)"
         />
-      </div>
-
-      <div
-        v-for="backend in backendState"
-        :key="backend.name"
-        class="shrink-0 border-t border-line-subtle px-pane py-1.5 text-small"
-        :class="backend.available ? 'text-faint' : 'text-warning'"
-      >
-        {{ backend.name }}: {{ backend.reason }}
       </div>
     </section>
 

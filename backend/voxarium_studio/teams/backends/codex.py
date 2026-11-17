@@ -34,9 +34,11 @@ What the request carries that Codex can take, and what it cannot:
 - **Pictures** ride ``-i`` on both the first run and a resume.
 
 What it never does: continue a stalled session (Codex has no turn cap), hold a run open for
-delegated work (none), report a usage window (``exec --json`` has no such frame), or offer
-Remote Control. A failed turn surfaces as an ``error`` event with Codex's own wording, so a
-usage limit it names is still recognised downstream (``teams/limits.py``).
+delegated work (none), report a usage window from stdout (``exec --json`` has no such
+frame), or offer Remote Control. The existing rollout tail does carry account quotas,
+shared with the status bar (§6.1). A failed turn surfaces as an ``error`` event with
+Codex's own wording, so a usage limit it names is still recognised downstream
+(``teams/limits.py``).
 
 The event vocabulary was read off the installed CLI (0.164.0) rather than guessed:
 ``thread.started`` / ``turn.started`` / ``turn.completed`` / ``turn.failed`` / ``error`` and
@@ -63,6 +65,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ..backend_usage import record_codex_usage
 from .base import AgentBackend, AgentEvent, AgentRunRequest, register_backend
 from .cli_stream import _Oversized, _drain, _frames
 from .codex_costs import estimate_cost
@@ -828,6 +831,16 @@ class _RolloutUsage:
                             self.context_window = window
                     if payload.get("type") != "token_count":
                         continue
+                    # §6.1: quota is account-wide, separate from token accounting.
+                    # Timestamped history cannot replace a newer observation or renew
+                    # stale data. Without a timestamp, only a known live task is safe.
+                    stamp = record.get("timestamp")
+                    if stamp is not None or (
+                        self.baseline is not None
+                        and not self.waiting_for_start
+                        and not self.unavailable_resume
+                    ):
+                        record_codex_usage(payload.get("rate_limits"), observed_at=stamp)
                     info = payload.get("info")
                     if not isinstance(info, dict):
                         continue

@@ -30,6 +30,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from ..backend_usage import record_claude_usage
 from ..changes import edit_stat
 from .base import (
     AgentBackend,
@@ -470,6 +471,8 @@ class ClaudeCodeBackend(AgentBackend):
 
                                 rate_limit = getattr(message, "rate_limit_info", None)
                                 if rate_limit is not None:
+                                    rate_limit_data = _rate_limit_data(rate_limit)
+                                    record_claude_usage(rate_limit_data)
                                     # `RateLimitEvent`, and read by duck typing rather than
                                     # by class: it arrived later than the SDK floor this
                                     # package pins, and an older one has no such name to
@@ -479,7 +482,7 @@ class ClaudeCodeBackend(AgentBackend):
                                     yield AgentEvent(
                                         kind="rate_limit",
                                         text=_rate_limit_line(rate_limit),
-                                        data=_rate_limit_data(rate_limit),
+                                        data=rate_limit_data,
                                         session_id=session_id,
                                     )
                                 elif isinstance(message, AssistantMessage):

@@ -16,6 +16,45 @@ const state: DesktopShellState = {
 }
 
 describe('project tab strip', () => {
+  it.each([
+    [2, 1], [0, 1], [2, 0], [0, 0],
+  ])('shows %i running and %i review tasks instead of Ready', async (running, review) => {
+    const host = document.createElement('div')
+    const current = shallowRef<DesktopShellState>({ ...state, tabs: state.tabs.map(tab => ({
+      ...tab, task_counts: { in_progress: running, needs_review: review },
+    })) })
+    const app = createApp({ render: () => h(ProjectTabStrip, { state: current.value, pending: [] }) })
+    app.mount(host)
+    try {
+      const tab = host.querySelector('[role="tab"]')!
+      const counts = tab.querySelectorAll('.project-tab-strip__count')
+      expect([...counts].map(node => node.textContent?.trim())).toEqual([String(running), String(review)])
+      expect(counts[0]?.querySelector('i')?.style.background).toBe(`var(--vxs-status-${running ? 'running' : 'todo'})`)
+      expect(counts[1]?.querySelector('i')?.style.background).toBe(`var(--vxs-status-${review ? 'review' : 'todo'})`)
+      expect(counts[0]?.getAttribute('aria-label')).toBe('project.taskCounts.inProgress')
+      expect(counts[1]?.getAttribute('aria-label')).toBe('project.taskCounts.needsReview')
+      expect(tab.textContent).not.toContain('desktop.tabs.ready')
+      expect(tab.getAttribute('title')).toBe('D:/Projects/a')
+      // Main publications update badges without replacing tabs or topology revisions.
+      current.value = { ...current.value, tabs: current.value.tabs.map(item => ({
+        ...item, task_counts: { in_progress: 0, needs_review: 0 },
+      })) }
+      await nextTick()
+      expect(host.querySelector('[role="tab"]')).toBe(tab)
+      expect([...tab.querySelectorAll('.project-tab-strip__count')].map(node => node.textContent?.trim())).toEqual(['0', '0'])
+    } finally { app.unmount() }
+  })
+
+  it('does not disguise unavailable counts as zero tasks', () => {
+    const host = document.createElement('div')
+    const app = createApp(ProjectTabStrip, { state, pending: [] })
+    app.mount(host)
+    try {
+      expect([...host.querySelectorAll('[role="tab"] .project-tab-strip__count')].map(node => node.textContent?.trim())).toEqual(['—', '—', '—', '—'])
+      expect(host.querySelectorAll('[role="tab"] .project-tab-strip__dot')).toHaveLength(4)
+    } finally { app.unmount() }
+  })
+
   it('shows a pending root before main has created its project view', () => {
     const host = document.createElement('div')
     const app = createApp(ProjectTabStrip, { state, pending: ['D:/Projects/new'] })

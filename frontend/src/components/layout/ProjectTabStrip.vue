@@ -173,13 +173,28 @@ const label = (root: string) => root.split(/[\\/]/).filter(Boolean).at(-1) || ro
           :aria-busy="pendingTab(tab.tabId, tab.project.root) || tab.state === 'loading'"
           aria-keyshortcuts="Control+Shift+ArrowLeft Control+Shift+ArrowRight Shift+F10"
           :aria-description="t('desktop.tabs.reorderHint')"
-          :title="`${tab.project.root} — ${t(`desktop.tabs.${tab.state}`)}`"
+          :title="tab.state === 'ready' ? tab.project.root : `${tab.project.root} — ${t(`desktop.tabs.${tab.state}`)}`"
           :class="['project-tab-strip__tab', { 'is-active': tab.tabId === props.state?.window.activeTabId, 'is-crashed': tab.state === 'crashed' }]"
           @pointerdown="pointerdown($event, tab.tabId)" @pointermove="pointermove" @pointerup="pointerup"
           @pointercancel="pointercancel" @lostpointercapture="pointercancel"
           @contextmenu.prevent="focusDetach(tab.tabId)" @click="click($event, tab.tabId)">
           <span class="project-tab-strip__name">{{ label(tab.project.root) }}</span>
-          <span class="project-tab-strip__status">{{ t(`desktop.tabs.${pendingTab(tab.tabId, tab.project.root) ? 'pending' : tab.state}`) }}</span>
+          <!-- §5.3: shell receives summaries from main, never a project store/socket. -->
+          <span class="project-tab-strip__counts">
+            <span class="project-tab-strip__count" role="img" data-task-status="in_progress"
+              :aria-label="t('project.taskCounts.inProgress', { count: tab.task_counts?.in_progress ?? '—' })"
+              :title="t('project.taskCounts.inProgress', { count: tab.task_counts?.in_progress ?? '—' })">
+              {{ tab.task_counts?.in_progress ?? '—' }}<i class="project-tab-strip__dot" aria-hidden="true"
+                :style="{ background: tab.task_counts?.in_progress ? 'var(--vxs-status-running)' : 'var(--vxs-status-todo)' }" />
+            </span>
+            <span class="project-tab-strip__count" role="img" data-task-status="needs_review"
+              :aria-label="t('project.taskCounts.needsReview', { count: tab.task_counts?.needs_review ?? '—' })"
+              :title="t('project.taskCounts.needsReview', { count: tab.task_counts?.needs_review ?? '—' })">
+              {{ tab.task_counts?.needs_review ?? '—' }}<i class="project-tab-strip__dot" aria-hidden="true"
+                :style="{ background: tab.task_counts?.needs_review ? 'var(--vxs-status-review)' : 'var(--vxs-status-todo)' }" />
+            </span>
+          </span>
+          <span v-if="pendingTab(tab.tabId, tab.project.root) || tab.state !== 'ready'" class="project-tab-strip__status">{{ t(`desktop.tabs.${pendingTab(tab.tabId, tab.project.root) ? 'pending' : tab.state}`) }}</span>
         </button>
         <!-- An inline command, never a popup painted below a WebContentsView. -->
         <button type="button" class="project-tab-strip__detach" :data-detach-tab-id="tab.tabId"
@@ -213,6 +228,9 @@ const label = (root: string) => root.split(/[\\/]/).filter(Boolean).at(-1) || ro
 .project-tab-strip__tab.is-crashed, .project-tab-strip__error { color: var(--vxs-danger); }
 .project-tab-strip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-tab-strip__status { font-size: 11px; }
+.project-tab-strip__counts { display: inline-flex; flex-shrink: 0; align-items: center; gap: 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.project-tab-strip__count { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.project-tab-strip__dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .project-tab-strip__open { flex-shrink: 0; width: 36px; border-radius: var(--vxs-radius-lg); color: var(--vxs-text-muted); font-size: 24px; }
 .project-tab-strip__detach, .project-tab-strip__close { width: 28px; flex-shrink: 0; color: var(--vxs-text-muted); }
 .project-tab-strip__detach:disabled, .project-tab-strip__close:disabled { opacity: .35; }

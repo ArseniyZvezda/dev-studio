@@ -118,6 +118,12 @@ class EventType(StrEnum):
     """One line from the update's transcript, as the command it came from prints it."""
 
     # Online sync (§16)
+    REMOTE_BINDING_CHANGE = "remote.binding_change"
+    """I5 quiesce phases, published only on the affected resident Ctx's bus.
+
+    This never signals project.opened, renderer rebind or identity commit.
+    """
+
     SYNC_STATUS = "sync.status"
     """Everything ``GET /api/sync`` returns, whenever any of it changes: the connection's
     state, who the server says this is, and who else is in the space. Whole, like

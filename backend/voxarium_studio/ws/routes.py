@@ -10,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
@@ -21,6 +24,70 @@ from .events import EventType
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def legacy_editor_blockers(state: Any, ctx: Any) -> int:
+    """Authoritative *live socket* evidence, not proof that an editor saved (I4).
+
+    A legacy /ws follows browser_bus selection, not its hello's captured root.
+    Without editor-lease/flush capability its visibility is unknown, so it is
+    conservatively a blocker for every resident Ctx, including roots opened
+    after connection. A scoped socket/collab socket blocks only its captured
+    Ctx. Future cutover must combine this with dirty/expired editor leases.
+    No client-provided query flag or frame is trusted as capability evidence.
+    """
+    sockets = getattr(state, "legacy_editor_sockets", {})
+    return sum(bound is None or bound is ctx for bound in sockets.values())
+
+
+def bind_editor_inventory(state: Any, ctx: Any) -> None:
+    """Install the app-owned live visibility callback on one resident Ctx.
+
+    The context publication/HTTP owner must call this for newly opened roots;
+    a project.opened event pump is too late to close that admission race. The
+    callback reads the shared registry at check time, not a copied hello/root.
+    Previously observed unconfirmed clients remain in the transition owner
+    after socket close; neither a capability flag nor disconnect is save proof.
+    """
+    transitions = ctx.docs.transitions
+
+    def inventory() -> bool:
+        sockets = getattr(state, "legacy_editor_sockets", {})
+        for token, bound in sockets.items():
+            if bound is None or bound is ctx:
+                transitions.register_client(token)
+        return bool(legacy_editor_blockers(state, ctx))
+
+    transitions.set_client_inventory(inventory)
+    inventory()
+
+
+def _inventory_contexts(state: Any, ctx: Any = None) -> list[Any]:
+    contexts = list(getattr(state, "project_contexts", {}).values())
+    for candidate in (getattr(state, "ctx", None), ctx):
+        if candidate is not None and all(candidate is not item for item in contexts):
+            contexts.append(candidate)
+    return [item for item in contexts if hasattr(getattr(item, "docs", None), "transitions")]
+
+
+@contextmanager
+def _editor_socket_inventory(state: Any, ctx: Any = None) -> Iterator[None]:
+    sockets = getattr(state, "legacy_editor_sockets", None)
+    if sockets is None:
+        sockets = state.legacy_editor_sockets = {}
+    token = uuid4().hex
+    sockets[token] = ctx
+    try:
+        for resident in _inventory_contexts(state, ctx):
+            bind_editor_inventory(state, resident)
+        yield
+    finally:
+        for resident in _inventory_contexts(state, ctx):
+            if ctx is None or ctx is resident:
+                # Also cover a root opened after connection but before teardown.
+                resident.docs.transitions.register_client(token)
+                resident.docs.transitions.close_client(token)
+        sockets.pop(token, None)
 
 
 @router.websocket("/ws/desktop")
@@ -212,9 +279,10 @@ async def project_collab_endpoint(websocket: WebSocket, project_id: str) -> None
     binding = await _project_binding(websocket, project_id)
     if binding is None:
         return
-    await websocket.accept()
-    await websocket.send_json(_hello(binding))
-    await binding.ctx.sync.serve_collab(_ProjectCollabSocket(websocket, binding))  # type: ignore[arg-type]
+    with _editor_socket_inventory(websocket.app.state, binding.ctx):
+        await websocket.accept()
+        await websocket.send_json(_hello(binding))
+        await binding.ctx.sync.serve_collab(_ProjectCollabSocket(websocket, binding))  # type: ignore[arg-type]
 
 
 def _resume_cursor(
@@ -248,6 +316,11 @@ async def project_websocket_endpoint(websocket: WebSocket, project_id: str) -> N
     binding = await _project_binding(websocket, project_id)
     if binding is None:
         return
+    with _editor_socket_inventory(websocket.app.state, binding.ctx):
+        await _serve_project_websocket(websocket, binding)
+
+
+async def _serve_project_websocket(websocket: WebSocket, binding: ProjectDescriptor) -> None:
     bus = binding.ctx.bus
     await websocket.accept()
     since_seq, gap = (None, None)
@@ -331,8 +404,9 @@ async def collab_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorised")
         return
     ctx = websocket.app.state.ctx
-    await websocket.accept()
-    await ctx.sync.serve_collab(websocket)
+    with _editor_socket_inventory(websocket.app.state, ctx):
+        await websocket.accept()
+        await ctx.sync.serve_collab(websocket)
 
 
 @router.websocket("/ws")
@@ -340,6 +414,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     if not await authorise_websocket(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorised")
         return
+
+    # Not bound to initial ctx: browser_bus can switch while this socket lives
+    # (runtime integration plan §2.1). Register before the first accepted await.
+    with _editor_socket_inventory(websocket.app.state):
+        await _serve_legacy_websocket(websocket)
+
+
+async def _serve_legacy_websocket(websocket: WebSocket) -> None:
 
     ctx = websocket.app.state.ctx
     bus = websocket.app.state.browser_bus

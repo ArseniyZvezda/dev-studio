@@ -457,12 +457,15 @@ def test_the_new_theme_knobs_round_trip_and_are_bounded(client: TestClient) -> N
         assert client.put("/api/settings", json={"theme": bad}).status_code == 422, bad
     assert client.get("/api/settings").json()["theme"]["text_size"] == 15
 
-    # `look` left the model with every look but Graphite (§7, 2026-09-16). A client that still
-    # sends one is ignored rather than refused, and the rest of its patch is applied.
+    # Retired fields remain readable from historical disk config, not writable
+    # through the strict API boundary (§5.2.1). Reject the whole patch.
+    before = client.get("/api/settings").json()
     response = client.put("/api/settings", json={"theme": {"look": "material", "font": "roboto"}})
-    assert response.status_code == 200
-    assert "look" not in response.json()["theme"]
-    assert response.json()["theme"]["font"] == "roboto"
+    assert response.status_code == 422
+    assert response.json() == {"detail": [{
+        "type": "value_error", "loc": ["body"], "msg": "Invalid settings request.",
+    }]}
+    assert client.get("/api/settings").json() == before
 
     # Null is applied, not read as omitted — it is the slider's "follow density again".
     after = client.put("/api/settings", json={"theme": {"text_size": None}}).json()["theme"]

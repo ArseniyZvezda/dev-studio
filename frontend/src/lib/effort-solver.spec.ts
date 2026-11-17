@@ -1,23 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  DEFAULT_EFFORT_SOLVER_WEIGHTS, effortSolverResult, spawnEffortSolver, validEffortSolverWeights,
+  effortSolverResult, spawnEffortSolver,
 } from './effort-solver'
 
-describe('Effort Solver input and result validation', () => {
-  it('accepts default weights and zeroing individual criteria', () => {
-    expect(validEffortSolverWeights(DEFAULT_EFFORT_SOLVER_WEIGHTS)).toBe(true)
-    expect(validEffortSolverWeights({ complexity: 0, creativity: 0, depth: 0, coverage: 1 })).toBe(true)
+describe('Orchestrator input and result validation', () => {
+  const scores = { complexity: 9, creativity: 6, depth: 8, coverage: 8 }
+  it.each([0, 0.6, 0.8, 1])('preserves normalized weight %s alongside the selected effort', weight => {
+    expect(effortSolverResult({ scores, weight, effort: 3 })).toEqual({ scores, weight, effort: 3 })
   })
-
-  it.each([-1, NaN, Infinity, ''])('refuses invalid weight %s', depth => {
-    expect(validEffortSolverWeights({ ...DEFAULT_EFFORT_SOLVER_WEIGHTS, depth: depth as number })).toBe(false)
+  it.each([-0.1, 1.1, NaN, Infinity, '0.6', true, null])('rejects invalid weight %s', weight => {
+    expect(effortSolverResult({ scores, weight, effort: 3 })).toBeNull()
   })
-
-  it('refuses a zero total', () => {
-    expect(validEffortSolverWeights({ complexity: 0, creativity: 0, depth: 0, coverage: 0 })).toBe(false)
-  })
-
   it.each([0, 11, 1.5, '8', true])('does not interpret invalid score %s as a valid result', depth => {
     expect(effortSolverResult({ scores: { complexity: 9, creativity: 6, depth, coverage: 8 }, effort: 4 })).toBeNull()
   })
@@ -41,5 +35,27 @@ describe('a spawn_subagent result (§10.3)', () => {
     ['a list', '[]'],
   ])('draws no evaluation from %s', (_case, text) => {
     expect(spawnEffortSolver(text)).toBeNull()
+  })
+})
+
+
+describe('Orchestrator capability and effort evaluation', () => {
+  it.each([1, 2, 3])('reads model strength %s independently from effort', model => {
+    expect(effortSolverResult({ model, effort: 4, effort_level: 'xhigh', reasoning: 'hidden' }))
+      .toEqual({ model, effort: 4, effort_level: 'xhigh' })
+  })
+  it.each([0, 4, 1.5, '2', true, null])('rejects malformed model strength %s', model => {
+    expect(effortSolverResult({ model, effort: 3 })).toBeNull()
+  })
+  it.each([0, 6, 2.5, '3', true])('rejects malformed effort %s', effort => {
+    expect(effortSolverResult({ model: 2, effort })).toBeNull()
+  })
+  it('does not trust inconsistent effort labels or reinterpret new records as legacy ones', () => {
+    expect(effortSolverResult({ model: 2, effort: 4, effort_level: 'low' })).toBeNull()
+    expect(effortSolverResult({ model: 4, scores: { complexity: 2, creativity: 2, depth: 2, coverage: 2 }, effort: 3 })).toBeNull()
+  })
+  it('reads new evaluation data under the compatible effort_solver result key', () => {
+    expect(spawnEffortSolver(JSON.stringify({ id: 'child', effort_solver: { model: 3, effort: 1, effort_level: 'low' } })))
+      .toEqual({ model: 3, effort: 1, effort_level: 'low' })
   })
 })

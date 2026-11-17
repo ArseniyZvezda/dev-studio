@@ -18,13 +18,13 @@ from voxarium_studio.teams.backends.base import AgentEvent
 TEAM = "team_default"
 MEMBER = f"{TEAM}__dev"
 SOLVER = f"{TEAM}__studio-effort-solver"
-# 1 + (1.5*1 + 1.5*1 + 3*2 + 2.5*7) / 19.125 rounds to 2: "medium", which is neither the
-# parent's "high" nor a model default, so an inherited effort cannot pass for a computed one.
-SCORES = {"complexity": 2, "creativity": 2, "depth": 3, "coverage": 3}
+# Orchestrator chooses "medium", unlike the parent's fixed "high", so inherited
+# effort cannot pass for an independently evaluated selection.
+SCORES = {"model": 2, "effort": 2}
 
 
 class SolverBackend:
-    """Effort Solver's model call (§10.11), answered without billing anything."""
+    """Orchestrator's model call (§10.11), answered without billing anything."""
 
     def __init__(self):
         self.requests = []
@@ -90,13 +90,13 @@ async def runner(ctx, monkeypatch, solver):
 
         monkeypatch.setitem(base._BACKENDS, name, Backend)
 
-    async def start(action, *, slots=1, backend="test_subagent_parent"):
+    async def start(action, *, slots=1, backend="test_subagent_parent", model="parent-model"):
         install(backend, action)
         ctx.jobs.update_limits({"agent": slots})
         async with ctx.db.session() as session:
             member = await session.get(TeamMember, MEMBER)
             member.agent_backend = backend
-            member.model = "parent-model"
+            member.model = model
             member.effort = "high"
             member.isolate_worktree = False
             member.permission_mode = "plan"
@@ -110,6 +110,43 @@ async def runner(ctx, monkeypatch, solver):
         return task, ctx.jobs.get(task.id).task
 
     return ctx, install, start
+
+
+@pytest.mark.parametrize("override", [None, "child-explicit", "auto"])
+async def test_children_inherit_auto_policy_not_the_parents_selected_model(runner, solver, monkeypatch, override):
+    from voxarium_studio.teams import orchestrator as runtime
+
+    ctx, _, start = runner
+    chosen = lambda backend, strength: f"{backend}-strength-{strength}"
+    monkeypatch.setattr(runtime, "resolve_model", chosen)
+    monkeypatch.setattr(subagents_module, "resolve_model", chosen)
+    parents, workers = [], []
+
+    async def backend(request):
+        if request.session_key != request.task.id:
+            workers.append(request)
+            yield result("Child findings", session="child-session")
+            return
+        parents.append(request)
+        solver.answer = json.dumps({"model": 3, "effort": 1})
+        row = await ctx.teams.subagents.create(
+            request.task.id, MEMBER, description="Independent assignment", prompt="Inspect parser",
+            model=override,
+        )
+        await ctx.teams.subagents.wait(request.task.id, MEMBER, row["id"], timeout=3)
+        await ctx.teams.subagents.get(request.task.id, MEMBER, row["id"])
+        yield result("Integrated findings")
+
+    task, job = await start(backend, model="auto")
+    await asyncio.wait_for(job, 8)
+    assert (await load(ctx, task.id)).status == TaskStatus.NEEDS_REVIEW
+    assert len(parents) == len(workers) == 1
+    assert parents[0].model == "test_subagent_parent-strength-2"
+    expected = "child-explicit" if override == "child-explicit" else "test_subagent_parent-strength-3"
+    assert workers[0].model == workers[0].member.model == expected
+    assert workers[0].effort == "low"
+    assert parents[0].effort == "high", "fixed member effort survives Auto model selection"
+    assert len(solver.requests) == 2
 
 
 async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usage(runner):
@@ -210,8 +247,10 @@ async def test_any_backend_autojoins_with_own_session_context_and_aggregate_usag
     assert not ctx.teams.subagents.runs and not ctx.jobs.is_running(rows[0].id)
 
 
-async def test_spawn_runs_the_worker_on_the_effort_solvers_choice(runner, solver):
+@pytest.mark.parametrize("expected, index", [("medium", 2), ("low", 1)])
+async def test_spawn_runs_the_worker_on_the_effort_solvers_choice(runner, solver, expected, index):
     ctx, _, start = runner
+    solver.answer = json.dumps({"model": 2, "effort": index})
     usage = {"input_tokens": 10, "cache_creation_input_tokens": 5,
              "cache_read_input_tokens": 7, "output_tokens": 3}
     solver.result_data = {"usage": usage, "total_tokens": 25, "total_cost_usd": 0.0123, "num_turns": 1}
@@ -237,13 +276,13 @@ async def test_spawn_runs_the_worker_on_the_effort_solvers_choice(runner, solver
     await asyncio.wait_for(job, 8)
     saved = await load(ctx, task.id)
     assert saved.status == TaskStatus.NEEDS_REVIEW
-    assert spawned[0]["effort"] == "medium"
+    assert spawned[0]["effort"] == expected
     # The spawn's answer carries the evaluation the transcript draws in the call row.
-    assert spawned[0]["effort_solver"] == {"scores": SCORES, "effort": 2, "effort_level": "medium"}
-    assert [row["effort"] for row in listed] == ["medium"]
+    assert spawned[0]["effort_solver"] == {"model": 2, "effort": index, "effort_level": expected}
+    assert [row["effort"] for row in listed] == [expected]
     assert "effort_solver" not in listed[0]
-    assert [request.effort for request in child_requests] == ["medium", "medium"]
-    assert all(request.member.effort == "medium" for request in child_requests)
+    assert [request.effort for request in child_requests] == [expected, expected]
+    assert all(request.member.effort == expected for request in child_requests)
     # One evaluation per spawn, over the label and the assignment alone; a follow-up
     # turn keeps the effort its worker was started with.
     assert len(solver.requests) == 1
@@ -252,11 +291,11 @@ async def test_spawn_runs_the_worker_on_the_effort_solvers_choice(runner, solver
         "title": "Review parser", "description": "Read parser.py and report bugs.",
     }
     row = (await children(ctx, task.id))[0]
-    assert row.effort == "medium"
+    assert row.effort == expected
     frames = [message for message in await messages(ctx, task.id)
               if message.kind == "system" and message.data.get("task_id") == row.id]
     assert {"task_started", "task_notification"} <= {frame.text for frame in frames}
-    assert all(frame.data["effort"] == "medium" for frame in frames)
+    assert all(frame.data["effort"] == expected for frame in frames)
     # The evaluation is the parent task's spend and stays out of the worker's counters.
     assert row.total_tokens == 200 and row.total_cost_usd == pytest.approx(0.10)
     assert saved.total_tokens == 200 + 10 + 25
@@ -272,7 +311,7 @@ async def test_solver_failure_starts_no_worker_and_substitutes_no_effort(runner,
     if failure == "invalid_json":
         solver.answer = "This looks like a simple task."
     elif failure == "out_of_range":
-        solver.answer = json.dumps({**SCORES, "depth": 11})
+        solver.answer = json.dumps({**SCORES, "effort": 6})
     else:
         solver.error = "Solver unavailable"
     child_started = False

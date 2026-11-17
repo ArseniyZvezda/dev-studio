@@ -20,7 +20,7 @@ from ..models.base import utcnow
 from ..models.subagents import SubagentMessage, TaskSubagent
 from ..models.teams import TaskStatus, TeamMember, TeamTask
 from .backends.base import AgentRunRequest, RuntimeSessionKey, get_backend, runtime_session_owner
-from .effort_solver import EFFORT_SOLVER_ID
+from .effort_solver import EFFORT_SOLVER_ID, resolve_model
 from .effort_solver_runner import EffortSolution, solve_effort
 from .tools import SERVER_NAME, build_toolset
 from .usage import RunUsage
@@ -37,6 +37,7 @@ class ParentRun:
     request: AgentRunRequest
     lease: AgentSlotLease
     run_id: str
+    model_policy: str = ""
     launches: int = 0
     closing: bool = False
     jobs: dict[str, asyncio.Task] = field(default_factory=dict)
@@ -50,8 +51,12 @@ class SubagentManager:
         self.owner = orchestrator
         self.runs: dict[str, ParentRun] = {}
 
-    def open_run(self, request: AgentRunRequest, lease: AgentSlotLease, run_id: str) -> None:
-        self.runs[request.task.id] = ParentRun(request, lease, run_id)
+    def open_run(self, request: AgentRunRequest, lease: AgentSlotLease, run_id: str,
+                 *, model_policy: str | None = None) -> None:
+        self.runs[request.task.id] = ParentRun(
+            request, lease, run_id,
+            model_policy=request.member.model if model_policy is None else model_policy,
+        )
 
     def require_run(self, task_id: str, member_id: str, run_id: str | None) -> ParentRun:
         run = self._run(task_id, member_id)
@@ -90,11 +95,11 @@ class SubagentManager:
             raise ValueError("This task run is closing")
 
     async def _solve_effort(self, run: ParentRun, description: str, prompt: str) -> EffortSolution:
-        """Score one assignment with the team's Effort Solver, read fresh each time (§10.11)."""
+        """Score one assignment with the team's Orchestrator, read fresh each time (§10.11)."""
         async with self.owner.db.session() as session:
             solver = await session.get(TeamMember, f"{run.request.task.team_id}__{EFFORT_SOLVER_ID}")
         if solver is None:
-            raise RuntimeError("The built-in Effort Solver is missing. Reload the team and retry.")
+            raise RuntimeError("The built-in Orchestrator is missing. Reload the team and retry.")
         return await solve_effort(
             solver, description, prompt, max_message_bytes=self.owner.config.teams.max_message_bytes,
         )
@@ -115,7 +120,7 @@ class SubagentManager:
         available, reason = implementation.is_available()
         if not available:
             raise ValueError(reason or f"Backend {backend} is unavailable")
-        # §10.3, §10.11: Effort Solver, not the parent, chooses a worker's effort from its
+        # §10.3, §10.11: Orchestrator, not the parent, chooses a worker's effort from its
         # description and prompt. A launch already known to be refused is not paid for, and
         # the model call stays outside `run.lock`: a slow evaluation must not hold up
         # stopping or closing the run. It is awaited inside the parent's own slot, like the
@@ -123,6 +128,8 @@ class SubagentManager:
         # starts on a substituted effort.
         await self._launch_allowed(task_id, run)
         solution = await self._solve_effort(run, description.strip(), prompt)
+        model_policy = model or run.model_policy or run.request.model
+        selected_model = resolve_model(backend, solution.model) if model_policy == "auto" else model_policy
         spent = {key: int(solution.usage.get(key) or 0) for key in (
             "total_tokens", "total_uncached_tokens", "total_cached_tokens",
             "total_input_tokens", "total_output_tokens", "num_turns",
@@ -133,7 +140,7 @@ class SubagentManager:
             await self._launch_allowed(task_id, run)
             row = TaskSubagent(
                 task_id=task_id, member_id=member_id, description=description.strip(),
-                backend=backend, model=model or run.request.model, effort=solution.effort_level,
+                backend=backend, model=selected_model, effort=solution.effort_level,
             )
             # Track ownership before the first cancellable INSERT/publish. A parent
             # stopped during spawn must also close a row whose job never started.
@@ -151,12 +158,9 @@ class SubagentManager:
             await self._start(run, row, prompt)
         if cost or any(spent.values()):
             await self.owner._publish_task_changed(task_id)
-        # §10.3: the four scores travel in this answer only — the transcript keeps the call's
-        # result, which is where the spawn row draws them; `TaskSubagent` stores the effort.
-        return {**row.model_dump(mode="json"), "effort_solver": {
-            "scores": solution.scores.model_dump(), "effort": solution.effort,
-            "effort_level": solution.effort_level,
-        }}
+        # §10.3: the evaluation travels in this answer; the transcript keeps the call's
+        # result, while `TaskSubagent` stores the concrete runtime selection.
+        return {**row.model_dump(mode="json"), "effort_solver": solution.result_data()}
 
     async def _start(self, run: ParentRun, row: TaskSubagent, prompt: str) -> None:
         # Persist/publish before submitting, so an immediate stop still has a start row.

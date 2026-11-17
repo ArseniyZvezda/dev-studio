@@ -20,6 +20,7 @@ from voxarium_studio.core.security import AuthSettings
 from voxarium_studio.main import create_app
 from voxarium_studio.models.teams import TaskStatus, TeamMember, TeamTask
 from voxarium_studio.teams.backends.base import AgentEvent, register_backend
+from voxarium_studio.sync.reservations import ReservationError
 
 # ---------------------------------------------------------------- switching projects
 
@@ -29,12 +30,157 @@ async def test_bootstrap_identity_is_immutable_and_initialisation_is_idempotent(
     workspace.initialise_workspace(state)
     descriptor = await workspace.ensure_project(state, ctx.paths.root)
     bus = state.browser_bus
+    reservations = state.remote_reservations
+    lease = reservations.reserve(root=ctx.paths.root, url="remote.example", persistent_id="fixture")
     workspace.initialise_workspace(state)
     assert resolve_project(state, descriptor.project_id) is descriptor
     assert state.browser_bus is bus
+    assert state.remote_reservations is reservations
+    assert ctx.remote_reservations is reservations
+    assert reservations.reserve(
+        root=ctx.paths.root, url="https://remote.example/", persistent_id="fixture",
+    ) is lease
+    assert reservations.release(lease)
     assert len(state.project_contexts) == len(state.project_registry) == 1
     with pytest.raises(FrozenInstanceError):
         descriptor.ctx = None
+
+
+async def test_reservation_owner_survives_selection_without_stopping_either_context(
+    ctx, tmp_path: Path,
+) -> None:
+    from voxarium_studio.core.project_scope import canonical_root
+
+    state = SimpleNamespace(ctx=ctx, project_lock=asyncio.Lock())
+    workspace.initialise_workspace(state)
+    owner = state.remote_reservations
+    lease = owner.reserve(root=ctx.paths.root, url="remote.example", persistent_id="shared")
+    other = tmp_path / "copy"
+    other.mkdir()
+    try:
+        replacement = await workspace.open_project(state, other)
+        workspace.initialise_workspace(state)
+        assert state.ctx is replacement
+        assert replacement.remote_reservations is ctx.remote_reservations is owner
+        assert state.remote_reservations is owner
+        assert len(state.project_contexts) == 2
+        with pytest.raises(ReservationError) as caught:
+            owner.reserve(root=other, url="https://remote.example/", persistent_id="shared")
+        assert caught.value.code == "duplicate_local_binding"
+        assert caught.value.owner_root == canonical_root(ctx.paths.root)
+        assert await workspace.open_project(state, ctx.paths.root / ".") is ctx
+        workspace.initialise_workspace(state)
+        assert state.remote_reservations is owner
+        assert len(state.project_contexts) == 2
+        assert owner.reserve(
+            root=ctx.paths.root, url="remote.example", persistent_id="shared",
+        ) is lease
+        # Opening a copy or encountering a collision never retires a context.
+        assert all(context.db is not None for context in state.project_contexts.values())
+    finally:
+        assert owner.release(lease)
+        await workspace.shutdown_workspace(state)
+
+
+@pytest.mark.parametrize("failure", [False, True])
+async def test_shutdown_fences_reservations_before_await_and_keeps_live_leases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: bool,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from voxarium_studio.sync.reservations import ReservationOwner
+    from voxarium_studio.ws.bus import EventBus
+
+    owner = ReservationOwner()
+    root = tmp_path / "resident"
+    lease = owner.reserve(root=root, url="remote.example", persistent_id="shared")
+    admission_closed, stopping, finish_stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    close = owner.close_admission
+
+    def close_admission():
+        close()
+        admission_closed.set()
+
+    monkeypatch.setattr(owner, "close_admission", close_admission)
+
+    fail_stop = failure
+
+    async def shutdown():
+        stopping.set()
+        await finish_stop.wait()
+        if fail_stop:
+            raise RuntimeError("fixture shutdown failure")
+
+    ctx = SimpleNamespace(
+        shutdown=shutdown, auth=AuthSettings(), bus=EventBus(),
+        paths=ProjectPaths.for_project(root),
+    )
+    lifecycle = SimpleNamespace(unregister_context=Mock(), register_context=Mock())
+    state = SimpleNamespace(
+        ctx=ctx, project_lock=asyncio.Lock(), remote_reservations=owner,
+        project_contexts={root: ctx},
+        project_registry={"fixture": SimpleNamespace(project_id="fixture", ctx=ctx)},
+        project_roots={root: SimpleNamespace(project_id="fixture", ctx=ctx)},
+        desktop_events=SimpleNamespace(close=AsyncMock()), remote_profile_lifecycle=lifecycle,
+    )
+    plugin_stop = AsyncMock()
+    monkeypatch.setattr(workspace.plugin_envs, "shutdown", plugin_stop)
+    await state.project_lock.acquire()
+    task = asyncio.create_task(workspace.shutdown_workspace(state))
+    try:
+        await asyncio.wait_for(admission_closed.wait(), 2)
+        assert not stopping.is_set()
+        state.desktop_events.close.assert_not_awaited()
+        with pytest.raises(ReservationError, match="reservation_admission_closed"):
+            owner.reserve(root=tmp_path / "another", url="other.example", persistent_id="new")
+        state.project_lock.release()
+        await asyncio.wait_for(stopping.wait(), 2)
+        assert state.project_contexts == {root: ctx}
+        assert not task.done()
+        finish_stop.set()
+        if failure:
+            with pytest.raises(RuntimeError, match="fixture shutdown failure"):
+                await task
+            lifecycle.unregister_context.assert_not_called()
+        else:
+            await task
+            lifecycle.unregister_context.assert_called_once_with(ctx)
+        plugin_stop.assert_awaited_once()
+        if failure:
+            assert state.project_contexts == {root: ctx}
+            assert state.project_roots[root].ctx is ctx
+            # A later successful retry joins the SAME context and retires it.
+            fail_stop = False
+            await workspace.shutdown_workspace(state)
+            lifecycle.unregister_context.assert_called_once_with(ctx)
+            assert not state.project_contexts
+            assert not state.project_registry
+            assert not state.project_roots
+        else:
+            assert not state.project_contexts
+        assert state.remote_reservations is owner
+        # Neither entering shutdown, stopping contexts nor failed stop releases it.
+        assert owner.release(lease)
+        assert not owner.release(lease)
+        with pytest.raises(ReservationError, match="reservation_admission_closed"):
+            owner.reserve(root=root, url="remote.example", persistent_id="shared")
+        # An ordinary repeated initialization, even after shutdown, keeps the
+        # closed owner. A failed stop also fences a NEW bootstrap context.
+        if failure:
+            state.ctx = SimpleNamespace(**vars(ctx))
+        monkeypatch.setattr(
+            workspace, "DesktopEventSource", lambda _state: SimpleNamespace(attach=Mock()),
+        )
+        workspace.initialise_workspace(state)
+        assert state.remote_reservations is owner
+        with pytest.raises(ReservationError, match="reservation_admission_closed"):
+            state.remote_reservations.reserve(root=root, url="remote.example", persistent_id="shared")
+    finally:
+        finish_stop.set()
+        if state.project_lock.locked():
+            state.project_lock.release()
+        if not task.done():
+            await task
 
 
 def test_a_new_lifespan_does_not_reuse_shutdown_identities(project: Path) -> None:
@@ -42,13 +188,23 @@ def test_a_new_lifespan_does_not_reuse_shutdown_identities(project: Path) -> Non
     app = create_app(str(project))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         previous = client.post("/api/projects/open", json={"path": str(project)}).json()
+        old_owner = app.state.remote_reservations
+        old_lease = old_owner.reserve(root=project, url="remote.example", persistent_id="fixture")
     assert not app.state.project_contexts
+    with pytest.raises(ReservationError, match="reservation_admission_closed"):
+        old_owner.reserve(root=project, url="remote.example", persistent_id="fixture")
     with TestClient(app, base_url="http://127.0.0.1") as client:
         current = client.post("/api/projects/open", json={"path": str(project)}).json()
         assert current["epoch"] != previous["epoch"]
         assert current["project_id"] != previous["project_id"]
         assert len(app.state.project_contexts) == 1
         assert client.get(f"/api/projects/{previous['project_id']}/project").status_code == 404
+        owner = app.state.remote_reservations
+        assert owner is not old_owner
+        lease = owner.reserve(root=project, url="remote.example", persistent_id="fixture")
+        assert not owner.release(old_lease)
+        assert old_owner.release(old_lease)  # The old capability was never revoked.
+        assert owner.release(lease)
 
 
 def test_failed_bootstrap_never_publishes_a_project_identity(project: Path, monkeypatch) -> None:
@@ -72,7 +228,12 @@ def test_failed_bootstrap_never_publishes_a_project_identity(project: Path, monk
         with TestClient(app, base_url="http://127.0.0.1"):
             pytest.fail("Failed bootstrap must not serve requests")
     assert stopped == [app.state.ctx]
+    assert not app.state._failed_project_contexts
     assert not hasattr(app.state, "project_registry")
+    with pytest.raises(ReservationError, match="reservation_admission_closed"):
+        app.state.remote_reservations.reserve(
+            root=project, url="remote.example", persistent_id="fixture",
+        )
 
 
 def test_bootstrap_keeps_legacy_event_replay_without_early_registry(project: Path, monkeypatch) -> None:
@@ -83,6 +244,8 @@ def test_bootstrap_keeps_legacy_event_replay_without_early_registry(project: Pat
 
     async def start(ctx):
         assert not hasattr(app.state, "project_registry")
+        assert ctx.remote_reservations is app.state.remote_reservations
+        assert ctx.remote_profile_lifecycle is app.state.remote_profile_lifecycle
         await original(ctx)
         await ctx.bus.publish("test.bootstrap")
 
@@ -90,6 +253,186 @@ def test_bootstrap_keeps_legacy_event_replay_without_early_registry(project: Pat
     with TestClient(app, base_url="http://127.0.0.1"):
         assert app.state.ctx.bus.forward_to is app.state.browser_bus
         assert any(event.type == "test.bootstrap" for event in app.state.browser_bus.replay(0))
+
+
+def test_one_app_owner_is_supplied_before_each_startup_and_alias_reuses_it(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    from voxarium_studio.core.context import AppContext
+
+    copy = tmp_path / "copied-project"
+    copy.mkdir()
+    paths = init_project(copy)
+    shutil.copyfile(ProjectPaths.for_project(project).config_file, paths.config_file)
+    original = AppContext.startup
+    started = []
+    app = create_app(str(project))
+
+    async def start(ctx):
+        assert ctx.remote_reservations is app.state.remote_reservations
+        assert ctx.remote_profile_lifecycle is app.state.remote_profile_lifecycle
+        started.append(ctx)
+        await original(ctx)
+
+    monkeypatch.setattr(AppContext, "startup", start)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        owner = app.state.remote_reservations
+        bootstrap = app.state.ctx
+        response = client.post("/api/project/open", json={"path": str(copy)})
+        assert response.status_code == 200, response.text
+        subsequent = app.state.ctx
+        assert subsequent is not bootstrap
+        assert subsequent.config.project_identity == bootstrap.config.project_identity
+        assert subsequent.remote_reservations is bootstrap.remote_reservations is owner
+        for root, expected in ((copy / ".", subsequent), (project / ".", bootstrap)):
+            response = client.post("/api/project/open", json={"path": str(root)})
+            assert response.status_code == 200, response.text
+            assert app.state.ctx is expected
+        workspace.initialise_workspace(app.state)
+        assert app.state.remote_reservations is owner
+        assert started == [bootstrap, subsequent]
+        assert len(app.state.project_contexts) == 2
+
+
+def test_runtime_start_failure_also_closes_reservation_admission(
+    project: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from voxarium_studio import main
+
+    runtime = SimpleNamespace(
+        lifecycle=Mock(), start=AsyncMock(side_effect=OSError("fixture runtime failure")),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(main, "create_remote_catalog_runtime", lambda: runtime)
+    app = create_app(str(project))
+    with pytest.raises(OSError, match="fixture runtime failure"):
+        with TestClient(app, base_url="http://127.0.0.1"):
+            pytest.fail("Failed runtime cannot serve requests")
+    runtime.close.assert_awaited_once()
+    with pytest.raises(ReservationError, match="reservation_admission_closed"):
+        app.state.remote_reservations.reserve(
+            root=project, url="remote.example", persistent_id="fixture",
+        )
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_bootstrap_failure_retains_exact_context_until_cleanup_retry(
+    project: Path, monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool,
+) -> None:
+    from voxarium_studio.core.context import AppContext
+
+    app = create_app(str(project))
+    leases, stopped = [], []
+
+    async def start(ctx):
+        assert ctx.remote_reservations is app.state.remote_reservations
+        leases.append(ctx.remote_reservations.reserve(
+            root=project, url="remote.example", persistent_id="fixture",
+        ))
+        raise OSError("fixture bootstrap failure")
+
+    async def stop(ctx):
+        stopped.append(ctx)
+        # Failed cleanup has not joined the consumer: keep its capability live.
+        if cleanup_fails:
+            raise RuntimeError("fixture cleanup failure")
+
+    monkeypatch.setattr(AppContext, "startup", start)
+    monkeypatch.setattr(AppContext, "shutdown", stop)
+    with pytest.raises(OSError, match="fixture bootstrap failure"):
+        with TestClient(app, base_url="http://127.0.0.1"):
+            pytest.fail("Failed bootstrap must not serve requests")
+    ctx = app.state.ctx
+    owner = app.state.remote_reservations
+    assert stopped == [ctx]
+    assert not hasattr(app.state, "project_registry")
+    assert app.state._failed_project_contexts == ({ctx.paths.root: ctx} if cleanup_fails else {})
+    with pytest.raises(ReservationError, match="reservation_admission_closed"):
+        owner.reserve(root=project, url="remote.example", persistent_id="fixture")
+    if cleanup_fails:
+        # A failed lifespan cannot silently replace its context/owner on reentry.
+        with pytest.raises(RuntimeError, match="Workspace cleanup is incomplete"):
+            with TestClient(app, base_url="http://127.0.0.1"):
+                pytest.fail("Unjoined context must fence a fresh lifespan")
+        assert app.state.remote_reservations is owner
+        cleanup_fails = False
+        asyncio.run(workspace.shutdown_workspace(app.state))
+        assert stopped == [ctx, ctx]
+        assert not app.state._failed_project_contexts
+    # Workspace never revokes a consumer's reservation, even during retry.
+    assert owner.release(leases[0])
+
+
+async def test_failed_subsequent_cleanup_preserves_b_jobs_and_fences_same_root(
+    ctx, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voxarium_studio.core.context import AppContext
+    from voxarium_studio.core.project_scope import canonical_root
+
+    state = SimpleNamespace(ctx=ctx, project_lock=asyncio.Lock())
+    workspace.initialise_workspace(state)
+    owner = state.remote_reservations
+    root = tmp_path / "failed-a"
+    root.mkdir()
+    started, finished = asyncio.Event(), asyncio.Event()
+    attempts, stopped, leases = [], [], []
+    cleanup_fails = True
+    original_stop = AppContext.shutdown
+
+    async def job(_handle):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    ctx.jobs.submit("b-job", "agent", job)
+    await started.wait()
+
+    async def start(candidate):
+        attempts.append(candidate)
+        assert candidate.remote_reservations is owner
+        assert candidate.remote_profile_lifecycle is ctx.remote_profile_lifecycle
+        leases.append(owner.reserve(root=root, url="remote.example", persistent_id="copy"))
+        raise OSError("fixture subsequent failure")
+
+    async def stop(candidate):
+        if candidate is not ctx:
+            stopped.append(candidate)
+            if cleanup_fails:
+                raise RuntimeError("fixture cleanup failure")
+        await original_stop(candidate)
+
+    monkeypatch.setattr(AppContext, "startup", start)
+    monkeypatch.setattr(AppContext, "shutdown", stop)
+    try:
+        with pytest.raises(OSError, match="fixture subsequent failure"):
+            await workspace.open_project(state, root)
+        failed_ctx = attempts[0]
+        assert state.ctx is ctx
+        assert state._failed_project_contexts == {canonical_root(root): failed_ctx}
+        assert canonical_root(root) not in state.project_roots
+        assert ctx.jobs.is_running("b-job") and not finished.is_set()
+        assert await workspace.open_project(state, ctx.paths.root / ".") is ctx
+        workspace.initialise_workspace(state)
+        assert state.remote_reservations is owner
+        with pytest.raises(RuntimeError, match="Project cleanup is incomplete"):
+            await workspace.open_project(state, root / ".")
+        assert attempts == [failed_ctx]
+        with pytest.raises(ReservationError, match="duplicate_local_binding"):
+            owner.reserve(root=tmp_path / "other-copy", url="remote.example", persistent_id="copy")
+        assert ctx.jobs.is_running("b-job") and not finished.is_set()
+    finally:
+        cleanup_fails = False
+        await workspace.shutdown_workspace(state)
+    assert stopped == [failed_ctx, failed_ctx]
+    assert not state._failed_project_contexts
+    assert finished.is_set()
+    assert owner.release(leases[0])
 
 
 def test_open_existing_project_switches_context(client: TestClient, tmp_path: Path) -> None:

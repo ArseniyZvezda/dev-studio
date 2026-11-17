@@ -270,6 +270,24 @@ def test_concurrency_maps_agents_to_the_singular_resource_class() -> None:
     limits = AppConfig().concurrency.as_dict()
     assert set(limits) == {"gpu", "cpu", "io", "agent"}
     assert limits["gpu"] == 1, "parallel GPU nodes exhaust VRAM (§8.2)"
+    assert limits["agent"] == 8, "eight parallel sessions by default (§10.3)"
+
+
+@pytest.mark.parametrize("concurrency", [None, {}, {"cpu": 2}])
+def test_missing_agent_limit_defaults_to_eight(project: Path, concurrency: dict | None) -> None:
+    paths = ProjectPaths.for_project(project)
+    raw = {} if concurrency is None else {"concurrency": concurrency}
+    paths.config_file.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert load_config(paths).concurrency.agents == 8
+
+
+def test_explicit_agent_limit_is_preserved(project: Path) -> None:
+    paths = ProjectPaths.for_project(project)
+    paths.config_file.write_text("concurrency:\n  agents: 2\n", encoding="utf-8")
+    config = load_config(paths)
+    assert config.concurrency.agents == 2
+    save_config(paths, config)
+    assert load_config(paths).concurrency.agents == 2
 
 
 async def test_a_database_predating_a_column_gains_it_with_the_model_default(

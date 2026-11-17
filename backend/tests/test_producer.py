@@ -59,6 +59,10 @@ async def producer(ctx):
         for key in (PRODUCER, DEV):
             member = await session.get(TeamMember, key)
             member.agent_backend = "producer_test"
+            # These tests exercise Producer lifecycle, not automatic effort evaluation.
+            # Keep execution entirely on the deterministic backend; dedicated selection
+            # tests explicitly enable Auto and provide their evaluator fixture.
+            member.effort = "high"
             session.add(member)
     return ctx
 
@@ -148,7 +152,8 @@ async def test_start_is_only_for_producer_and_opens_a_localized_conversation(pro
     assert request.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:studio ---") == 1
     assert request.prompt.count("--- BEGIN REQUIRED SKILL: voxarium_studio:producer ---") == 1
     assert request.prompt.index("voxarium_studio:studio") < request.prompt.index("voxarium_studio:producer")
-    assert "Break a substantial goal into **many small, concrete tasks**" in request.prompt
+    assert "prefer a small number of cohesive board tasks" in request.prompt
+    assert "there is no fixed numerical cap" in request.prompt
     assert "Skill(voxarium_studio:producer)" in request.extra_allowed_tools
     assert "voxarium_studio:producer" in request.skill_files
     assert "Speak English" in request.system_prompt
@@ -1366,7 +1371,8 @@ def test_board_start_and_second_chat_work_while_first_chat_stays_paused(client, 
     assert client.post(f"/api/chats/{first}/producer/pause").json()["producer_paused"]
 
     board = f"/api/teams/{TEAM}/tasks"
-    task = client.post(board, json={"assignee_id": DEV, "title": "Manual work", "auto_start": False})
+    task = client.post(board, json={"assignee_id": DEV, "title": "Manual work", "auto_start": False,
+                                   "effort": "high"})
     assert task.status_code == 201
     task_id = task.json()["id"]
     assert client.patch(f"{board}/{task_id}", json={"status": "pending"}).status_code == 200

@@ -1,4 +1,4 @@
-"""A task left on "Auto" effort is scored by Effort Solver when its run starts (§10.3, §10.11)."""
+"""A task left on "Auto" effort is scored by Orchestrator when its run starts (§10.3, §10.11)."""
 from __future__ import annotations
 
 import json
@@ -13,11 +13,11 @@ from voxarium_studio.teams.backends.base import AgentEvent, register_backend
 
 from test_teams import DEV, TEAM, load, release, teams  # noqa: F401 — `teams` is a fixture
 
-SCORES = {"complexity": 9, "creativity": 6, "depth": 8, "coverage": 8}  # → 3, "high"
+SCORES = {"model": 2, "effort": 4}
 
 
 class Solver:
-    """The Solver's backend: records what it was asked and answers with fixed scores."""
+    """The Orchestrator backend: records its input and answers with fixed selections."""
 
     def __init__(self) -> None:
         self.requests: list = []
@@ -42,12 +42,14 @@ class Worker:
 
     name = "effort_worker"
     efforts: list[str | None] = []
+    requests: list = []
 
     def is_available(self):
         return True, "worker"
 
     async def run(self, request):
         Worker.efforts.append(request.effort)
+        Worker.requests.append(request)
         yield AgentEvent(kind="result", text="Done.", session_id="sess_auto", is_final=True,
                          data={"total_cost_usd": 0.25, "num_turns": 2})
 
@@ -72,6 +74,7 @@ def solver(monkeypatch) -> Solver:
 
 async def _dev(ctx: AppContext, *, backend: str = "effort_worker", effort: str | None = None) -> None:
     Worker.efforts.clear()
+    Worker.requests.clear()
     async with ctx.db.session() as session:
         member = await session.get(TeamMember, DEV)
         member.agent_backend = backend
@@ -103,16 +106,16 @@ async def test_auto_effort_is_solved_at_start_and_kept_on_the_task(
     task = await _run(teams, wait_for)
 
     assert task.status == TaskStatus.NEEDS_REVIEW
-    assert Worker.efforts == ["high"]
-    assert task.effort == "high", "stored as the task's override, like the Producer's Auto"
+    assert Worker.efforts == ["xhigh"]
+    assert task.effort == "xhigh", "stored as the task's override, like the Producer's Auto"
     assert len(solver.requests) == 1
     assert json.loads(solver.requests[0].prompt) == {
         "title": "Implement movement", "description": "Arrow keys move the player.",
     }
     [scored] = await _messages(teams, task.id, "effort_solver")
-    assert scored.data == {"scores": SCORES, "effort": 3, "effort_level": "high"}
+    assert scored.data == {"model": 2, "effort": 4, "effort_level": "xhigh"}
     assert task.total_cost_usd == pytest.approx(0.75), "the evaluation is the task's spend"
-    assert task.num_turns == 2, "the Solver's turn is not a turn of the task's session"
+    assert task.num_turns == 2, "the Orchestrator's turn is not a turn of the task's session"
 
 
 async def test_a_resumed_run_keeps_the_solved_effort(
@@ -123,7 +126,7 @@ async def test_a_resumed_run_keeps_the_solved_effort(
     await teams.teams.request_changes(task.id, "Once more.")
     await wait_for(task.id, timeout=20)
 
-    assert Worker.efforts == ["high", "high"]
+    assert Worker.efforts == ["xhigh", "xhigh"]
     assert len(solver.requests) == 1
 
 
@@ -164,6 +167,6 @@ async def test_solver_failure_blocks_the_run_without_a_substituted_effort(
     task = await _run(teams, wait_for)
 
     assert task.status == TaskStatus.BLOCKED
-    assert "Effort Solver" in (task.error or "")
+    assert "Orchestrator" in (task.error or "")
     assert Worker.efforts == [], "no session starts on a default effort"
-    assert task.effort is None, "the next start asks the Solver again"
+    assert task.effort is None, "the next start asks Orchestrator again"

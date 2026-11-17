@@ -14,14 +14,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlmodel import select
 
 from ..core.paths import ProjectPaths
 from ..core.prompts import AgentPromptsConfig
-from ..models.teams import Team, TeamMember, TeamTask
+from ..models.teams import EffortSolverCurveMultiplier, Team, TeamMember, TeamTask
 from .director_identity import DIRECTOR_ID, is_director
-from .effort_solver import DEFAULT_SYSTEM_PROMPT, EFFORT_SOLVER_ID, EffortWeights, is_effort_solver
+from .effort_solver import DEFAULT_SYSTEM_PROMPT, LEGACY_SYSTEM_PROMPT, EFFORT_SOLVER_ID, is_effort_solver
 from .producer_identity import PRODUCER_ID, is_producer
 
 log = logging.getLogger(__name__)
@@ -43,10 +43,17 @@ class MemberDefinition(BaseModel):
     """An existing Claude Code agent to run as, instead of the one the Studio writes."""
 
     model: str = "sonnet"
+    """Concrete model id, or auto to follow Orchestrator; never auto on the evaluator (§10.11)."""
     effort: str | None = None
     """``low`` … ``max``, or omitted for whatever the model does by default."""
 
-    effort_solver_weights: EffortWeights | None = None
+    effort_solver_curve_multiplier: EffortSolverCurveMultiplier = 1.0
+
+    @model_validator(mode="after")
+    def explicit_evaluator_model(self) -> MemberDefinition:
+        if self.id == EFFORT_SOLVER_ID and self.model.strip().lower() == "auto":
+            raise ValueError("The built-in Orchestrator cannot use model auto")
+        return self
 
     allowed_tools: list[str] = Field(default_factory=lambda: ["Read", "Grep", "Glob"])
     skills: list[str] = Field(default_factory=list)
@@ -101,6 +108,21 @@ def _member_key(team_id: str, member_id: str) -> str:
 def _assign_keys(team_id: str, entries: list[str]) -> list[str]:
     """Namespace ``can_assign_to`` entries, leaving the ``*`` wildcard untouched."""
     return [entry if entry == "*" else _member_key(team_id, entry) for entry in entries]
+
+
+def _migrate_orchestrator(member: TeamMember) -> dict[str, str]:
+    """Only old defaults migrate; user names/prompts are not ours to replace (§10.11)."""
+    if not is_effort_solver(member):
+        return {}
+    changes = {}
+    for key in ("name", "role_title"):
+        if getattr(member, key) == "Effort Solver":
+            changes[key] = "Orchestrator"
+    if not member.responsibility.strip() or member.responsibility.strip() == LEGACY_SYSTEM_PROMPT:
+        changes["responsibility"] = DEFAULT_SYSTEM_PROMPT
+    for key, value in changes.items():
+        setattr(member, key, value)
+    return changes
 
 
 class TeamStore:
@@ -171,6 +193,7 @@ class TeamStore:
             teams.append(team)
 
             declared_ids: set[str] = set()
+            solver_migrations: dict[str, dict[str, str]] = {}
             for order, member_def in enumerate(definition.members):
                 key = _member_key(definition.id, member_def.id)
                 declared_ids.add(key)
@@ -197,8 +220,9 @@ class TeamStore:
                     member.kind = "human"
                 member.manager_id = manager_key
                 member.responsibility = member_def.responsibility
-                if is_effort_solver(member) and not member.responsibility.strip():
-                    member.responsibility = DEFAULT_SYSTEM_PROMPT
+                migrated = _migrate_orchestrator(member)
+                if migrated:
+                    solver_migrations[member_def.id] = migrated
                 self.sync_producer_responsibility(member)
                 member.can_assign_to = _assign_keys(definition.id, member_def.can_assign_to)
                 member.tags = list(member_def.tags)
@@ -206,9 +230,8 @@ class TeamStore:
                 member.agent = member_def.agent
                 member.model = member_def.model
                 member.effort = member_def.effort
-                member.effort_solver_weights = (
-                    member_def.effort_solver_weights.model_dump()
-                    if is_effort_solver(member) and member_def.effort_solver_weights is not None else None
+                member.effort_solver_curve_multiplier = (
+                    member_def.effort_solver_curve_multiplier if is_effort_solver(member) else 1.0
                 )
                 member.allowed_tools = list(member_def.allowed_tools)
                 member.skills = list(member_def.skills)
@@ -266,15 +289,14 @@ class TeamStore:
                 solver = await session.get(TeamMember, solver_id)
                 if solver is None:
                     solver = TeamMember(
-                        id=solver_id, team_id=team.id, name="Effort Solver", role_title="Effort Solver",
+                        id=solver_id, team_id=team.id, name="Orchestrator", role_title="Orchestrator",
                         builtin="effort_solver", responsibility=DEFAULT_SYSTEM_PROMPT,
                         allowed_tools=[], isolate_worktree=False,
                         avatar_color="#a855f7", sort_order=len(declared_ids),
                     )
                 solver.builtin = "effort_solver"
                 solver.kind = "agent"
-                if not solver.responsibility.strip():
-                    solver.responsibility = DEFAULT_SYSTEM_PROMPT
+                _migrate_orchestrator(solver)
                 session.add(solver)
                 declared_ids.add(solver_id)
 
@@ -301,7 +323,7 @@ class TeamStore:
                 log.info("Member %s removed from %s.yaml", existing.id, definition.id)
                 await session.delete(existing)
 
-            if missing_producer or missing_director or missing_solver:
+            if missing_producer or missing_director or missing_solver or solver_migrations:
                 await session.flush()
                 # Append only the built-in entry: materialising defaults on every other
                 # member would rewrite an untouched roster and its explanatory comments.
@@ -313,6 +335,9 @@ class TeamStore:
                 payload = round_trip.load(path.read_text(encoding="utf-8")) or {}
                 if payload.get("members") is None:
                     payload["members"] = []
+                for entry in payload["members"]:
+                    if entry.get("id") in solver_migrations:
+                        entry.update(solver_migrations[entry["id"]])
                 restored = (
                     ([director] if missing_director else [])
                     + ([producer] if missing_producer else [])
@@ -397,8 +422,8 @@ class TeamStore:
                 entry["avatar_icon"] = member.avatar_icon
             if member.effort:
                 entry["effort"] = member.effort
-            if is_effort_solver(member) and member.effort_solver_weights is not None:
-                entry["effort_solver_weights"] = EffortWeights.model_validate(member.effort_solver_weights).model_dump()
+            if is_effort_solver(member):
+                entry["effort_solver_curve_multiplier"] = member.effort_solver_curve_multiplier
             if member.agent:
                 entry["agent"] = member.agent
             if member.pos_x is not None and member.pos_y is not None:

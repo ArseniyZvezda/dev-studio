@@ -16,8 +16,7 @@ from .effort_solver import (
     DEFAULT_SYSTEM_PROMPT,
     EFFORT_LEVELS,
     EffortScores,
-    calculate_effort,
-    parse_scores,
+    parse_evaluation,
 )
 from .usage import RunUsage
 
@@ -26,26 +25,37 @@ SOLVER_TIMEOUT = 180.0
 
 @dataclass(frozen=True, slots=True)
 class EffortSolution:
-    scores: EffortScores
+    model: int
     effort: int
     effort_level: str
     usage: dict[str, Any] = field(default_factory=dict)
+    # Compatibility for historical callers, never used to select new work.
+    scores: EffortScores | None = None
+    weight: float | None = None
+    curve_multiplier: float = 1.0
+
+    def result_data(self) -> dict[str, Any]:
+        """Public selection, without private model telemetry (§10.11)."""
+        return {"model": self.model, "effort": self.effort,
+                "effort_level": self.effort_level}
 
 
 async def solve_effort(
     member: TeamMember, title: str, brief: str,
     *, max_message_bytes: int = MAX_MESSAGE_BYTES_DEFAULT,
 ) -> EffortSolution:
-    """One isolated evaluation using the Solver's model and its configured weights.
+    """One isolated evaluation using the Orchestrator's explicit model (§10.11).
 
     Only the proposed title and brief enter the prompt. This call is awaited inside
     the Producer's current slot; acquiring another slot would deadlock at capacity.
     Cancellation/timeout closes the backend stream, including its child process.
     """
+    if member.model.strip().lower() == "auto":
+        raise ValueError("The built-in Orchestrator cannot use model auto")
     backend = get_backend(member.agent_backend)
     available, reason = backend.is_available()
     if not available:
-        raise RuntimeError(reason or f"Effort Solver backend {member.agent_backend} is unavailable")
+        raise RuntimeError(reason or f"Orchestrator backend {member.agent_backend} is unavailable")
 
     async def evaluate(workdir: Path) -> EffortSolution:
         request = AgentRunRequest(
@@ -66,7 +76,7 @@ async def solve_effort(
         try:
             async for event in stream:
                 if event.kind == "error" or event.data.get("is_error"):
-                    raise RuntimeError(event.text or "Effort Solver returned an error")
+                    raise RuntimeError(event.text or "Orchestrator returned an error")
                 usage.observe(event)
                 if event.kind == "text" and event.text:
                     parts.append(event.text)
@@ -76,10 +86,11 @@ async def solve_effort(
                     usage.finish(result_data)
         finally:
             await stream.aclose()
-        scores = parse_scores((final or "\n".join(parts)).strip())
-        effort = calculate_effort(scores, member.effort_solver_weights)
+        evaluation = parse_evaluation((final or "\n".join(parts)).strip())
+        effort = evaluation.effort
         return EffortSolution(
-            scores=scores, effort=effort, effort_level=EFFORT_LEVELS[effort - 1],
+            model=evaluation.model,
+            effort=effort, effort_level=EFFORT_LEVELS[effort - 1],
             usage={**usage.counters(), "total_cost_usd": result_data.get("total_cost_usd", 0),
                    "num_turns": result_data.get("num_turns", 0)},
         )
@@ -89,4 +100,4 @@ async def solve_effort(
         try:
             return await asyncio.wait_for(evaluate(Path(directory)), timeout=SOLVER_TIMEOUT)
         except asyncio.TimeoutError as exc:
-            raise RuntimeError(f"Effort Solver did not answer within {SOLVER_TIMEOUT:.0f}s") from exc
+            raise RuntimeError(f"Orchestrator did not answer within {SOLVER_TIMEOUT:.0f}s") from exc

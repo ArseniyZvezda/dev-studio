@@ -740,6 +740,11 @@ class ChatService:
                     request.prompt = required.prepend(prompt) if not resume_session_id else prompt
                     request.images = [*(image for item in earlier for image in item.images), *request.images]
                     await self._mark_delivered(earlier)
+                if request.model == "auto":
+                    await self._select_auto_model(chat, request, prompt)
+                    resume_session_id = request.resume_session_id
+                    if not resume_session_id:
+                        request.prompt = required.prepend(recovery_prompt(prompt, await self.messages(chat_id)))
                 if chat.producer_mode:
                     await self.producer.compact(chat_id, backend, request)
                     fresh = await self.get_chat(chat_id)
@@ -823,6 +828,42 @@ class ChatService:
                 await self._publish_chat_by_id(chat_id, running=False)
             finally:
                 self._ending.discard(chat_id)
+
+    async def _select_auto_model(self, chat: AgentChat, request: AgentRunRequest, prompt: str) -> None:
+        """§10.11: Auto also applies to ordinary chats and Producer's own turns.
+
+        Resolve before compaction (it too invokes the backend), and drop a runtime
+        session on a concrete model change while retaining its saved transcript.
+        """
+        from .effort_solver import EFFORT_SOLVER_ID, resolve_model
+        from .effort_solver_runner import solve_effort
+
+        async with self.db.session() as session:
+            evaluator = await session.get(TeamMember, f"{request.member.team_id}__{EFFORT_SOLVER_ID}")
+        if evaluator is None:
+            raise RuntimeError("The built-in Orchestrator is missing. Reload the team and retry.")
+        previous = next((message.data for message in reversed(await self.messages(chat.id))
+                         if message.kind == "effort_solver" and message.data.get("resolved_model")), {})
+        solution = await solve_effort(
+            evaluator, chat.title or "Chat turn", prompt,
+            max_message_bytes=self.config.teams.max_message_bytes,
+        )
+        selected = resolve_model(request.member.agent_backend, solution.model)
+        if (previous.get("resolved_model"), previous.get("backend")) != (selected, request.member.agent_backend):
+            request.resume_session_id = None
+            async with self.db.session() as session:
+                fresh = await session.get(AgentChat, chat.id)
+                if fresh is not None:
+                    fresh.agent_session_id = None
+                    session.add(fresh)
+        request.model = selected
+        request.member = request.member.model_copy(update={"model": selected})
+        if request.effort is None:
+            request.effort = solution.effort_level
+        await self.record(chat.id, chat.member_id, role="system", kind="effort_solver", data={
+            **solution.result_data(), "resolved_model": selected, "backend": request.member.agent_backend,
+        })
+        await self._store_result_stats(chat.id, solution.usage)
 
     async def _consume(
         self, backend: Any, request: AgentRunRequest, chat_id: str, member_id: str, *, input_at: datetime | None = None,

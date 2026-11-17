@@ -9,13 +9,27 @@ the client instead of letting it guess.
 from __future__ import annotations
 
 import hashlib
+import re
+import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
-PROTOCOL_VERSION = 1
+# Staged delivery (§16.7–16.9, VS-180): these v2 declarations are shared with Remote,
+# NOT permission to switch the legacy runner. service.py still imports PROTOCOL_VERSION
+# and socket_url(), deliberately pinned to v1 until I9–I16 and L are accepted.
+WIRE_V2_VERSION = 2
+CATALOG_API_VERSION = 2
+LEGACY_RUNNER_PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = LEGACY_RUNNER_PROTOCOL_VERSION
+V2_CAPABILITIES = (
+    "project_catalog", "explicit_project_create", "strict_connect",
+    "project_snapshot", "legacy_resolution",
+)
 
 # Application close codes the remote uses (``voxarium_studio_remote/protocol.py``).
 CLOSE_BAD_REQUEST = 4400
 CLOSE_UNAUTHORISED = 4401
+CLOSE_PROJECT_NOT_FOUND = 4404
+CLOSE_OVERLOADED = 4408
 
 # What the local backend closes a browser's collaboration socket with (§16.4).
 CLOSE_COLLAB_UNAVAILABLE = 4000
@@ -26,6 +40,34 @@ CLOSE_COLLAB_RESET = 4001
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 MAX_SPACE_NAME = 64
+
+
+def check_project_id(raw: object) -> str:
+    """Exact v2 identity, never a normalized legacy selector (§16.7)."""
+    if not isinstance(raw, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", raw, re.ASCII) is None:
+        raise ValueError("Invalid project ID")
+    return raw
+
+
+def check_display_name(raw: object) -> str:
+    """New/edited labels only; migration preserves historical text literally."""
+    if not isinstance(raw, str):
+        raise ValueError("Invalid display name")
+    # Validate before stripping: a trailing newline/control is not whitespace repair.
+    if any(ord(c) < 32 or 127 <= ord(c) <= 159 or
+           ord(c) in {0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+                      0x2066, 0x2067, 0x2068, 0x2069} for c in raw):
+        raise ValueError("Invalid display name")
+    name = unicodedata.normalize("NFC", raw).strip()
+    if not 1 <= len(name) <= 120 or len(name.encode("utf-8")) > 480:
+        raise ValueError("Invalid display name")
+    return name
+
+
+def check_color(raw: object) -> str:
+    if not isinstance(raw, str) or re.fullmatch(r"#[0-9a-fA-F]{6}", raw) is None:
+        raise ValueError("Invalid color")
+    return raw.lower()
 
 
 def content_hash(content: str) -> str:

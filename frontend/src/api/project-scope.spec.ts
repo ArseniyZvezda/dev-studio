@@ -17,11 +17,12 @@ function session(id: string) {
 }
 const reply = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
 
-describe('Remote global URL classification (studio-design §5.1/§6, offline slice E)', () => {
+describe('Remote global URL classification (studio-design §5.1/§6, offline S6)', () => {
   const profile = 'c503da2b-f8fe-4fb0-b945-86bc119495b3'
-  const paths = ['/remote/servers', `/remote/servers/${profile}/verify`, `/remote/servers/${profile}/projects`]
+  const suffixes = ['', '/credential', '/recover', '/verify', '/projects', '/projects/operations/Create_01.a-Z/observe']
+  const paths = ['/remote/servers', ...suffixes.map(suffix => `/remote/servers/${profile}${suffix}`)]
 
-  it('keeps exactly the existing Remote routes global across A/B bindings and tab selection', async () => {
+  it('keeps only the supported Remote routes global across A/B bindings and tab selection', async () => {
     const a = session('A'), b = new ProjectSession('B')
     b.bind({ project_id: 'B', epoch: 'epoch-2' })
     const original = window.location.href
@@ -39,7 +40,7 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
           }
         }
       }
-      expect(fetcher).toHaveBeenCalledTimes(18)
+      expect(fetcher).toHaveBeenCalledTimes(2 * paths.length * 3)
       expect(fetcher.mock.calls.every(([url]) => !String(url).includes('project_id=') && !String(url).includes('epoch='))).toBe(true)
       expect(a.scope).toEqual({ project_id: 'A', epoch: 'epoch-1' })
       expect(b.scope).toEqual({ project_id: 'B', epoch: 'epoch-2' })
@@ -49,8 +50,8 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
   it('preserves ordinary queries without injecting or interpreting project scope', () => {
     // The router accepts canonical UUIDs without constraining version/variant.
     for (const id of ['00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-ffff-ffff-ffffffffffff']) {
-      for (const action of ['verify', 'projects']) {
-        const path = `/remote/servers/${id}/${action}`
+      for (const suffix of suffixes) {
+        const path = `/remote/servers/${id}${suffix}`
         expect(isGlobalApiPath(path)).toBe(true)
         expect(scopedApiUrl(session('A'), path)).toBe(`/api${path}`)
       }
@@ -65,8 +66,9 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
 
   it('does not globalize similar, extra, encoded or noncanonical route spellings', () => {
     const similar = [
-      '/remote', '/remote/servers/', '/remote/servers-extra', '/remote/servers/new',
-      `/remote/servers/${profile}`, `/remote/servers/${profile}/projects/extra`,
+      '/remote', '/remote/status', '/remote/credential', '/remote/recover',
+      '/remote/servers/', '/remote/servers-extra', '/remote/servers/new',
+      `/remote/servers/${profile}/`, `/remote/servers/${profile}/projects/extra`,
       `/remote/servers/${profile}/verify/`, `/remote/servers/${profile}/create`,
       `/remote/servers/${profile}/credentials`, `/remote/servers/${profile}/projects-extra`,
       `/remote/servers/${profile.toUpperCase()}/projects`, '/remote/servers/not-a-uuid/projects',
@@ -75,11 +77,24 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
       `/remote/servers/${profile}/%70rojects`, `/remote/servers/%63${profile.slice(1)}/verify`,
       `/remote/servers/${profile}/%252e%252e`, '/remote/servers/%252e%252e/projects',
       '/remote/servers/%252f/projects', '/Remote/servers', '/api/remote/servers',
+      ...suffixes.flatMap(suffix => [
+        `/remote/servers/${profile}${suffix}/extra`,
+        `/remote/servers/${profile}${suffix}/`,
+        `/remote/servers/${profile.toUpperCase()}${suffix}`,
+        `/remote/servers/not-a-uuid${suffix}`,
+        `/remote/servers/${profile.replaceAll('-', '')}${suffix}`,
+        `/remote/servers/%63${profile.slice(1)}${suffix}`,
+      ]),
+      `/remote/servers/${profile}/%63redential`, `/remote/servers/${profile}/%72ecover`,
+      `/remote/servers/${profile}/credential-extra`, `/remote/servers/${profile}/recovery`,
     ]
     for (const path of similar) {
       expect(isGlobalApiPath(path), path).toBe(false)
-      expect(scopedApiUrl(session('A'), path), path)
-        .toBe(`/api/projects/A${path}?project_id=A&epoch=epoch-1`)
+      for (const id of ['A', 'B']) {
+        expect(scopedApiUrl(session(id), path), path)
+          .toBe(`/api/projects/${id}${path}?project_id=${id}&epoch=epoch-1`)
+      }
+      expect(() => scopedApiUrl(new ProjectSession('unbound'), path), path).toThrow('bootstrapped')
     }
   })
 
@@ -105,6 +120,50 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
     }
   })
 
+  it('admits only the exact observation route and bounded operation alphabet', () => {
+    const observe = (operation: string) => `/remote/servers/${profile}/projects/operations/${operation}/observe`
+    for (const operation of ['a', 'Z', '0', '_', '-', 'a.b', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-', 'a'.repeat(128)]) {
+      const path = observe(operation)
+      expect(isGlobalApiPath(path), path).toBe(true)
+      for (const scope of [session('A'), session('B'), new ProjectSession('unbound')]) {
+        expect(scopedApiUrl(scope, path), path).toBe(`/api${path}`)
+      }
+    }
+
+    const invalid = [
+      ...['', 'a'.repeat(129), 'a b', 'a+b', 'a:b', 'a@b', 'а', 'é', '\t', '\n', '%61', '%252e', 'a/b']
+        .map(observe),
+      `/remote/servers/${profile}/projects/operations`,
+      `/remote/servers/${profile}/projects/operations/a`,
+      observe('a').replace('/operations/', '/operation/'),
+      observe('a').replace('/observe', '/Observe'),
+      observe('a').replace('/observe', '/%6fbserve'),
+      observe('a').replace('/projects/', '/%70rojects/'),
+      observe('a').replace('/operations/', '/%6fperations/'),
+      observe('a').replace(profile, profile.toUpperCase()),
+      observe('a').replace(profile, profile.replaceAll('-', '')),
+      observe('a').replace(profile, 'not-a-uuid'),
+      observe('a').replace(profile, `%63${profile.slice(1)}`),
+      ...['/', '/extra', '-extra', '\n', '\r', '\r\n', '\u2028', '\u2029'].map(ending => `${observe('a')}${ending}`),
+    ]
+    for (const path of invalid) {
+      expect(isGlobalApiPath(path), path).toBe(false)
+      for (const id of ['A', 'B']) {
+        expect(scopedApiUrl(session(id), path), path)
+          .toBe(`/api/projects/${id}${path}?project_id=${id}&epoch=epoch-1`)
+      }
+      expect(() => scopedApiUrl(new ProjectSession('unbound'), path), path).toThrow('bootstrapped')
+    }
+
+    // These alphabet-valid segments are URL escapes, not usable operation URLs.
+    for (const operation of ['.', '..', '%2e', '%2e%2e', '%2f', '%5c', '%', 'a?b', 'a#b', 'a\\b']) {
+      for (const scope of [session('A'), session('B'), new ProjectSession('unbound')]) {
+        expect(() => scopedApiUrl(scope, observe(operation))).toThrow()
+      }
+    }
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('retains project REST/WS scope and rejects stale sessions even for global Remote URLs', () => {
     const a = session('A'), b = session('B')
     for (const scope of [a, b]) {
@@ -121,6 +180,25 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline sli
 })
 
 describe('immutable renderer binding (§5.3.2)', () => {
+  it('keeps every project Remote route scoped without broadening the global catalog allowlist', () => {
+    const paths = [
+      '/remote', '/remote/editors', '/remote/editors/editor_1/heartbeat', '/remote/editors/editor_1',
+      '/remote/prepare', '/remote/changes/change_1/quiesce', '/remote/changes/change_1/editor-ack',
+      '/remote/changes/change_1/commit', '/remote/changes/change_1',
+      '/remote/reconcile-preview', '/remote/enable', '/remote/migration',
+      '/remote/migration/plan_1/profile', '/remote/migration/plan_1/resolve',
+    ]
+    for (const path of paths) {
+      expect(isGlobalApiPath(path), path).toBe(false)
+      for (const id of ['A', 'B']) {
+        expect(scopedApiUrl(session(id), path), path)
+          .toBe(`/api/projects/${id}${path}?project_id=${id}&epoch=epoch-1`)
+      }
+      expect(() => scopedApiUrl(new ProjectSession('unbound'), path)).toThrow('bootstrapped')
+    }
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('derives a fixed project route and never treats malformed handles as legacy', () => {
     expect(ProjectSession.fromPath('/p/A/documents').routeBase).toBe('/p/A')
     expect(ProjectSession.fromPath('/documents').isLegacy).toBe(true)

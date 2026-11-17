@@ -17,6 +17,24 @@ import type {
   UpdateStatus,
 } from '@/api/types'
 
+/**
+ * Ctx-local I5 observation (`BindingTransitions._change_dto`, studio-design §5.3).
+ * The current backend calls its phase `state` and its G `binding_generation`;
+ * it does NOT yet publish the design's expanded phase/from/to/generation wire.
+ * Never treat this observation as a commit/enable receipt or a ProjectSession.
+ */
+export interface RemoteBindingChange {
+  change_id: string
+  expires_at: number
+  state: 'prepared' | 'draining' | 'ready' | 'blocked' | 'cancelled' | 'expired' | 'paused'
+  binding_generation: number
+  expected_generation: number
+  fenced: boolean
+  required_editor_acks: string[]
+  missing_acks: string[]
+  reason: string | null
+}
+
 export interface EventPayloads {
   'system.hello': { project: string; resumed_from: number | null; project_id?: string; epoch?: string }
   'system.pong': Record<string, never>
@@ -196,6 +214,7 @@ export interface EventPayloads {
 
   /** Everything `GET /api/sync` returns, whenever any of it changes (§16.5). */
   'sync.status': SyncStatus
+  'remote.binding_change': RemoteBindingChange
   /**
    * A document changed here and on the server at once, outside a live room. The server's
    * version has the path; this Studio's was kept beside it as `copy` (§16.3).

@@ -690,8 +690,9 @@ class ProducerService:
         return json.dumps({"state": chat.producer_state, "decision_policy": chat.producer_policy,
                            "effort_mode": chat.producer_effort_mode,
                            "effort_instructions": (
-                               "Before every new task is created, Effort Solver evaluates only its title "
-                               "and brief, then calculates effort from four scores and its configured weights. "
+                               "Before every new task is created, Orchestrator evaluates only its title "
+                               "and brief, selecting model strength and reasoning effort independently. "
+                               "Auto model selections use the global backend model-strength mapping. "
                                "Do not choose or pass effort yourself. If evaluation fails, no task is created."
                                if chat.producer_effort_mode == "auto" else
                                "New tasks inherit their assignee's configured default effort. "

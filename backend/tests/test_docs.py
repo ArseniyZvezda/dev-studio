@@ -8,8 +8,11 @@ panel and the link itself would disagree.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +20,83 @@ from fastapi.testclient import TestClient
 from voxarium_studio.core.context import AppContext
 from voxarium_studio.explorer.service import PathOutsideProject
 from voxarium_studio.teams.docs import MAX_ASSET_BYTES, DocStore, DocumentChangedOnDisk
+
+
+def test_docstore_import_does_not_depend_on_context_import_order() -> None:
+    """Conftest preloads AppContext; a clean interpreter catches sync/docs cycles."""
+    process = subprocess.run(
+        [sys.executable, "-c", "from voxarium_studio.teams.docs import DocStore"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        timeout=15,
+    )
+    assert process.returncode == 0, process.stderr
+
+
+async def test_cancelled_final_snapshot_restores_document_admission(ctx: AppContext) -> None:
+    """Cancellation while waiting is not a generation change or a stranded fence."""
+    transitions = ctx.remote_transitions
+    admission = await transitions.admit()
+    entered = False
+
+    async def snapshot() -> None:
+        nonlocal entered
+        async with transitions.final_snapshot():
+            entered = True
+
+    waiting = asyncio.create_task(snapshot())
+    await asyncio.sleep(0)
+    assert transitions.snapshot_pending
+    assert not entered
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert not transitions.snapshot_pending
+    assert transitions.generation == 0
+    admission.release()
+    await ctx.docs.write("after-cancel.md", "# Still writable\n")
+    assert transitions.active_mutations == 0
+
+
+async def test_cancelled_critical_wait_releases_document_admission(ctx: AppContext) -> None:
+    """The mutation's finally owns cleanup even when it never gets the FS lock."""
+    transitions = ctx.remote_transitions
+    first = await transitions.admit()
+    second = await transitions.admit()
+    waiting_started = asyncio.Event()
+
+    async def blocked() -> None:
+        try:
+            waiting_started.set()
+            async with second.critical():
+                pytest.fail("Cancelled writer acquired the filesystem section")
+        finally:
+            second.release()
+
+    async with first.critical():
+        task = asyncio.create_task(blocked())
+        await waiting_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    first.release()
+    assert transitions.active_mutations == 0
+    async with transitions.final_snapshot() as fence:
+        assert fence.advance_generation() == 1
+
+
+async def test_final_snapshot_generation_capability_cannot_be_reused(ctx: AppContext) -> None:
+    transitions = ctx.remote_transitions
+    async with transitions.final_snapshot() as fence:
+        assert fence.generation == 0
+        assert fence.advance_generation() == 1
+        with pytest.raises(RuntimeError, match="snapshot_fence_closed"):
+            fence.advance_generation()
+    with pytest.raises(RuntimeError, match="snapshot_fence_closed"):
+        fence.advance_generation()
+    assert transitions.generation == 1
+    assert not transitions.snapshot_pending
 
 
 @pytest.fixture

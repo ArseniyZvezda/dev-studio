@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 from sqlmodel import select
 
 from ..core.context import AppContext
@@ -19,6 +19,7 @@ from ..models.teams import (
     TERMINAL_TASK_STATUSES,
     AgentChat,
     AgentMessage,
+    EffortSolverCurveMultiplier,
     Team,
     TeamMember,
     TeamTask,
@@ -203,9 +204,22 @@ class MemberUpdate(BaseModel):
     tags: list[str] | None = None
     agent_backend: str | None = None
     agent: str | None = None
-    model: str | None = None
+    model: str | None = Field(default=None, description=(
+        "Concrete model id, or auto to follow Orchestrator. The built-in Orchestrator cannot use auto."
+    ))
     effort: str | None = None
-    effort_solver_weights: dict[str, Any] | None = None
+    effort_solver_curve_multiplier: EffortSolverCurveMultiplier = 1.0
+
+    @field_validator("effort_solver_curve_multiplier", mode="before")
+    @classmethod
+    def _curve_multiplier(cls, value: Any) -> float:
+        # Return a safe 400 even for non-JSON NaN/Infinity: the default validation
+        # response would try to echo those non-finite inputs as JSON.
+        try:
+            return TypeAdapter(EffortSolverCurveMultiplier).validate_python(value)
+        except ValueError as exc:
+            raise HTTPException(400, "Curve multiplier must be a finite positive number.") from exc
+
     allowed_tools: list[str] | None = None
     skills: list[str] | None = None
     """Folder names under ``.voxarium_studio/skills/`` — the whole list, as it should be (§10.10). Null
@@ -463,21 +477,17 @@ async def _validate_member(
     """Guard the invariants the org chart depends on. Raises HTTPException(400)."""
     from ..teams.producer_identity import is_producer
     from ..teams.director_identity import is_director
-    from ..teams.effort_solver import EffortWeights, is_effort_solver
+    from ..teams.effort_solver import is_effort_solver
     if is_director(member) and fields.get("kind", member.kind) != "human":
         raise HTTPException(400, "The built-in Director must remain a person.")
     if is_producer(member) and fields.get("kind", "agent") != "agent":
         raise HTTPException(400, "The built-in Producer must remain an agent.")
     if is_effort_solver(member) and fields.get("kind", "agent") != "agent":
-        raise HTTPException(400, "The built-in Effort Solver must remain an agent.")
-    if "effort_solver_weights" in fields:
-        if not is_effort_solver(member):
-            raise HTTPException(400, "Component weights are only available on Effort Solver.")
-        if fields["effort_solver_weights"] is not None:
-            try:
-                fields["effort_solver_weights"] = EffortWeights.model_validate(fields["effort_solver_weights"]).model_dump()
-            except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, "The built-in Orchestrator must remain an agent.")
+    if is_effort_solver(member) and str(fields.get("model", member.model)).strip().lower() == "auto":
+        raise HTTPException(400, "The built-in Orchestrator cannot use model auto.")
+    if "effort_solver_curve_multiplier" in fields and not is_effort_solver(member):
+        raise HTTPException(400, "Legacy curve multiplier is only available on Orchestrator.")
     if is_producer(member) and "responsibility" in fields:
         # §10.11: the built-in role mirrors the Producer System Prompt in Team Settings.
         raise HTTPException(
@@ -710,7 +720,7 @@ async def delete_member(
         if is_director(member):
             raise HTTPException(409, "The built-in Director cannot be deleted.")
         if is_effort_solver(member):
-            raise HTTPException(409, "The built-in Effort Solver cannot be deleted.")
+            raise HTTPException(409, "The built-in Orchestrator cannot be deleted.")
 
         open_tasks = list(
             (await session.exec(select(TeamTask).where(TeamTask.assignee_id == member_id))).all()

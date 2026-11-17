@@ -15,9 +15,19 @@ const result = computed(() => effortSolverResult(props.data))
     :aria-label="t('effortSolver.name')"
   >
     <dl class="grid grid-cols-2 gap-x-4 gap-y-1">
+      <div v-if="result.model !== undefined" class="col-span-2 flex items-baseline justify-between gap-2">
+        <dt class="font-medium">{{ t('effortSolver.modelStrength') }}</dt>
+        <dd class="font-mono font-semibold tabular-nums">{{ result.model }}</dd>
+      </div>
+      <template v-if="result.scores">
       <div v-for="dimension in EFFORT_SOLVER_DIMENSIONS" :key="dimension" class="flex items-baseline justify-between gap-2">
         <dt class="text-muted">{{ t(`effortSolver.dimensions.${dimension}`) }}</dt>
         <dd class="font-mono font-medium tabular-nums">{{ result.scores[dimension] }}</dd>
+      </div>
+      </template>
+      <div v-if="result.weight !== undefined" class="col-span-2 flex items-baseline justify-between gap-2">
+        <dt class="text-muted">{{ t('effortSolver.weight') }}</dt>
+        <dd class="font-mono font-medium tabular-nums">{{ result.weight.toFixed(3) }}</dd>
       </div>
       <div class="col-span-2 mt-1 flex items-baseline justify-between border-t border-violet-500/25 pt-2">
         <dt class="font-medium">{{ t('chat.producer.effort') }}</dt>

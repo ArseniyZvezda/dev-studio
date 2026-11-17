@@ -82,7 +82,7 @@ describe('durable Studio-managed work (§10.3)', () => {
     expect(subagents([progress], [row])[0]).toMatchObject({ inputTokens: null, outputTokens: null, cacheReadTokens: 800 })
   })
 
-  it('carries the effort Effort Solver chose, from the saved row and from live frames', () => {
+  it('carries the effort Orchestrator chose, from the saved row and from live frames', () => {
     // §10.11: the durable row keeps it after the transcript is cleaned up …
     expect(subagents([], [saved({ effort: 'xhigh' })])[0]?.effort).toBe('xhigh')
     // … a worker spawned while the dialog is open has only its start frame …
