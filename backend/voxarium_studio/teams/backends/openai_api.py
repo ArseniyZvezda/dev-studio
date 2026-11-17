@@ -240,6 +240,8 @@ class OpenAIApiBackend:
                     if self.connection.api_key.get_secret_value():
                         headers["Authorization"] = "Bearer " + self.connection.api_key.get_secret_value()
                     answer, calls, finish = "", {}, None
+                    response_id = uuid4().hex
+                    thinking = ""
                     size = 0
                     async with client.stream("POST", self.connection.base_url + "/chat/completions", json=body, headers=headers) as response:
                         if response.status_code >= 300:
@@ -270,9 +272,13 @@ class OpenAIApiBackend:
                                 text = delta.get("content") or delta.get("refusal")
                                 if text:
                                     answer += text
-                                    yield AgentEvent("text", text, session_id=session_id)
+                                    yield AgentEvent("text", text, data={"stream_id": response_id,
+                                                     "stream_text": answer}, session_id=session_id)
                                 if delta.get("reasoning_content"):
-                                    yield AgentEvent("thinking", delta["reasoning_content"], session_id=session_id)
+                                    thinking += delta["reasoning_content"]
+                                    yield AgentEvent("thinking", delta["reasoning_content"],
+                                                     data={"stream_id": response_id, "stream_text": thinking},
+                                                     session_id=session_id)
                                 for call in delta.get("tool_calls", []):
                                     item = calls.setdefault(call["index"], {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                                     item["id"] += call.get("id", "")

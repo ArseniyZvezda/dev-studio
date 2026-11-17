@@ -130,6 +130,22 @@ async def test_tool_round_fragmented_arguments(monkeypatch, tmp_path):
     assert sent[1][1]["messages"][-1] == {"role": "tool", "tool_call_id": "call1", "content": "Tool text"}
 
 
+async def test_text_deltas_share_block_and_keep_plain_collectors_correct(monkeypatch, tmp_path):
+    fake_http(monkeypatch, [(200, stream(
+        {"choices": [{"delta": {"reasoning_content": "Think"}}]},
+        {"choices": [{"delta": {"reasoning_content": " more"}}]},
+        {"choices": [{"delta": {"content": "Hello"}}]},
+        {"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]},
+    ))])
+    events = [e async for e in OpenAIApiBackend(connection()).run(request(tmp_path))]
+    text = [e for e in events if e.kind == "text"]
+    thinking = [e for e in events if e.kind == "thinking"]
+    assert len({e.data["stream_id"] for e in [*text, *thinking]}) == 1
+    assert [e.data["stream_text"] for e in text] == ["Hello", "Hello world"]
+    assert [e.data["stream_text"] for e in thinking] == ["Think", "Think more"]
+    assert "".join(e.text for e in text) == events[-1].text == "Hello world"
+
+
 @pytest.mark.parametrize("response", [(401, "secret-canary"), (429, "secret-canary"), (200, stream({"choices": [{"delta": {"content": "partial"}}]}))])
 async def test_api_failures_are_final_and_do_not_leak_key(monkeypatch, tmp_path, response):
     fake_http(monkeypatch, [response])

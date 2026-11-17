@@ -425,6 +425,10 @@ class AgentEvent:
     """``text`` | ``thinking`` | ``tool_use`` | ``tool_result`` | ``system`` | ``result`` |
     ``continued`` | ``rate_limit`` | ``error``.
 
+    Streaming text/thinking may carry ``data.stream_id`` (one provider response) and
+    cumulative ``data.stream_text``. ``text`` remains a delta for plain-text collectors;
+    transcript persistence upserts a single block from the cumulative snapshot (§10.6).
+
     ``rate_limit`` is the account rather than the work: how full the usage window is and,
     once it is spent, when it refills (``data["resets_at"]``, unix epoch seconds).
     Backend-agnostic by intent even though Claude Code is the runtime that reports it — any

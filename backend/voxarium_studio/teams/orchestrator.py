@@ -3351,7 +3351,7 @@ class TeamOrchestrator:
                 "member_id": member_id,
                 "role": role,
                 "kind": kind,
-                "text": text,
+                "text": message.text,
                 "data": message.data,
                 "id": message.id,
                 "created_at": message.created_at.isoformat(),
