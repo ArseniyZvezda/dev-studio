@@ -1137,6 +1137,7 @@ async function complete() {
            second one: a patch wants the width the transcript has, and the two are read one
            at a time. The switch back is the same control that got here. -->
       <ConversationPanel :conversation-id="task.id" :messages="task.messages" :task-status="task.status"
+        :compressing="isCompressing || task.is_compressing_context === true"
         :embedded="embedded" :empty-text="isHuman ? t('taskDetail.transcript.emptyPerson')
           : task.status === 'todo' ? t('taskDetail.transcript.emptyTodo') : t('taskDetail.transcript.emptyAgent')">
         <template v-if="selectedFile" #alternative>

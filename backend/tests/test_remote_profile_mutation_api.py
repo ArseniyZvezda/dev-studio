@@ -154,6 +154,35 @@ async def client_for(h, *, known=True):
             yield client
 
 
+SYMLINK_SKIP = "symlink creation needs Developer Mode or SeCreateSymbolicLinkPrivilege"
+
+
+@pytest.fixture
+def symlink_capability(request, tmp_path):
+    """Host capability probe for the cases that create symlinks, BEFORE ``harness``.
+
+    Requested first so a host without the privilege (Windows WinError 1314,
+    Developer Mode off) skips before harness setup/teardown runs; parameter
+    cases that create no link (``kind="directory"``) are never skipped. Any
+    other OSError is a real failure. Where links can be created, the tests run
+    unchanged.
+    """
+    callspec = getattr(request.node, "callspec", None)
+    kind = callspec.params.get("kind") if callspec is not None else None
+    if kind is not None and not kind.endswith("link"):
+        return
+    probe = tmp_path / "symlink-capability" / "probe"
+    probe.parent.mkdir()
+    try:
+        probe.symlink_to(probe.parent / "absent-target")
+    except OSError as failure:
+        if getattr(failure, "winerror", None) == 1314:
+            pytest.skip(SYMLINK_SKIP)
+        raise
+    probe.unlink()
+    probe.parent.rmdir()
+
+
 @pytest.fixture
 async def harness(monkeypatch, studio_home, tmp_path):
     counts = Counter()
@@ -428,7 +457,8 @@ async def test_recovery_rechecks_journal_evidence_under_lifecycle_guard(harness)
 @pytest.mark.parametrize("operation", OPERATIONS)
 @pytest.mark.parametrize("filename", ("config.yaml", "remote-keys.json"))
 @pytest.mark.parametrize("kind", ("dangling-link", "directory"))
-async def test_unsafe_store_is_not_proven_absence_and_never_mutated(harness, operation, filename, kind):
+async def test_unsafe_store_is_not_proven_absence_and_never_mutated(
+        symlink_capability, harness, operation, filename, kind):
     h = harness
     async with client_for(h) as client:
         if operation == "recover":
@@ -459,7 +489,8 @@ async def test_unsafe_store_is_not_proven_absence_and_never_mutated(harness, ope
 
 @pytest.mark.parametrize("operation", OPERATIONS)
 @pytest.mark.parametrize("filename", ("config.yaml", "remote-keys.json"))
-async def test_store_path_is_rechecked_after_inventory_under_shared_guard(harness, operation, filename):
+async def test_store_path_is_rechecked_after_inventory_under_shared_guard(
+        symlink_capability, harness, operation, filename):
     h = harness
     async with client_for(h) as client:
         if operation == "recover":
@@ -1071,7 +1102,8 @@ async def test_i1_recovery_url_union_is_rechecked_after_config_transaction_acqui
 
 
 @pytest.mark.parametrize("kind", ("directory", "dangling-link", "regular-link"))
-async def test_i1_private_binding_location_must_be_regular_unlinked_file(harness, monkeypatch, kind):
+async def test_i1_private_binding_location_must_be_regular_unlinked_file(
+        symlink_capability, harness, monkeypatch, kind):
     h = harness
     path = h.home / "remote-bindings.json"
     target = h.home / "synthetic-binding-target.json"
@@ -1157,3 +1189,200 @@ async def test_i14_synthetic_http_private_failure_is_redacted_and_precedes_key(h
             owner.ready.mutations.recover(P1["profile_id"], expected_revision=3)
         clean_exception(caught.value)
     secret_free(caplog.text)
+
+
+# --- VS-187 Gate L: the user's explicit consumer confirmation (dev spec §16.11) ------
+
+CONFIRMATIONS = "remote-consumer-confirmations.json"
+
+
+def census_url(profile_id=P1["profile_id"]):
+    return f"{BASE}/{profile_id}/consumers"
+
+
+async def census(client, profile_id=P1["profile_id"]):
+    response = await client.get(census_url(profile_id))
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    secret_free(response.text)
+    return response.json()
+
+
+async def confirm(client, shown, **changes):
+    body = {"expected_revision": shown["revision"], "url": shown["url"],
+            "bound_roots": shown["bound_roots"], **changes}
+    return await client.post(census_url(shown["profile_id"]) + "/confirmation", json=body)
+
+
+async def test_gate_l_unconfirmed_key_write_is_503_with_zero_writes_then_confirmation_admits(harness):
+    h = harness
+    (h.home / "remote-keys.json").unlink()  # Clean home: the first-ever key.
+    async with client_for(h, known=False) as client:
+        before = snapshot(h.home)
+        shown = await census(client)
+        assert shown == {"profile_id": P1["profile_id"], "url": P1["url"], "revision": 3,
+                         "state": "unknown", "confirmed_at": None, "bound_roots": [],
+                         "active_roots": [], "operations": []}
+        assert snapshot(h.home) == before, "the census is read-only"
+        error(await mutate(client, "set_credential"), 503, "consumer_lifecycle_unavailable")
+        assert snapshot(h.home) == before, "no record at all without confirmation"
+        assert not h.counts["publication"] and not h.counts["_begin"]
+
+        confirmed = await confirm(client, shown)
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["state"] == "known" and confirmed.json()["confirmed_at"]
+        stored = json.loads((h.home / CONFIRMATIONS).read_text(encoding="utf-8"))
+        assert list(stored["urls"]) == [P1["url"]] and stored["version"] == 1
+        # Only the confirmation file changed; no key, profile or binding.
+        # (The shared transaction's lock file is the only other new entry.)
+        assert {k: v for k, v in snapshot(h.home).items()
+                if k not in {CONFIRMATIONS, "config.yaml.lock"}} == before
+
+        success(await mutate(client, "set_credential"), {**P1, "revision": 4}, "stored")
+        assert keys(h.home)["profiles"][P1["profile_id"]]["token"] == NEW_KEY
+
+        # The other profile's URL was never confirmed.
+        assert (await census(client, P2["profile_id"]))["state"] == "unknown"
+        error(await mutate(client, "set_credential", profile_id=P2["profile_id"], revision=8),
+              503, "consumer_lifecycle_unavailable")
+
+
+async def test_gate_l_confirmation_is_durable_and_withdraw_closes_again(harness):
+    h = harness
+    async with client_for(h, known=False) as client:
+        shown = await census(client)
+        assert (await confirm(client, shown)).status_code == 200
+        # A fresh reader (as after a restart) sees the durable record; the
+        # real-Remote restart is covered in test_remote_gate_l.py.
+        from voxarium_studio.sync.consumer_confirmations import ConsumerConfirmations
+        assert ConsumerConfirmations().confirmed((P1["url"],))
+        assert not ConsumerConfirmations().confirmed((P2["url"],))
+        assert (await census(client))["state"] == "known"
+        response = await client.request("DELETE", census_url() + "/confirmation",
+                                        json={"expected_revision": 3})
+        assert response.status_code == 200 and response.json()["state"] == "unknown", response.text
+        before = snapshot(h.home)
+        error(await mutate(client, "clear_credential"), 503, "consumer_lifecycle_unavailable")
+        assert snapshot(h.home) == before
+        # Withdrawing an absent confirmation creates or rewrites nothing.
+        response = await client.request("DELETE", census_url() + "/confirmation",
+                                        json={"expected_revision": 3})
+        assert response.status_code == 200 and snapshot(h.home) == before
+
+
+@pytest.mark.parametrize("change,code", [
+    ({"url": "https://one.invalid/other"}, "consumer_inventory_changed"),
+    ({"bound_roots": ["D:/synthetic/not-shown"]}, "consumer_inventory_changed"),
+    ({"expected_revision": 2}, "profile_revision_conflict"),
+])
+async def test_gate_l_confirmation_must_match_exactly_what_was_shown(harness, change, code):
+    h = harness
+    async with client_for(h, known=False) as client:
+        shown = await census(client)
+        before = snapshot(h.home)
+        error(await confirm(client, shown, **change), 409, code)
+        assert snapshot(h.home) == before and not (h.home / CONFIRMATIONS).exists()
+
+
+async def test_gate_l_confirmation_refuses_a_stale_view_after_a_binding_appears(harness):
+    h = harness
+    async with client_for(h, known=False) as client:
+        shown = await census(client)
+        record = private_binding(h)
+        error(await confirm(client, shown), 409, "consumer_inventory_changed")
+        again = await census(client)
+        assert again["bound_roots"] == [record.canonical_root]
+        assert (await confirm(client, again)).status_code == 200
+
+
+@pytest.mark.parametrize("raw", ("{" + CANARY, '{"version":99,"urls":{}}',
+                                 '{"version":1,"urls":{"https://one.invalid/deployment/prefix":{}}}',
+                                 '{"version":1,"urls":{"HTTPS://ONE.invalid/deployment/prefix/":'
+                                 '{"confirmed_at":"2026-11-18T00:00:00Z","bound_roots":[]}}}'))
+async def test_gate_l_corrupt_confirmation_store_is_unknown_and_replaceable(harness, raw):
+    h = harness
+    (h.home / CONFIRMATIONS).write_text(raw, encoding="utf-8")
+    async with client_for(h, known=False) as client:
+        shown = await census(client)
+        assert shown["state"] == "unknown" and shown["confirmed_at"] is None
+        before = snapshot(h.home)
+        error(await mutate(client, "set_credential"), 503, "consumer_lifecycle_unavailable")
+        assert snapshot(h.home) == before
+        # Re-confirming replaces the corrupt regular file (others only become unknown).
+        assert (await confirm(client, shown)).status_code == 200
+        success(await mutate(client, "set_credential"), {**P1, "revision": 4}, "stored")
+
+
+async def test_gate_l_recents_empty_store_and_bindings_never_imply_known(harness):
+    from voxarium_studio.core import workspace as workspace_module
+
+    h = harness
+    workspace_module.record_recent(h.root, "recent")
+    workspace_module.record_recent(h.other_root, "other")
+    (h.home / "remote-bindings.json").write_text('{"version":1,"roots":{}}', encoding="utf-8")
+    async with client_for(h, known=False) as client:
+        assert (await census(client))["state"] == "unknown"
+        for operation in OPERATIONS[:-1]:
+            before = snapshot(h.home)
+            error(await mutate(client, operation), 503, "consumer_lifecycle_unavailable")
+            assert snapshot(h.home) == before
+
+
+async def test_gate_l_bound_root_refuses_url_and_delete_but_not_key_change(harness):
+    h = harness
+    record = private_binding(h)
+    async with client_for(h, known=False) as client:
+        shown = await census(client)
+        assert shown["bound_roots"] == [record.canonical_root] and shown["active_roots"] == []
+        assert (await confirm(client, shown)).status_code == 200
+        before = snapshot(h.home)
+        error(await mutate(client, "change_url"), 409, "profile_in_use")
+        error(await mutate(client, "delete"), 409, "profile_in_use")
+        assert snapshot(h.home) == before
+        success(await mutate(client, "set_credential"), {**P1, "revision": 4}, "stored")
+    assert RemoteBindings().read().get(record.canonical_root) == record, "bindings are never removed"
+
+
+async def test_gate_l_active_runner_refuses_without_forced_stop_until_released(harness):
+    h = harness
+    async with client_for(h, known=False) as client:
+        owner = h.app.state.remote_catalog.runtime
+        shown = await census(client)
+        assert (await confirm(client, shown)).status_code == 200
+        lease = owner.lifecycle.attach(root=str(h.other_root), url=P1["url"],
+                                       profile_id=P1["profile_id"])
+        busy = await census(client)
+        assert busy["active_roots"] == [str(canonical_root(h.other_root))]
+        before = snapshot(h.home)
+        for operation in ("set_credential", "clear_credential"):
+            error(await mutate(client, operation), 409, "profile_consumers_not_drained")
+        assert snapshot(h.home) == before
+        lease.release()  # The user disabled sync; the runner's lease is gone.
+        success(await mutate(client, "clear_credential"), {**P1, "revision": 4}, "none")
+
+
+async def test_gate_l_in_flight_operation_is_listed_and_blocks(harness):
+    h = harness
+    async with client_for(h, known=False) as client:
+        owner = h.app.state.remote_catalog.runtime
+        assert (await confirm(client, await census(client))).status_code == 200
+        with owner.lifecycle.operation(P1["profile_id"], kind="verify"):
+            shown = await census(client)
+            assert shown["operations"] == ["verify"] and shown["active_roots"] == []
+            error(await mutate(client, "set_credential"), 409, "profile_consumers_not_drained")
+
+
+async def test_gate_l_routes_validate_before_any_write(harness):
+    h = harness
+    async with client_for(h, known=False) as client:
+        for body in ({}, {"expected_revision": 3, "url": P1["url"]},
+                     {"expected_revision": 3, "url": "not a url", "bound_roots": []},
+                     {"expected_revision": 3, "url": P1["url"], "bound_roots": [], "extra": 1}):
+            error(await client.post(census_url() + "/confirmation", json=body), 422, "invalid_request")
+        error(await client.get(census_url() + "?x=1"), 422, "invalid_request")
+        error(await client.get(f"{BASE}/not-a-uuid/consumers"), 422, "invalid_request")
+        error(await client.get(census_url("33333333-3333-4333-8333-333333333333")), 404,
+              "profile_not_found")
+        response = await client.get(census_url(), headers={"authorization": "Bearer wrong"})
+        assert response.status_code == 401
+    assert not (h.home / CONFIRMATIONS).exists()

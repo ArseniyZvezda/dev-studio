@@ -182,6 +182,21 @@ describe('task header usage (§10.4)', () => {
     })
   })
 
+  it('sizes assistant context by the window Claude reports on the response or its result', () => {
+    const first = message({ data: { usage: { input_tokens: 2, cache_creation_input_tokens: 38000 } } })
+    const result = message({ kind: 'result', data: { usage: { input_tokens: 9 }, context_window: 1_000_000 } })
+    expect(taskUsage({ total_tokens: 38002, messages: [first] }).contextWindow).toBeNull()
+    expect(taskUsage({ total_tokens: 38002, messages: [first, result] })).toMatchObject({
+      contextTokens: 38002, contextWindow: 1_000_000,
+    })
+    const next = message({ data: { usage: { input_tokens: 5, cache_read_input_tokens: 38000 }, context_window: 1_000_000 } })
+    expect(taskUsage({ total_tokens: 76007, messages: [first, result, next] })).toMatchObject({
+      contextTokens: 38005, contextWindow: 1_000_000,
+    })
+    const child = message({ kind: 'result', data: { parent_tool_use_id: 'delegate_call', context_window: 200_000 } })
+    expect(taskUsage({ total_tokens: 38002, messages: [first, child] }).contextWindow).toBeNull()
+  })
+
   it('ignores subagent context when reading legacy assistant usage', () => {
     const root = message({ data: { usage: { input_tokens: 200 } } })
     const child = message({ data: { parent_tool_use_id: 'delegate_call', usage: { input_tokens: 50 } } })

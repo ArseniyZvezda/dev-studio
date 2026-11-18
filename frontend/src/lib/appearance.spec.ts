@@ -74,7 +74,10 @@ describe('exportTheme / parseImportedTheme', () => {
     expect(
       parseImportedTheme('{"palette": "warm", "surfaces": "tonal", "radius": "sharp", "mode": "light"}'),
     ).toEqual({ mode: 'light' })
-    expect(parseImportedTheme('{"look": "material", "font": "roboto"}')).toEqual({ font: 'roboto' })
+    // The interface font has been Allo alone since 2026-11-17, so an old `font` goes the same way.
+    expect(
+      parseImportedTheme('{"look": "material", "font": "roboto", "mono_font": "fira"}'),
+    ).toEqual({ mono_font: 'fira' })
   })
 
   it('starts a project on the Graphite design’s own accent and monospace face', () => {
@@ -87,11 +90,12 @@ describe('exportTheme / parseImportedTheme', () => {
 
 describe('fontStylesheet', () => {
   it('names a stylesheet only for faces the page has to fetch', () => {
-    expect(fontStylesheet('google-sans')).toBeNull()
+    expect(fontStylesheet('cascadia')).toBeNull()
     expect(fontStylesheet('system')).toBeNull()
-    expect(fontStylesheet('inter')).toMatch(/fonts\.googleapis\.com/)
-    expect(fontStylesheet('roboto')).toMatch(/family=Roboto/)
+    expect(fontStylesheet('fira')).toMatch(/fonts\.googleapis\.com/)
     expect(fontStylesheet('jetbrains')).toMatch(/JetBrains\+Mono/)
+    // The interface face is bundled, never a choice the page fetches.
+    expect(fontStylesheet('inter')).toBeNull()
     expect(fontStylesheet('nope')).toBeNull()
   })
 })

@@ -43,7 +43,7 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus, InvalidURI
 
 from ..core.config import AppConfig
 from ..core.paths import ProjectPaths
@@ -56,26 +56,33 @@ from .protocol import (
     CLOSE_BAD_REQUEST,
     CLOSE_COLLAB_RESET,
     CLOSE_COLLAB_UNAVAILABLE,
+    CLOSE_PROJECT_NOT_FOUND,
+    CLOSE_REASON_PROTOCOL_UPGRADE,
+    CLOSE_REASONS_BAD_REQUEST,
     CLOSE_UNAUTHORISED,
     PROTOCOL_VERSION,
+    HelloError,
     check_space_name,
     content_hash,
     is_insecure,
     normalise_url,
+    parse_hello_v2,
     socket_url,
+    socket_url_v2,
 )
-from .state import Base, SyncNamespace, SyncState, SyncStateV2
+from .state import Base, SyncNamespace, SyncState, SyncStateError, SyncStateV2
 from .transitions import EditorLeaseError, MutationBusy, MutationGateError, StaleBindingGeneration
 
 
 @dataclass(frozen=True)
 class ActivatedRemoteTarget:
-    """Input from the future I6 completed-activation owner, NEVER inferred.
+    """Completed-activation evidence, NEVER inferred from config or private rows.
 
-    I2 supplies no durable marker/reader or production activation path. The
-    default context reader returns None, preserving genuinely legacy projects.
-    Tests inject this evidence; I6 must obtain it from its strict disk journal
-    and I10 must supply a compatible, separately enabled runner (§2.3/§3.1).
+    Production obtains it only from a completed I12 Enable journal whose
+    committed (ID, R) is the current config's (``core.context``); unresolved
+    journals block as recovery_required, and a genuinely legacy project has
+    none. Tests may inject it. ``config_fingerprint`` is the observed bytes;
+    preflight re-checks every component before a key or socket (§2.3/§3.1).
     """
 
     canonical_root: str
@@ -191,6 +198,163 @@ class _Stop(Exception):
         super().__init__(message)
         self.state = state
         self.message = message
+
+
+def _with_name(user: object) -> object:
+    """v2 cards carry ``display_name``; the browser, author and conflict copy read ``name``.
+
+    A local presentation alias only (§16.4): the wire card and the user ID are
+    kept as received, and a v1 card that already has ``name`` is left alone.
+    """
+    if isinstance(user, dict) and "name" not in user and isinstance(user.get("display_name"), str):
+        return {**user, "name": user["display_name"]}
+    return user
+
+
+class _CheckpointV2:
+    """The shared engine's mutable working copy of an immutable SyncStateV2 (I10).
+
+    Reconciliation updates ``cursor``/``docs`` exactly as it does for the v1
+    SyncState; ``save`` publishes a NEW validated SyncStateV2 and never mutates
+    the loaded/published one. Saves are synchronous on the event loop, so they
+    are serialized per runner; SyncStateV2.save itself refuses to overwrite a
+    newer cursor. A failed publication is terminal, never a silent reset. The
+    legacy checkpoint is neither read nor imported here.
+    """
+
+    def __init__(self, checkpoint: SyncStateV2) -> None:
+        if type(checkpoint) is not SyncStateV2:
+            raise _Stop("blocked", "preview_required")
+        self.namespace = checkpoint.namespace
+        self.space_instance_id = checkpoint.space_instance_id
+        self.cursor = checkpoint.cursor
+        self.docs = {path: Base(base.rev, base.hash) for path, base in checkpoint.docs.items()}
+        self.published = checkpoint
+
+    @property
+    def url(self) -> str:
+        return self.namespace.url
+
+    @property
+    def space_id(self) -> str:
+        return self.namespace.persistent_id
+
+    def snapshot(self) -> SyncStateV2:
+        # Base(0, None) is how the engine records "no base"; v2 has no rev-0 entry.
+        docs = {path: Base(base.rev, base.hash) for path, base in sorted(self.docs.items()) if base.rev > 0}
+        return SyncStateV2(self.namespace, self.space_instance_id, self.cursor, docs)
+
+    def save(self) -> None:
+        try:
+            state = self.snapshot()
+            if state == self.published:
+                return
+            state.save()
+        except SyncStateError as exc:
+            raise _Stop("blocked", exc.code) from None
+        self.published = state
+
+
+class _ActivatedLink:
+    """Strict v2 connect for ONE captured activated binding (I10, server-design §3.1).
+
+    The target is the binding captured at publication; config is re-read only to
+    detect drift (which stops the runner), never as a source of a new target.
+    There is no v1 URL here and no fallback to one. The key comes from the
+    profile-bound provider for exactly ``binding.target.profile_id``/``url``.
+    """
+
+    def __init__(
+        self, binding: RemoteStartupBinding, *, credential: Callable[[], str | None],
+        account: Callable[[], str | None], drift: Callable[[], str | None],
+    ) -> None:
+        self.binding = binding
+        self._credential = credential
+        self._account = account
+        self._drift = drift
+        self.user_id: str | None = None
+        """The account the first accepted hello proved; every reconnect must repeat it."""
+        self.state = _CheckpointV2(binding.checkpoint)
+
+    def drift_stop(self) -> _Stop | None:
+        try:
+            code = self._drift()
+        except Exception:
+            code = "activation_unavailable"
+        return None if code is None else _Stop("blocked", str(code))
+
+    def check(self) -> None:
+        stop = self.drift_stop()
+        if stop is not None:
+            raise stop
+
+    def open(self) -> tuple[str, dict[str, str]]:
+        self.check()
+        target = self.binding.target
+        try:
+            token = self._credential()
+        except credentials.CredentialsError as exc:
+            raise _Stop("blocked", exc.code) from None
+        except Exception:
+            raise _Stop("blocked", "credential_store_unavailable") from None
+        if not isinstance(token, str) or not token:
+            raise _Stop("blocked", "credential_missing")
+        return socket_url_v2(target.url, target.persistent_id), {"Authorization": f"Bearer {token}"}
+
+    @staticmethod
+    def raise_for_close(ws: ClientConnection) -> None:
+        # Fixed local codes; the server's reason is reflected only when it is a known one.
+        if ws.close_code == CLOSE_UNAUTHORISED:
+            raise _Stop("unauthorised", "unauthorised")
+        if ws.close_code == CLOSE_BAD_REQUEST:
+            reason = ws.close_reason if ws.close_reason in CLOSE_REASONS_BAD_REQUEST else "invalid_request"
+            raise _Stop("blocked", reason)
+        if ws.close_code == CLOSE_PROJECT_NOT_FOUND:
+            raise _Stop("blocked", "project_not_found")
+
+    def accept_hello(self, raw: object) -> dict[str, Any]:
+        """Every check before the caller may publish a socket, state, sync or write."""
+        target = self.binding.target
+        try:
+            if not isinstance(raw, str):
+                raise HelloError()
+            try:
+                frame = json.loads(raw)
+            except (ValueError, RecursionError):
+                raise HelloError() from None
+            hello = parse_hello_v2(frame)
+        except HelloError as exc:
+            raise _Stop("blocked", exc.code) from None
+        user, space = hello["user"], hello["space"]
+        # The expected ID, never the answer: a mismatch is a protocol error, not a rebind.
+        if space["id"] != target.persistent_id:
+            raise _Stop("blocked", "identity_mismatch")
+        if space["storage_epoch"] != target.space_instance_id:
+            raise _Stop("blocked", "instance_mismatch")
+        try:
+            expected = self._account()
+        except Exception:
+            raise _Stop("blocked", "account_unavailable") from None
+        if expected is not None and user["id"] != expected:
+            raise _Stop("blocked", "account_mismatch")
+        if self.user_id is not None and user["id"] != self.user_id:
+            raise _Stop("blocked", "account_mismatch")
+        try:
+            # Against the newest agreed cursor, not just the startup checkpoint.
+            self.state.snapshot().validate_hello(
+                persistent_id=space["id"], space_instance_id=space["storage_epoch"], seq=hello["seq"],
+            )
+        except SyncStateError as exc:
+            # cursor_rollback included: stop BEFORE sync/write; bases/cursor are kept.
+            raise _Stop("blocked", exc.code) from None
+        self.check()
+        self.user_id = user["id"]
+        return hello
+
+
+def _refuse_redirect(exc: Exception) -> Exception:
+    """The v2 socket never follows a redirect, same-origin or not."""
+    return exc
 
 
 @dataclass(slots=True)
@@ -361,6 +525,11 @@ class RemoteSync:
         self._binding_evidence_sink: Callable[[dict[str, Any]], None] | None = None
         self._retained_evidence: list[dict[str, Any]] = []
         self._binding_failure: str | None = None
+        self._link: _ActivatedLink | None = None
+        """The activated v2 runner's captured binding; ``None`` for the legacy branch."""
+        self._terminal: _Stop | None = None
+        """Set when this connection must end for good (drift, failed checkpoint). From
+        then on nothing is sent, applied or joined — a late ACK included."""
 
     # ----------------------------------------------------- binding cutover (I5)
 
@@ -835,7 +1004,7 @@ class RemoteSync:
     @property
     def live(self) -> bool:
         """Connected and caught up — the only state rooms are offered in."""
-        return self._state_name == "connected"
+        return self._state_name == "connected" and self._terminal is None
 
     def status(self) -> dict[str, Any]:
         settings = self._config().sync
@@ -871,7 +1040,51 @@ class RemoteSync:
     # ------------------------------------------------------------------ the connection
 
     async def _run(self, url: str, space: str, token: str) -> None:
+        """The legacy v1 compatibility runner for a genuinely unactivated project.
+
+        Against a v2 Remote its socket is closed 4400 ``protocol_upgrade_required``
+        before hello: that is terminal here, never a cue to try the v2 socket.
+        """
+        self._link = None
+        headers = {"Authorization": f"Bearer {token}"}
+        await self._connection_loop(
+            lambda: (socket_url(url, space), headers),
+            lambda ws: self._converse(ws, url),
+            self._raise_for_close,
+        )
+
+    async def _run_activated(
+        self, binding: RemoteStartupBinding, *, credential: Callable[[], str | None],
+        account: Callable[[], str | None], drift: Callable[[], str | None],
+    ) -> None:
+        """The activated v2 runner for one captured binding (I10).
+
+        ``credential`` is the profile-bound key provider for exactly
+        ``binding.target.profile_id``/``url``; ``account`` the verified account ID
+        of that profile, or ``None`` when no verification is available (then the
+        first accepted hello pins the account for every reconnect); ``drift`` a
+        synchronous re-observation returning a stop code when config/private
+        binding no longer describe the captured target. Every connect (initial
+        and reconnect) repeats the strict hello before any sync/push/join.
+        """
+        try:
+            link = _ActivatedLink(binding, credential=credential, account=account, drift=drift)
+        except _Stop as stop:
+            await self._set_status(stop.state, stop.message)
+            return
+        self._link = link
+        await self._connection_loop(
+            link.open, lambda ws: self._converse_v2(ws, link), link.raise_for_close, strict=True,
+        )
+
+    async def _connection_loop(
+        self, target: Callable[[], tuple[str, dict[str, str]]],
+        converse: Callable[[ClientConnection], Any],
+        raise_for_close: Callable[[ClientConnection], None], *, strict: bool = False,
+    ) -> None:
+        """Reconnect with backoff; a :class:`_Stop` ends the runner for good."""
         delay = RECONNECT_MIN_SECONDS
+        self._terminal = None
         while True:
             if self._binding_fenced:
                 return
@@ -882,27 +1095,40 @@ class RemoteSync:
             if self._binding_quiescing or self._binding_fenced:
                 continue
             try:
-                async with connect(
-                    socket_url(url, space),
-                    additional_headers={"Authorization": f"Bearer {token}"},
-                    max_size=MAX_FRAME_BYTES,
-                    open_timeout=10,
-                ) as ws:
+                address, headers = target()
+                opener = connect(address, additional_headers=headers, max_size=MAX_FRAME_BYTES,
+                                 open_timeout=10)
+                if strict:
+                    opener.process_redirect = _refuse_redirect
+                async with opener as ws:
                     try:
-                        await self._converse(ws, url)
+                        await converse(ws)
                     finally:
                         await self._disconnected()
                     # A handshake that got as far as a conversation earns a fresh backoff.
                     delay = RECONNECT_MIN_SECONDS
-                    self._raise_for_close(ws)
+                    raise_for_close(ws)
+                    if self._terminal is not None:
+                        raise self._terminal
                     message = "The server closed the connection"
             except asyncio.CancelledError:
                 raise
             except _Stop as stop:
                 await self._set_status(stop.state, stop.message)
                 return
+            except InvalidStatus as exc:
+                status = exc.response.status_code
+                if strict and (300 <= status <= 399 or 400 <= status <= 499 and status not in {408, 429}):
+                    code = ("redirect_refused" if status < 400 else
+                            "unauthorised" if status in {401, 403} else "protocol_unavailable")
+                    await self._set_status("unauthorised" if code == "unauthorised" else "blocked", code)
+                    return
+                message = str(exc) or type(exc).__name__
             except (InvalidURI, ValueError) as exc:
-                await self._set_status("error", f"Not a usable server address: {exc}")
+                if strict:
+                    await self._set_status("blocked", "invalid_frame")
+                else:
+                    await self._set_status("error", f"Not a usable server address: {exc}")
                 return
             except (OSError, InvalidHandshake, ConnectionClosed, TimeoutError) as exc:
                 message = str(exc) or type(exc).__name__
@@ -918,9 +1144,14 @@ class RemoteSync:
         if ws.close_code == CLOSE_UNAUTHORISED:
             raise _Stop("unauthorised", ws.close_reason or "The server refused the key")
         if ws.close_code == CLOSE_BAD_REQUEST:
+            if ws.close_reason == CLOSE_REASON_PROTOCOL_UPGRADE:
+                # A v2 Remote: this unactivated project must be bound to a Remote project.
+                raise _Stop("error", "The server speaks protocol 2 and no longer accepts this "
+                                     "project's legacy space (protocol_upgrade_required)")
             raise _Stop("error", ws.close_reason or "The server refused the request")
 
     async def _converse(self, ws: ClientConnection, url: str) -> None:
+        """The legacy v1 conversation: a v1 hello, then the shared engine."""
         try:
             hello = json.loads(await asyncio.wait_for(ws.recv(), HELLO_TIMEOUT_SECONDS))
         except ConnectionClosed:
@@ -936,10 +1167,32 @@ class RemoteSync:
                 f"The server speaks protocol {hello.get('protocol')}, this Studio speaks "
                 f"{PROTOCOL_VERSION}. Update whichever is older.",
             )
-        self._user = hello.get("user")
+        self._user = _with_name(hello.get("user"))
         self._state = SyncState.load(
             self.paths.root, url=url, space_id=str((hello.get("space") or {}).get("id") or "")
         )
+        await self._conversation(ws)
+
+    async def _converse_v2(self, ws: ClientConnection, link: _ActivatedLink) -> None:
+        """Strict v2 hello BEFORE the socket/state are published to the engine (I10)."""
+        try:
+            raw = await asyncio.wait_for(ws.recv(), HELLO_TIMEOUT_SECONDS)
+        except ConnectionClosed:
+            link.raise_for_close(ws)
+            raise
+        if self._binding_quiescing or self._binding_fenced:
+            return
+        hello = link.accept_hello(raw)
+        if self._binding_quiescing or self._binding_fenced or self._link is not link:
+            return
+        self._user = _with_name(dict(hello["user"]))
+        # The same working copy across reconnects; never SyncState, never a fresh one.
+        self._state = link.state
+        await self._conversation(ws)
+
+    async def _conversation(self, ws: ClientConnection) -> None:
+        """One accepted socket: catch up, push, relay rooms (shared by v1 and v2)."""
+        assert self._state is not None
         self._ws = ws
         await self._set_status("syncing")
         await self._send({"t": "sync", "since": self._state.cursor})
@@ -956,8 +1209,26 @@ class RemoteSync:
             with contextlib.suppress(asyncio.CancelledError):
                 await pusher
 
+    def _halt(self, stop: _Stop) -> None:
+        """End this connection for good, synchronously: nothing more is sent or applied.
+
+        The socket is closed from a task of its own — the reader may be waiting on
+        the lock the caller holds. The runner then reports ``stop`` and returns.
+        """
+        if self._terminal is None:
+            self._terminal = stop
+        self._synced = False
+        ws = self._ws
+        if ws is not None:
+            self._spawn(ws.close(), name="sync-halt")
+
     async def _disconnected(self) -> None:
-        protected = self._binding_quiescing or self._binding_fenced or self._requires_editor_lease()
+        # An activated v2 runner's ordinary drop ends the transport-scoped work like v1:
+        # its Remote room sessions are gone, and every ambiguous ID is recorded below and
+        # then settled by the next same-target catch-up (``synced``). Only a binding
+        # quiesce/fence, or an activated model WITHOUT that runner, keeps them (I5/I8).
+        protected = self._binding_quiescing or self._binding_fenced or (
+            self._requires_editor_lease() and self._link is None)
         # Capture BEFORE any cleanup, including legacy cleanup. A later cutover
         # cannot reinterpret a discarded message ID as positively reconciled.
         unresolved = bool(self._pending or self._live_writes)
@@ -972,7 +1243,12 @@ class RemoteSync:
         self._settled.set()
         self._peers = []
         if self._state is not None:
-            self._state.save()
+            try:
+                self._state.save()
+            except _Stop as stop:
+                # A v2 checkpoint that could not be published ends the runner; cleanup goes on.
+                if self._terminal is None:
+                    self._terminal = stop
         for session in list(self._sessions.values()):
             if not self._binding_fenced:
                 self._room_activity(session.path)
@@ -1010,6 +1286,8 @@ class RemoteSync:
         async with self._send_lock:
             if ws is not self._ws:
                 raise ConnectionError("Remote connection changed")
+            if self._terminal is not None:
+                raise ConnectionError("Remote connection stopped")
             if self._binding_fenced and message.get("t") != "leave":
                 raise ConnectionError("Remote binding is fenced")
             if self._binding_quiescing and message.get("t") == "join":
@@ -1028,6 +1306,9 @@ class RemoteSync:
             await ws.send(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
 
     async def _handle(self, message: dict[str, Any]) -> None:
+        if self._terminal is not None:
+            # A stopped connection's late ACK/change must not reach the checkpoint or disk.
+            return
         kind = message.get("t")
         if self._binding_fenced and kind not in {"ack", "nack", "error"}:
             return
@@ -1046,14 +1327,26 @@ class RemoteSync:
             if self._state is not None:
                 self._state.cursor = max(self._state.cursor, _integer(message.get("seq")))
             self._synced = True
+            if self._link is not None and not (self._binding_quiescing or self._binding_fenced):
+                # Catch-up from the agreed cursor on the SAME target/G has replayed every
+                # change, so the previous socket's ambiguous IDs are now reconciled by
+                # comparison (applied → recorded, lost → pushed again). Other targets'
+                # or generations' evidence stays retained.
+                target, generation = list(self._target_tuple()), self.docs.transitions.generation
+                self._retained_evidence = [
+                    row for row in self._retained_evidence
+                    if row.get("target") != target or row.get("generation") != generation
+                ]
             # What is on disk and the server has never seen is pushed before anyone is told
             # the two are in step — a room may only be joined from an agreed revision.
             async with self._lock:
                 await self._push_local()
-            await self._set_status("connected")
+            if self._terminal is None:
+                await self._set_status("connected")
         elif kind == "presence":
             peers = message.get("peers")
-            self._peers = peers if isinstance(peers, list) else []
+            self._peers = ([{**peer, "user": _with_name(peer.get("user"))} if isinstance(peer, dict)
+                            else peer for peer in peers] if isinstance(peers, list) else [])
             await self._publish_status()
         elif kind == "error":
             self._on_error(message)
@@ -1082,7 +1375,8 @@ class RemoteSync:
             hash=None if deleted else message.get("hash"),
             content=None if deleted else message.get("content"),
         )
-        await self._reconcile(path, remote, by=message.get("by"))
+        by = _with_name(message.get("by"))
+        await self._reconcile(path, remote, by=by if isinstance(by, dict) else None)
         state.save()
 
     async def _reconcile(
@@ -1210,14 +1504,20 @@ class RemoteSync:
         subscription = self._subscription
         assert subscription is not None
         docs_prefix = self._docs_prefix()
+        config_path = self._config_relative()
         async for event in subscription.stream():
             if event.type in (EventType.TEAM_DOC_CHANGED, EventType.TEAM_DOC_FOLDER_CHANGED):
                 self._dirty.set()
-            elif event.type == EventType.EXPLORER_FILE_CHANGED and docs_prefix is not None:
+            elif event.type == EventType.EXPLORER_FILE_CHANGED and (
+                    docs_prefix is not None or config_path is not None):
                 # Changes made behind the Studio's back — the user's own editor, a checkout.
+                # A hand-edited config wakes the comparison too: an activated runner
+                # re-observes its binding there before pushing anything (I10).
                 changes = event.data.get("changes") or []
                 if event.data.get("truncated") or any(
-                    str(change.get("path", "")).startswith(docs_prefix) for change in changes
+                    docs_prefix is not None and str(change.get("path", "")).startswith(docs_prefix)
+                    or config_path is not None and str(change.get("path", "")) == config_path
+                    for change in changes
                 ):
                     self._dirty.set()
 
@@ -1225,6 +1525,12 @@ class RemoteSync:
         try:
             return self.paths.docs.resolve().relative_to(self.paths.root).as_posix() + "/"
         except (ValueError, OSError):
+            return None
+
+    def _config_relative(self) -> str | None:
+        try:
+            return self.paths.config_file.resolve().relative_to(self.paths.root.resolve()).as_posix()
+        except (ValueError, OSError, AttributeError):
             return None
 
     async def _push_loop(self) -> None:
@@ -1239,8 +1545,17 @@ class RemoteSync:
     async def _push_local(self) -> None:
         """Compare the tree with what was last agreed and push every difference."""
         state = self._state
-        if state is None or not self._synced or self._ws is None or self._binding_fenced:
+        if (state is None or not self._synced or self._ws is None or self._binding_fenced
+                or self._terminal is not None):
             return
+        link = self._link
+        if link is not None and not self._binding_quiescing:
+            # Manual config/private-binding drift ends the captured target before a
+            # single further write is sent to it (I10). A quiesce owns its own checks.
+            stop = link.drift_stop()
+            if stop is not None:
+                self._halt(stop)
+                return
         local = self._binding_corpus()[0] if self._binding_quiescing else self._scan()
         known = {path for path, base in state.docs.items() if base.hash is not None}
         for path in sorted(local.keys() | known):
@@ -1783,8 +2098,8 @@ class RemoteSync:
             self._close_collab_registration(session)
             await self._close_browser(session, CLOSE_COLLAB_UNAVAILABLE, "unavailable")
 
-    def _spawn(self, coro: Any) -> None:
-        task = asyncio.create_task(coro, name="sync-rejoin")
+    def _spawn(self, coro: Any, *, name: str = "sync-rejoin") -> None:
+        task = asyncio.create_task(coro, name=name)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 

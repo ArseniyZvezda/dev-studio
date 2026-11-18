@@ -26,7 +26,7 @@ const props = defineProps<{
   backends?: readonly string[]
 }>()
 const emit = defineEmits<{ change: [backend: string | null, model: string | null] }>()
-const ALL_BACKENDS = ['claude_code', 'codex', 'qwen'] as const
+const ALL_BACKENDS = ['claude_code', 'codex', 'qwen', 'antigravity'] as const
 const backends = computed(() => {
   const allowed = props.backends ? [...props.backends] : [...new Set([
     ...ALL_BACKENDS, ...Object.keys(props.options?.agent_backends ?? {}).filter(id =>

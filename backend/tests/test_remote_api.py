@@ -355,7 +355,8 @@ def idle(env):
 def test_factory_requires_every_injection_and_exact_unmounted_surface():
     signature = inspect.signature(create_remote_router)
     required = {"metadata", "profiles", "verification", "catalog"}
-    assert set(signature.parameters) == required | {"mutations", "creation"}
+    assert set(signature.parameters) == required | {"mutations", "creation", "consumers"}
+    assert signature.parameters["consumers"].default is None
     assert signature.parameters["mutations"].default is None
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is inspect.Parameter.empty
                for name, p in signature.parameters.items() if name in required)

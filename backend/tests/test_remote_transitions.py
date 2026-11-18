@@ -1573,3 +1573,86 @@ async def test_i6_last_safe_increment_pair_and_snapshot_overflow(coordinator):
             fence.advance_generation()
         assert caught.value.code == "binding_generation_exhausted"
     assert c.gate.generation == MAX_BINDING_GENERATION
+
+
+# --- TASK-185 I12: transient foreign Windows handle on journal replace -------------
+
+
+def _transient_replace_refusal(winerror):
+    """What MoveFileEx reports while an AV/indexer briefly holds the target file."""
+    error = PermissionError(13, "Access is denied", None, winerror)
+    if getattr(error, "winerror", None) != winerror:  # Non-Windows OSError has no winerror.
+        error.winerror = winerror
+    return error
+
+
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_journal_replace_retries_only_a_transient_foreign_windows_handle(monkeypatch, tmp_path, winerror):
+    from voxarium_studio.sync import transitions
+    calls, sleeps = [], []
+    real = transitions._os_replace
+
+    def flaky(source, target):
+        calls.append(target)
+        if len(calls) < 3:
+            raise _transient_replace_refusal(winerror)
+        return real(source, target)
+
+    monkeypatch.setattr(transitions, "_os_replace", flaky)
+    monkeypatch.setattr(transitions, "_replace_sleep", sleeps.append)
+    source, target = tmp_path / "new", tmp_path / "journal.json"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    transitions._replace_journal(source, target)
+    assert target.read_bytes() == b"new" and not source.exists()
+    assert len(calls) == 3 and len(sleeps) == 2 and sum(sleeps) < 0.1
+
+
+def test_journal_replace_is_bounded_and_never_hides_other_errors(monkeypatch, tmp_path):
+    from voxarium_studio.sync import transitions
+    calls = []
+
+    def always(source, target):
+        calls.append(target)
+        raise _transient_replace_refusal(5)
+
+    monkeypatch.setattr(transitions, "_os_replace", always)
+    monkeypatch.setattr(transitions, "_replace_sleep", lambda _seconds: None)
+    with pytest.raises(PermissionError):
+        transitions._replace_journal(tmp_path / "a", tmp_path / "b")
+    assert len(calls) == transitions._REPLACE_ATTEMPTS
+    for error in (PermissionError(13, "denied"), _transient_replace_refusal(1314), OSError(5, "io")):
+        calls.clear()
+
+        def once(source, target, error=error):
+            calls.append(target)
+            raise error
+
+        monkeypatch.setattr(transitions, "_os_replace", once)
+        with pytest.raises(OSError):
+            transitions._replace_journal(tmp_path / "a", tmp_path / "b")
+        assert len(calls) == 1, "only a transient sharing refusal is retried"
+
+
+async def test_i6_commit_survives_transient_journal_replace_refusal(projects, monkeypatch):
+    """The reproduced flake: overwriting the previous phase's journal was refused
+    once by a foreign handle and surfaced as recovery_required."""
+    from voxarium_studio.sync import transitions
+    from voxarium_studio.sync.transitions import read_binding_change_journals
+    p = projects
+    prepared, body = await ready_commit(p)
+    real = transitions._os_replace
+    refused = set()
+
+    def flaky(source, target):
+        if "remote-changes" in str(target) and os.path.exists(target) and source not in refused:
+            refused.add(source)
+            raise _transient_replace_refusal(5)
+        return real(source, target)
+
+    monkeypatch.setattr(transitions, "_os_replace", flaky)
+    response = await commit(p, prepared, body)
+    assert response.status_code == 200, response.text
+    assert len(refused) >= 2  # config_committed and completed both overwrote a journal
+    (row,) = read_binding_change_journals(p.ca.paths.root)
+    assert row["phase"] == "completed"

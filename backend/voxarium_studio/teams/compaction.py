@@ -37,11 +37,22 @@ def transcript_text(messages: list[AgentMessage]) -> str:
     )
 
 
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def context_tokens(messages: list[AgentMessage]) -> int:
     """Latest request usage, never cumulative run usage; estimate when unreported."""
     for message in reversed(messages):
         if message.kind in SUMMARY_KINDS:
             break
+        if message.data.get("parent_tool_use_id"):
+            continue
+        if message.kind == "system" and message.data.get("subtype") == "usage_update":
+            # Codex/Antigravity size the latest request only on the telemetry snapshot.
+            if (reported := _count(message.data.get("context_tokens"))) is not None:
+                return reported
+            continue
         if message.role != "assistant":
             continue
         usage = message.data.get("usage")
@@ -52,6 +63,40 @@ def context_tokens(messages: list[AgentMessage]) -> int:
             return sum(max(0, int(usage[key])) for key in keys
                        if isinstance(usage.get(key), (int, float)))
     return math.ceil(len(transcript_text(messages)) / 4)
+
+
+def context_window(messages: list[AgentMessage]) -> int | None:
+    """The newest window a runtime reported for this task's model (§10.4).
+
+    A window belongs to the session model rather than to one request, so it is read past
+    an earlier summary too: right after a compression the dialogue is short, but its limit
+    is still the one the next run will hit.
+    """
+    for message in reversed(messages):
+        if message.data.get("parent_tool_use_id"):
+            continue
+        if (window := _count(message.data.get("context_window"))):
+            return window
+    return None
+
+
+def compression_threshold(messages: list[AgentMessage], percent: int, fallback_tokens: int) -> int:
+    """Tokens at which automatic compression starts; zero when it is off (§10.4).
+
+    ``percent`` of the reported window wins; a runtime that never reports its window
+    falls back to the absolute ``fallback_tokens``.
+    """
+    if not percent:
+        return 0
+    window = context_window(messages)
+    if window:
+        return max(1, math.ceil(window * min(percent, 100) / 100))
+    return fallback_tokens
+
+
+def needs_compression(messages: list[AgentMessage], percent: int, fallback_tokens: int) -> bool:
+    threshold = compression_threshold(messages, percent, fallback_tokens)
+    return bool(threshold) and has_dialogue(messages) and context_tokens(messages) >= threshold
 
 
 def expand_evidence(messages: list[AgentMessage]) -> list[AgentMessage]:

@@ -256,7 +256,7 @@ export function subagents(messages: (LifecycleMessage & Pick<AgentMessage, 'crea
         type,
         typeLabel: typeLabel(type),
         backend: text(data.backend),
-        model: text(data.model),
+        model: text(data.model) || previous?.model || '',
         // A follow-up turn restarts the same worker; a frame recorded before effort was
         // reported must not blank what the durable row already says.
         effort: text(data.effort) || previous?.effort || '',

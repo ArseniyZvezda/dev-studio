@@ -76,6 +76,26 @@ export interface RecoverRemoteProfileInput extends RemoteRevisionInput {
 }
 export interface RecoveredRemoteProfile { profile: RemoteServerProfile | null }
 
+/** Gate L census (dev spec §16): projects this Studio knows use a profile/URL.
+ * `known` only after the user explicitly confirmed this exact URL and list; never inferred.
+ */
+export type RemoteProfileConsumerOperation = 'verify' | 'read' | 'create'
+export interface RemoteProfileConsumers {
+  profile_id: string
+  url: string
+  revision: number
+  state: 'known' | 'unknown'
+  confirmed_at: string | null
+  bound_roots: string[]
+  active_roots: string[]
+  operations: RemoteProfileConsumerOperation[]
+}
+/** Exactly the URL and project list shown to the user; the backend refuses a changed inventory. */
+export interface ConfirmRemoteProfileConsumersInput extends RemoteRevisionInput {
+  url: string
+  bound_roots: string[]
+}
+
 /** Preserve the local router's error envelope, including Studio 401 semantics. */
 export class RemoteApiError extends ApiError implements RemoteError {
   constructor(status: number, readonly code: string, readonly details: Record<string, string> = {}) {
@@ -171,6 +191,31 @@ const verificationErrorCodes = new Set([
   'identity_mismatch', 'project_not_found', 'metadata_conflict', 'snapshot_changed', 'payload_too_large',
 ])
 
+// Gate L envelope codes accepted from the local router (never inside a VerificationDTO).
+const consumerErrorCodes = new Set(['consumer_inventory_changed', 'consumer_confirmation_unavailable'])
+
+function stringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+function consumers(value: unknown, expectedId: string): RemoteProfileConsumers {
+  if (!object(value) || !exactFields(value, [
+    'profile_id', 'url', 'revision', 'state', 'confirmed_at', 'bound_roots', 'active_roots', 'operations',
+  ]) || value.profile_id !== expectedId || !profileUrl(value.url)
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1
+    || !(value.state === 'known' || value.state === 'unknown')
+    || !(value.confirmed_at === null || (typeof value.confirmed_at === 'string' && !!value.confirmed_at))
+    || (value.state === 'known' && value.confirmed_at === null)
+    || !stringList(value.bound_roots) || !stringList(value.active_roots)
+    || !stringList(value.operations) || !value.operations.every(item => ['verify', 'read', 'create'].includes(item))) {
+    throw new RemoteApiError(502, 'invalid_response')
+  }
+  return {
+    profile_id: value.profile_id, url: value.url, revision: value.revision as number, state: value.state,
+    confirmed_at: value.confirmed_at as string | null, bound_roots: [...value.bound_roots],
+    active_roots: [...value.active_roots], operations: [...value.operations] as RemoteProfileConsumerOperation[],
+  }
+}
+
 function checkedVerification(value: unknown): VerificationDTO {
   if (!object(value) || !exactFields(value, [
     'state', 'checked_at', 'user', 'wire_protocol', 'catalog_version', 'error_code',
@@ -232,7 +277,7 @@ function serverProfile(value: unknown): RemoteServerProfile {
   return { ...value, verification: verification(value.verification) } as unknown as RemoteServerProfile
 }
 
-export function createRemoteApiClient(session: ProjectSession = rendererSession) {
+function remoteRequest(session: ProjectSession) {
   async function request<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string,
     query?: Query, body?: unknown, expectedStatus?: 200 | 201 | 204 | 'create'): Promise<T> {
     const current = session.capture()
@@ -269,7 +314,7 @@ export function createRemoteApiClient(session: ProjectSession = rendererSession)
       if (!response.ok) {
         if (object(payload) && typeof payload.code === 'string' && object(payload.details)
           && (expectedStatus === undefined || (exactFields(payload, ['code', 'details'])
-            && (verificationErrorCodes.has(payload.code)
+            && (verificationErrorCodes.has(payload.code) || consumerErrorCodes.has(payload.code)
               || ['studio_unauthorised', 'studio_forbidden', 'method_not_allowed'].includes(payload.code))))
           && Object.values(payload.details).every(value => typeof value === 'string')) {
           throw new RemoteApiError(response.status, payload.code, payload.details as Record<string, string>)
@@ -282,6 +327,11 @@ export function createRemoteApiClient(session: ProjectSession = rendererSession)
       return payload as T
     } finally { current() }
   }
+  return request
+}
+
+export function createRemoteApiClient(session: ProjectSession = rendererSession) {
+  const request = remoteRequest(session)
 
   return {
     async createProject(profileId: string, input: CreateRemoteProjectInput): Promise<RemoteCreateResult> {
@@ -371,3 +421,35 @@ export function createRemoteApiClient(session: ProjectSession = rendererSession)
     },
   }
 }
+
+/** Gate L census client (dev spec §16), separate from profile intents: reading it never
+ * confirms, and confirming is a distinct explicit call with exactly what the user saw.
+ */
+export function createRemoteConsumersClient(session: ProjectSession = rendererSession) {
+  const request = remoteRequest(session)
+  return {
+    /** Read-only census; never confirms anything by itself. */
+    async profileConsumers(profileId: string): Promise<RemoteProfileConsumers> {
+      const path = profilePath(profileId)
+      return consumers(await request<unknown>('GET', `${path}/consumers`, undefined, undefined, 200), profileId)
+    },
+    /** Only after the user's explicit confirmation of exactly this URL and list. */
+    async confirmProfileConsumers(profileId: string, input: ConfirmRemoteProfileConsumersInput): Promise<RemoteProfileConsumers> {
+      const path = profilePath(profileId)
+      revisionInput(input, ['expected_revision', 'url', 'bound_roots'])
+      if (typeof input.url !== 'string' || !input.url || !stringList(input.bound_roots)) {
+        throw new RemoteApiError(422, 'invalid_request')
+      }
+      // Capture before the await: later caller mutation cannot change what was confirmed.
+      const body = { expected_revision: input.expected_revision, url: input.url, bound_roots: [...input.bound_roots] }
+      return consumers(await request<unknown>('POST', `${path}/consumers/confirmation`, undefined, body, 200), profileId)
+    },
+    async withdrawProfileConsumers(profileId: string, input: RemoteRevisionInput): Promise<RemoteProfileConsumers> {
+      const path = profilePath(profileId)
+      revisionInput(input, ['expected_revision'])
+      return consumers(await request<unknown>('DELETE', `${path}/consumers/confirmation`, undefined,
+        { expected_revision: input.expected_revision }, 200), profileId)
+    },
+  }
+}
+export type RemoteConsumersClient = ReturnType<typeof createRemoteConsumersClient>

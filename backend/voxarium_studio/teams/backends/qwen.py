@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
 import time
@@ -30,7 +29,7 @@ from .base import (
     register_backend,
     register_context_inspector,
 )
-from .cli_stream import _Oversized, _drain, _frames
+from .cli_stream import _Oversized, _drain, _frames, _kill_tree
 from .mcp_bridge import bridge_servers
 from .recovery import recovery_prompt
 
@@ -482,26 +481,6 @@ async def _write_prompt(writer: asyncio.StreamWriter, prompt: str) -> None:
         pass  # Early CLI failures are reported by stderr/the exit code.
     finally:
         writer.close()
-
-
-async def _kill_tree(process: asyncio.subprocess.Process) -> None:
-    if os.name == "nt":
-        killer = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(process.pid), "/T", "/F",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
-        await killer.wait()
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    if process.returncode is None:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-    await process.wait()
 
 
 def _text(value: Any) -> str:

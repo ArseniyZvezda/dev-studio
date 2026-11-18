@@ -262,3 +262,134 @@ async def test_claude_adapter_records_real_rate_limit_event(
     assert [event.kind for event in events] == ["rate_limit", "rate_limit"]
     assert events[0].data["utilization"] == 0
     assert [item["used_percent"] for item in usage.get_usage_limits("claude_code")] == [0, 70]
+
+
+def test_claude_usage_report_is_percent_with_iso_resets(clock: SimpleNamespace) -> None:
+    """`get_usage` is what `/usage` shows: percentages, not the stream's fractions (§6.1)."""
+    usage.record_claude_usage(claude(0.9, "seven_day_opus"))
+    usage.record_claude_usage_report({
+        "five_hour": {"utilization": 17, "resets_at": "2027-01-16T08:00:00+00:00"},
+        "seven_day": {"utilization": 2.5, "resets_at": None},
+        "seven_day_opus": None,  # not this account's window: the stale warning goes
+        "seven_day_sonnet": {"utilization": 140},
+        "extra_usage": {"utilization": 50},
+        "limits": [{"percent": 99}],
+    })
+    expected = [
+        {"window": "five_hour", "used_percent": 17.0, "resets_at": clock.wall + 86_400},
+        {"window": "seven_day", "used_percent": 2.5, "resets_at": None},
+    ]
+    assert usage.get_usage_limits("claude_code") == expected
+    assert usage._reset_instant("2027-01-16T08:00:00Z") == clock.wall + 86_400
+    assert usage._reset_instant("not a date") is None
+    for malformed in (None, [], "17%", {"five_hour": "17"}, {"five_hour": {"utilization": "17"}}):
+        usage.record_claude_usage_report(malformed)
+    assert usage.get_usage_limits("claude_code") == expected
+
+
+import asyncio  # noqa: E402
+
+
+def _fake_claude_sdk(monkeypatch: pytest.MonkeyPatch, turns: list[list[object]], control: list[dict]) -> None:
+    """A protocol fake of the SDK surface the adapter reads — never a subprocess."""
+    sdk = ModuleType("claude_agent_sdk")
+    for name in ("AssistantMessage", "ResultMessage", "SystemMessage", "UserMessage"):
+        setattr(sdk, name, type(name, (), {"__init__": lambda self, **kw: self.__dict__.update(kw)}))
+    sdk.ClaudeAgentOptions = lambda **kwargs: SimpleNamespace(**kwargs)
+
+    class Query:
+        async def _send_control_request(self, request, timeout=60.0):
+            control.append(request)
+            if control[0] == "silent":
+                await asyncio.Event().wait()  # the CLI exits before it answers
+            return {"rate_limits": {"five_hour": {"utilization": 42, "resets_at": None}}}
+
+    class Client:
+        def __init__(self, **kwargs):
+            self._query = Query()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            for message in turns.pop(0):
+                await asyncio.sleep(0)  # a real session reads a pipe between frames
+                yield message
+
+    sdk.ClaudeSDKClient = Client
+    sdk.TextBlock = type("TextBlock", (), {"__init__": lambda self, text: setattr(self, "text", text)})
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(claude_code, "_option_fields", lambda: frozenset())
+    monkeypatch.setattr(claude_code.ClaudeCodeBackend, "is_available", lambda self: (True, "Ready"))
+    monkeypatch.setattr(claude_code, "_CONTEXT_WINDOWS", {})
+    monkeypatch.setattr(claude_code, "_usage_refreshed_at", -float("inf"))
+    monkeypatch.setattr(claude_code, "_usage_refresh", None)
+    monkeypatch.setattr(claude_code, "_usage_refresh_client", None)
+
+
+async def test_claude_adapter_reports_session_window_and_refreshes_account_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk_turn = lambda sdk: [  # noqa: E731
+        sdk.SystemMessage(subtype="init", data={"model": "claude-opus-5[1m]"}, session_id="s1"),
+        sdk.AssistantMessage(content=[sdk.TextBlock("ok")], model="claude-opus-5", message_id="r1",
+                             usage={"input_tokens": 2, "cache_creation_input_tokens": 38000,
+                                    "output_tokens": 4}),
+        sdk.ResultMessage(subtype="success", result="ok", num_turns=1, session_id="s1", usage={},
+                          model_usage={"claude-opus-5[1m]": {"contextWindow": 1_000_000},
+                                       "claude-haiku-5-5": {"contextWindow": 200_000}}),
+    ]
+    control: list[dict] = []
+    turns: list[list[object]] = []
+    _fake_claude_sdk(monkeypatch, turns, control)
+    sdk = sys.modules["claude_agent_sdk"]
+    turns.extend([sdk_turn(sdk), sdk_turn(sdk)])
+    request = AgentRunRequest(
+        member=TeamMember(team_id="team", name="Dev", role_title="Developer"),
+        task=None, session_key="usage-test", workdir=tmp_path, prompt="test", system_prompt="test",
+    )
+    first = [event async for event in claude_code.ClaudeCodeBackend().run(request)]
+    await asyncio.sleep(0)
+    text = next(event for event in first if event.kind == "text")
+    assert "context_window" not in text.data  # nothing has reported it yet
+    assert next(event for event in first if event.kind == "result").data["context_window"] == 1_000_000
+    # The CLI's own `/usage` report, asked once and throttled across sessions.
+    assert control == [{"subtype": "get_usage"}]
+    assert usage.get_usage_limits("claude_code") == [
+        {"window": "five_hour", "used_percent": 42.0, "resets_at": None}]
+
+    second = [event async for event in claude_code.ClaudeCodeBackend().run(request)]
+    await asyncio.sleep(0)
+    assert next(event for event in second if event.kind == "text").data["context_window"] == 1_000_000
+    assert len(control) == 1
+
+
+async def test_claude_usage_request_dies_with_its_session_and_is_asked_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short run closes before a Studio session answers `get_usage` (§6.1)."""
+    control: list = ["silent"]
+    turns: list[list[object]] = []
+    _fake_claude_sdk(monkeypatch, turns, control)
+    sdk = sys.modules["claude_agent_sdk"]
+    result = lambda: [sdk.ResultMessage(subtype="success", result="ok", session_id="s1")]  # noqa: E731
+    turns.extend([result(), result()])
+    request = AgentRunRequest(
+        member=TeamMember(team_id="team", name="Dev", role_title="Developer"),
+        task=None, session_key="usage-test", workdir=tmp_path, prompt="test", system_prompt="test",
+    )
+    [event async for event in claude_code.ClaudeCodeBackend().run(request)]
+    await asyncio.sleep(0)
+    assert claude_code._usage_refresh is None  # cancelled with its session, not left to time out
+    assert usage.get_usage_limits("claude_code") == []
+    control[0] = "answering"
+    [event async for event in claude_code.ClaudeCodeBackend().run(request)]
+    await asyncio.sleep(0)
+    assert control.count({"subtype": "get_usage"}) >= 2
+    assert [item["used_percent"] for item in usage.get_usage_limits("claude_code")] == [42.0]

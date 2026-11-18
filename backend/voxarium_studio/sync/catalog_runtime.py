@@ -7,49 +7,81 @@ The S2 readers still use the existing user-config scope; live locators fence
 that scope against the home pinned at start, rather than redirecting globals.
 
 C4 permits explicit HTTP-only Verify, with one owned pool and fresh request
-bindings. Catalog reads remain disabled before credential/network lookup until
-R3; no verification history or persistent activation flag is maintained. S2
-fences are bounded observations, not a multiprocess lease or ABA proof.
+bindings; no verification history or persistent activation flag is maintained.
+S2 fences are bounded observations, not a multiprocess lease or ABA proof.
 C6 adds only S2 create/rename with exact-row, secret-free response observation.
-C5/I1 adds app-owned consumer/admission fencing and private binding reads, not
-positive legacy completeness (gate L) or S5 drain; sensitive mutations stay closed.
+C5/I1 adds app-owned consumer/admission fencing and private binding reads. Gate L
+(positive legacy completeness) comes only from the user's durable confirmation of
+the exact URL (dev spec §16.11); without it sensitive mutations stay closed.
 C7 exposes explicit S2 credential/URL/delete/recovery commands. Recovery alone
 may inspect a regular pending journal; ordinary reads/admission stay fenced.
-C8 owns lazy durable Create routing/services. Its production transport remains
-absent until R3; neither startup nor metadata GET opens the intent journal.
+C8 owns lazy durable Create routing/services; neither startup nor metadata GET
+opens the intent journal.
+
+I9 (runtime-integration-plan) releases the former R3 gate in this same owner:
+strict-v2 catalog reads (list/exact get/snapshot/legacy resolve) and Create use
+the accepted S3 services over the one owned pool. Every read is an owned task
+holding a C5 ``read`` lease through each await/page/cleanup, with a fresh
+revision/URL-bound provider; close cancels and joins it. A v1 Remote still
+verifies only as a diagnostic: catalog services never send v1 requests.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import stat
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from pydantic import SecretStr
 
 from ..core import application_config, paths
 from ..core.application_config import RemoteServerProfile
 from . import bindings, credentials
-from .catalog import CatalogError
+from .catalog import CatalogError, CatalogResponse
 from .catalog_create_runtime import CatalogCreateRuntime
 from .catalog_http import CatalogHttpTransport
 from .catalog_metadata import CatalogMetadataObserver
 from .catalog_providers import PendingCatalogProviders, S2CatalogReaders
+from .catalog_read_service import CatalogReadService
+from .catalog_service import CatalogService
 from .catalog_verification import CatalogVerificationService
 from .profiles import ProfileConsumers, ProfileError, RemoteProfiles
-from .profile_lifecycle import ProfileLifecycle
+from .consumer_confirmations import FILE_NAME as CONFIRMATIONS_FILE, ConsumerConfirmations
+from .profile_lifecycle import ConsumerCensus, ProfileLifecycle
 from . import profiles as profile_store
 
 if TYPE_CHECKING:
     from ..api.remote import ServerProfile
     from ..api.remote_metadata import CatalogMetadataAdapter
-    from .catalog import CatalogPage
+    from .catalog import CatalogPage, CatalogProject
+    from .catalog_reads import LegacyResolution, ProjectSnapshot
     from .catalog_verification import VerificationStatus
+
+
+T = TypeVar("T")
+# Select reads one complete, consistent snapshot only for its exact identity
+# (server-design §3.3–3.4). Wide pages; still bounded by the reader's bytes.
+SELECT_SNAPSHOT_LIMIT = 100
+SELECT_SNAPSHOT_MAX_PAGES = 1000
+# Fixed local vocabulary for owner-side ProfileError refusals; anything else
+# is a store failure, never a raw message (studio-design §5.1).
+_PROFILE_CODES = frozenset({
+    "profile_not_found", "profile_revision_conflict", "profile_recovery_required",
+    "invalid_catalog_readers", "consumer_lifecycle_unavailable",
+    "application_store_unavailable", "invalid_profile_metadata",
+})
+
+
+def _profile_code(error: ProfileError) -> str:
+    if (type(error) is ProfileError and len(error.args) == 1
+            and type(error.args[0]) is str and error.args[0] in _PROFILE_CODES):
+        return error.args[0]
+    return "profile_store_unavailable"
 
 
 @dataclass(frozen=True, repr=False)
@@ -123,16 +155,90 @@ class _ProfileMutations:
 
 
 @dataclass(frozen=True, repr=False)
-class _UnavailableOutbound:
-    """R3 release gate, not a fake verification or dead transport.
+class _OwnedTransport:
+    """The owner's single pool, resolved at each send; never a second client (I9).
 
-    Putting a failing transport behind CatalogService would be too late: its
-    snapshot already loads the token. Do not instantiate catalog read services.
+    Create is composed before the pool opens (the pool stays the last fallible
+    startup action), so it holds this handle instead of the pool itself.
+    Admission is rechecked at the send boundary: once close fences the owner no
+    new request leaves, while an admitted response keeps its own cleanup.
     """
+
+    owner: RemoteCatalogRuntime
+
+    async def request(self, method: str, url: str, *, headers: Mapping[str, str],
+                      params: Mapping[str, str | int], json: Mapping[str, str] | None,
+                      follow_redirects: bool) -> CatalogResponse:
+        self.owner._admit()
+        transport = self.owner._transport
+        if transport is None:
+            raise CatalogError("service_unavailable")
+        return await transport.request(method, url, headers=headers, params=params,
+                                       json=json, follow_redirects=follow_redirects)
+
+
+@dataclass(frozen=True, repr=False)
+class _ReadServices:
+    """Fresh accepted S3 services bound to ONE provider, for one owned read."""
+
+    catalog: CatalogService
+    reads: CatalogReadService
+
+
+@dataclass(frozen=True, repr=False)
+class _CatalogProvider:
+    """I9 catalog facade: each call is one owned, leased, freshly bound read.
+
+    Callers supply only a profile ID, its expected revision and an exact
+    project/legacy selector. URL, key and transport are never inputs, and no
+    result, verification or provider is cached between calls.
+    """
+
+    owner: RemoteCatalogRuntime
 
     async def list_projects(self, profile_id: str, *, expected_revision: int,
                             after: str | None = None, limit: int = 20) -> CatalogPage:
-        raise CatalogError("service_unavailable")
+        return await self.owner._read(profile_id, expected_revision, lambda s: s.catalog.list_projects(
+            profile_id, expected_revision=expected_revision, limit=limit, after=after,
+        ))
+
+    async def get_project(self, profile_id: str, id: str, *,
+                          expected_revision: int) -> CatalogProject:
+        return await self.owner._read(profile_id, expected_revision, lambda s: s.catalog.get_project(
+            profile_id, id, expected_revision=expected_revision,
+        ))
+
+    async def snapshot(self, profile_id: str, id: str, *, expected_revision: int,
+                       expected_epoch: str | None = None, limit: int = 20,
+                       max_pages: int = 100, max_bytes: int = 64 * 1024 * 1024) -> ProjectSnapshot:
+        return await self.owner._read(profile_id, expected_revision, lambda s: s.reads.snapshot(
+            profile_id, id, expected_revision=expected_revision, expected_epoch=expected_epoch,
+            limit=limit, max_pages=max_pages, max_bytes=max_bytes,
+        ))
+
+    async def resolve_legacy(self, profile_id: str, name: str, *,
+                             expected_revision: int) -> LegacyResolution:
+        return await self.owner._read(profile_id, expected_revision, lambda s: s.reads.resolve_legacy(
+            profile_id, name, expected_revision=expected_revision,
+        ))
+
+    async def select_observation(self, profile_id: str, id: str, *,
+                                 expected_revision: int) -> dict[str, object]:
+        """Exact Select evidence: id, storage_epoch (= space_instance_id), seq.
+
+        server-design §3.4: the incarnation is the wire storage_epoch 1:1, read
+        with the seq of one complete consistent snapshot. Document contents are
+        dropped inside the owned worker; this observation is not a lock.
+        """
+        async def observe(services: _ReadServices) -> dict[str, object]:
+            snapshot = await services.reads.snapshot(
+                profile_id, id, expected_revision=expected_revision,
+                limit=SELECT_SNAPSHOT_LIMIT, max_pages=SELECT_SNAPSHOT_MAX_PAGES,
+            )
+            return {"persistent_id": snapshot.id, "space_instance_id": snapshot.space_instance_id,
+                    "snapshot_seq": snapshot.seq}
+
+        return await self.owner._read(profile_id, expected_revision, observe)
 
 
 @dataclass(frozen=True, repr=False)
@@ -171,9 +277,32 @@ class RemoteCatalogReady:
     metadata: _MetadataProvider = field(repr=False)
     profiles: _ProfileProvider = field(repr=False)
     verification: _VerificationProvider = field(repr=False)
-    catalog: _UnavailableOutbound = field(repr=False)
+    catalog: _CatalogProvider = field(repr=False)
     mutations: _ProfileMutations = field(repr=False)
     create: CatalogCreateRuntime = field(repr=False)
+
+
+class _PinnedConfirmations(ConsumerConfirmations):
+    """Gate L store at the home pinned on start; drift/links are unavailable, never empty."""
+
+    def __init__(self, runtime: RemoteCatalogRuntime) -> None:
+        super().__init__()
+        self._runtime = runtime
+
+    def path(self) -> Path:
+        self._runtime._locating()
+        home = self._runtime._home
+        if home is None:
+            raise ProfileError("profile_recovery_required")
+        path = home / CONFIRMATIONS_FILE
+        try:
+            mode = home.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISDIR(mode):
+                raise ProfileError("profile_recovery_required")
+        return path
 
 
 class RemoteCatalogRuntime:
@@ -190,15 +319,18 @@ class RemoteCatalogRuntime:
 
     def __init__(self) -> None:
         self._state = "new"
-        self.lifecycle = ProfileLifecycle(profile_reader=self._get, binding_reader=self._read_bindings)
+        self.lifecycle = ProfileLifecycle(profile_reader=self._get, binding_reader=self._read_bindings,
+                                          confirmations=_PinnedConfirmations(self))
         self._home: Path | None = None
         self._repo: RemoteProfiles | None = None
         self._readers: S2CatalogReaders | None = None
         self._ready: RemoteCatalogReady | None = None
         self._transport: CatalogHttpTransport | None = None
         self._requests: set[asyncio.Task] = set()
+        self._cancelled_requests: set[asyncio.Task] = set()
         self._close_task: asyncio.Task | None = None
         self._create: CatalogCreateRuntime | None = None
+        self._outbound = _OwnedTransport(self)
 
     @property
     def ready(self) -> RemoteCatalogReady:
@@ -472,6 +604,7 @@ class RemoteCatalogRuntime:
                     and type(error.args[0]) is str and error.args[0] in {
                         "profile_not_found", "profile_revision_conflict", "profile_url_collision",
                         "profile_in_use", "profile_consumers_not_drained", "consumer_lifecycle_unavailable",
+                        "consumer_inventory_changed", "consumer_confirmation_unavailable",
                         "credential_clear_confirmation_required", "credential_required",
                         "invalid_profile_metadata", "invalid_server_url", "profile_recovery_required",
                         "profile_recovery_unavailable", "application_store_unavailable",
@@ -506,6 +639,24 @@ class RemoteCatalogRuntime:
         # Only an actual successful S2 recover returning None proves absent
         # metadata. No failed read, missing journal or exception becomes null.
         return None
+
+    # --- Gate L facade (dev spec §16.11) ------------------------------------------
+
+    def consumer_census(self, profile_id: str) -> ConsumerCensus:
+        """Read-only: known bindings for the exact profile URL; never grants consent."""
+        self._admit()
+        return self.lifecycle.census(profile_id)
+
+    def confirm_consumers(self, profile_id: str, *, expected_revision: int, url: str,
+                          bound_roots: tuple[str, ...]) -> ConsumerCensus:
+        """The user's explicit confirmation of what they were shown; nothing else."""
+        self._check_mutation_locations()
+        return self.lifecycle.confirm(profile_id, expected_revision=expected_revision,
+                                      url=url, bound_roots=bound_roots)
+
+    def withdraw_consumers(self, profile_id: str, *, expected_revision: int) -> ConsumerCensus:
+        self._check_mutation_locations()
+        return self.lifecycle.withdraw(profile_id, expected_revision=expected_revision)
 
     def _list(self) -> tuple[RemoteServerProfile, ...]:
         self._check()
@@ -622,7 +773,7 @@ class RemoteCatalogRuntime:
             profile_id, expected_revision=expected_revision,
         ))
         self._requests.add(operation)
-        operation.add_done_callback(self._requests.discard)
+        operation.add_done_callback(self._finished_request)
         cancelled = False
         code = None
         try:
@@ -634,7 +785,7 @@ class RemoteCatalogRuntime:
         except Exception:
             code = "verification_failed"
         if cancelled:
-            operation.cancel()
+            self._cancel_request(operation)
             try:
                 await _settle(operation)
             except BaseException:
@@ -646,6 +797,98 @@ class RemoteCatalogRuntime:
         if code is not None:
             raise CatalogError(code)
         return result
+
+    def _finished_request(self, task: asyncio.Task) -> None:
+        self._requests.discard(task)
+        self._cancelled_requests.discard(task)
+
+    def _cancel_request(self, task: asyncio.Task) -> None:
+        # Caller cancellation and close can overlap. A second cancel would
+        # interrupt the transport's response cleanup (and, for reads, release
+        # the C5 lease early). One cancellation per owned worker; all join it.
+        if not task.done() and task not in self._cancelled_requests:
+            self._cancelled_requests.add(task)
+            task.cancel()
+
+    async def _read(self, profile_id: str, expected_revision: int,
+                    operation: Callable[[_ReadServices], Awaitable[T]]) -> T:
+        """One owned catalog read (I9), shaped like C8's owned Create worker.
+
+        The worker owns the C5 logical lease from admission through provider
+        capture, every service await/page and its cancellation cleanup. Close
+        cancels it once and joins it before closing the pool. A failure, close
+        or cancellation never returns a partial result or a raw exception.
+        """
+        self._admit()
+        task = asyncio.create_task(self._read_admitted(profile_id, expected_revision, operation))
+        self._requests.add(task)
+        task.add_done_callback(self._finished_request)
+        cancelled = False
+        result = None
+        code = None
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                cancelled = True
+            else:
+                code = "service_unavailable"  # The owner cancelled its worker (close).
+        except CatalogError as error:
+            code = error.code if type(error) is CatalogError and type(error.code) is str else "catalog_unavailable"
+        except Exception:
+            code = "service_unavailable"
+        if cancelled:
+            self._cancel_request(task)
+            try:
+                await _settle(task)
+            except BaseException:
+                pass  # Consume cleanup outcome, never its raw cancellation text.
+            raise asyncio.CancelledError() from None
+        # After guard for retained handles: a closed owner publishes nothing.
+        self._admit()
+        if code is not None:
+            raise CatalogError(code)
+        return result
+
+    async def _read_admitted(self, profile_id: str, expected_revision: int,
+                             operation: Callable[[_ReadServices], Awaitable[T]]) -> T:
+        self._admit()
+        lease = None
+        code = None
+        try:
+            # Admission BEFORE binding/token capture (profile_lifecycle.operation).
+            lease = self.lifecycle.operation(profile_id, kind="read")
+        except ProfileError as error:
+            code = _profile_code(error)
+        except Exception:
+            code = "service_unavailable"
+        if code is not None:
+            raise CatalogError(code)
+        with lease:
+            provider = None
+            try:
+                # Before guard: exact profile/URL/revision CAS, no key lookup yet.
+                provider = self.providers_for(profile_id, expected_revision=expected_revision)
+            except ProfileError as error:
+                code = _profile_code(error)
+            except CatalogError as error:
+                code = error.code if type(error.code) is str else "service_unavailable"
+            except Exception:
+                code = "profile_store_unavailable"
+            if code is not None:
+                raise CatalogError(code)
+            services = _ReadServices(
+                catalog=CatalogService(profiles=provider, credentials=provider.load_token,
+                                       transport=self._outbound),
+                reads=CatalogReadService(profiles=provider, credentials=provider.load_token,
+                                         transport=self._outbound),
+            )
+            # The S3 guards fence both sides of every send/page and re-read the
+            # live key after the operation (after guard), still inside the lease.
+            result = await operation(services)
+            self._admit()
+            return result
 
     async def start(self) -> RemoteCatalogReady:
         if self._state == "ready":
@@ -678,14 +921,15 @@ class RemoteCatalogRuntime:
             adapter = CatalogMetadataAdapter(observer=observer)
             self._readers = readers
             # One app-owned registry, not a request/project singleton. No
-            # journal I/O here; production Create stays gated before keys/R3.
+            # journal I/O here. I9: Create sends through the owner's pool handle
+            # (admission-checked per send), never a pool of its own.
             creation = CatalogCreateRuntime(
                 home=home, check=self._check, providers=self.providers_for,
-                lifecycle=self.lifecycle,
+                lifecycle=self.lifecycle, transport=self._outbound,
             )
             ready = RemoteCatalogReady(
                 _MetadataProvider(self, adapter), _ProfileProvider(self),
-                _VerificationProvider(self), _UnavailableOutbound(), _ProfileMutations(self),
+                _VerificationProvider(self), _CatalogProvider(self), _ProfileMutations(self),
                 creation,
             )
             readers.check()  # No usable owner until composition fully succeeds.
@@ -724,14 +968,14 @@ class RemoteCatalogRuntime:
             self._ready = None
             requests = tuple(self._requests)
             for request in requests:
-                request.cancel()
+                self._cancel_request(request)
             self._close_task = asyncio.create_task(self._shutdown(requests))
         await _settle(self._close_task)
 
     async def _shutdown(self, requests: tuple[asyncio.Task, ...]) -> None:
         failed = False
         try:
-            # Cancel Create concurrently with Verify cleanup, not after a
+            # Cancel Create concurrently with Verify/read cleanup, not after a
             # possibly slow response close. Admission was already fenced.
             create_close = (() if self._create is None else (self._create.close(),))
             await asyncio.gather(*requests, *create_close, return_exceptions=True)
@@ -743,6 +987,7 @@ class RemoteCatalogRuntime:
             self._transport = None
             self._create = None
             self._requests.clear()
+            self._cancelled_requests.clear()
             self._readers = None
             self._repo = None
             self._home = None

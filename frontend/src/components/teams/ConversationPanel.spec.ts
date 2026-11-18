@@ -249,6 +249,36 @@ describe('the transcript widget', () => {
     expect(html.slice(second)).toContain('Mid')
   })
 
+  it('says "Compressing context…" on the last line while a task is being compressed', async () => {
+    useVerbosity().value = 'default'
+    const app = createSSRApp(ConversationPanel, {
+      conversationId: 'task_1', messages: feed, emptyText: 'Nothing yet.', taskStatus: 'in_progress', compressing: true,
+    })
+    const html = await renderToString(app.use(createPinia()))
+    expect(html).toMatch(/vxs-task-activity[^>]*>\s*Compressing context…/)
+    await setLocale('ru')
+    try {
+      const ru = await renderToString(createSSRApp(ConversationPanel, {
+        conversationId: 'task_1', messages: feed, emptyText: '', compressing: true,
+      }).use(createPinia()))
+      expect(ru).toContain('Сжатие контекста…')
+    } finally {
+      await setLocale('en')
+    }
+  })
+
+  it.each(['compressed summary', 'context_summary'])('draws %s as one folded block standing in for the dialogue', async (kind) => {
+    const summary = message({ kind, text: 'Goal: dash cooldown. Next: test.' })
+    for (const level of ['default', 'verbose'] as const) {
+      const html = await renderFeed([summary, message({ text: 'Resumed.' })], level)
+      expect(html.match(/data-compressed-summary/g)).toHaveLength(1)
+      expect(html).toContain('<details')
+      expect(html).toContain('Context compressed')
+      expect(html).toContain('Goal: dash cooldown.')
+      expect(html).toContain('Resumed.')
+    }
+  })
+
   it('offers only Default and Verbose', async () => {
     const html = await render('default')
     expect(html).toContain('<option value="default"')

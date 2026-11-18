@@ -493,11 +493,96 @@ ID still generates it on the server; re-reading by ID never recovers the secret.
 Rotate/revoke/delete increment credential generation; guard incoming operations and queued
 outbound reads/sends against current SQLite active status/generation across processes.
 Old bindings checked after mutation commit cannot change data or authorize new delivery;
-already-authorized in-flight bytes cannot be recalled. Idle sockets close within 30 s
-(4401), with presence removal and normal scribe handoff; revoke→rotate cannot revive an
-old binding. Name/colour edits do not revoke keys; public cards update within 30 s.
+already-authorized in-flight bytes cannot be recalled. Idle sockets close within 5 s
+(4401) when the key changed in another process (CLI/admin RPC), and at once when it changed
+in the server process, with presence removal and normal scribe handoff; revoke→rotate
+cannot revive an old binding (R-A0, VS-191). Name/colour edits do not revoke keys; public cards update within 30 s.
 These are **v2 candidate guarantees**, not old v1 rotation behaviour. Revocation may
 interrupt dirty rooms; do not persist Yjs or forge a final put under revoked credentials.
+
+## Opt-in AI control — ACP/1 (VS-191; off by default)
+
+Server side of the opt-in AI access design
+([ai-access-design](../.voxarium_studio/docs/remote-identity/ai-access-design.md) §§3–9,
+tasks R-A0/R-A1/R-A2). The Remote **authenticates, checks grants and relays**; it runs no
+AI, stores no prompts, transcripts, results or offline command queue, and logs no bodies.
+Studio and Android clients for it are separate tasks (S-A1…S-A5, X-A1, A-A1…A-A3); until
+X-A1 interop passes this is a server capability, not a shipped feature.
+
+### Enabling it
+
+```bash
+voxarium-studio-remote serve --data ./data --ai-control      # or
+VOXARIUM_REMOTE_AI_CONTROL=1 voxarium-studio-remote serve --data ./data
+```
+
+In Docker add `VOXARIUM_REMOTE_AI_CONTROL: "1"` to the service `environment`. Without the
+flag nothing under `/api/ai/v1` is mounted: `GET /api/ai/v1/capabilities` is a plain 404
+(`unsupported` for clients). `/healthz`, `/api/v1/me`, `/api/v2/me`, the Documents
+`PROTOCOL_VERSION`, Verify/catalog/Create behave identically on and off. Only put it behind
+TLS you control: Remote and its TLS terminator are a *trusted* relay (no E2E, §6).
+
+Enabling creates `ai-control.db` next to `remote.db` (own `application_id`/`user_version`,
+strict schema check; `remote.db` and its migration are unchanged). It holds control
+registrations with only the SHA-256 of each device secret, export/grant mirrors with
+revoke/unpublish tombstones, the authorisation-only resource index and an audit of
+IDs/op/outcome/time. Back it up together with `remote.db`; it holds credential digests.
+Disabling the flag later keeps the file and its tombstones; deleting it is a registry reset
+(new `server_instance_id`, every device re-registers and every owner re-consents).
+
+Key lifecycle (R-A0): `user rotate|revoke|delete` (CLI or admin RPC) tombstones that user's
+registrations, their grants and their exports **inside the same transaction, before the new
+key is printed**; if `ai-control.db` cannot be updated the rotation is refused. Registrations
+are bound to the key generation, so reactivation never resurrects them. Live ACP sockets are
+re-checked on every frame and swept every 5 s.
+
+### Endpoints
+
+| Endpoint | Auth | Contract |
+|---|---|---|
+| `GET /api/ai/v1/capabilities` | personal `Bearer` only (device headers or a query → 400) | 200 `{"acp":1,"server_instance_id":UUID,"ai_control":{"versions":[1]}}`, `no-store`, no side effects; 401 bad key |
+| `POST /api/ai/v1/registrations` | personal key | strict `{client_id: UUIDv4, display_name, kind: studio\|android}` → 201 `{server_instance_id, registration_id, client_id, user_id, device_token}` (token shown once); repeat → 409 `registration_exists` + same `registration_id`, never the token; >32 active → 409 `capacity_exceeded` |
+| `GET /api/ai/v1/registrations` | key + `X-VXS-Client-ID` + `X-VXS-Device-Token` | directory of live devices `{user_id, registration_id, client_id, display_name, kind}` |
+| `DELETE /api/ai/v1/registrations/{id}` | personal key, own registration | 204; tombstones its grants/exports and closes its socket (4403) |
+| `WS /api/ai/v1/control` | key + device headers, empty query | `hello {acp, server_instance_id, connection_id, lease_seconds:15, heartbeat_seconds:5}` |
+
+Frames are `{"acp":1,"type","request_id":UUID,"body"}`, UTF-8 text only, ≤64 KiB, depth ≤12,
+≤128 fields, no duplicate keys/floats/unknown fields (→ close 4400). Close codes: 4400
+protocol_error (also lease expiry), 4401 key/device invalid, 4403 registration revoked,
+4409 second live executor, 4429 overloaded. Request outcomes use the §6 code enum plus
+`capacity_exceeded`, `duplicate_export`.
+
+| Client → Remote | Role | Server behaviour |
+|---|---|---|
+| `executor.attach {executor_epoch, manifest[≤16]{export_id,revision,hash}}` | studio | one live executor per registration; `mirror_status` matched/mismatched/missing; nothing is resurrected |
+| `heartbeat.ping {nonce, executor_epoch}` | executor | `heartbeat.pong {nonce, executor_epoch, lease_seconds:15}`; lease = last valid ping + 15 s (monotonic) |
+| `export.publish` / `export.unpublish` / `grant.put` / `grant.revoke` / `mirror.get` | executor | CAS: new = expected 0 → 1, update n → n+1; same revision+hash → same ACK; otherwise `revision_conflict`; tombstones are terminal for a `grant_id` |
+| `resource.index.begin/page/commit` | executor | ≤1024 rows/export, pages ≤50, staging ≤2 MiB, atomic replace on exact count+hash |
+| `directory.list {after?}` | requester | targets with an effective grant for *this* device only; online/offline + `executor_epoch` when online |
+| `request {target, grant_id, grant_revision, op, payload, …}` | requester | key+device+grant+scope+limits checked, then `forward {source, grant, deadline, request}` to the exact executor; offline → `not_available` (no queue); 10 s without receipt → `outcome_unknown` |
+| `response` / `event` | executor | only for its own forwarded request/subscription; re-checked against the requester's current grant at delivery and at dequeue; a late or revoked one is not released |
+
+Semantic hashes are SHA-256 over canonical JSON (sorted keys, no whitespace, UTF-8,
+integers only) of these records, which the Studio side must reproduce exactly:
+`{"kind":"export","export_id","persistent_id","storage_epoch","revision","policy_digest","display_name","state":"published"}`,
+`{"kind":"export","export_id","revision","state":"unpublished"}`,
+`{"kind":"grant","export_id","export_revision","grant":<§4 grant>,"state":"active"}`,
+`{"kind":"grant","export_id","export_revision","grant_id","revision","state":"revoked"}`,
+and `{"kind":"resource.index","rows":[rows sorted by resource_id]}`.
+
+Server-side differences from the design text, deliberate for ACP/1: a grant carries
+`resource_ids` (exact IDs, only for `selected_resources`); empty `member_ids` means "no
+member filter for reads" and allows no `*.create`; the server rejects an `issued_at` more
+than 30 s ahead but leaves age (60 s) and executor-epoch checks of *unknown* commands to the
+PC ledger (§7.0), so known command IDs can still be recovered; a revoked grant cannot be
+re-put — new consent is a new `grant_id`; a subscription that ends (revoke, overflow, gap)
+is announced to both sides as `event {subscription_id, target, resource_id, code}`.
+The §8 frame budget (≤128 object fields in total) binds before the "pages ≤50" wording:
+a `resource.index.page` therefore carries ≤20 rows without `remote_origin` (fewer with it),
+and `directory.list` pages are cut by fields as well as bytes (about 6 targets per page,
+follow `next_after`). The 16 exports per executor count unpublished tombstones too (only
+registry-deleted ones are excluded); a revoked executor registration answers its grantees
+`denied` (their own grant is revoked) rather than `not_available`.
 
 ### Unchanged scope and Android acceptance boundary
 

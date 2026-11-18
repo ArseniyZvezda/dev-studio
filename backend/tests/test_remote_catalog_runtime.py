@@ -636,8 +636,18 @@ def test_retained_ready_and_provider_callbacks_reject_after_close(synthetic):
     assert all(s.calls[k] == before[k] for k in ("list", "get", "source", "token"))
 
 
-@pytest.mark.parametrize("state", ["ready", "pending", "corrupt", "closed"])
-def test_catalog_gate_service_unavailable_before_any_profile_or_token_lookup(synthetic, state):
+@pytest.mark.parametrize("state,codes", [
+    ("ready", ("profile_revision_conflict", "profile_not_found")),
+    ("pending", ("profile_recovery_required",) * 2),
+    ("corrupt", ("consumer_lifecycle_unavailable",) * 2),
+    ("closed", ("service_unavailable",) * 2),
+])
+def test_catalog_read_refuses_stale_binding_before_token_or_http(synthetic, state, codes):
+    """I9 lifted the R3 gate: refusal is now the lease/provider before-guard.
+
+    The ``outbound`` phase still denies any token lookup, service/client
+    construction or send, so these typed refusals precede all of them.
+    """
     s = synthetic
     s.seed()
     ready = s.start()
@@ -648,14 +658,15 @@ def test_catalog_gate_service_unavailable_before_any_profile_or_token_lookup(syn
     elif state == "closed":
         s.close()
     before = s.calls.copy()
-    # Even nonsensical/missing bindings cannot trigger validation/read side effects.
-    for pid, revision in ((P1["profile_id"], 3), (CANARY, -1)):
-        for callback, options in ((ready.catalog.list_projects, {"after": CANARY, "limit": 20}),):
-            with pytest.raises(CatalogError) as caught:
-                with s.guard("outbound"):
-                    s.loop.run_until_complete(callback(pid, expected_revision=revision, **options))
-            clean_error(caught.value, "service_unavailable")
-    assert s.calls == before
+    for (pid, revision), code in zip(((P1["profile_id"], 2), (P2["profile_id"], 8)), codes):
+        with pytest.raises(CatalogError) as caught:
+            with s.guard("outbound"):
+                s.loop.run_until_complete(ready.catalog.list_projects(
+                    pid, expected_revision=revision, after="alpha", limit=20))
+        clean_error(caught.value, code)
+    assert not s.requests
+    assert all(s.calls[k] == before[k] for k in ("token", "transport", "verify", "pool"))
+    assert not s.runtime._requests
 
 
 def test_explicit_verify_uses_real_http_services_and_does_not_cache_metadata(synthetic):
@@ -709,13 +720,18 @@ def test_explicit_verify_uses_real_http_services_and_does_not_cache_metadata(syn
     assert s.calls["verify"] == 4 and s.calls["token"] > 0
     assert s.calls["pool"] == 1
     assert (s.config.read_bytes(), s.keys.read_bytes()) == before_files
-    before = s.calls.copy()
+    # I9: a v1 Verify stays diagnostic. The catalog read performs its OWN
+    # strict-v2 discovery and stops at the v1 health reply: no /api/v1 request,
+    # no authenticated send and no catalog GET (v1 catalog/POST = 0).
     with pytest.raises(CatalogError) as caught:
-        with s.guard("outbound"):
+        with s.guard("verify"):
             s.loop.run_until_complete(ready.catalog.list_projects(
                 P1["profile_id"], expected_revision=P1["revision"]))
-    clean_error(caught.value, "service_unavailable")
-    assert len(s.requests) == 4 and s.calls == before
+    clean_error(caught.value, "version_mismatch")
+    assert len(s.requests) == 5
+    assert str(s.requests[-1].url) == P1["url"] + "/healthz"
+    assert "authorization" not in s.requests[-1].headers
+    assert s.calls["pool"] == 1 and not s.runtime._requests
     s.close()
     assert transport._closed and not s.runtime._requests
 

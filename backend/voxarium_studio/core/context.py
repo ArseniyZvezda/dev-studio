@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -23,7 +24,7 @@ from ..plugins import envs as plugin_envs
 from ..plugins import loader as plugin_loader
 from ..plugins.api import PluginHost
 from ..plugins.registry import PluginHook, Registry
-from ..sync import RemoteSync
+from ..sync import RemoteSync, credentials
 from ..sync.protocol import check_space_name, normalise_url
 from ..sync.service import ActivatedRemoteTarget, RemoteStartupBinding, preflight_remote_binding
 from ..sync.transitions import BindingTransitions
@@ -56,28 +57,70 @@ class _ProfileLease(Protocol):
     def release(self) -> None: ...
 
 
+def _completed_enable(paths: ProjectPaths) -> tuple[dict, str] | None:
+    """The completed I12 Enable record that published the CURRENT config, if any.
+
+    Returns ``(record, config_fingerprint)``; ``None`` means no journal exists at
+    all. Raises when journals exist but do not prove an activation: unresolved
+    (recovery_required), corrupt/lost, or the current (ID, R) was produced by a
+    disabled I6 change or by nothing this root recorded (activation_unavailable).
+    """
+    from ..sync.bindings import BindingError
+    from ..sync.transitions import (ENABLE_JOURNAL_VERSION, BindingChangeError, completed_activation,
+                                    journal_unresolved, read_binding_change_journals)
+    from .config import _project_config_document
+
+    records = read_binding_change_journals(paths.root)
+    if not records:
+        return None
+    if any(journal_unresolved(row) for row in records):
+        # Before reading config: a half-published Enable is never reinterpreted.
+        raise BindingChangeError("recovery_required")
+    try:
+        _, config, fingerprint = _project_config_document(paths)
+        identity = config.project_identity
+        if fingerprint is None or identity is None:
+            raise ValueError
+    except Exception:
+        raise BindingError("activation_unavailable") from None
+    record = completed_activation(records, persistent_id=identity.id, identity_revision=identity.revision)
+    if record is None or record["version"] != ENABLE_JOURNAL_VERSION:
+        raise BindingError("activation_unavailable")
+    return record, fingerprint
+
+
 def _read_remote_sync_activation(paths: ProjectPaths) -> ActivatedRemoteTarget | None:
-    """Classify the owning I6 journal without repairing or enabling anything.
+    """Classify the owning I6/I12 journals without repairing or enabling anything.
 
     Completed evidence belongs to the exact canonical root, not to a private
     binding row or today's portable config (runtime-integration-plan §2.3/3.5;
     studio-design §7). In particular edit_id/unbind remove that row, and a VCS
     checkout can restore sync.space: neither permits a legacy runner again.
-    Pending, corrupt and known-lost journals refuse through the same I2 seam.
+    Pending, corrupt and known-lost journals refuse through the same I2 seam;
+    an unresolved I6/I12 record refuses as ``recovery_required``.
 
-    I6 commits only disabled targets. A journal is not confirmed consent or an
-    I10 activation target: until that owner exists, even completed records must
-    remain blocked rather than fabricate a runner binding from private metadata.
+    I12: ONLY a completed Enable record whose committed (ID, R) is the current
+    config's yields a target; a disabled I6 commit never does. The target's
+    config fingerprint is the current bytes' (unrelated settings saves keep
+    the target); preflight still checks every identity/URL/enabled/private/
+    checkpoint component against it before any credential or socket.
     A canonical config without legacy sync.space also refuses if the journal
     was lost. Identity metadata WITH an explicit legacy space (including the
     fresh empty default) remains genuinely unactivated legacy.
     """
     from ..sync.bindings import BindingError
-    from ..sync.transitions import read_binding_change_journals
     from .config import _project_config_document
 
-    if read_binding_change_journals(paths.root):
-        raise BindingError("activation_unavailable")
+    enabled = _completed_enable(paths)
+    if enabled is not None:
+        record, fingerprint = enabled
+        commit = record["commit"]
+        return ActivatedRemoteTarget(
+            canonical_root=record["canonical_root"], config_fingerprint=fingerprint,
+            profile_id=commit["binding"]["profile_id"], url=commit["url"],
+            persistent_id=commit["persistent_id"], identity_revision=commit["identity_revision"],
+            space_instance_id=commit["binding"]["space_instance_id"],
+        )
     try:
         # Read exact disk bytes with the existing duplicate/merge-strict owner;
         # load_config's defaults and the effective model cannot prove legacy.
@@ -108,6 +151,47 @@ def _read_remote_sync_activation(paths: ProjectPaths) -> ActivatedRemoteTarget |
     return None
 
 
+def _read_remote_verified_account(paths: ProjectPaths, profile_id: str, url: str) -> str | None:
+    """I12: the account Enable verified through ``/api/v2/me`` for this target.
+
+    Enable records ``me.user.id`` in its completed journal before the runner may
+    start, so the very first hello (and every reconnect, also after restart) is
+    checked against it instead of pinning whatever the first hello said (§6).
+    ``None`` only when no Enable proves an activation for exactly this profile
+    and URL; unreadable/unresolved evidence raises (the runner then blocks).
+    """
+    enabled = _completed_enable(paths)
+    if enabled is None:
+        return None
+    record, _ = enabled
+    binding = record["commit"]["binding"]
+    if binding["profile_id"] != profile_id or binding["url"] != url:
+        return None
+    return record["expected"]["account_id"]
+
+
+def _activation_refusal(error: BaseException) -> str | None:
+    """Typed blocked reason for an unreadable activation, else the generic one."""
+    code = getattr(error, "code", None)
+    return code if code == "recovery_required" else None
+
+
+def _same_binding_target(current: RemoteStartupBinding, captured: RemoteStartupBinding) -> bool:
+    """Same transport target, ignoring the runner's own checkpoint progress (I10).
+
+    The whole-store private fingerprint is not compared: another root's row
+    changing is not drift here, while this root's row is re-checked exactly by
+    preflight's ``require_confirmed``. Profile labels/revisions stay excluded.
+    I12: neither are the config bytes themselves — preflight re-reads the disk
+    identity/URL/enabled against the target on every observation, and an
+    unrelated settings save must not end a connected target.
+    """
+    return (replace(current.target, config_fingerprint="") == replace(captured.target, config_fingerprint="")
+            and current.namespace == captured.namespace
+            and current.enabled == captured.enabled and current.checkpoint is not None
+            and current.checkpoint.space_instance_id == captured.target.space_instance_id)
+
+
 class _ProfileRemoteSync(RemoteSync):
     """Fence attach/reconnect without holding a thread lock across awaits (§5.2.1).
 
@@ -126,8 +210,17 @@ class _ProfileRemoteSync(RemoteSync):
         reservations: Callable[[], ReservationOwner | None] = lambda: None,
         activation: Callable[[], ActivatedRemoteTarget | None] | None = None,
         profile_reader: Callable[[str], Any] | None = None,
+        profile_token: Callable[[str, str], str | None] | None = None,
+        verified_account: Callable[[str, str], str | None] | None = None,
     ) -> None:
         super().__init__(paths, config, docs, bus)
+        # I10: the v2 runner's key is the S2 profile credential for the binding's exact
+        # profile + URL — never the legacy per-URL token. Looked up at call time.
+        self._profile_token = profile_token or (
+            lambda profile_id, url: credentials.load_profile_token(profile_id, url))
+        # The account ID a catalog verification proved for that profile, or None when
+        # no such observation is available (then the runner pins the first hello's).
+        self._verified_account = verified_account or (lambda _profile_id, _url: None)
         self._profile_lifecycle = lifecycle
         self._profile_lease: _ProfileLease | None = None
         self._profile_transition = asyncio.Lock()
@@ -171,9 +264,11 @@ class _ProfileRemoteSync(RemoteSync):
         async with self._profile_transition:
             if self._cleanup_failed:
                 raise RuntimeError("sync_cleanup_required")
-            if self._startup_binding is not None and self._runner is not None:
+            if (self._startup_binding is not None and self._runner is not None
+                    and not self._runner.done()):
                 try:
-                    unchanged = self._preflight(self._activation()) == self._startup_binding
+                    unchanged = _same_binding_target(self._preflight(self._activation()),
+                                                     self._startup_binding)
                 except Exception:
                     unchanged = False
                 if unchanged:
@@ -183,14 +278,16 @@ class _ProfileRemoteSync(RemoteSync):
             return await super().reconfigure()
 
     async def _start_runner(self) -> None:
+        refusal = None
         try:
             target = self._activation()
-        except Exception:
+        except Exception as error:
             self._activated_model_seen = True
             target = None  # Unreadable activation never becomes legacy fallback.
+            refusal = _activation_refusal(error)
         if target is not None or self._activated_model_seen:
             self._activated_model_seen = True
-            await self._start_activated(target)
+            await self._start_activated(target, refusal=refusal)
             return
         # A repeated start must not overwrite a runner/lease that can still reconnect.
         # Reconfigure already stops first, so ordinarily this branch does nothing.
@@ -228,23 +325,58 @@ class _ProfileRemoteSync(RemoteSync):
                                         home=self._remote_home, profile_reader=self._profile_reader)
 
     def _activated_runner(self, binding: RemoteStartupBinding) -> Coroutine[Any, Any, None] | None:
-        """I10 seam, synchronous publication only; production R3 gate stays shut.
+        """The I10 v2 runner for THIS captured binding; synchronous publication only.
 
-        I2 never calls the v1 runner/token provider with a canonical binding.
-        There is deliberately no public flag to enable a v2 transport here.
+        Never the v1 runner or the legacy token: the key provider and verified
+        account are bound to ``binding.target.profile_id``/``url``, and drift is a
+        re-observation compared with the captured target, never a new target.
+        Nothing is read here; the runner reads the key per connect attempt.
         """
+        target = binding.target
+        profile_id, url = target.profile_id, target.url
+        return self._run_activated(
+            binding,
+            credential=lambda: self._profile_token(profile_id, url),
+            account=lambda: self._verified_account(profile_id, url),
+            drift=lambda: self._binding_drift(binding),
+        )
+
+    def _binding_drift(self, binding: RemoteStartupBinding) -> str | None:
+        """A stop code when disk/private/profile no longer describe *binding* (I10)."""
+        from ..sync.bindings import BindingError
+        from ..sync.state import SyncStateError
+
+        try:
+            current = self._preflight(self._activation())
+        except (BindingError, SyncStateError) as exc:
+            return exc.code
+        except Exception as exc:
+            return _activation_refusal(exc) or "activation_unavailable"
+        if current.checkpoint is None:
+            return "preview_required"
+        if not _same_binding_target(current, binding):
+            return "binding_changed"
+        if not current.enabled:
+            return "disabled"
         return None
 
-    async def _start_activated(self, target: ActivatedRemoteTarget | None) -> None:
+    async def _start_activated(self, target: ActivatedRemoteTarget | None, *,
+                               refusal: str | None = None) -> None:
         from ..sync.bindings import BindingError
         from ..sync.reservations import ReservationError
         from ..sync.state import SyncStateError
 
-        # Idempotent start reuses this consumer. Reconfigure explicitly stops it.
-        if self._startup_binding is not None and self._runner is not None:
+        # Idempotent start reuses this consumer. Reconfigure explicitly stops it. A
+        # runner that already ended (terminal close, drift) is replaced, not reused.
+        if self._startup_binding is not None and self._runner is not None and not self._runner.done():
             return
         if self._profile_lease is not None or self._runner is not None:
             await self._stop_runner()
+        if target is None and refusal is not None:
+            # I12: an unresolved Enable/commit journal. No automatic retry, repair
+            # or fresh reset; only an explicit recovery can change this state.
+            await self._set_status("blocked", refusal)
+            return
         try:
             binding = self._preflight(target)
         except (BindingError, SyncStateError) as exc:
@@ -375,6 +507,13 @@ class AppContext:
         self.remote_sync_activation: Callable[[], ActivatedRemoteTarget | None] = (
             lambda: _read_remote_sync_activation(self.paths)
         )
+        # I10 hook, owned by I12: the account ID Enable's /api/v2/me verification
+        # proved for (profile_id, url), read from the completed Enable journal so it
+        # also holds after a restart. None = no Enable for that target; the v2
+        # runner then pins the first accepted hello's account instead.
+        self.remote_verified_account: Callable[[str, str], str | None] = (
+            lambda profile_id, url: _read_remote_verified_account(self.paths, profile_id, url)
+        )
 
         self.db = Database(paths.db_file)
         self.bus = bus or EventBus()
@@ -404,6 +543,7 @@ class AppContext:
             lifecycle=lambda: self.remote_profile_lifecycle,
             reservations=lambda: self.remote_reservations,
             activation=lambda: self.remote_sync_activation(),
+            verified_account=lambda profile_id, url: self.remote_verified_account(profile_id, url),
         )
         """The connection to a Voxarium Studio Remote, when the project has one (§16)."""
         self.skills = SkillStore(paths, builtins=self._builtin_skills)

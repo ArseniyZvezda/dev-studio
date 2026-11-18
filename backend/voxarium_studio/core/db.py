@@ -18,6 +18,9 @@ from .. import models  # noqa: F401  — import registers tables on SQLModel.met
 
 log = logging.getLogger(__name__)
 
+_SYNCHRONOUS_FULL = 2
+"""``PRAGMA synchronous`` reads back as an integer: 1 is NORMAL, 2 is FULL."""
+
 
 def _default_literal(column: Column) -> str | None:  # type: ignore[type-arg]
     """SQL literal to backfill an added column with, or None to leave it NULL.
@@ -201,6 +204,54 @@ class Database:
             except BaseException:
                 await session.rollback()
                 raise
+
+    @asynccontextmanager
+    async def durable_session(self, *, immediate: bool = True) -> AsyncIterator[AsyncSession]:
+        """One transaction committed with ``PRAGMA synchronous=FULL`` (ai-access-design §7).
+
+        The project database runs WAL with ``synchronous=NORMAL``, which can lose the last
+        commits on power loss. A remote AI mutation must not be acknowledged — and must
+        never reach a dispatch — unless its ledger row and object/message mutation are on
+        disk (§16.12), so this scope switches *its own* connection to FULL before the
+        transaction, reads the value back inside it (``session.info["synchronous"]``,
+        which is ``2`` for FULL) and refuses to proceed otherwise. ``immediate`` takes the
+        write lock up front (``BEGIN IMMEDIATE``), so a read-then-insert inside the scope
+        is serialised against every other writer of the file.
+
+        Commits on success, rolls back on any failure, and always puts the connection
+        back to NORMAL before it returns to the pool (``session.info["restored"]``); a
+        connection whose reset fails is invalidated rather than reused at FULL.
+        """
+        async with self._engine.connect() as conn:
+            await conn.exec_driver_sql("PRAGMA synchronous=FULL")
+            await conn.commit()
+            session = AsyncSession(bind=conn, expire_on_commit=False)
+            try:
+                try:
+                    bound = await session.connection()
+                    if immediate:
+                        await bound.exec_driver_sql("BEGIN IMMEDIATE")
+                    level = (await bound.exec_driver_sql("PRAGMA synchronous")).scalar()
+                    session.info["synchronous"] = level
+                    if level != _SYNCHRONOUS_FULL:
+                        raise RuntimeError("durable_session_not_full")
+                    yield session
+                    await session.commit()
+                except BaseException:
+                    await session.rollback()
+                    raise
+                finally:
+                    await session.close()
+            finally:
+                try:
+                    await conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
+                    session.info["restored"] = (
+                        await conn.exec_driver_sql("PRAGMA synchronous")
+                    ).scalar()
+                    await conn.commit()
+                except Exception:  # pragma: no cover - a broken connection is not reused
+                    log.exception("Could not restore synchronous=NORMAL; dropping connection")
+                    await conn.invalidate()
 
     def session_factory(self) -> async_sessionmaker[AsyncSession]:
         return self._session_factory

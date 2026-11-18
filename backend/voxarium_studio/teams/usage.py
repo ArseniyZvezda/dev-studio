@@ -102,7 +102,12 @@ class RunUsage:
         self.input += delta.get("input_tokens", 0) + delta.get("cache_creation_input_tokens", 0)
         self.output += delta.get("output_tokens", 0)
         if not data.get("parent_tool_use_id") and any(key in counted for key in TOKEN_FIELDS[:3]):
+            # The window is the session model's and outlives one request: keep the one a
+            # previous turn's result reported when this response does not repeat it.
+            window = token_count(data.get("context_window")) or self.context.get("context_window")
             self.context = {"context_tokens": sum(counted.get(key, 0) for key in TOKEN_FIELDS[:3])}
+            if window:
+                self.context["context_window"] = window
         return True
 
     def counters(self) -> dict[str, int]:
@@ -120,6 +125,11 @@ class RunUsage:
         })
 
     def finish(self, data: dict[str, Any]) -> None:
+        # Claude reports its context window only on the result (`modelUsage`), so the
+        # snapshot published after it is the first that can size the latest request.
+        window = token_count(data.get("context_window"))
+        if window and "context_tokens" in self.context:
+            self.context["context_window"] = window
         self.total = max(self.total, token_count(data.get("total_tokens")) or 0)
         uncached, cached = usage_components(data)
         self.uncached = max(self.uncached, uncached)

@@ -187,6 +187,11 @@ class TeamOrchestrator:
         """
         self.removing_members: set[str] = set()
         """Members being removed: no new assignments or sessions during the transfer (§10.2)."""
+        self.compressing: set[str] = set()
+        """Tasks whose context is being summarized right now, by a run or by Compress (§10.4).
+
+        A run's automatic compression happens inside its ``task`` job, so the job kind alone
+        cannot tell the card to say "Compressing context…"; this set can."""
         self._number_lock = asyncio.Lock()
         """Serialises task-number allocation (§10.2). ``MAX(number) + 1`` read in one
         session and committed in another would hand two concurrent creations the same
@@ -1652,14 +1657,30 @@ class TeamOrchestrator:
         Failed/empty summaries leave both the dialogue and the session usable.
         """
         task_id = request.session_key
-        threshold = self.config.teams.context_compression_tokens
-        if not force and not threshold:
-            return False
+        teams = self.config.teams
         messages = await self._messages_of(task_id)
         if not compaction.has_dialogue(messages):
             return False
-        if not force and compaction.context_tokens(messages) < threshold:
+        if not force and not compaction.needs_compression(
+                messages, teams.context_compression_percent, teams.context_compression_tokens):
             return False
+        # §10.4: the task card says "Compressing context…" for the whole summary call,
+        # whether a run triggered it or the Compress button did.
+        self.compressing.add(task_id)
+        await self._publish_task_changed(task_id)
+        try:
+            await self._replace_with_summary(backend, request, messages)
+        finally:
+            # Cleared only after the replacement is stored, so the status line never
+            # gives way to the old dialogue before the summary block arrives.
+            self.compressing.discard(task_id)
+            await self._publish_task_changed(task_id)
+        return True
+
+    async def _replace_with_summary(
+        self, backend: Any, request: AgentRunRequest, messages: list[AgentMessage]
+    ) -> None:
+        task_id = request.session_key
         summary, results = await compaction.summarize(
             backend, request, messages, self.config.teams.prompts.text("task_compact"),
             lambda data: self._store_result_stats(task_id, data),
@@ -1701,8 +1722,6 @@ class TeamOrchestrator:
             task.agent_session_id = None
             task.remote_control_url = None
             session.add(task)
-        await self._publish_task_changed(task_id)
-        return True
 
     async def _auto_compress(self, backend: Any, request: AgentRunRequest) -> None:
         try:

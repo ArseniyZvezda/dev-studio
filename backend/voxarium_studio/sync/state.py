@@ -114,6 +114,7 @@ class SyncState:
 # Opt-in S4 storage (remote-identity/studio-design §4.3/§6/§8). Nothing in
 # RemoteSync consumes this API yet; the v1 class, path and format above stay intact.
 STATE_V2_VERSION = 2
+_RENAME_ATTEMPTS = 8
 
 
 class SyncStateError(ValueError):
@@ -331,6 +332,59 @@ class SyncStateV2:
             raise SyncStateError("instance_mismatch")
         if seq < self.cursor:
             raise SyncStateError("cursor_rollback")
+
+    @classmethod
+    def archive(cls, expected: "SyncStateV2") -> str:
+        """VS-188: move THIS namespace's checkpoint aside after explicit confirmation.
+
+        Only a rename inside the same namespace directory: the old bytes are kept
+        under ``state.archived-<UTC>-<random>.json`` and are never rewritten,
+        deleted or migrated; Markdown is not touched. The current checkpoint must
+        still equal ``expected`` (another incarnation's, or one whose cursor the
+        Remote went behind). Afterwards ``load`` returns ``None`` and only a new
+        Preview → Enable may create a fresh checkpoint (§4.3/§6). Returns the
+        archive file name. Callers serialize this with Enable for the namespace.
+        """
+        import time
+        from uuid import uuid4
+
+        from ..core.application_config import _fsync_directory
+
+        if not isinstance(expected, SyncStateV2):
+            raise SyncStateError("invalid_state")
+        namespace = expected.namespace
+        expected._payload()
+        current = cls._load(namespace)
+        if current is None or current != expected:
+            raise SyncStateError("state_changed")
+        path = namespace.path
+        content = path.read_bytes()
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        target = path.with_name(f"state.archived-{stamp}-{uuid4().hex[:12]}.json")
+        try:
+            if target.exists() or target.is_symlink():
+                raise OSError("archive name taken")
+            for attempt in range(_RENAME_ATTEMPTS):
+                try:
+                    # rename, not replace: an existing archive is never overwritten.
+                    os.rename(path, target)
+                    break
+                except PermissionError as error:
+                    # A foreign Windows handle (AV/indexer) on the just-read file.
+                    if (getattr(error, "winerror", None) not in {5, 32}
+                            or attempt == _RENAME_ATTEMPTS - 1):
+                        raise
+                time.sleep(0.01 * (attempt + 1))
+            _fsync_directory(path.parent)
+        except OSError:
+            raise SyncStateError("state_write_failed") from None
+        try:
+            moved = target.read_bytes() == content
+        except OSError:
+            moved = False
+        if cls._load(namespace) is not None or not moved:
+            raise SyncStateError("state_write_failed")
+        return target.name
 
     def save(self) -> None:
         """Explicit atomic publication; failure never masquerades as a saved base.

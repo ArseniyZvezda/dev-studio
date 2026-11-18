@@ -1,5 +1,6 @@
 """SQLModel tables. Importing this package registers every table on SQLModel.metadata."""
 
+from .ai_access import AiAuditReceipt, AiCommandLedger, AiMessageProvenance, AiResourceProvenance
 from .automation import AutomationRun
 from .base import new_id, utcnow
 from .pipeline import NodeCacheEntry, NodeRun, NodeStatus, Run, RunStatus
@@ -19,6 +20,10 @@ __all__ = [
     "AgentChat",
     "AgentChatMessage",
     "AgentMessage",
+    "AiAuditReceipt",
+    "AiCommandLedger",
+    "AiMessageProvenance",
+    "AiResourceProvenance",
     "AutomationRun",
     "ChatSessionContext",
     "NodeCacheEntry",

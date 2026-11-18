@@ -29,7 +29,7 @@ from ..models.teams import (
 )
 from ..teams import project_skills
 from ..teams.attachments import MAX_ATTACHMENT_BYTES, media_type_of
-from ..teams.backends import codex, qwen
+from ..teams.backends import antigravity, codex, qwen
 from ..core.api_backends import connections as api_connections
 from ..teams.backends.base import (
     RemoteControlUnavailable,
@@ -59,6 +59,9 @@ def _task_json(ctx: AppContext, task: TeamTask) -> dict[str, Any]:
         "display_id": format_task_id(ctx.task_code, task.number),
         "is_running": ctx.jobs.is_running(task.id),
         "is_compacting": bool(ctx.jobs.get(task.id) and ctx.jobs.get(task.id).kind == "task_compaction"),
+        # §10.4: true for automatic compression inside a run too; display only — Stop
+        # stays the run's control, unlike the manual job's cancel button.
+        "is_compressing_context": task.id in ctx.teams.compressing,
     }
 
 
@@ -400,6 +403,7 @@ async def member_options(ctx: Ctx) -> dict[str, Any]:
         "effort_levels": _effort_levels(),
         "common_tools": COMMON_TOOLS,
         "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models(),
+                             *antigravity.suggested_models(),
                              *[{"id": c.model, "label": c.model, "group": c.name, "backend": c.backend_id}
                                for c in api_connections()]],
         "studio_tool_prefix": f"mcp__{SERVER_NAME}__",

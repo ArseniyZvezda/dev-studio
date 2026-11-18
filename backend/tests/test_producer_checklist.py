@@ -38,6 +38,11 @@ def test_checklist_counts_unicode_characters_and_keeps_completion():
         items[0], {"text": "Проверить результат", "done": False}]
 
 
+def plain(checklist):
+    """What the Producer wrote, without the id and linked tasks each item also keeps."""
+    return [{"text": item["text"], "done": item["done"]} for item in checklist]
+
+
 async def workspace_chat(ctx):
     chat = await opened(ctx)
     async with ctx.db.session() as session:
@@ -53,15 +58,17 @@ async def test_plan_is_saved_in_chat_json_context_and_survives_approval(producer
     items = [{"text": "Implement movement", "done": False}]
     service = producer.chats.producer
     await service.update_checklist(chat.id, items)
+    await service.link_existing(chat.id, task.id, "p1", "")
     await service.propose(chat.id, [task.id], "Implement movement")
     pending = await producer.chats.get_chat(chat.id)
     await service._approve_plan(chat.id, pending.producer_plan_version, automatic=False)
     saved = await producer.chats.get_chat(chat.id)
     assert not saved.producer_plan
-    assert saved.producer_checklist == items
-    assert producer.chats.to_json(saved)["producer_checklist"] == items
+    assert plain(saved.producer_checklist) == items
+    assert producer.chats.to_json(saved)["producer_checklist"] == saved.producer_checklist
     context = json.loads(await service.context(chat.id))
-    assert context["session_plan"] == items
+    assert plain(context["session_plan"]) == items
+    assert context["session_plan"][0]["id"] == "p1" and context["session_plan"][0]["load"] == 1
     assert "50 characters" in context["session_plan_instructions"]
     assert "Never call stop_producer_mode" in context["mode_instructions"]
 
@@ -69,7 +76,7 @@ async def test_plan_is_saved_in_chat_json_context_and_survives_approval(producer
 async def test_task_tools_require_plan_then_require_refresh_before_yield(producer):
     chat = await workspace_chat(producer)
     tools = await tools_for(producer, chat)
-    args = {"assignee_id": DEV, "title": "Movement", "brief": "Move with arrow keys"}
+    args = {"assignee_id": DEV, "title": "Movement", "brief": "Move with arrow keys", "plan_item": "p1"}
     denied = await tools["create_task"](args)
     assert denied["is_error"] and "update_producer_checklist" in denied["content"][0]["text"]
     assert not await producer.chats.producer.tasks(chat.id)
@@ -121,7 +128,7 @@ async def test_invalid_update_keeps_previous_plan_and_goal_can_be_clarified(prod
     await tools["update_producer_checklist"]({"items": items})
     denied = await tools["update_producer_checklist"]({"items": [{"text": "x" * 51, "done": False}]})
     assert denied["is_error"]
-    assert (await producer.chats.get_chat(chat.id)).producer_checklist == items
+    assert plain((await producer.chats.get_chat(chat.id)).producer_checklist) == items
 
 
 async def test_workspace_mode_can_only_stop_during_chat_deletion(producer):
@@ -146,7 +153,7 @@ async def test_checklist_survives_compaction_and_database_reopen(producer, monke
         async with reopened.session() as session:
             saved = await session.get(AgentChat, chat.id)
             assert saved.producer_compacted_through
-            assert saved.producer_checklist == items
+            assert plain(saved.producer_checklist) == items
             assert saved.producer_workspace and saved.producer_checklist_revision
     finally:
         await reopened.close()

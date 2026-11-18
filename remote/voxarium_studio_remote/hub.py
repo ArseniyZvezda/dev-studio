@@ -69,6 +69,11 @@ class Connection:
         while not self.queue.empty():
             self.queue.get_nowait()
 
+    def revoke(self) -> None:
+        """Drop queued data and wake the writer so it closes the socket now (R-A0)."""
+        self.discard()
+        self.queue.put_nowait(None)
+
     def send(self, message: dict[str, Any]) -> None:
         if self.overloaded or self.closed:
             return
@@ -178,6 +183,23 @@ class Hub:
         if not space.connections:
             # Nothing in a space outlives its connections except what the store holds.
             self._spaces.pop(space.id, None)
+
+    def close_user(self, user_id: str, credential_version: int) -> int:
+        """Close every socket of *user_id* opened under an older credential generation.
+
+        Called after a rotate/revoke/reactivate/delete commits in this process (R-A0),
+        so an idle socket does not wait for the periodic watcher. A new key for the
+        same user never adopts the old socket: its generation no longer matches.
+        """
+        closed = 0
+        for space in list(self._spaces.values()):
+            for connection in list(space.connections):
+                if (connection.user.id == user_id
+                        and connection.user.credential_version != credential_version
+                        and not connection.closed):
+                    connection.revoke()
+                    closed += 1
+        return closed
 
     def handle(self, connection: Connection, raw: str) -> None:
         """Act on one frame. A frame that cannot be acted on is answered, never fatal."""

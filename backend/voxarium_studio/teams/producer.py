@@ -32,8 +32,24 @@ CHECKLIST_INSTRUCTIONS = (
     "or completing tasks and after reading changed task results, before proposing a plan, "
     "waiting, asking the user or ending the turn. Mark only completed work done; keep "
     "unfinished or cancelled work unchecked and describe remaining work concisely. "
-    "The session Plan is separate from the draft task approval plan and survives approval."
+    "The session Plan is separate from the draft task approval plan and survives approval. "
+    "Send each item as text, done and, for an existing item, its id: the id keeps the item "
+    "and the tasks linked to it. Omit id only for a new item. An item whose linked tasks "
+    "are unfinished cannot be removed."
 )
+# §10.11: the restraint on task counts is enforced, not only advised. An item's first
+# task is free; every further unit of load asks for this many more characters of
+# justification. Linear and uncapped on purpose — a rising price, never a ceiling.
+ITEM_JUSTIFICATION_STEP = 80
+# Reopening a Done result is counted per task: the Nth needs N steps of justification
+# and adds N to the load of every Plan item the task belongs to.
+REOPEN_JUSTIFICATION_STEP = 150
+CLOSED_STATUSES = frozenset({"done", "cancelled"})
+
+
+def justification_length(text: Any) -> int:
+    """Characters of justification once runs of whitespace stop counting as content."""
+    return len(" ".join(str(text or "").split()))
 
 
 class ProducerService:
@@ -361,8 +377,11 @@ class ProducerService:
             raise ValueError(f"Supply a short checklist of 1–{CHECKLIST_MAX_ITEMS} items.")
         cleaned = []
         for item in items:
-            if not isinstance(item, dict) or set(item) != {"text", "done"}:
-                raise ValueError("Each checklist item must contain only text and done.")
+            if not isinstance(item, dict) or not {"text", "done"} <= set(item) <= {"id", "text", "done"}:
+                raise ValueError("Each checklist item must contain only text, done and, "
+                                 "for an existing item, its id.")
+            if "id" in item and (not isinstance(item["id"], str) or not item["id"].strip()):
+                raise ValueError("A checklist item id must be the id the saved Plan shows.")
             text = item["text"]
             if (not isinstance(text, str) or not text.strip()
                     or len(text) > CHECKLIST_ITEM_MAX_CHARS
@@ -372,8 +391,155 @@ class ProducerService:
                 raise ValueError("Checklist text must be plain single-line text of 1–50 characters, without Markdown.")
             if type(item["done"]) is not bool:
                 raise ValueError("Checklist done must be a boolean.")
-            cleaned.append({"text": text.strip(), "done": item["done"]})
+            cleaned.append({**({"id": item["id"].strip()} if "id" in item else {}),
+                            "text": text.strip(), "done": item["done"]})
         return cleaned
+
+    @staticmethod
+    def merge_checklist(existing: list[dict[str, Any]], checked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Carry each item's id and linked tasks across a replacement (§10.11).
+
+        An item is recognised by its id, or — for a Plan written before items had ids, and
+        for a call that left one out — by unchanged text. Rewording keeps the tasks only
+        when the id comes with it, so the restraint on an item cannot be reset by renaming.
+        """
+        by_id = {item["id"]: item for item in existing if item.get("id")}
+        kept: set[int] = set()
+        matches: list[dict[str, Any] | None] = []
+        for item in checked:
+            prior = None
+            if "id" in item:
+                prior = by_id.get(item["id"])
+                if prior is None:
+                    raise ValueError(f"No session Plan item has id {item['id']!r}. Omit id for a new item.")
+                if id(prior) in kept:
+                    raise ValueError(f"Session Plan item {item['id']} is listed twice.")
+                kept.add(id(prior))
+            matches.append(prior)
+        for index, item in enumerate(checked):
+            if matches[index] is None:
+                prior = next((entry for entry in existing
+                              if id(entry) not in kept and entry["text"] == item["text"]), None)
+                if prior is not None:
+                    kept.add(id(prior))
+                    matches[index] = prior
+        held = [entry for entry in existing if id(entry) not in kept
+                and any(task["status"] not in CLOSED_STATUSES for task in entry.get("tasks", []))]
+        if held:
+            raise ValueError(
+                "A session Plan item with unfinished linked tasks cannot be removed. Keep it by passing "
+                "its id: " + "; ".join(f"{entry.get('id', '?')} ({entry['text']})" for entry in held))
+        number = max((int(found.group(1)) for entry in existing
+                      if (found := re.fullmatch(r"p(\d+)", str(entry.get("id", ""))))), default=0)
+        merged = []
+        for item, prior in zip(checked, matches):
+            ident = (prior or {}).get("id")
+            if not ident:
+                number += 1
+                ident = f"p{number}"
+            merged.append({"id": ident, "text": item["text"], "done": item["done"],
+                           "tasks": [dict(task) for task in (prior or {}).get("tasks", [])]})
+        return merged
+
+    @staticmethod
+    def item_load(item: dict[str, Any]) -> int:
+        """What an item already carries: its tasks, plus 1, 2, 3… for each one's reopenings."""
+        return sum(1 + task.get("reopens", 0) * (task.get("reopens", 0) + 1) // 2
+                   for task in item.get("tasks", []) if task["status"] != "cancelled")
+
+    def task_record(self, task: TeamTask, justification: str = "") -> dict[str, Any]:
+        return {"id": task.id, "display_id": self.orchestrator.display_id(task), "title": task.title[:200],
+                "status": TaskStatus(task.status).value, "reopens": task.reopen_count,
+                "justification": justification}
+
+    async def plan_items(self, chat_id: str) -> list[dict[str, Any]]:
+        """The saved Plan with an id on every item; older Plans gain theirs here."""
+        chat = await self._chat(chat_id)
+        if all(item.get("id") for item in chat.producer_checklist):
+            return chat.producer_checklist
+        plain = [{"text": item["text"], "done": item["done"]} for item in chat.producer_checklist]
+        return (await self._save(
+            chat_id, producer_checklist=self.merge_checklist(chat.producer_checklist, plain))).producer_checklist
+
+    async def check_plan_link(self, chat_id: str, plan_item: Any, justification: Any,
+                              task: TeamTask | None = None) -> bool:
+        """Whether one more task may join a Plan item — the enforced restraint (§10.11).
+
+        False means there is nothing to link: an ordinary Producer chat without a Plan.
+        """
+        items = await self.plan_items(chat_id)
+        if not items:
+            return False
+        listing = "; ".join(f"{item['id']} ({item['text']})" for item in items)
+        if not isinstance(plan_item, str) or not plan_item.strip():
+            raise ValueError("Pass plan_item: the id of the session Plan item this task belongs to. "
+                             f"Items: {listing}.")
+        item = next((entry for entry in items if entry["id"] == plan_item.strip()), None)
+        if item is None:
+            raise ValueError(f"No session Plan item has id {plan_item!r}. Items: {listing}.")
+        if task is not None and any(record["id"] == task.id for record in item["tasks"]):
+            return True
+        load = self.item_load(item)
+        required = ITEM_JUSTIFICATION_STEP * load
+        if justification_length(justification) < required:
+            raise ValueError(
+                f"Session Plan item {item['id']} already carries a load of {load} (its tasks, plus 1, 2, 3… "
+                f"for each task's reopenings). One more task needs a justification of at least {required} "
+                "characters: why the existing tasks cannot be reused or consolidated, and why this one is "
+                "indispensable. Nothing was changed.")
+        return True
+
+    async def link_task(self, chat_id: str, plan_item: str, task: TeamTask, justification: Any = "") -> None:
+        """Record a task on its Plan item; it stays there in whatever status it ends (§10.11)."""
+        items = [{**item, "tasks": [dict(record) for record in item.get("tasks", [])]}
+                 for item in await self.plan_items(chat_id)]
+        for item in items:
+            if item["id"] == plan_item.strip() and all(record["id"] != task.id for record in item["tasks"]):
+                item["tasks"].append(self.task_record(task, " ".join(str(justification or "").split())))
+        await self._save(chat_id, producer_checklist=items)
+
+    async def link_existing(self, chat_id: str, reference: str, plan_item: Any, justification: Any) -> str:
+        chat = await self._chat(chat_id)
+        task = await self.resolve(chat, reference)
+        if not await self.check_plan_link(chat_id, plan_item, justification, task):
+            raise ValueError("Write the session Plan with update_producer_checklist before linking tasks.")
+        await self.link_task(chat_id, plan_item, task, justification)
+        return f"{self.orchestrator.display_id(task)} linked to session Plan item {plan_item.strip()}."
+
+    async def sync_plan_tasks(self) -> None:
+        """Keep the status each Plan item shows beside its tasks current (§10.11)."""
+        async with self.chats.db.session() as session:
+            chats = (await session.exec(select(AgentChat).where(
+                AgentChat.producer_checklist_revision != ""))).all()
+        for chat in chats:
+            if not any(item.get("tasks") for item in chat.producer_checklist):
+                continue
+            lock = self.chats.lock(chat.id)
+            if lock.locked():  # A tool call is editing this Plan; the next pass refreshes it.
+                continue
+            async with lock:
+                await self.refresh_plan_tasks(chat.id)
+
+    async def refresh_plan_tasks(self, chat_id: str) -> None:
+        async with self.chats.db.session() as session:
+            chat = await session.get(AgentChat, chat_id)
+            if chat is None:
+                return
+            ids = {record["id"] for item in chat.producer_checklist for record in item.get("tasks", [])}
+            if not ids:
+                return
+            current = {task.id: task for task in (await session.exec(
+                select(TeamTask).where(TeamTask.id.in_(ids)))).all()}
+            # A task deleted from the board keeps the last record its item had of it.
+            items = [{**item, "tasks": [
+                {**record, **({key: value for key, value in self.task_record(current[record["id"]]).items()
+                               if key != "justification"} if record["id"] in current else {})}
+                for record in item.get("tasks", [])]} for item in chat.producer_checklist]
+            if items == chat.producer_checklist:
+                return
+            chat.producer_checklist = items
+            session.add(chat)
+        await self.chats._publish_chat(chat)
 
     async def checklist_revision(self, chat_id: str) -> str:
         # Meaningful board changes invalidate the Plan; costs/timestamps alone do not.
@@ -384,8 +550,8 @@ class ProducerService:
         return hashlib.sha256(json.dumps(board, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     async def update_checklist(self, chat_id: str, items: Any) -> AgentChat:
-        await self._chat(chat_id)
-        checked = self.checklist_items(items)
+        chat = await self._chat(chat_id)
+        checked = self.merge_checklist(chat.producer_checklist, self.checklist_items(items))
         return await self._save(chat_id, producer_checklist=checked,
                                 producer_checklist_revision=await self.checklist_revision(chat_id))
 
@@ -418,6 +584,15 @@ class ProducerService:
         tasks = [await self.resolve(chat, r) for r in dict.fromkeys(references)]
         if any(t.status != TaskStatus.TODO or t.producer_approved for t in tasks):
             raise ValueError("A new plan contains only unapproved Todo tasks.")
+        if chat.producer_checklist:
+            # §10.11: counting an item's tasks only works if nothing is released unlinked.
+            linked = {record["id"] for item in chat.producer_checklist for record in item.get("tasks", [])}
+            unlinked = [self.orchestrator.display_id(t) for t in tasks if t.id not in linked]
+            if unlinked:
+                raise ValueError(
+                    "Every planned task belongs to a session Plan item. Link these first with "
+                    "link_producer_task (plan_item, and a justification when the item already has tasks): "
+                    + ", ".join(unlinked))
         saved = await self._save(chat_id, producer_plan=[self.plan_entry(t) for t in tasks],
                          producer_plan_summary=summary.strip(), producer_state="awaiting_approval",
                          producer_plan_version=chat.producer_plan_version + 1, producer_watch=[])
@@ -547,7 +722,7 @@ class ProducerService:
             self.check_task_cost(await self._chat(chat_id), task)
 
     async def review(self, chat_id: str, reference: str, action: str, comment: str,
-                     estimated_additional_cost_usd: float = 0.0) -> str:
+                     estimated_additional_cost_usd: float = 0.0, justification: str = "") -> str:
         chat = await self._chat(chat_id)
         await self.require_checklist(chat_id)
         task = await self.resolve(chat, reference)
@@ -564,14 +739,28 @@ class ProducerService:
                         "This task's Producer chat is paused. Resume that chat or run the task manually from the board."
                     )
             self.check_task_cost(chat, task, estimated_additional_cost_usd)
-        # §10.11: a Done result closes this unit of work; fixes need a new task.
-        if (task.result_type == "done" and task.status in {TaskStatus.NEEDS_REVIEW, TaskStatus.DONE}
-                and action != "approve"):
+        # §10.11: a Done result is approved, or reopened in place — a counted move whose
+        # price rises each time — rather than answered with yet another task.
+        reopening = task.result_type == "done" and task.status in {TaskStatus.NEEDS_REVIEW, TaskStatus.DONE}
+        if reopening and action not in {"approve", "request_changes"}:
             raise ValueError(
-                "A task returned for review with result_type=done can only be approved into Done. "
-                "It cannot be restarted or cancelled, including after approval. "
-                "Create a new task for any corrections and follow the usual plan approval policy."
+                "A task returned for review with result_type=done can only be approved into Done or "
+                "reopened with request_changes and a justification. It cannot be started or cancelled, "
+                "including after approval."
             )
+        reopening = reopening and action == "request_changes"
+        if reopening:
+            if not comment.strip():
+                raise ValueError("Reopening needs concrete feedback in comment.")
+            number = task.reopen_count + 1
+            required = REOPEN_JUSTIFICATION_STEP * number
+            if justification_length(justification) < required:
+                raise ValueError(
+                    f"This would be reopening #{number} of {self.orchestrator.display_id(task)}. It needs a "
+                    f"justification of at least {required} characters: why the Done result fails its "
+                    "acceptance criteria, and why this attempt will succeed where the previous ones did not. "
+                    "Each reopening needs a longer justification than the last and adds its number to the "
+                    "load of the task's session Plan item. Nothing was changed.")
         interrupted = await self.orphaned(task)
         # §10.11: the Producer resolves routine blockers and follows existing user
         # instructions without a mandatory question/answer round trip per result.
@@ -580,9 +769,25 @@ class ProducerService:
                 raise ValueError("Only a task awaiting review can be approved.")
             await self.orchestrator.approve(task.id, actor_id=chat.member_id)
         elif action == "request_changes":
-            if (task.status not in {"needs_review", "blocked"} and not interrupted) or not comment.strip():
+            if (task.status not in {"needs_review", "blocked"} and not interrupted
+                    and not reopening) or not comment.strip():
                 raise ValueError("Feedback and a task in review or blocked are required.")
+            if reopening and task.archived:
+                # Archived means "Done and put away"; reopened work belongs on the board.
+                await self.orchestrator.update_task(task.id, {"archived": False}, actor_id=chat.member_id)
             await self.orchestrator.request_changes(task.id, comment, actor_id=chat.member_id)
+            if reopening:
+                async with self.chats.db.session() as session:
+                    stored = await session.get(TeamTask, task.id)
+                    stored.reopen_count += 1
+                    session.add(stored)
+                    count = stored.reopen_count
+                await self.orchestrator.record_message(
+                    task.id, chat.member_id, role="assistant", kind="text",
+                    text=" ".join(justification.split()),
+                    data={"producer_review": "reopen", "reopen_count": count},
+                )
+                await self.orchestrator._publish_task_changed(task.id)
         elif action == "cancel":
             async with self._approval_lock:
                 await self.orchestrator.update_task(task.id, {"status": TaskStatus.CANCELLED}, actor_id=chat.member_id)
@@ -602,6 +807,11 @@ class ProducerService:
             raise ValueError("Unknown review action.")
         await self._save(chat_id, producer_questions=[q for q in chat.producer_questions
                                                       if not q.get("task") or q["task"]["id"] != task.id])
+        await self.refresh_plan_tasks(chat_id)
+        if reopening:
+            return (f"{self.orchestrator.display_id(task)}: reopened (reopening #{count}). "
+                    f"The next one needs at least {REOPEN_JUSTIFICATION_STEP * (count + 1)} characters "
+                    "of justification.")
         return f"{self.orchestrator.display_id(task)}: {action} applied."
 
     async def _remove_from_plans(self, task_id: str) -> None:
@@ -634,6 +844,7 @@ class ProducerService:
         while True:
             try:
                 await self.reconcile()
+                await self.sync_plan_tasks()
                 # Bus wakeups are cheap; only a changed durable snapshot calls a model.
                 await asyncio.wait_for(self._subscription.get(), timeout=5)
             except TimeoutError:
@@ -673,8 +884,17 @@ class ProducerService:
                     await self.queue(chat_id, self.chats.config.teams.prompts.text("producer_wake"))
 
     async def context(self, chat_id: str) -> str:
+        await self.plan_items(chat_id)
         chat = await self._chat(chat_id)
         tasks = await self.tasks(chat_id)
+        # §10.11: each item arrives with what it already carries, so the Producer sees
+        # the price of one more task before asking for it.
+        session_plan = [{"id": item["id"], "text": item["text"], "done": item["done"],
+                         "load": self.item_load(item),
+                         "next_task_justification_chars": ITEM_JUSTIFICATION_STEP * self.item_load(item),
+                         "tasks": [{key: record[key] for key in ("display_id", "status", "reopens")}
+                                   for record in item.get("tasks", [])]}
+                        for item in chat.producer_checklist]
         # An indefinitely active producer must not grow its injected board without bound.
         # Full briefs/results stay accessible through get_task; prioritize unresolved work.
         active = [t for t in tasks if t.status not in {"done", "cancelled"}]
@@ -697,7 +917,7 @@ class ProducerService:
                                if chat.producer_effort_mode == "auto" else
                                "New tasks inherit their assignee's configured default effort. "
                                "Do not override effort when creating tasks."),
-                           "session_plan": chat.producer_checklist,
+                           "session_plan": session_plan,
                            "session_plan_instructions": CHECKLIST_INSTRUCTIONS,
                            "mode_instructions": (
                                "This chat belongs to the Producer workspace. Keep Producer Mode enabled; "
@@ -733,6 +953,18 @@ class ProducerService:
                                for m in recent if m.kind not in {"thinking", "state"})
         if not force and len(history) < COMPACT_CHARS:
             return False
+        # §10.11: the reader sees the summary being written, not a silent pause.
+        self.chats.compacting.add(chat_id)
+        await self.chats._publish_chat_by_id(chat_id)
+        try:
+            return await self._summarize(chat_id, chat, messages, history, backend, request)
+        finally:
+            self.chats.compacting.discard(chat_id)
+            await self.chats._publish_chat_by_id(chat_id)
+
+    async def _summarize(self, chat_id: str, chat: AgentChat, messages: list[AgentChatMessage],
+                         history: str, backend, request) -> bool:
+        from dataclasses import replace
         summary_prompt = self.chats.config.teams.prompts.text("producer_compact")
         summary_request = replace(
             request, member=request.member.model_copy(update={"max_turns": 2, "allowed_tools": []}),
@@ -785,7 +1017,6 @@ class ProducerService:
             stored.agent_session_id = None
             session.add(stored)
         await self.chats._publish_message(message)
-        await self.chats._publish_chat(stored)
         return True
 
     def tools(self, chat_id: str) -> list[Any]:
@@ -801,13 +1032,32 @@ class ProducerService:
                   "items": {"type": "array", "minItems": 1, "maxItems": CHECKLIST_MAX_ITEMS,
                       "items": {"type": "object", "additionalProperties": False,
                           "properties": {
+                              "id": {"type": "string",
+                                     "description": "The existing item's id (p1, p2…). Omit for a new item."},
                               "text": {"type": "string", "minLength": 1,
                                        "maxLength": CHECKLIST_ITEM_MAX_CHARS},
                               "done": {"type": "boolean"}},
                           "required": ["text", "done"]}}}, "required": ["items"]})
         async def checklist(args):
-            await self.update_checklist(chat_id, args.get("items"))
-            return _text("Session Plan saved. Keep it current as tasks change.")
+            saved = await self.update_checklist(chat_id, args.get("items"))
+            return _text("Session Plan saved. Keep it current as tasks change. Items: " + "; ".join(
+                f"{item['id']} ({item['text']})" for item in saved.producer_checklist))
+
+        @tool("link_producer_task",
+              "Link an existing board task you are reusing to a session Plan item, so it counts toward "
+              "that item. Tasks you create are linked by create_task's plan_item. A link is never removed; "
+              "the item keeps the task in whatever status it ends. The item's first task needs no "
+              "justification; each further one needs a longer justification, as the saved Plan's "
+              "next_task_justification_chars shows.",
+              {"type": "object", "properties": {
+                  "task": {"type": "string"},
+                  "plan_item": {"type": "string", "description": "Session Plan item id (p1, p2…)."},
+                  "justification": {"type": "string",
+                      "description": "Why existing tasks cannot cover this work and why this task is indispensable."}},
+               "required": ["task", "plan_item"]})
+        async def link(args):
+            return _text(await self.link_existing(chat_id, str(args.get("task") or ""),
+                                                  args.get("plan_item"), args.get("justification")))
 
         @tool("propose_producer_plan",
               "Present draft Todo tasks as a plan. In Careful, end the turn and wait for explicit user "
@@ -847,9 +1097,11 @@ class ProducerService:
               "manually or in other chats. Starting Producer drafts still requires plan approval; "
               "cancelling them does not. Approve verified results, request_changes with concrete feedback "
               "or a resolved answer, cancel unnecessary work, or start approved tasks. "
-              "A task returned for review with result_type=done may only be approved into Done; "
-              "never restart or cancel it, even after approval. Create a new task for corrections "
-              "and follow the usual plan approval policy. Resolve routine "
+              "A task returned for review with result_type=done may be approved into Done or, when it "
+              "fails its acceptance criteria, reopened in place with request_changes plus justification — "
+              "also after approval. Never start or cancel it. Every reopening is counted: the Nth needs at "
+              f"least N×{REOPEN_JUSTIFICATION_STEP} characters of justification and adds N to the load of "
+              "its session Plan item, so prefer one complete round of feedback. Resolve routine "
               "questions and blockers according to the current decision policy; follow existing user instructions "
               "without asking again. Do not restart work the user has asked to keep stopped. "
               "Before continuing, compare cumulative task API cost and estimated_additional_cost_usd with "
@@ -859,13 +1111,17 @@ class ProducerService:
                   "task": {"type": "string"},
                   "action": {"type": "string", "enum": ["approve", "request_changes", "cancel", "start"]},
                   "comment": {"type": "string"},
+                  "justification": {"type": "string",
+                      "description": "Required to reopen a Done result: why it fails its acceptance criteria "
+                                     "and why this attempt will succeed where the previous ones did not."},
                   "estimated_additional_cost_usd": {"type": "number", "minimum": 0,
                       "description": "Estimated API cost of proposed continuation, in USD."}},
                "required": ["task", "action"]})
         async def review(args):
             return _text(await self.review(chat_id, str(args.get("task") or ""),
                                            str(args.get("action") or ""), str(args.get("comment") or ""),
-                                           args.get("estimated_additional_cost_usd", 0.0)))
+                                           args.get("estimated_additional_cost_usd", 0.0),
+                                           str(args.get("justification") or "")))
 
         @tool("stop_producer_mode",
               "Stop Producer Mode only when the USER explicitly asks to stop/finish this mode. "
@@ -876,7 +1132,7 @@ class ProducerService:
             await self.disable(chat_id, cancel=False)
             return _text("Producer Mode stopped. Existing tasks remain on the board.")
 
-        return [checklist, propose, wait, ask, review, stop]
+        return [checklist, link, propose, wait, ask, review, stop]
 
 
 def context_overflow(text: str) -> bool:

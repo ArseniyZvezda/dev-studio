@@ -74,7 +74,7 @@ export type SkillPickerScope = 'all' | 'studio' | 'global' | 'project'
 
 export function skillBackendLabel(backend: string): string {
   if (backend === 'all' || backend === 'shared') return t(`skills.picker.${backend}`)
-  return ({ claude_code: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code' } as Record<string, string>)[backend] ?? backend
+  return ({ claude_code: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code', antigravity: 'Antigravity' } as Record<string, string>)[backend] ?? backend
 }
 
 /** Studio folders and bundled skills live together; native project installations stay distinct. */

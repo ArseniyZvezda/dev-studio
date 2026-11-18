@@ -1,7 +1,9 @@
 """Recent account quota telemetry shared by all resident projects (§6.1).
 
-This is not token accounting or a quota probe: adapters feed only the CLI frames
-they already consume. Nothing is persisted, and no raw frames, account identifiers,
+This is not token accounting or a quota probe: adapters feed the CLI frames they
+already consume and, for Claude Code, the CLI's own ``get_usage`` report asked of a
+session that is already running. The Studio never calls a provider itself, and reading
+the status starts nothing. Nothing is persisted, and no raw frames, account identifiers,
 credentials or transcript content are retained. Unknown/stale usage is not zero.
 """
 
@@ -93,6 +95,55 @@ def record_claude_usage(info: Any) -> None:
     sample = _Sample(window, used * 100, _reset(info.get("resets_at")), time.time(), time.monotonic())
     with _lock:
         _claude[window] = sample
+
+
+def _reset_instant(value: Any) -> float | None:
+    """``get_usage`` dates a reset as ISO 8601; the stream frames as epoch seconds."""
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        try:
+            return _reset(parsed.timestamp())
+        except (OverflowError, OSError):
+            return None
+    return _reset(value)
+
+
+def record_claude_usage_report(rate_limits: Any) -> None:
+    """Merge the CLI's ``get_usage`` report, whose utilization is already a percentage.
+
+    These are the figures ``/usage`` shows. The stream's ``rate_limit`` frames carry a
+    utilization only once a window crosses a warning threshold, so without this report an
+    ordinary session never has a percentage, and one that once crossed it keeps that
+    figure until it ages out (§6.1). A window the report names as ``null`` does not apply
+    to this account and is dropped; one it does not mention is left as it was.
+    """
+    if not isinstance(rate_limits, dict):
+        return
+    now, monotonic = time.time(), time.monotonic()
+    samples: dict[str, _Sample] = {}
+    absent: list[str] = []
+    for window in _CLAUDE_WINDOWS:
+        if window not in rate_limits:
+            continue
+        info = rate_limits[window]
+        if info is None:
+            absent.append(window)
+            continue
+        if not isinstance(info, dict):
+            continue
+        used = _number(info.get("utilization"))
+        if used is None or not 0 <= used <= 100:
+            continue
+        samples[window] = _Sample(window, used, _reset_instant(info.get("resets_at")), now, monotonic)
+    with _lock:
+        for window in absent:
+            _claude.pop(window, None)
+        _claude.update(samples)
 
 
 def record_codex_usage(rate_limits: Any, *, observed_at: Any = None) -> None:

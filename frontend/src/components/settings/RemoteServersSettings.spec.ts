@@ -7,8 +7,8 @@ import { createPinia, disposePinia } from 'pinia'
 import { createApp, h, nextTick, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
-import { createRemoteApiClient, RemoteApiError, type RemoteServerProfile, type RemoteServers,
-  type VerificationDTO } from '@/api/remote'
+import { createRemoteApiClient, createRemoteConsumersClient, RemoteApiError, type RemoteProfileConsumers,
+  type RemoteServerProfile, type RemoteServers, type VerificationDTO } from '@/api/remote'
 import { t } from '@/i18n'
 import { rendererSession } from '@/session/project-session'
 import { useRemoteServersStore } from '@/stores/remote-servers'
@@ -16,6 +16,7 @@ import RemoteServersSettings from './RemoteServersSettings.vue'
 
 vi.mock('@/api/remote', async importOriginal => ({
   ...await importOriginal<typeof import('@/api/remote')>(), createRemoteApiClient: vi.fn(),
+  createRemoteConsumersClient: vi.fn(),
 }))
 
 type Client = ReturnType<typeof createRemoteApiClient>
@@ -57,7 +58,22 @@ function makeClient() {
     observe: vi.fn<Client['observe']>(),
   } satisfies Client
 }
+/** Gate L census (dev spec §16): by default the user already confirmed each profile's exact URL. */
+let consumers = makeConsumers([])
+function makeConsumers(items: RemoteServerProfile[]) {
+  const census = (profileId: string): RemoteProfileConsumers => {
+    const item = items.find(value => value.profile_id === profileId)!
+    return { profile_id: profileId, url: item.url, revision: item.revision, state: 'known',
+      confirmed_at: '2026-11-18T10:00:00Z', bound_roots: [], active_roots: [], operations: [] }
+  }
+  return {
+    profileConsumers: vi.fn(async (profileId: string) => census(profileId)),
+    confirmProfileConsumers: vi.fn(async (profileId: string) => census(profileId)),
+    withdrawProfileConsumers: vi.fn(async (profileId: string) => ({ ...census(profileId), state: 'unknown' as const, confirmed_at: null })),
+  } satisfies ReturnType<typeof createRemoteConsumersClient>
+}
 function harness(items: RemoteServerProfile[] = [profile()]) {
+  consumers = makeConsumers(items)
   const pinia = createPinia()
   piniae.push(pinia)
   const api = makeClient()
@@ -120,6 +136,7 @@ function mutate(context: Harness, next: RemoteServerProfile) {
 
 beforeEach(() => {
   vi.mocked(createRemoteApiClient).mockReset()
+  vi.mocked(createRemoteConsumersClient).mockReset().mockImplementation(() => consumers)
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Unexpected direct network')))
   vi.stubGlobal('WebSocket', vi.fn())
 })
@@ -1106,5 +1123,353 @@ describe('global scope release gate explanation', () => {
     expect(gate?.textContent).toBe(t('settings.remoteServers.mutationGate'))
     expect(gate?.textContent).not.toContain('settings.remoteServers.')
     assertNoOtherCalls(h.api)
+  })
+})
+
+describe('Gate L consumer confirmation in the key dialog (dev spec §16)', () => {
+  it('shows the census, blocks Save until the user confirms and never confirms by itself', async () => {
+    const context = harness()
+    const unknown: RemoteProfileConsumers = { profile_id: id, url: profile().url, revision: 7, state: 'unknown',
+      confirmed_at: null, bound_roots: ['D:\games\alpha'], active_roots: [], operations: ['verify'] }
+    consumers.profileConsumers.mockResolvedValueOnce(unknown)
+    const view = mountView(context)
+    await flush()
+    vi.mocked(createRemoteApiClient).mockReturnValueOnce(context.api)
+    button(row(view.host), 'remote-credential').click()
+    await flush(); await flush()
+    const panel = dialog()!.querySelector('[data-testid="remote-consumers"]')!
+    expect(panel.textContent).toContain('D:\games\alpha')
+    expect(panel.textContent).toContain(t('settings.remoteServers.consumers.operations', {
+      operations: t('settings.remoteServers.consumers.operation.verify') }))
+    const field = dialog()!.querySelector<HTMLInputElement>('input[type="password"]')!
+    field.value = secret
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(button(document.body, 'remote-credential-submit').disabled).toBe(true)
+    dialog()!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(context.api.setCredential).not.toHaveBeenCalled()
+    expect(consumers.confirmProfileConsumers).not.toHaveBeenCalled()
+    button(document.body, 'remote-consumers-acknowledge').click()
+    await flush()
+    button(document.body, 'remote-consumers-confirm').click()
+    await flush(); await flush()
+    expect(consumers.confirmProfileConsumers).toHaveBeenCalledExactlyOnceWith(id,
+      { expected_revision: 7, url: profile().url, bound_roots: ['D:\games\alpha'] })
+    expect(button(document.body, 'remote-credential-submit').disabled).toBe(false)
+    context.api.setCredential.mockResolvedValueOnce(profile({ revision: 8 }))
+    dialog()!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(context.api.setCredential).toHaveBeenCalledExactlyOnceWith(id, { expected_revision: 7, token: secret })
+    expect(dialog()).toBeNull()
+  })
+
+  it('localizes a not-drained refusal instead of showing its code or details', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    vi.mocked(createRemoteApiClient).mockReturnValueOnce(context.api)
+    button(row(view.host), 'remote-credential').click()
+    await flush(); await flush()
+    const field = dialog()!.querySelector<HTMLInputElement>('input[type="password"]')!
+    field.value = secret
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    context.api.setCredential.mockRejectedValueOnce(new RemoteApiError(409, 'profile_consumers_not_drained', { root: secret }))
+    dialog()!.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(dialog()!.querySelector('[role="alert"]')?.textContent).toBe(t('settings.remoteServers.credentials.notDrained'))
+    expect(document.body.textContent).not.toContain(secret)
+    expect(document.body.textContent).not.toContain('profile_consumers_not_drained')
+  })
+})
+
+describe('C7 profile deletion and URL change (dev spec §16.11)', () => {
+  const newUrl = 'https://moved.example/team'
+  async function openAction(context: Harness, host: HTMLElement, action: 'remote-delete' | 'remote-change-url') {
+    vi.mocked(createRemoteApiClient).mockReturnValueOnce(context.api)
+    button(row(host), action).click()
+    await flush(); await flush()
+  }
+  function typeUrl(value: string) {
+    const field = document.body.querySelector<HTMLInputElement>('[data-testid="remote-metadata-new-url"]')
+    expect(field).not.toBeNull()
+    field!.value = value
+    field!.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  async function reviewUrl(value = newUrl) {
+    typeUrl(value)
+    await flush()
+    button(document.body, 'remote-url-review').click()
+    await flush()
+  }
+  function text(testId: string): string | null | undefined {
+    return document.body.querySelector(`[data-testid="${testId}"]`)?.textContent
+  }
+  function alertText(): string | null | undefined {
+    return dialog()?.querySelector('[role="alert"]')?.textContent?.trim()
+  }
+  function noWrites(context: Harness) {
+    for (const method of ['verify', 'createProfile', 'renameProfile', 'changeProfileUrl', 'setCredential',
+      'clearCredential', 'deleteProfile', 'recoverProfile', 'listProjects', 'createProject', 'observe'] as const) {
+      expect(context.api[method], method).not.toHaveBeenCalled()
+    }
+    expect(consumers.confirmProfileConsumers).not.toHaveBeenCalled()
+    expect(consumers.withdrawProfileConsumers).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  }
+  const refusals = [
+    ['profile_in_use', 409, 'settings.remoteServers.lifecycle.inUse'],
+    ['profile_consumers_not_drained', 409, 'settings.remoteServers.lifecycle.notDrained'],
+    ['consumer_lifecycle_unavailable', 503, 'settings.remoteServers.lifecycle.notConfirmed'],
+  ] as const
+
+  it('deletes only after review of the exact name/URL and explicit confirmation, once, without reload', async () => {
+    const other = profile({ profile_id: otherId, name: 'Other', url: 'https://other.example' })
+    const context = harness([profile(), other])
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    expect(text('remote-delete-name')).toBe('Team Remote')
+    expect(text('remote-delete-url')).toBe(profile().url)
+    expect(document.body.querySelector('[data-testid="remote-delete-confirm"]')).toBeNull()
+    expect(verifyButton(view.host, otherId).disabled).toBe(true)
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    expect(context.api.deleteProfile).not.toHaveBeenCalled()
+    expect(text('remote-delete-confirmation')).toContain(t('settings.remoteServers.delete.confirmWarning',
+      { name: 'Team Remote', url: profile().url }))
+    const pending = deferred<void>()
+    context.api.deleteProfile.mockReturnValueOnce(pending.promise)
+    const confirm = button(document.body, 'remote-delete-confirm')
+    confirm.click()
+    forceClick(confirm)
+    await flush()
+    expect(context.api.deleteProfile).toHaveBeenCalledExactlyOnceWith(id, { expected_revision: 7 })
+    expect(confirm.disabled).toBe(true)
+    pending.resolve()
+    await flush()
+    expect(dialog()).toBeNull()
+    expect(view.host.querySelector(`[data-profile-id="${id}"]`)).toBeNull()
+    expect(row(view.host, otherId).textContent).toContain('Other')
+    expect(context.store.items.map(item => item.profile_id)).toEqual([otherId])
+    expect(context.api.listServers).toHaveBeenCalledTimes(1)
+    expect(verifyButton(view.host, otherId).disabled).toBe(false)
+  })
+
+  it('cancelling deletion at review, at confirmation or with Escape sends nothing', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-cancel').click()
+    await flush()
+    expect(dialog()).toBeNull()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    button(document.body, 'remote-delete-back').click()
+    await flush()
+    expect(document.body.querySelector('[data-testid="remote-delete-confirmation"]')).toBeNull()
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    button(document.body, 'remote-delete-cancel').click()
+    await flush()
+    expect(dialog()).toBeNull()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    dialog()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flush()
+    expect(dialog()).toBeNull()
+    expect(row(view.host).textContent).toContain('Team Remote')
+    expect(button(row(view.host), 'remote-delete').disabled).toBe(false)
+    noWrites(context)
+  })
+
+  it('keeps deletion blocked until the projects using this URL are confirmed', async () => {
+    const context = harness()
+    consumers.profileConsumers.mockResolvedValueOnce({ profile_id: id, url: profile().url, revision: 7,
+      state: 'unknown', confirmed_at: null, bound_roots: [], active_roots: [], operations: [] })
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    expect(text('remote-delete-gate')).toBe(t('settings.remoteServers.lifecycle.required'))
+    const confirm = button(document.body, 'remote-delete-confirm')
+    expect(confirm.disabled).toBe(true)
+    forceClick(confirm)
+    await flush()
+    expect(context.api.deleteProfile).not.toHaveBeenCalled()
+  })
+
+  it.each(refusals)('shows a %s deletion refusal as text and never retries', async (code, status, key) => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    const bound: RemoteProfileConsumers = { profile_id: id, url: profile().url, revision: 7, state: 'known',
+      confirmed_at: '2026-11-18T10:00:00Z', bound_roots: ['D:\\games\\alpha'], active_roots: [], operations: [] }
+    consumers.profileConsumers.mockResolvedValueOnce(bound)
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    context.api.deleteProfile.mockRejectedValueOnce(new RemoteApiError(status, code, { root: secret }))
+    button(document.body, 'remote-delete-confirm').click()
+    await flush(); await flush()
+    expect(alertText()).toBe(t(key))
+    expect(consumers.profileConsumers).toHaveBeenCalledTimes(2)
+    expect(text('remote-consumers-roots')).toContain('D:\\games\\alpha')
+    expect(context.api.deleteProfile).toHaveBeenCalledTimes(1)
+    expect(row(view.host).textContent).toContain('Team Remote')
+    expect(context.store.busy[id]).toBeUndefined()
+    expect(document.body.textContent).not.toContain(secret)
+    expect(document.body.textContent).not.toContain(code)
+    // No automatic retry: only another explicit Continue → Delete would send again.
+    await flush()
+    expect(context.api.deleteProfile).toHaveBeenCalledTimes(1)
+    expect(document.body.querySelector('[data-testid="remote-delete-confirmation"]')).toBeNull()
+  })
+
+  it('a stale revision on deletion blocks the dialog and requires an explicit Refresh', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    context.api.deleteProfile.mockRejectedValueOnce(new RemoteApiError(409, 'profile_revision_conflict', { raw: secret }))
+    button(document.body, 'remote-delete-confirm').click()
+    await flush()
+    expect(alertText()).toBe(t('settings.remoteServers.lifecycle.stale'))
+    expect(document.body.querySelector('[data-testid="remote-delete-confirm"]')).toBeNull()
+    expect(button(document.body, 'remote-delete-review').disabled).toBe(true)
+    button(document.body, 'remote-delete-cancel').click()
+    await flush()
+    expect(view.host.textContent).toContain(t('settings.remoteServers.metadata.stale'))
+    expect(button(row(view.host), 'remote-delete').disabled).toBe(true)
+    expect(context.api.deleteProfile).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain(secret)
+  })
+
+  it('never sends a deletion whose reviewed revision another owner already replaced', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-delete')
+    button(document.body, 'remote-delete-review').click()
+    await flush()
+    mutate(context, profile({ name: 'Renamed elsewhere', revision: 8 }))
+    await flush()
+    forceClick(button(document.body, 'remote-delete-confirm'))
+    await flush()
+    expect(context.api.deleteProfile).not.toHaveBeenCalled()
+    expect(alertText()).toBe(t('settings.remoteServers.lifecycle.stale'))
+  })
+
+  it('changes the URL only after confirming the exact old and new URL, clearing the saved key, once', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-change-url')
+    expect(dialog()?.textContent).toContain(t('settings.remoteServers.changeUrl.title'))
+    expect(text('remote-url-current')).toBe(profile().url)
+    expect(text('remote-url-key-warning')).toBe(t('settings.remoteServers.changeUrl.keyWarning'))
+    expect(document.body.querySelector('[data-testid="remote-metadata-name"]')).toBeNull()
+    await reviewUrl(`  ${newUrl} `)
+    expect(context.api.changeProfileUrl).not.toHaveBeenCalled()
+    expect(text('remote-url-confirm-old')).toBe(profile().url)
+    expect(text('remote-url-confirm-new')).toBe(newUrl)
+    // Submitting the form (Enter) never confirms a reviewed URL change.
+    document.body.querySelector('[data-testid="remote-metadata-form"]')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(context.api.changeProfileUrl).not.toHaveBeenCalled()
+    const pending = deferred<RemoteServerProfile>()
+    context.api.changeProfileUrl.mockReturnValueOnce(pending.promise)
+    const confirm = button(document.body, 'remote-url-confirm')
+    confirm.click()
+    forceClick(confirm)
+    await flush()
+    expect(context.api.changeProfileUrl).toHaveBeenCalledExactlyOnceWith(id,
+      { expected_revision: 7, url: newUrl, clear_credential: true })
+    pending.resolve(profile({ url: newUrl, revision: 8, has_token: false, credential_source: 'none' }))
+    await flush()
+    expect(dialog()).toBeNull()
+    expect(row(view.host).textContent).toContain(newUrl)
+    expect(row(view.host).textContent).toContain(t('settings.remoteServers.credential.missing'))
+    expect(context.api.listServers).toHaveBeenCalledTimes(1)
+    expect(context.api.verify).not.toHaveBeenCalled()
+  })
+
+  it('cancelling or going back from a URL change sends nothing and rejects an unchanged URL', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-change-url')
+    await reviewUrl(profile().url)
+    expect(alertText()).toBe(t('settings.remoteServers.changeUrl.unchanged'))
+    expect(document.body.querySelector('[data-testid="remote-url-confirmation"]')).toBeNull()
+    await reviewUrl()
+    button(document.body, 'remote-url-back').click()
+    await flush()
+    expect(document.body.querySelector('[data-testid="remote-url-confirmation"]')).toBeNull()
+    await reviewUrl()
+    button(document.body, 'remote-metadata-cancel').click()
+    await flush()
+    expect(dialog()).toBeNull()
+    expect(row(view.host).textContent).toContain(profile().url)
+    noWrites(context)
+  })
+
+  it.each(refusals)('shows a %s URL-change refusal as text and never retries', async (code, status, key) => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-change-url')
+    await reviewUrl()
+    context.api.changeProfileUrl.mockRejectedValueOnce(new RemoteApiError(status, code, { root: secret }))
+    button(document.body, 'remote-url-confirm').click()
+    await flush(); await flush()
+    expect(alertText()).toBe(t(key))
+    expect(consumers.profileConsumers).toHaveBeenCalledTimes(2)
+    await flush()
+    expect(context.api.changeProfileUrl).toHaveBeenCalledTimes(1)
+    expect(row(view.host).textContent).toContain(profile().url)
+    expect(context.store.items[0]!.revision).toBe(7)
+    expect(document.body.textContent).not.toContain(secret)
+    expect(document.body.textContent).not.toContain(code)
+  })
+
+  it('a stale revision on URL change blocks the form and requires an explicit Refresh', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-change-url')
+    await reviewUrl()
+    context.api.changeProfileUrl.mockRejectedValueOnce(new RemoteApiError(409, 'profile_revision_conflict', { raw: secret }))
+    button(document.body, 'remote-url-confirm').click()
+    await flush()
+    expect(alertText()).toBe(t('settings.remoteServers.lifecycle.stale'))
+    expect(document.body.querySelector('[data-testid="remote-url-confirm"]')).toBeNull()
+    expect(button(document.body, 'remote-url-review').disabled).toBe(true)
+    button(document.body, 'remote-metadata-cancel').click()
+    await flush()
+    expect(button(row(view.host), 'remote-change-url').disabled).toBe(true)
+    expect(context.api.changeProfileUrl).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain(secret)
+  })
+
+  it('never sends a URL change whose reviewed revision another owner already replaced', async () => {
+    const context = harness()
+    const view = mountView(context)
+    await flush()
+    await openAction(context, view.host, 'remote-change-url')
+    await reviewUrl()
+    mutate(context, profile({ name: 'Renamed elsewhere', revision: 8 }))
+    await flush()
+    forceClick(button(document.body, 'remote-url-confirm'))
+    await flush()
+    expect(context.api.changeProfileUrl).not.toHaveBeenCalled()
+    expect(alertText()).toBe(t('settings.remoteServers.metadata.stale'))
   })
 })

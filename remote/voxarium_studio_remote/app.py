@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -28,8 +29,19 @@ from .protocol import (
 )
 from .store import ProjectExists, SnapshotChanged, SnapshotTooLarge, Store, UnknownLegacySpace, UnknownProject
 
-REVOCATION_CHECK_SECONDS = 30.0
+if TYPE_CHECKING:
+    from .ai_store import AiStore
+
+# R-A0: an idle Documents socket of a rotated/revoked key closes within this period even
+# when the key changed in another process (CLI/admin RPC). In-process changes close at once.
+REVOCATION_CHECK_SECONDS = 5.0
 MAX_CREATE_BYTES = 2048
+AI_CONTROL_ENV_VAR = "VOXARIUM_REMOTE_AI_CONTROL"
+
+
+def ai_control_from_env() -> bool:
+    """ACP/1 is off unless explicitly enabled (ai-access design §4)."""
+    return (os.environ.get(AI_CONTROL_ENV_VAR) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 class ApiError(Exception):
@@ -71,25 +83,70 @@ def _id(raw: object) -> str:
 
 
 def create_app(data_dir: str | Path | None = None, *, store: Store | None = None,
-               authenticator: Authenticator | None = None) -> FastAPI:
+               authenticator: Authenticator | None = None, ai_control: bool | None = None,
+               ai_store: "AiStore | None" = None) -> FastAPI:
+    """*ai_control* ``None`` reads ``$VOXARIUM_REMOTE_AI_CONTROL``; default off."""
     owns_store = store is None
     if store is None:
         if data_dir is None:
             raise ValueError("create_app needs a data directory or a store")
         store = Store(Path(data_dir) / "remote.db")
     auth, hub = authenticator or build_authenticator(store), Hub(store)
+    enabled = ai_control_from_env() if ai_control is None else ai_control is True
+    owns_ai_store = False
+    if enabled and ai_store is None:
+        from .ai_store import AiStore
+        from .store import AI_CONTROL_DB
+        location = store.path.with_name(AI_CONTROL_DB) if store.path is not None else ":memory:"
+        ai_store, owns_ai_store = AiStore(location), True
+    loop_ref: list[asyncio.AbstractEventLoop | None] = [None]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        loop_ref[0] = asyncio.get_running_loop()
         try:
             yield
         finally:
+            loop_ref[0] = None
+            if owns_ai_store and ai_store is not None:
+                ai_store.close()
             if owns_store:
                 store.close()
 
     app = FastAPI(title="Voxarium Studio Remote", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     app.state.store, app.state.hub = store, hub
+    app.state.ai_control = enabled
+    relay = None
+    if enabled and ai_store is not None:
+        from .ai_routes import mount_ai_control
+        # AI mirrors are invalidated inside the credential transaction (before a new key
+        # is shown); this in-process hook replaces the separate-process file hook.
+        store.add_credential_hook(lambda user_id, version: ai_store.invalidate_user(user_id, version),
+                                  replaces_file_hook=owns_ai_store and store.path is not None)
+        relay = mount_ai_control(app, store, auth, ai_store)
+
+    def _close_stale(user_id: str, version: int) -> None:
+        hub.close_user(user_id, version)
+        if relay is not None:
+            relay.close_user(user_id, version)
+
+    def credential_listener(user_id: str, version: int) -> None:
+        # Sockets live on the server loop; a rotation may commit on another thread.
+        loop = loop_ref[0]
+        if loop is not None and loop.is_running():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is loop:
+                _close_stale(user_id, version)
+            else:
+                loop.call_soon_threadsafe(_close_stale, user_id, version)
+        else:
+            _close_stale(user_id, version)
+
+    store.add_credential_listener(credential_listener)
 
     @app.exception_handler(ApiError)
     async def api_error(_request: Request, exc: ApiError):

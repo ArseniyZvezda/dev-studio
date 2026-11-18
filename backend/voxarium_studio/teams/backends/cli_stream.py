@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
@@ -86,3 +88,24 @@ async def _drain(stream: asyncio.StreamReader, tail: deque[str]) -> None:
         return
 
 
+
+
+async def _kill_tree(process: asyncio.subprocess.Process) -> None:
+    """Kill a CLI and everything it started — its MCP servers and shells included."""
+    if os.name == "nt":
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill", "/PID", str(process.pid), "/T", "/F",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await killer.wait()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    await process.wait()

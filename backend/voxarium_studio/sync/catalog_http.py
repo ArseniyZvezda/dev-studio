@@ -97,9 +97,25 @@ def _request(method: str, url: str, headers: Mapping[str, str],
         raise ValueError()
     path = urlsplit(url).path
     projects = re.search(r"/api/v2/projects(?:/[a-z0-9][a-z0-9._-]{0,63})?$", path)
+    # S3 read-only endpoints (server-design §3.3–3.4; I11): GET only, and each
+    # with exactly its own query vocabulary. Never a room, WS, put or create.
+    snapshot = re.search(r"/api/v2/projects/[a-z0-9][a-z0-9._-]{0,63}/snapshot$", path)
+    resolve = path.endswith("/api/v2/legacy-spaces/resolve")
     health_path = path.endswith("/healthz")
-    if not (health_path or path.endswith(("/api/v1/me", "/api/v2/me")) or projects):
+    if not (health_path or path.endswith(("/api/v1/me", "/api/v2/me")) or projects
+            or snapshot or resolve):
         raise ValueError()
+    if snapshot or resolve:
+        if method != "GET" or body is not None:
+            raise ValueError()
+        keys = set(params)
+        if snapshot:
+            # First page (optionally epoch-bound) or a fully bound continuation.
+            if keys not in ({"limit"}, {"limit", "expected_epoch"},
+                            {"limit", "after", "expected_seq", "expected_epoch"}):
+                raise ValueError()
+        elif keys != {"name"} or not isinstance(params["name"], str):
+            raise ValueError()
     if method == "POST":
         if not path.endswith("/api/v2/projects") or params or body is None:
             raise ValueError()

@@ -572,6 +572,8 @@ export interface TeamTask {
   /** Producer draft approval gate, returned by the ordinary task API (§10.11). */
   producer_chat_id?: string | null
   producer_approved?: boolean
+  /** Times a Producer reopened this task's Done result; counted, never reset (§10.11). */
+  reopen_count?: number
   attachments?: (TaskAttachment & { reference: string })[]
   id: string
   /**
@@ -666,6 +668,8 @@ export interface TeamTask {
   finished_at: string | null
   is_running?: boolean
   is_compacting?: boolean
+  /** §10.4: context is being summarized now — by Compress or automatically inside a run. */
+  is_compressing_context?: boolean
 }
 
 /**
@@ -720,7 +724,7 @@ export interface AgentChat {
   producer_plan?: ProducerPlanTask[]
   producer_plan_summary?: string
   producer_plan_version?: number
-  producer_checklist?: { text: string; done: boolean }[]
+  producer_checklist?: ProducerPlanItem[]
   id: string
   member_id: string
   /** The first message's first line, unless somebody named it. */
@@ -739,6 +743,33 @@ export interface AgentChat {
   last_message_at: string
   /** The member is answering right now. */
   is_running: boolean
+  /** A Producer turn is summarizing its context right now (§10.11). */
+  is_compacting?: boolean
+}
+
+/**
+ * One item of the Producer's session Plan (§10.11). `id` and `tasks` are absent on a Plan
+ * saved before items kept their tasks; the backend adds them the next time it is used.
+ */
+export interface ProducerPlanItem {
+  id?: string
+  text: string
+  done: boolean
+  tasks?: ProducerPlanItemTask[]
+}
+
+/**
+ * A board task an item has ever been given — kept in whatever status it ends, and after
+ * the task itself is deleted, so the item goes on showing what it cost.
+ */
+export interface ProducerPlanItemTask {
+  id: string
+  display_id: string
+  title: string
+  status: string
+  /** How many times the Producer sent this task's Done result back. */
+  reopens: number
+  justification?: string
 }
 
 export interface ProducerPlanTask {
@@ -1291,7 +1322,6 @@ export interface ThemeConfig {
   accent: string
   /** Body text in px, or null to take the app's own size — `docs.font_size`'s arrangement. */
   text_size: number | null
-  font: 'google-sans' | 'inter' | 'ibm-plex' | 'roboto' | 'system'
   mono_font: 'cascadia' | 'jetbrains' | 'fira' | 'system'
   sidebar: 'labels' | 'icons' | 'auto'
   canvas_grid: 'dots' | 'lines' | 'none'
@@ -1421,6 +1451,25 @@ export interface ProjectRemoteStatus {
   pending_writes: number
   /** Explicit null means no observed transition; absence is not idle evidence. */
   binding_change?: RemoteJsonObject | null
+  /** Unresolved private journal; absent/null means nothing to recover (§16.10). */
+  recovery?: ProjectRemoteRecovery | null
+}
+
+/** An interrupted binding change. The GET then reports blocked/recovery_required. */
+export interface ProjectRemoteRecovery {
+  /** 32 lowercase hex characters. */
+  change_id: string
+  /** Null: unknown operation (an old drain record). */
+  operation: 'enable' | 'edit_id' | 'select' | 'disable' | 'unbind' | 'migrate' | null
+  /** Journal phase, informational only. */
+  phase: string
+  /** previous: back to the previous destination, sync off; commit: finish the sync-off change. */
+  outcome: 'previous' | 'commit'
+  /** persistent_id is null only for a legacy root; url may be '' after unbind. */
+  target: { persistent_id: string | null; url: string; identity_revision: number; enabled: false }
+  /** False: the command is refused now, see `code`. */
+  available: boolean
+  code: string | null
 }
 
 /** I6 historical commit receipt; never relabel it with a newer backend epoch/G. */
@@ -1534,26 +1583,93 @@ export interface ProjectRemoteCommitRequest {
   config_fingerprint: string
   confirmation: ProjectRemoteConfirmation
 }
+/** CAS of the observation being previewed (I11); no target is accepted. */
+export interface ProjectRemotePreviewRequest {
+  expected_revision: number
+  config_fingerprint: string
+  backend_epoch?: string
+}
 export interface ProjectRemotePreview {
+  /** 32 lowercase hex characters. */
   preview_id: string
+  /** 64 lowercase hex characters; Enable sends it back unchanged. */
   fingerprint: string
+  /** unchanged/download/upload/conflict/delete_local/delete_remote. */
   counts: Record<string, number>
-  conflicts: RemoteJsonObject[]
+  /** Conflicting document paths. */
+  conflicts: string[]
+  /** Unix timestamp in seconds. */
   expires_at: string | number
+  /** Checkpoint base: none/matched/epoch_mismatch/cursor_rollback. */
+  base?: string
+  incarnation?: { space_instance_id: string; seq: number }
 }
 export interface ProjectRemoteEnableRequest {
   expected_revision: number
   expected_generation: number
   preview_id: string
+  fingerprint: string
   confirmation: ProjectRemoteConfirmation & { action: 'reconcile' }
+  config_fingerprint?: string
+  backend_epoch?: string
 }
+/** Explicit recovery; every value is captured from one GET observation. */
+export interface ProjectRemoteRecoverRequest {
+  change_id: string
+  expected_revision: number
+  config_fingerprint: string
+  confirmation: { url: string; persistent_id: string | null; action: 'recover' }
+  backend_epoch: string
+}
+export interface ProjectRemoteRecoverResult {
+  project_id: string
+  epoch: string
+  backend_epoch: string
+  change_id: string
+  outcome: 'previous' | 'commit'
+  recovered: true
+  persistent_id: string | null
+  identity_revision: number | null
+  url: string
+  enabled: false
+  config_fingerprint: string
+  binding_generation: number
+  profile_id: string | null
+  space_instance_id: string | null
+  state: 'disabled' | 'migration_required'
+  reason: null
+}
+/** Archives (renames, keeps) a checkpoint of another Remote incarnation; the preview is consumed. */
+export interface ProjectRemoteArchiveRequest {
+  expected_revision: number
+  expected_generation: number
+  preview_id: string
+  fingerprint: string
+  confirmation: ProjectRemoteConfirmation & { action: 'archive_checkpoint' }
+  config_fingerprint: string
+  backend_epoch: string
+}
+export interface ProjectRemoteArchiveResult {
+  project_id: string
+  epoch: string
+  backend_epoch: string
+  archived: true
+  base: 'epoch_mismatch' | 'cursor_rollback'
+  preview_required: true
+}
+export type ProjectRemoteMigrationState = 'needs_identity' | 'needs_profile' | 'identity_present'
+  | 'migration_required' | 'migration_conflict' | 'invalid_config'
+/** S1 read-only diagnostic plan; no network, no permission to apply. */
 export interface ProjectRemoteMigrationPlan {
   migration_plan_id: string
-  legacy_url: string
-  legacy_selector: string
-  config_fingerprint: string
-  has_legacy_key: boolean
-  state: string
+  config_fingerprint: string | null
+  persistent_id?: string | null
+  identity_revision?: number | null
+  legacy_url?: string | null
+  legacy_selector?: string | null
+  has_legacy_key?: boolean | null
+  state: ProjectRemoteMigrationState | string
+  reasons: string[]
 }
 export interface ProjectRemoteMigrationProfileRequest {
   config_fingerprint: string
@@ -1562,8 +1678,14 @@ export interface ProjectRemoteMigrationProfileRequest {
   import_legacy_credential: boolean
   confirmation: { url: string }
 }
-/** §5.2 does not yet freeze profile-command output fields; no credential DTO is inferred. */
-export type ProjectRemoteMigrationProfile = RemoteJsonObject
+/** Explicit profile command result; credential is a state, never a secret. */
+export interface ProjectRemoteMigrationProfile {
+  migration_plan_id: string
+  profile_id: string
+  profile_revision: number
+  url: string
+  credential: 'stored' | 'environment' | 'missing'
+}
 export interface ProjectRemoteMigrationResolveRequest {
   profile_id: string
   expected_profile_revision: number
@@ -1574,8 +1696,8 @@ export interface ProjectRemoteMigrationResolution {
   legacy_selector: string
   catalog_id: string
   space_instance_id: string
-  changes: RemoteJsonObject
-  conflicts: RemoteJsonObject[]
+  changes: RemoteJsonValue
+  conflicts: RemoteJsonValue[]
 }
 
 /** Fixed I4 refusal codes, distinct from an untyped disk conflict HTTP 409. */
@@ -1712,6 +1834,7 @@ export interface TeamsConfig {
   /** Automatic resumes of a session that stopped mid-work, e.g. on `max_turns` (§10.3). */
   max_run_continuations: number
   /** Automatic task compression threshold; zero disables automatic compression (§10.4). */
+  context_compression_percent?: number
   context_compression_tokens?: number
   /**
    * The largest single message the Studio accepts from an agent runtime (§10.3). The Agent

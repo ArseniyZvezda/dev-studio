@@ -6,7 +6,7 @@
 import { createPinia, disposePinia } from 'pinia'
 import { createApp, h, nextTick, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ProjectRemoteCommitReceipt, ProjectRemotePreparedChange, ProjectRemoteStatus } from '@/api/types'
+import type { ProjectRemoteCommitReceipt, ProjectRemotePreparedChange, ProjectRemoteRecovery, ProjectRemoteStatus } from '@/api/types'
 import { setLocale, t } from '@/i18n'
 import { rendererSession } from '@/session/project-session'
 import { useSyncStore } from '@/stores/sync'
@@ -155,9 +155,18 @@ function emitPhase(patch: Partial<RemoteBindingChange> = {}) {
     project_id: 'local-A', epoch: 'runtime-A', seq: ++phaseSeq, ts: '' }))
 }
 
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return { get length() { return items.size }, clear: () => items.clear(),
+    getItem: key => items.get(key) ?? null, key: index => [...items.keys()][index] ?? null,
+    removeItem: key => { items.delete(key) }, setItem: (key, value) => { items.set(key, String(value)) } }
+}
 beforeEach(async () => {
   await setLocale('en')
   vi.stubGlobal('WebSocket', vi.fn())
+  // Node ≥ 25 defines its own global localStorage (undefined without
+  // --localstorage-file), shadowing jsdom's; the API client reads its token there.
+  if (!window.localStorage) vi.stubGlobal('localStorage', memoryStorage())
 })
 afterEach(() => {
   for (const view of mounted.splice(0)) {
@@ -920,17 +929,19 @@ describe('explicit gated project Remote actions', () => {
     expect(mutations(h)).toEqual([])
   })
 
-  it.each([false, true])('read-only Preview, available=%s, never releases Enable', async available => {
+  it.each(['unavailable', 'malformed'] as const)('read-only Preview %s never releases Enable', async variant => {
     const h = harness(metadata({ enabled: false, state: 'disabled', profile_id: profileId, space_instance_id: storage }))
-    h.handlers.set('POST /reconcile-preview', () => available
+    // VS-186: a malformed HTTP-200 preview (non-hex id, object conflicts) is not Enable authority.
+    h.handlers.set('POST /reconcile-preview', () => variant === 'malformed'
       ? Response.json({ preview_id: 'preview-A', fingerprint: 'f'.repeat(64), counts: { conflicts: 1 },
         conflicts: [{}], expires_at: Date.now() / 1000 + 60 })
       : refusal('preview_unavailable', 503))
     await flush()
     projectButton(h, 'preview').click()
     await flush()
-    if (available) expect(projectNode(h, 'preview-result').textContent).toContain(t('sync.project.previewResult', { conflicts: 1 }))
-    else expect(projectNode(h, 'error').textContent).toBe(t('sync.project.unavailable'))
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    if (variant === 'unavailable') expect(projectNode(h, 'error').textContent).toBe(t('sync.project.unavailable'))
+    else expect(projectNode(h, 'error').textContent).toBe(t('sync.identity.failed'))
     expect(projectButton(h, 'enable').disabled).toBe(true)
     expect(mutations(h).map(call => call.path)).toEqual([`${remotePath}/reconcile-preview`])
     expect(WebSocket).not.toHaveBeenCalled()
@@ -945,7 +956,7 @@ describe('explicit gated project Remote actions', () => {
     await flush()
     emitPhase({ binding_generation: generation, state: 'draining', fenced: false })
     await flush()
-    pending.resolve(Response.json({ preview_id: 'preview-A', fingerprint: 'f'.repeat(64), counts: {}, conflicts: [], expires_at: Date.now() / 1000 + 60 }))
+    pending.resolve(Response.json(previewDto()))
     await flush()
     expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
     expect(projectButton(h, 'enable').disabled).toBe(true)
@@ -1207,5 +1218,813 @@ describe('two safe increments before any ID barrier', () => {
     expect(h.store.remote?.binding_generation).toBe(old)
     expect(h.view.host.querySelector('[data-testid="remote-id-confirm"]')).toBeNull()
     assertTransport(h)
+  })
+})
+
+// ------------------------------------------------ VS-186 I13: Preview → explicit Enable / Disable
+const previewId = 'd'.repeat(32)
+const previewFingerprint = 'e'.repeat(64)
+function previewDto(patch: Record<string, unknown> = {}) {
+  return { preview_id: previewId, fingerprint: previewFingerprint,
+    counts: { unchanged: 2, upload: 1, conflict: 1 }, conflicts: ['notes/plan.md'],
+    expires_at: Date.now() / 1000 + 60, base: 'matched', incarnation: { space_instance_id: storage, seq: 5 }, ...patch }
+}
+function selectedMetadata(patch: Partial<ProjectRemoteStatus> = {}) {
+  return metadata({ enabled: false, state: 'disabled', profile_id: profileId, space_instance_id: storage, ...patch })
+}
+function enableHarness(initial = selectedMetadata()) {
+  const h = harness(initial)
+  h.handlers.set('POST /reconcile-preview', () => Response.json(previewDto()))
+  h.handlers.set('POST /enable', () => {
+    const enabled = selectedMetadata({ enabled: true, state: 'connecting', binding_generation: generation + 1 })
+    h.setMetadata(enabled)
+    return Response.json(enabled)
+  })
+  return h
+}
+async function previewNow(h: Harness) {
+  await flush()
+  projectButton(h, 'preview').click()
+  await flush()
+}
+function enableCalls(h: Harness) { return count(h, '/enable') }
+
+describe('I13 Preview and explicit Enable', () => {
+  it('shows profile ID and instance read-only next to ID and URL', async () => {
+    const h = harness(selectedMetadata())
+    await flush()
+    expect(projectNode(h, 'profile-id').textContent).toBe(profileId)
+    expect(projectNode(h, 'instance').textContent).toBe(storage)
+    expect(node(h.view.host, 'current').textContent).toBe('old-game')
+    expect(h.view.host.textContent).toContain(metadata().url)
+    const bare = harness(metadata({ profile_id: null, space_instance_id: null }))
+    await flush()
+    expect(projectNode(bare, 'profile-id').textContent).toBe(t('sync.project.none'))
+    expect(projectNode(bare, 'instance').textContent).toBe(t('sync.project.none'))
+  })
+
+  it('sends the captured CAS body with Preview and shows counts without enabling', async () => {
+    const h = enableHarness()
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    await previewNow(h)
+    expect(mutations(h).map(call => call.path)).toEqual([`${remotePath}/reconcile-preview`])
+    expect(mutations(h)[0]!.body).toEqual({ expected_revision: 3, config_fingerprint: initialFingerprint, backend_epoch: 'backend-A' })
+    const result = projectNode(h, 'preview-result').textContent
+    expect(result).toContain(t('sync.project.previewResult', { conflicts: 1 }))
+    expect(result).toContain(`${t('sync.project.count.upload')}: 1`)
+    expect(result).toContain(t('sync.project.base.matched'))
+    expect(projectButton(h, 'enable').disabled).toBe(false)
+    expect(enableCalls(h)).toBe(0)
+    expect(h.store.remote?.enabled).toBe(false)
+    expect(WebSocket).not.toHaveBeenCalled()
+  })
+
+  it.each(['en', 'ru'] as const)('Enable requires an explicit confirmation of the exact ID and URL, then reloads status (%s)', async language => {
+    await setLocale(language)
+    const h = enableHarness()
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    expect(enableCalls(h)).toBe(0)
+    expect(projectNode(h, 'enable-review').textContent).toContain(t('sync.project.enableTitle'))
+    expect(projectNode(h, 'enable-id').textContent).toBe('old-game')
+    expect(projectNode(h, 'enable-url').textContent).toBe(metadata().url)
+    expect(projectNode(h, 'enable-conflicts').textContent).toContain('notes/plan.md')
+    const reads = h.calls.filter(call => call.method === 'GET').length
+    projectButton(h, 'enable-confirm').click()
+    await flush()
+    expect(enableCalls(h)).toBe(1)
+    expect(mutations(h).find(call => call.path === `${remotePath}/enable`)!.body).toEqual({
+      expected_revision: 3, expected_generation: generation, preview_id: previewId, fingerprint: previewFingerprint,
+      confirmation: { url: metadata().url, persistent_id: 'old-game', action: 'reconcile' },
+      config_fingerprint: initialFingerprint, backend_epoch: 'backend-A',
+    })
+    expect(h.calls.filter(call => call.method === 'GET').length).toBeGreaterThan(reads)
+    expect(h.store.remote?.enabled).toBe(true)
+    expect(projectNode(h, 'notice').textContent).toBe(t('sync.project.enabled'))
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(h.view.host.querySelector('[data-testid="remote-project-error"]')).toBeNull()
+  })
+
+  it.each(['preview_stale', 'preview_expired', 'instance_mismatch', 'cursor_rollback', 'stale_binding',
+    'confirmation_required', 'duplicate_local_binding', 'mystery_code'])('Enable refusal %s enables nothing, drops the preview and never retries', async code => {
+    const h = enableHarness()
+    h.handlers.set('POST /enable', () => refusal(code))
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    projectButton(h, 'enable-confirm').click()
+    await flush()
+    expect(enableCalls(h)).toBe(1)
+    const shown = projectNode(h, 'error').textContent?.trim()
+    expect(shown).toBeTruthy()
+    expect(shown).not.toMatch(/^sync\.|_/)
+    expect(shown).not.toContain(code)
+    expect(h.store.remote?.enabled).toBe(false)
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(h.view.host.querySelector('[data-testid="remote-project-enable-review"]')).toBeNull()
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    forceClick(projectButton(h, 'enable'))
+    await flush()
+    expect(enableCalls(h)).toBe(1)
+  })
+
+  it('reports an unknown Enable outcome after a transport failure, without retry', async () => {
+    const h = enableHarness()
+    h.handlers.set('POST /enable', () => { throw new TypeError('network down') })
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    projectButton(h, 'enable-confirm').click()
+    await flush()
+    expect(projectNode(h, 'error').textContent).toBe(t('sync.project.enableUnknown'))
+    expect(enableCalls(h)).toBe(1)
+    expect(projectButton(h, 'preview').disabled).toBe(true) // explicit refresh first
+  })
+
+  it('cancel during confirmation sends no Enable request', async () => {
+    const h = enableHarness()
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    projectButton(h, 'enable-cancel').click()
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-project-enable-review"]')).toBeNull()
+    expect(enableCalls(h)).toBe(0)
+    expect(h.store.remote?.enabled).toBe(false)
+  })
+
+  it('keeps Enable unavailable without a preview or for an expired preview response', async () => {
+    const h = enableHarness()
+    await flush()
+    forceClick(projectButton(h, 'enable'))
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-project-enable-review"]')).toBeNull()
+    h.handlers.set('POST /reconcile-preview', () => Response.json(previewDto({ expires_at: Date.now() / 1000 - 1 })))
+    await previewNow(h)
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    expect(enableCalls(h)).toBe(0)
+  })
+
+  it('drops a preview when it expires, even with the confirmation open', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const h = enableHarness()
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    vi.advanceTimersByTime(61_000)
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(h.view.host.querySelector('[data-testid="remote-project-enable-review"]')).toBeNull()
+    expect(projectNode(h, 'error').textContent).toBe(t('sync.project.previewExpired'))
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    expect(enableCalls(h)).toBe(0)
+  })
+
+  it.each([
+    { config_fingerprint: 'f'.repeat(64) }, { identity_revision: 4 }, { binding_generation: generation + 1 },
+    { space_instance_id: 'b'.repeat(32) }, { url: 'https://other.example/team' },
+  ])('drops the preview after snapshot change %j', async patch => {
+    const h = enableHarness()
+    await previewNow(h)
+    projectButton(h, 'enable').click()
+    await flush()
+    h.setMetadata(selectedMetadata(patch))
+    button(h, 'refresh').click()
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(h.view.host.querySelector('[data-testid="remote-project-enable-confirm"]')).toBeNull()
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    forceClick(projectButton(h, 'enable'))
+    await flush()
+    expect(enableCalls(h)).toBe(0)
+  })
+
+  it('drops the preview on a binding phase event', async () => {
+    const h = enableHarness()
+    await previewNow(h)
+    emitPhase({ binding_generation: generation, state: 'draining', fenced: false })
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-project-preview-result"]')).toBeNull()
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+  })
+
+  it('rejects a preview of another server project instance', async () => {
+    const h = enableHarness()
+    h.handlers.set('POST /reconcile-preview', () => Response.json(previewDto({ incarnation: { space_instance_id: 'b'.repeat(32), seq: 1 } })))
+    await previewNow(h)
+    expect(projectNode(h, 'error').textContent).toBe(t('sync.project.instanceMismatch'))
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+  })
+
+  it('Select and Create never enable on their own', async () => {
+    const h = await catalogHarness(selectedMetadata())
+    await projectInput(h, 'create-id', 'another-id')
+    h.handlers.set(`POST ${projectsPath}`, () => Response.json({ state: 'created', project: { ...h.project, id: 'another-id' }, error_code: null }, { status: 201 }))
+    projectButton(h, 'create').click()
+    await flush()
+    expect(mutations(h).map(call => call.path)).toEqual([projectsPath])
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    expect(h.store.remote?.enabled).toBe(false)
+  })
+})
+
+describe('I13 explicit Disable', () => {
+  function disableHarness() {
+    const h = harness(selectedMetadata({ enabled: true, state: 'connected' }))
+    h.handlers.set('POST /prepare', () => Response.json(prepared({
+      to: { persistent_id: 'old-game', url: metadata().url, enabled: false }, plan: { operation: 'disable', enabled: false } })))
+    h.handlers.set(`POST /changes/${changeId}/commit`, () => {
+      const result = receipt({ binding_change: { change_id: changeId, state: 'committed' } as const, ...selectedMetadata({ identity_revision: 4, config_fingerprint: committedFingerprint,
+        binding_generation: committedGeneration }) } as Partial<ProjectRemoteCommitReceipt>)
+      h.setMetadata(selectedMetadata({ identity_revision: 4, config_fingerprint: committedFingerprint,
+        binding_generation: committedGeneration }))
+      return Response.json(result)
+    })
+    return h
+  }
+
+  it.each(['en', 'ru'] as const)('uses the prepare/quiesce/commit barrier and ends disabled (%s)', async language => {
+    await setLocale(language)
+    const h = disableHarness()
+    await flush()
+    projectButton(h, 'disable').click()
+    await flush()
+    expect(mutations(h)).toEqual([])
+    expect(h.view.host.textContent).toContain(t('sync.project.disableTitle'))
+    await confirm(h)
+    expect(mutations(h).map(call => call.path.slice(remotePath.length))).toEqual([
+      '/prepare', `/changes/${changeId}/quiesce`, `/changes/${changeId}/commit`,
+    ])
+    expect(mutations(h)[0]!.body).toEqual({ backend_epoch: 'backend-A', operation: 'disable', persistent_id: 'old-game',
+      url: metadata().url, profile_id: profileId, expected_revision: 3, config_fingerprint: initialFingerprint })
+    expect(mutations(h)[2]!.body).toEqual({ expected_revision: 3, expected_generation: generation + 1,
+      config_fingerprint: initialFingerprint, confirmation: { url: metadata().url, persistent_id: 'old-game' } })
+    expect(node(h.view.host, 'notice').textContent).toBe(t('sync.project.disabled'))
+    expect(h.store.remote).toMatchObject({ enabled: false, state: 'disabled', profile_id: profileId })
+    expect(h.view.host.querySelector('[data-testid="remote-project-disable"]')).toBeNull()
+    expect(count(h, '/enable')).toBe(0)
+  })
+
+  it('cancels Disable review with no mutation', async () => {
+    const h = disableHarness()
+    await flush()
+    projectButton(h, 'disable').click()
+    await flush()
+    button(h, 'cancel').click()
+    await flush()
+    expect(mutations(h)).toEqual([])
+    expect(h.store.remote?.enabled).toBe(true)
+  })
+})
+
+// ------------------------------------------------ VS-186 I15: explicit legacy migration
+const planId = 'f'.repeat(64)
+const catalogId = 'legacy-game'
+const legacyInstance = '0123456789abcdef0123456789abcdef'
+function legacyMetadata() {
+  return metadata({ persistent_id: null, identity_revision: null, enabled: false, state: 'migration_required',
+    profile_id: null, space_instance_id: null })
+}
+function planDto(patch: Record<string, unknown> = {}) {
+  return { migration_plan_id: planId, config_fingerprint: initialFingerprint, persistent_id: null, identity_revision: null,
+    legacy_url: metadata().url, legacy_selector: 'Legacy Game', has_legacy_key: true, state: 'needs_profile',
+    reasons: ['legacy_resolution_required'], ...patch }
+}
+function migrationHarness() {
+  const h = harness(legacyMetadata())
+  const profile = { profile_id: profileId, name: 'Same label', url: metadata().url, revision: 7,
+    has_token: true, credential_source: 'stored', verification: { state: 'unavailable' } }
+  h.handlers.set(`GET ${globalServersPath}`, () => Response.json({ items: [profile,
+    { ...profile, profile_id: '22222222-2222-4222-8222-222222222222', url: 'https://remote.example/other' }] }))
+  h.handlers.set('GET /migration', () => Response.json(planDto()))
+  h.handlers.set(`POST /migration/${planId}/profile`, () => Response.json({ migration_plan_id: planId, profile_id: profileId,
+    profile_revision: 8, url: metadata().url, credential: 'stored' }))
+  h.handlers.set(`POST /migration/${planId}/resolve`, () => Response.json({ migration_plan_id: planId,
+    legacy_selector: 'Legacy Game', catalog_id: catalogId, space_instance_id: legacyInstance, changes: {}, conflicts: [] }))
+  h.handlers.set('POST /prepare', () => Response.json(prepared({
+    to: { persistent_id: catalogId, url: metadata().url, enabled: false }, plan: { operation: 'migrate', enabled: false } })))
+  h.handlers.set(`POST /changes/${changeId}/commit`, () => {
+    const after = metadata({ persistent_id: catalogId, identity_revision: 1, config_fingerprint: committedFingerprint,
+      binding_generation: committedGeneration, enabled: false, state: 'disabled', profile_id: profileId,
+      space_instance_id: legacyInstance })
+    h.setMetadata(after)
+    return Response.json(receipt({ ...after, binding_change: { change_id: changeId, state: 'committed' } }))
+  })
+  return h
+}
+function migrationNode<T extends HTMLElement = HTMLElement>(h: Harness, name: string) {
+  const element = h.view.host.querySelector<T>(`[data-testid="remote-migration-${name}"]`)
+  expect(element, name).not.toBeNull()
+  return element!
+}
+function migrationButton(h: Harness, name: string) { return migrationNode<HTMLButtonElement>(h, name) }
+async function click(element: HTMLElement) { element.click(); await flush() }
+async function loadPlan(h: Harness) { await flush(); await click(migrationButton(h, 'load')) }
+async function chooseExistingProfile(h: Harness) {
+  await click(migrationButton(h, 'servers'))
+  const select = migrationNode<HTMLSelectElement>(h, 'profile')
+  select.value = profileId
+  select.dispatchEvent(new Event('change', { bubbles: true }))
+  await flush()
+}
+
+describe('I15 legacy migration panel', () => {
+  it('is hidden for a project that does not require migration', async () => {
+    const h = harness()
+    await flush()
+    expect(h.view.host.querySelector('[data-testid="remote-migration"]')).toBeNull()
+  })
+
+  it.each(['en', 'ru'] as const)('walks plan → profile → resolve → apply, each by an explicit click, and ends disabled (%s)', async language => {
+    await setLocale(language)
+    const h = migrationHarness()
+    await flush()
+    expect(h.calls.map(call => call.method + ' ' + call.path)).toEqual([`GET ${remotePath}`])
+    await loadPlan(h)
+    expect(migrationNode(h, 'url').textContent).toBe(metadata().url)
+    expect(migrationNode(h, 'selector').textContent).toBe('Legacy Game')
+    expect(migrationNode(h, 'state').textContent).toBe(t('sync.migration.state.needs_profile'))
+    expect(mutations(h)).toEqual([])
+    await chooseExistingProfile(h)
+    // Only profiles whose URL equals the legacy URL exactly are offered.
+    expect([...migrationNode<HTMLSelectElement>(h, 'profile').options].map(option => option.value)).toEqual(['', profileId])
+    expect(migrationButton(h, 'profile-submit').disabled).toBe(true) // URL not yet confirmed
+    await click(migrationNode(h, 'url-confirm'))
+    await click(migrationButton(h, 'profile-submit'))
+    expect(mutations(h).map(call => call.path)).toEqual([`${remotePath}/migration/${planId}/profile`])
+    expect(mutations(h)[0]!.body).toEqual({ config_fingerprint: initialFingerprint, profile_id: profileId,
+      import_legacy_credential: false, confirmation: { url: metadata().url } })
+    expect(migrationNode(h, 'profile-result').textContent).toContain(t('sync.migration.credential.stored'))
+    expect(mutations(h)).toHaveLength(1)
+    await click(migrationButton(h, 'resolve'))
+    expect(mutations(h)[1]!.body).toEqual({ profile_id: profileId, expected_profile_revision: 8, config_fingerprint: initialFingerprint })
+    const mapping = migrationNode(h, 'resolution').textContent
+    expect(mapping).toContain('Legacy Game')
+    expect(mapping).toContain(catalogId)
+    expect(mapping).toContain(legacyInstance)
+    expect(mutations(h)).toHaveLength(2)
+    await click(migrationButton(h, 'apply'))
+    expect(mutations(h)).toHaveLength(2)
+    expect(h.view.host.textContent).toContain(t('sync.migration.applyTitle'))
+    await confirm(h)
+    expect(mutations(h).slice(2).map(call => call.path.slice(remotePath.length))).toEqual([
+      '/prepare', `/changes/${changeId}/quiesce`, `/changes/${changeId}/commit`,
+    ])
+    expect(mutations(h)[2]!.body).toEqual({ backend_epoch: 'backend-A', operation: 'migrate', persistent_id: catalogId,
+      url: metadata().url, migration_plan_id: planId, profile_id: profileId, catalog_id: catalogId,
+      catalog_instance_id: legacyInstance, expected_revision: 0, config_fingerprint: initialFingerprint })
+    expect(mutations(h)[4]!.body).toEqual({ expected_revision: 0, expected_generation: generation + 1,
+      config_fingerprint: initialFingerprint, confirmation: { url: metadata().url, persistent_id: catalogId } })
+    expect(node(h.view.host, 'notice').textContent).toBe(t('sync.migration.applied'))
+    expect(h.store.remote).toMatchObject({ persistent_id: catalogId, enabled: false, state: 'disabled',
+      profile_id: profileId, space_instance_id: legacyInstance })
+    expect(h.view.host.querySelector('[data-testid="remote-migration"]')).toBeNull()
+    expect(count(h, '/enable')).toBe(0)
+    expect(WebSocket).not.toHaveBeenCalled()
+  })
+
+  it('creates a new profile with explicit key import and URL confirmation', async () => {
+    const h = migrationHarness()
+    await loadPlan(h)
+    const name = migrationNode<HTMLInputElement>(h, 'name')
+    name.value = 'Team server'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    await click(migrationNode(h, 'import'))
+    expect(migrationButton(h, 'profile-submit').disabled).toBe(true)
+    await click(migrationNode(h, 'url-confirm'))
+    await click(migrationButton(h, 'profile-submit'))
+    expect(mutations(h)[0]!.body).toEqual({ config_fingerprint: initialFingerprint, name: 'Team server',
+      import_legacy_credential: true, confirmation: { url: metadata().url } })
+  })
+
+  it('cannot import a key the plan does not have', async () => {
+    const h = migrationHarness()
+    h.handlers.set('GET /migration', () => Response.json(planDto({ has_legacy_key: false })))
+    await loadPlan(h)
+    expect(migrationNode<HTMLInputElement>(h, 'import').disabled).toBe(true)
+  })
+
+  it.each([
+    ['profile', 'credential_conflict', 'sync.migration.error.credentialConflict'],
+    ['profile', 'profile_url_collision', 'sync.migration.error.urlCollision'],
+    ['profile', 'legacy_completeness_unproven', 'sync.migration.error.gate'],
+    ['resolve', 'legacy_space_not_found', 'sync.migration.error.notFound'],
+    ['resolve', 'profile_revision_conflict', 'sync.migration.error.stale'],
+    ['resolve', 'catalog_unavailable', 'sync.migration.error.unavailable'],
+  ] as const)('shows a %s refusal %s localized and stops there', async (step, code, key) => {
+    const h = migrationHarness()
+    h.handlers.set(`POST /migration/${planId}/${step}`, () => refusal(code, code === 'catalog_unavailable' ? 503 : 409))
+    await loadPlan(h)
+    await chooseExistingProfile(h)
+    await click(migrationNode(h, 'url-confirm'))
+    await click(migrationButton(h, 'profile-submit'))
+    if (step === 'resolve') await click(migrationButton(h, 'resolve'))
+    expect(migrationNode(h, 'error').textContent).toBe(t(key))
+    expect(migrationNode(h, 'error').textContent).not.toContain(code)
+    expect(h.view.host.querySelector('[data-testid="remote-migration-apply"]')).toBeNull()
+    expect(count(h, '/prepare')).toBe(0)
+    expect(mutations(h)).toHaveLength(step === 'resolve' ? 2 : 1)
+  })
+
+  it('blocks apply when resolution reports conflicts', async () => {
+    const h = migrationHarness()
+    h.handlers.set(`POST /migration/${planId}/resolve`, () => Response.json({ migration_plan_id: planId,
+      legacy_selector: 'Legacy Game', catalog_id: catalogId, space_instance_id: legacyInstance, changes: {}, conflicts: ['x'] }))
+    await loadPlan(h)
+    await chooseExistingProfile(h)
+    await click(migrationNode(h, 'url-confirm'))
+    await click(migrationButton(h, 'profile-submit'))
+    await click(migrationButton(h, 'resolve'))
+    expect(migrationNode(h, 'conflicts').textContent).toBe(t('sync.migration.resolveConflicts', { count: 1 }))
+    expect(migrationButton(h, 'apply').disabled).toBe(true)
+    forceClick(migrationButton(h, 'apply'))
+    await flush()
+    expect(count(h, '/prepare')).toBe(0)
+  })
+
+  it('offers no profile step for a conflicting or invalid plan and shows reasons localized', async () => {
+    const h = migrationHarness()
+    h.handlers.set('GET /migration', () => Response.json(planDto({ state: 'migration_conflict',
+      reasons: ['identity_selector_conflict', 'something_new'] })))
+    await loadPlan(h)
+    expect(migrationNode(h, 'state').textContent).toBe(t('sync.migration.state.migration_conflict'))
+    expect(h.view.host.textContent).toContain(t('sync.migration.reason.identity_selector_conflict'))
+    expect(h.view.host.textContent).toContain(t('sync.migration.reason.unrecognised'))
+    expect(h.view.host.textContent).not.toContain('something_new')
+    expect(h.view.host.querySelector('[data-testid="remote-migration-profile-submit"]')).toBeNull()
+  })
+
+  it('discards a migration apply cancelled at review without any request', async () => {
+    const h = migrationHarness()
+    await loadPlan(h)
+    await chooseExistingProfile(h)
+    await click(migrationNode(h, 'url-confirm'))
+    await click(migrationButton(h, 'profile-submit'))
+    await click(migrationButton(h, 'resolve'))
+    await click(migrationButton(h, 'apply'))
+    button(h, 'cancel').click()
+    await flush()
+    expect(count(h, '/prepare')).toBe(0)
+    expect(h.store.remote?.state).toBe('migration_required')
+  })
+})
+
+// ------------------------------------------------ VS-188: explicit recovery and checkpoint archive (§16.10)
+const recoveryChange = 'f'.repeat(32)
+function recoveryDto(patch: Partial<ProjectRemoteRecovery> = {}): ProjectRemoteRecovery {
+  return { change_id: recoveryChange, operation: 'select', phase: 'fenced', outcome: 'previous',
+    target: { persistent_id: 'old-game', url: metadata().url, identity_revision: 3, enabled: false },
+    available: true, code: null, ...patch }
+}
+function recoveryMetadata(recovery: ProjectRemoteRecovery | null = recoveryDto(), patch: Partial<ProjectRemoteStatus> = {}) {
+  return selectedMetadata({ state: 'blocked', reason: 'recovery_required', recovery, ...patch })
+}
+function recoveryHarness(initial = recoveryMetadata()) {
+  const h = harness(initial)
+  h.handlers.set('POST /recover', () => {
+    const target = initial.recovery!.target
+    const after = selectedMetadata({ persistent_id: target.persistent_id, url: target.url,
+      identity_revision: initial.identity_revision, binding_generation: generation + 1,
+      config_fingerprint: committedFingerprint, recovery: null })
+    h.setMetadata(after)
+    return Response.json({ project_id: 'local-A', epoch: 'runtime-A', backend_epoch: 'backend-A',
+      change_id: initial.recovery!.change_id, outcome: initial.recovery!.outcome, recovered: true,
+      persistent_id: target.persistent_id, identity_revision: initial.identity_revision, url: target.url,
+      enabled: false, config_fingerprint: committedFingerprint, binding_generation: generation + 1,
+      profile_id: profileId, space_instance_id: storage, state: 'disabled', reason: null })
+  })
+  return h
+}
+function recoveryNode<T extends HTMLElement = HTMLElement>(h: Harness, name: string) {
+  const element = h.view.host.querySelector<T>(`[data-testid="remote-recovery-${name}"]`)
+  expect(element, name).not.toBeNull()
+  return element!
+}
+function recoveryButton(h: Harness, name: string) { return recoveryNode<HTMLButtonElement>(h, name) }
+function missing(h: Harness, testId: string) { return h.view.host.querySelector(`[data-testid="${testId}"]`) === null }
+function recoverCalls(h: Harness) { return count(h, '/recover') }
+const expectedRecoverBody = {
+  change_id: recoveryChange, expected_revision: 3, config_fingerprint: initialFingerprint,
+  confirmation: { url: metadata().url, persistent_id: 'old-game', action: 'recover' }, backend_epoch: 'backend-A',
+}
+async function startRecovery(h: Harness) {
+  await flush()
+  recoveryButton(h, 'start').click()
+  await flush()
+}
+
+describe('VS-188 explicit recovery of an interrupted binding change', () => {
+  it.each([undefined, null])('shows no recovery panel when recovery is %s', async value => {
+    const h = harness(selectedMetadata(value === undefined ? {} : { recovery: value }))
+    await flush()
+    expect(missing(h, 'remote-recovery')).toBe(true)
+    expect(missing(h, 'remote-recovery-start')).toBe(true)
+    expect(mutations(h)).toEqual([])
+  })
+
+  it.each([
+    ['select', 'previous'], ['enable', 'commit'], ['edit_id', 'previous'], ['disable', 'commit'],
+    ['unbind', 'commit'], ['migrate', 'previous'], [null, 'previous'],
+  ] as const)('explains interrupted %s with outcome %s and the exact target', async (operation, outcome) => {
+    const h = recoveryHarness(recoveryMetadata(recoveryDto({ operation, outcome })))
+    await flush()
+    const opKey = operation ? `sync.project.recovery.operation.${operation}` as const : 'sync.project.recovery.operation.unknown' as const
+    expect(recoveryNode(h, 'reason').textContent).toBe(t('sync.project.recovery.reason', { operation: t(opKey) }))
+    expect(recoveryNode(h, 'outcome').textContent).toBe(t(`sync.project.recovery.outcome.${outcome}`))
+    expect(recoveryNode(h, 'id').textContent).toBe('old-game')
+    expect(recoveryNode(h, 'url').textContent).toBe(metadata().url)
+    expect(recoveryButton(h, 'start').disabled).toBe(false)
+    expect(mutations(h)).toEqual([]) // nothing recovers on load
+  })
+
+  it('shows a legacy root without an ID and an unbound target without a server', async () => {
+    const h = recoveryHarness(recoveryMetadata(recoveryDto({ operation: 'unbind', outcome: 'commit',
+      target: { persistent_id: null, url: '', identity_revision: 3, enabled: false } })))
+    await flush()
+    expect(recoveryNode(h, 'id').textContent).toBe(t('sync.project.recovery.legacyId'))
+    expect(recoveryNode(h, 'url').textContent).toBe(t('sync.identity.noServer'))
+  })
+
+  it.each([
+    ['recovery_conflict', 'sync.project.recovery.error.recovery_conflict'],
+    ['recovery_ambiguous', 'sync.project.recovery.error.recovery_ambiguous'],
+    ['binding_journal_unavailable', 'sync.project.recovery.error.binding_journal_unavailable'],
+    [null, 'sync.project.recovery.unavailable'],
+  ] as const)('offers no command when unavailable (%s)', async (code, key) => {
+    const h = recoveryHarness(recoveryMetadata(recoveryDto({ available: false, code })))
+    await flush()
+    expect(missing(h, 'remote-recovery-start')).toBe(true)
+    expect(recoveryNode(h, 'unavailable').textContent).toBe(t(key))
+    expect(recoveryNode(h, 'id').textContent).toBe('old-game')
+    expect(mutations(h)).toEqual([])
+  })
+
+  it('refuses a malformed recovery record without offering the command', async () => {
+    const h = recoveryHarness(recoveryMetadata(recoveryDto({ change_id: 'not-hex' })))
+    await flush()
+    expect(missing(h, 'remote-recovery-start')).toBe(true)
+    expect(recoveryNode(h, 'unavailable').textContent).toBe(t('sync.project.recovery.error.invalid'))
+  })
+
+  it('reviews the exact target, then sends the captured body once and reloads the status', async () => {
+    const h = recoveryHarness()
+    const before = deferred<Response>()
+    h.handlers.set('POST /recover', (handler => async (call: Call) => { await before.promise; return handler(call) })(h.handlers.get('POST /recover')!))
+    await startRecovery(h)
+    expect(recoverCalls(h)).toBe(0)
+    expect(recoveryNode(h, 'review').textContent).toContain(t('sync.project.recovery.reviewHint'))
+    expect(recoveryNode(h, 'review-id').textContent).toBe('old-game')
+    expect(recoveryNode(h, 'review-url').textContent).toBe(metadata().url)
+    recoveryButton(h, 'confirm').click()
+    await flush()
+    expect(recoverCalls(h)).toBe(1)
+    expect(recoveryButton(h, 'confirm').disabled).toBe(true)
+    forceClick(recoveryButton(h, 'confirm'))
+    forceClick(button(h, 'refresh'))
+    await flush()
+    expect(recoverCalls(h)).toBe(1)
+    const reads = h.calls.filter(call => call.method === 'GET').length
+    before.resolve(new Response())
+    await flush()
+    expect(mutations(h).map(call => call.path)).toEqual([`${remotePath}/recover`])
+    expect(mutations(h)[0]!.body).toEqual(expectedRecoverBody)
+    expect(h.calls.filter(call => call.method === 'GET').length).toBeGreaterThan(reads)
+    expect(recoveryNode(h, 'notice').textContent).toBe(t('sync.project.recovery.done'))
+    expect(missing(h, 'remote-recovery')).toBe(true)
+    expect(missing(h, 'remote-recovery-error')).toBe(true)
+    expect(h.store.remote?.enabled).toBe(false)
+    expect(h.store.remote?.recovery).toBeNull()
+  })
+
+  it('sends revision 0 and a null ID for a legacy root without identity', async () => {
+    const legacy = recoveryMetadata(recoveryDto({ operation: 'migrate',
+      target: { persistent_id: null, url: metadata().url, identity_revision: 0, enabled: false } }),
+    { identity_revision: null, persistent_id: null })
+    const h = recoveryHarness(legacy)
+    await startRecovery(h)
+    expect(recoveryNode(h, 'review-id').textContent).toBe(t('sync.project.recovery.legacyId'))
+    recoveryButton(h, 'confirm').click()
+    await flush()
+    expect(mutations(h)[0]!.body).toEqual({ ...expectedRecoverBody, expected_revision: 0,
+      confirmation: { ...expectedRecoverBody.confirmation, persistent_id: null } })
+    expect(recoveryNode(h, 'notice').textContent).toBe(t('sync.project.recovery.done'))
+  })
+
+  it('cancel at review sends nothing', async () => {
+    const h = recoveryHarness()
+    await startRecovery(h)
+    recoveryButton(h, 'cancel').click()
+    await flush()
+    expect(missing(h, 'remote-recovery-review')).toBe(true)
+    expect(recoveryButton(h, 'start').disabled).toBe(false)
+    expect(mutations(h)).toEqual([])
+  })
+
+  it('drops the review when a refresh observes another snapshot', async () => {
+    const h = recoveryHarness()
+    await startRecovery(h)
+    h.setMetadata(recoveryMetadata(recoveryDto(), { config_fingerprint: 'f'.repeat(64) }))
+    button(h, 'refresh').click()
+    await flush()
+    expect(missing(h, 'remote-recovery-review')).toBe(true)
+    expect(mutations(h)).toEqual([])
+  })
+
+  it.each([
+    ['confirmation_required', 409, 'sync.project.recovery.error.confirmation_required'],
+    ['stale_binding', 409, 'sync.project.recovery.error.stale_binding'],
+    ['recovery_conflict', 409, 'sync.project.recovery.error.recovery_conflict'],
+    ['recovery_ambiguous', 409, 'sync.project.recovery.error.recovery_ambiguous'],
+    ['unknown_change', 409, 'sync.project.recovery.error.unknown_change'],
+    ['change_in_progress', 409, 'sync.project.recovery.error.change_in_progress'],
+    ['stale_backend_epoch', 409, 'sync.project.recovery.error.stale_backend_epoch'],
+    ['reload_required', 409, 'sync.project.recovery.error.reload_required'],
+    ['binding_journal_unavailable', 503, 'sync.project.recovery.error.binding_journal_unavailable'],
+    ['consumer_lifecycle_unavailable', 503, 'sync.project.recovery.error.consumer_lifecycle_unavailable'],
+    ['config_store_unavailable', 503, 'sync.project.recovery.error.config_store_unavailable'],
+    ['binding_store_unavailable', 503, 'sync.project.recovery.error.binding_store_unavailable'],
+    ['recovery_failed', 503, 'sync.project.recovery.error.recovery_failed'],
+    ['mystery_code', 409, 'sync.project.recovery.error.refused'],
+  ] as const)('refusal %s (%s) is shown localized and never retried', async (code, status, key) => {
+    const h = recoveryHarness()
+    h.handlers.set('POST /recover', () => refusal(code, status))
+    await startRecovery(h)
+    recoveryButton(h, 'confirm').click()
+    await flush()
+    expect(recoverCalls(h)).toBe(1)
+    expect(recoveryNode(h, 'error').textContent).toBe(t(key))
+    expect(missing(h, 'remote-recovery-review')).toBe(true)
+    expect(missing(h, 'remote-recovery-notice')).toBe(true)
+    // An explicit refresh is required before another explicit attempt.
+    expect(recoveryButton(h, 'start').disabled).toBe(true)
+    forceClick(recoveryButton(h, 'start'))
+    await flush()
+    expect(recoverCalls(h)).toBe(1)
+  })
+
+  it.each([
+    ['a transport failure', () => { throw new TypeError('network down') }],
+    ['a gateway error without a code', () => new Response('bad gateway', { status: 502 })],
+    ['a contradictory receipt', () => Response.json({ recovered: true, change_id: 'a'.repeat(32), enabled: false })],
+  ] as const)('reports an unknown outcome after %s and requires refresh', async (_label, reply) => {
+    const h = recoveryHarness()
+    h.handlers.set('POST /recover', reply)
+    await startRecovery(h)
+    recoveryButton(h, 'confirm').click()
+    await flush()
+    expect(recoveryNode(h, 'error').textContent).toBe(t('sync.project.recovery.error.unknown'))
+    expect(recoverCalls(h)).toBe(1)
+    expect(recoveryButton(h, 'start').disabled).toBe(true)
+    button(h, 'refresh').click()
+    await flush()
+    expect(recoveryButton(h, 'start').disabled).toBe(false) // explicit, not automatic
+    expect(recoverCalls(h)).toBe(1)
+  })
+
+  it('disables every other binding command while recovery is pending', async () => {
+    const h = await catalogHarness(recoveryMetadata())
+    h.handlers.set('POST /reconcile-preview', () => Response.json(previewDto()))
+    await enter(h)
+    expect(button(h, 'review').disabled).toBe(true)
+    expect(projectButton(h, 'select').disabled).toBe(true)
+    expect(projectButton(h, 'preview').disabled).toBe(true)
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    for (const element of [button(h, 'review'), projectButton(h, 'select'), projectButton(h, 'preview'), projectButton(h, 'enable')]) {
+      forceClick(element)
+    }
+    await flush()
+    expect(mutations(h)).toEqual([])
+    expect(missing(h, 'remote-id-confirm')).toBe(true)
+    expect(recoveryButton(h, 'start').disabled).toBe(false)
+  })
+
+  it('disables Disable while an enabled project reports a recovery', async () => {
+    const h = recoveryHarness(recoveryMetadata(recoveryDto(), { enabled: true, state: 'blocked' }))
+    await flush()
+    expect(projectButton(h, 'disable').disabled).toBe(true)
+  })
+
+  it('renders the recovery panel in Russian', async () => {
+    await setLocale('ru')
+    const h = recoveryHarness()
+    await startRecovery(h)
+    const reason = recoveryNode(h, 'reason').textContent!
+    expect(reason).toBe(t('sync.project.recovery.reason', { operation: t('sync.project.recovery.operation.select') }))
+    expect(reason).toMatch(/[а-яё]/i)
+    expect(recoveryButton(h, 'confirm').textContent).toBe(t('sync.project.recovery.confirm'))
+    expect(recoveryButton(h, 'confirm').textContent).toMatch(/[а-яё]/i)
+  })
+})
+
+function archiveCalls(h: Harness) { return count(h, '/checkpoint/archive') }
+function archiveHarness(base: string) {
+  const h = enableHarness()
+  h.handlers.set('POST /reconcile-preview', () => Response.json(previewDto({ base })))
+  h.handlers.set('POST /checkpoint/archive', () => Response.json({ project_id: 'local-A', epoch: 'runtime-A',
+    backend_epoch: 'backend-A', archived: true, base, preview_required: true }))
+  return h
+}
+const expectedArchiveBody = {
+  expected_revision: 3, expected_generation: generation, preview_id: previewId, fingerprint: previewFingerprint,
+  confirmation: { url: metadata().url, persistent_id: 'old-game', action: 'archive_checkpoint' },
+  config_fingerprint: initialFingerprint, backend_epoch: 'backend-A',
+}
+
+describe('VS-188 archive of a checkpoint from another Remote incarnation', () => {
+  it.each(['none', 'matched'])('offers no archive for base %s', async base => {
+    const h = archiveHarness(base)
+    await previewNow(h)
+    expect(missing(h, 'remote-project-archive-panel')).toBe(true)
+    expect(projectButton(h, 'enable').disabled).toBe(false)
+  })
+
+  it.each(['epoch_mismatch', 'cursor_rollback'] as const)('offers archive instead of Enable for base %s', async base => {
+    const h = archiveHarness(base)
+    await previewNow(h)
+    expect(projectNode(h, 'archive-reason').textContent).toBe(t(`sync.project.archive.${base}`))
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    forceClick(projectButton(h, 'enable'))
+    await flush()
+    expect(missing(h, 'remote-project-enable-review')).toBe(true)
+    projectButton(h, 'archive').click()
+    await flush()
+    expect(archiveCalls(h)).toBe(0)
+    expect(projectNode(h, 'archive-id').textContent).toBe('old-game')
+    expect(projectNode(h, 'archive-url').textContent).toBe(metadata().url)
+    projectButton(h, 'archive-confirm').click()
+    await flush()
+    expect(mutations(h).map(call => call.path)).toEqual([`${remotePath}/reconcile-preview`, `${remotePath}/checkpoint/archive`])
+    expect(mutations(h)[1]!.body).toEqual(expectedArchiveBody)
+    expect(projectNode(h, 'notice').textContent).toBe(t('sync.project.archive.done'))
+    expect(missing(h, 'remote-project-preview-result')).toBe(true)
+    expect(missing(h, 'remote-project-archive-review')).toBe(true)
+    expect(projectButton(h, 'enable').disabled).toBe(true)
+    expect(count(h, '/enable')).toBe(0)
+    expect(h.store.remote?.enabled).toBe(false)
+  })
+
+  it('cancel at review sends nothing and keeps the preview', async () => {
+    const h = archiveHarness('epoch_mismatch')
+    await previewNow(h)
+    projectButton(h, 'archive').click()
+    await flush()
+    projectButton(h, 'archive-cancel').click()
+    await flush()
+    expect(missing(h, 'remote-project-archive-review')).toBe(true)
+    expect(archiveCalls(h)).toBe(0)
+    expect(missing(h, 'remote-project-preview-result')).toBe(false)
+  })
+
+  it.each([
+    ['confirmation_required', 409, 'sync.project.archive.error.confirmation_required'],
+    ['preview_not_found', 409, 'sync.project.archive.error.preview_stale'],
+    ['preview_stale', 409, 'sync.project.archive.error.preview_stale'],
+    ['preview_expired', 409, 'sync.project.archive.error.preview_expired'],
+    ['checkpoint_current', 409, 'sync.project.archive.error.checkpoint_current'],
+    ['already_enabled', 409, 'sync.project.alreadyEnabled'],
+    ['recovery_required', 409, 'sync.identity.recoveryRequired'],
+    ['change_in_progress', 409, 'sync.project.archive.error.change_in_progress'],
+    ['stale_binding', 409, 'sync.project.archive.error.stale_binding'],
+    ['checkpoint_unavailable', 503, 'sync.project.archive.error.checkpoint_unavailable'],
+    ['mystery_code', 409, 'sync.project.archive.error.refused'],
+  ] as const)('archive refusal %s drops the preview and is never retried', async (code, status, key) => {
+    const h = archiveHarness('cursor_rollback')
+    h.handlers.set('POST /checkpoint/archive', () => refusal(code, status))
+    await previewNow(h)
+    projectButton(h, 'archive').click()
+    await flush()
+    projectButton(h, 'archive-confirm').click()
+    await flush()
+    expect(archiveCalls(h)).toBe(1)
+    expect(projectNode(h, 'error').textContent).toBe(t(key))
+    expect(missing(h, 'remote-project-preview-result')).toBe(true)
+    expect(missing(h, 'remote-project-archive-panel')).toBe(true)
+    expect(missing(h, 'remote-project-notice')).toBe(true)
+  })
+
+  it('reports an unknown archive outcome after a transport failure and requires refresh', async () => {
+    const h = archiveHarness('epoch_mismatch')
+    h.handlers.set('POST /checkpoint/archive', () => { throw new TypeError('network down') })
+    await previewNow(h)
+    projectButton(h, 'archive').click()
+    await flush()
+    projectButton(h, 'archive-confirm').click()
+    await flush()
+    expect(projectNode(h, 'error').textContent).toBe(t('sync.project.archive.unknown'))
+    expect(archiveCalls(h)).toBe(1)
+    expect(missing(h, 'remote-project-preview-result')).toBe(true)
+    expect(projectButton(h, 'preview').disabled).toBe(true)
+  })
+
+  it('renders the archive explanation in Russian', async () => {
+    await setLocale('ru')
+    const h = archiveHarness('epoch_mismatch')
+    await previewNow(h)
+    const reason = projectNode(h, 'archive-reason').textContent!
+    expect(reason).toBe(t('sync.project.archive.epoch_mismatch'))
+    expect(reason).toMatch(/[а-яё]/i)
+    expect(projectButton(h, 'archive').textContent).toBe(t('sync.project.archive.archive'))
   })
 })

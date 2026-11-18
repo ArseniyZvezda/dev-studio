@@ -35,6 +35,7 @@ beforeEach(() => {
         { window: 'primary', used_percent: 100, resets_at: null },
       ] },
       qwen: { available: false, reason: 'Not installed' },
+      antigravity: { available: true, reason: 'Antigravity CLI installed' },
     } },
     refreshStatus: vi.fn(), refreshTaskCounts: vi.fn(),
   })
@@ -110,7 +111,7 @@ describe('status bar account limits', () => {
   it('shows muted remaining percentages after each name, including full and exhausted windows', () => {
     const host = mount()
     const usage = [...host.querySelectorAll('.backend-usage')]
-    expect(usage.map(node => node.textContent)).toEqual(['100% / 35%', '0%', '—'])
+    expect(usage.map(node => node.textContent)).toEqual(['100% / 35%', '0%', '—', '—'])
     expect(usage.every(node => node.classList.contains('text-faint'))).toBe(true)
     expect(usage[0]!.parentElement!.textContent).toContain('nav.agentBackends.claude_code100% / 35%')
     expect(usage[0]!.getAttribute('aria-label')).toContain('limitRemaining')
@@ -123,7 +124,7 @@ describe('status bar account limits', () => {
     const host = mount()
     mocks.session.connection = 'closed'
     await nextTick()
-    expect([...host.querySelectorAll('.backend-usage')].map(node => node.textContent)).toEqual(['—', '—', '—'])
+    expect([...host.querySelectorAll('.backend-usage')].map(node => node.textContent)).toEqual(['—', '—', '—', '—'])
     mocks.session.connection = 'open'
     mocks.session.status.agent_backends.codex.usage_limits[0].used_percent = 42
     await nextTick()
@@ -140,6 +141,6 @@ describe('status bar account limits', () => {
     expect(host.querySelectorAll('.backend-usage')[1]!.textContent).toBe('—')
     mocks.session.status = null
     await nextTick()
-    expect([...host.querySelectorAll('.backend-usage')].map(node => node.textContent)).toEqual(['—', '—', '—'])
+    expect([...host.querySelectorAll('.backend-usage')].map(node => node.textContent)).toEqual(['—', '—', '—', '—'])
   })
 })

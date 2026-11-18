@@ -54,7 +54,7 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checke
 log = logging.getLogger(__name__)
 
 # Producer-generated task descriptions stay concise (§10.11).
-PRODUCER_BRIEF_MAX_CHARS = 1500
+PRODUCER_BRIEF_MAX_CHARS = 2800
 
 SERVER_NAME = "voxarium_studio"
 """MCP server name. The CLI exposes its tools as ``mcp__voxarium_studio__<tool>``.
@@ -250,6 +250,26 @@ def build_toolset(
                         "it out of Todo."
                     ),
                 },
+                # §10.11: in Producer Mode a task belongs to a session Plan item, and an
+                # item that already has tasks makes the next one argue for itself.
+                **({
+                    "plan_item": {
+                        "type": "string",
+                        "description": (
+                            "Id of the session Plan item this task belongs to (p1, p2…). "
+                            "Required once the session Plan exists."
+                        ),
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": (
+                            "Why existing tasks cannot be reused or consolidated and why this "
+                            "task is indispensable. Not needed for an item's first task; the "
+                            "required length grows with the item's load "
+                            "(next_task_justification_chars in the saved Plan)."
+                        ),
+                    },
+                } if producer else {}),
             },
             "required": ["assignee_id", "title", "brief"],
         },
@@ -286,6 +306,15 @@ def build_toolset(
                 is_error=True,
             )
 
+        # Checked before anything is created or evaluated: a refused task costs nothing.
+        plan_linked = False
+        if producer:
+            try:
+                plan_linked = await producer.check_plan_link(
+                    chat_id, args.get("plan_item"), args.get("justification"))
+            except ValueError as exc:
+                return _text(str(exc), is_error=True)
+
         effort_solver_result: dict[str, Any] = {}
         try:
             created = await orchestrator.create_task(
@@ -305,6 +334,8 @@ def build_toolset(
             return _text(f"{type(exc).__name__}: {exc}", is_error=True)
 
         budget["remaining"] -= 1
+        if plan_linked:
+            await producer.link_task(chat_id, args["plan_item"], created, args.get("justification"))
         async with db.session() as session:
             assignee = await session.get(TeamMember, created.assignee_id)
         who = assignee.name if assignee else created.assignee_id

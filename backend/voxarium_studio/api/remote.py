@@ -34,6 +34,7 @@ from ..sync.catalog import CatalogError, CatalogPage, CatalogProject, CreateResu
 from ..sync.catalog_create_service import CatalogCreateService
 from ..sync.catalog_service import CatalogService, ProfileProvider
 from ..sync.catalog_verification import CatalogVerificationService, VerificationStatus
+from ..sync.profile_lifecycle import ConsumerCensus
 from ..sync.profiles import ProfileError
 from ..sync.protocol import normalise_url
 
@@ -121,6 +122,32 @@ class CredentialInput(VerifyInput):
         if not self.token.get_secret_value().strip():
             raise ValueError("Invalid credential")
         return self
+
+
+class ConfirmConsumersInput(VerifyInput):
+    """Exactly what the user was shown (dev spec §16.11); a stale view conflicts."""
+
+    url: str
+    bound_roots: Annotated[list[Annotated[str, Field(min_length=1)]], Field(max_length=10_000)]
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value: str) -> str:
+        # Never normalised here: the confirmation is for the exact URL shown.
+        if normalise_url(value) != value:
+            raise ValueError("Invalid server address")
+        return value
+
+
+class ConsumerCensusDTO(_DTO):
+    profile_id: str
+    url: str
+    revision: Annotated[int, Field(ge=1)]
+    state: Literal["known", "unknown"]
+    confirmed_at: str | None
+    bound_roots: list[str]
+    active_roots: list[str]
+    operations: list[Literal["verify", "read", "create"]]
 
 
 class RecoveryConfirmation(_DTO):
@@ -233,6 +260,17 @@ class ProfileMutations(Protocol):
     def recover(self, profile_id: str, *, expected_revision: int) -> ServerProfile | None: ...
 
 
+class ConsumerConfirmation(Protocol):
+    """Gate L owner (§16.11): census and the user's explicit URL confirmation."""
+
+    def consumer_census(self, profile_id: str) -> ConsumerCensus: ...
+
+    def confirm_consumers(self, profile_id: str, *, expected_revision: int, url: str,
+                          bound_roots: tuple[str, ...]) -> ConsumerCensus: ...
+
+    def withdraw_consumers(self, profile_id: str, *, expected_revision: int) -> ConsumerCensus: ...
+
+
 class ProjectCreation(Protocol):
     """Application-owned C8 commands; never a request-local service (§5.1/C9)."""
 
@@ -285,6 +323,7 @@ _ERROR_STATUS = {
     "credential_binding_unproven": 409,
     "profile_url_collision": 409,
     "profile_in_use": 409, "profile_consumers_not_drained": 409,
+    "consumer_inventory_changed": 409, "consumer_confirmation_unavailable": 503,
     "credential_clear_confirmation_required": 409,
     "profile_recovery_confirmation_conflict": 409,
     "profile_recovery_required": 409, "credential_required": 409,
@@ -469,7 +508,8 @@ def create_remote_router(*, metadata: ServerMetadataProvider, profiles: ProfileP
                          verification: CatalogVerificationService,
                          catalog: CatalogService,
                          mutations: ProfileMutations | None = None,
-                         creation: ProjectCreation | None = None) -> APIRouter:
+                         creation: ProjectCreation | None = None,
+                         consumers: ConsumerConfirmation | None = None) -> APIRouter:
     """Standalone factory only: never mounted by importing this module.
 
     ``profiles`` must observe the same pending-safe source as the injected
@@ -538,6 +578,40 @@ def create_remote_router(*, metadata: ServerMetadataProvider, profiles: ProfileP
                     or body.confirmation.action != "discard_uncertain_credential"):
                 raise ProfileError("profile_recovery_confirmation_conflict")
             return _RecoveredProfile(profile=mutations.recover(
+                profile_id, expected_revision=body.expected_revision))
+
+    if consumers is not None:
+        def census(profile_id: str, value: ConsumerCensus) -> ConsumerCensusDTO:
+            if not isinstance(value, ConsumerCensus) or value.profile_id != profile_id:
+                raise CatalogError("invalid_response")
+            return ConsumerCensusDTO.model_validate({
+                "profile_id": value.profile_id, "url": value.url, "revision": value.revision,
+                "state": value.state, "confirmed_at": value.confirmed_at,
+                "bound_roots": list(value.bound_roots), "active_roots": list(value.active_roots),
+                "operations": list(value.operations),
+            })
+
+        @router.get("/{profile_id}/consumers", response_model=ConsumerCensusDTO)
+        async def consumer_census(profile_id: str, request: Request):
+            _query(request, set())
+            if await request.body():
+                raise CatalogError("invalid_request")
+            _profile_id(profile_id)
+            return census(profile_id, consumers.consumer_census(profile_id))
+
+        @router.post("/{profile_id}/consumers/confirmation", response_model=ConsumerCensusDTO)
+        async def confirm_consumers(profile_id: str, request: Request, body: ConfirmConsumersInput):
+            _query(request, set())
+            _profile_id(profile_id)
+            return census(profile_id, consumers.confirm_consumers(
+                profile_id, expected_revision=body.expected_revision, url=body.url,
+                bound_roots=tuple(body.bound_roots)))
+
+        @router.delete("/{profile_id}/consumers/confirmation", response_model=ConsumerCensusDTO)
+        async def withdraw_consumers(profile_id: str, request: Request, body: VerifyInput):
+            _query(request, set())
+            _profile_id(profile_id)
+            return census(profile_id, consumers.withdraw_consumers(
                 profile_id, expected_revision=body.expected_revision))
 
     @router.post("/{profile_id}/verify", response_model=VerificationDTO)

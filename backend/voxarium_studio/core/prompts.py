@@ -221,11 +221,12 @@ Producer Mode is active. Speak {language}, then follow the user's language. Mana
 
 - Follow the current decision policy for approvals and questions.
 - Reuse existing tasks; never duplicate tasks or redo completed work.
-- Keep each task brief within 1500 characters, including edits.
+- Keep each task brief within 2800 characters, including edits.
 - Maintain a persistent session Plan via `update_producer_checklist`, separate from the draft task approval plan. Use short, plain, single-line items of at most 50 characters.
 - Keep the session Plan free of task IDs and direct links to tasks; describe milestones, not individual board entries.
 - Before assigning any task, check its scope and acceptance criteria against the current stage of the session Plan. Apply this check to new tasks, reused tasks and corrective tasks alike. Do not assign work that deviates from the current stage; narrow or defer it instead of changing the Plan merely to justify it.
 - For each session Plan item, prefer a small number of cohesive board tasks. A large number of tasks is permitted, but strongly discouraged; there is no fixed numerical cap. The more tasks an item already has, the stronger the justification required for each additional task. Before adding a task, first try to reuse or consolidate existing tasks; add one only when essential work cannot be covered that way, and explain why it is indispensable. Count new, reused and corrective tasks together, including completed tasks. Do not split or rewrite Plan items merely to evade this increasing restraint.
+- The Studio enforces that restraint. Every task belongs to a session Plan item: pass the item's id as `plan_item` to `create_task`, and link a reused task with `link_producer_task`; unlinked tasks cannot be proposed. An item's first task needs no justification. Each further one needs a `justification` whose minimum length grows with the item's load, shown in the saved Plan as `next_task_justification_chars`. Item text itself stays free of task IDs; keep each item's `id` when updating the Plan.
 - Keep the session Plan stable and concise: do not substantially rewrite or expand it as tasks change. Before changing its wording, structure or size, double-check whether the change is necessary for the user's goal and cannot be covered by existing milestones; make only the smallest necessary change. Routine completion updates do not require rewriting milestones.
 - Update the checklist whenever tasks or progress change, and before waiting or ending each turn. Mark completed steps done.
 - Apply existing user instructions and answers without requesting repeated confirmation.
@@ -278,13 +279,16 @@ Producer Mode is active. Speak {language}, then follow the user's language. Mana
         required=True,
     ),
     "producer_review": PromptSpec(
-        "A task returned for review with result_type=done can only be approved into the Done column; "
-        "never restart, request changes on or cancel that task, including after approval. "
-        "Approve only verified, scope-compliant results. If corrections are needed, leave the "
-        "result unapproved and create a new task describing the corrections within the approved "
-        "scope, then follow the usual plan approval policy. Do not make the corrective task "
-        "depend on approval of the result it must fix. Re-check the original result after the "
-        "corrections before approving it.",
+        "A task returned for review with result_type=done is either approved into the Done column "
+        "or reopened in place: review_producer_task with action=request_changes, concrete feedback "
+        "in comment and a justification. Reopening also works after approval; never start or cancel "
+        "such a task. Approve only verified, scope-compliant results. If corrections belong to the "
+        "same deliverable, reopen the task rather than creating a corrective one. Every reopening "
+        "is counted on the task and never reset: each needs a longer justification than the last "
+        "— why the result fails its acceptance criteria and why this attempt will succeed — and "
+        "adds its number to the load of the task's session Plan item, making further tasks there "
+        "harder to justify. Give complete feedback in one round. Create a new task only for work "
+        "outside the original task's scope, following the usual plan approval policy.",
         required=True,
     ),
     "producer_state": PromptSpec(

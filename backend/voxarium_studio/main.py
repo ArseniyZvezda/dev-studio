@@ -40,8 +40,10 @@ if TYPE_CHECKING:
     from pydantic import SecretStr
     from .api.remote import ServerProfile
     from .core.application_config import RemoteServerProfile
-    from .sync.catalog import CatalogPage, CreateResult
+    from .sync.catalog import CatalogPage, CatalogProject, CreateResult
+    from .sync.catalog_reads import LegacyResolution, ProjectSnapshot
     from .sync.catalog_verification import VerificationStatus
+    from .sync.profile_lifecycle import ConsumerCensus
 
 log = logging.getLogger(__name__)
 
@@ -94,10 +96,56 @@ class _RemoteCatalogHolder:
     async def verify(self, profile_id: str, *, expected_revision: int) -> VerificationStatus:
         return await self.ready.verification.verify(profile_id, expected_revision=expected_revision)
 
+    # Gate L (dev spec §16.11): the user's explicit consumer confirmation.
+    def _owner(self) -> RemoteCatalogRuntime:
+        self.ready  # Admission: only while this lifespan's owner is ready.
+        assert self.runtime is not None
+        return self.runtime
+
+    def consumer_census(self, profile_id: str) -> ConsumerCensus:
+        return self._owner().consumer_census(profile_id)
+
+    def confirm_consumers(self, profile_id: str, *, expected_revision: int, url: str,
+                          bound_roots: tuple[str, ...]) -> ConsumerCensus:
+        return self._owner().confirm_consumers(profile_id, expected_revision=expected_revision,
+                                               url=url, bound_roots=bound_roots)
+
+    def withdraw_consumers(self, profile_id: str, *, expected_revision: int) -> ConsumerCensus:
+        return self._owner().withdraw_consumers(profile_id, expected_revision=expected_revision)
+
     async def list_projects(self, profile_id: str, *, expected_revision: int,
                             after: str | None = None, limit: int = 20) -> CatalogPage:
         return await self.ready.catalog.list_projects(
             profile_id, expected_revision=expected_revision, after=after, limit=limit,
+        )
+
+    # I9 backend facades for the project flow (Select/Preview/migration). They
+    # are NOT browser URL handlers: no route is mounted for them, and callers
+    # reach them through app.state.remote_catalog, never app.state.ctx.
+    async def get_project(self, profile_id: str, id: str, *,
+                          expected_revision: int) -> CatalogProject:
+        return await self.ready.catalog.get_project(
+            profile_id, id, expected_revision=expected_revision,
+        )
+
+    async def snapshot(self, profile_id: str, id: str, *, expected_revision: int,
+                       expected_epoch: str | None = None, limit: int = 20,
+                       max_pages: int = 100, max_bytes: int = 64 * 1024 * 1024) -> ProjectSnapshot:
+        return await self.ready.catalog.snapshot(
+            profile_id, id, expected_revision=expected_revision, expected_epoch=expected_epoch,
+            limit=limit, max_pages=max_pages, max_bytes=max_bytes,
+        )
+
+    async def resolve_legacy(self, profile_id: str, name: str, *,
+                             expected_revision: int) -> LegacyResolution:
+        return await self.ready.catalog.resolve_legacy(
+            profile_id, name, expected_revision=expected_revision,
+        )
+
+    async def select_observation(self, profile_id: str, id: str, *,
+                                 expected_revision: int) -> dict[str, object]:
+        return await self.ready.catalog.select_observation(
+            profile_id, id, expected_revision=expected_revision,
         )
 
     async def create_project(self, profile_id: str, *, expected_revision: int,
@@ -231,11 +279,12 @@ def create_app(
 
     app.include_router(api_router)
     # This router already owns the full /api/remote/servers prefix (§5.2.1).
-    # V0 outbound methods use the runtime's deny facades, before token/network I/O.
+    # I9: its catalog GET reaches the owner's strict-v2 read facade; the holder's
+    # snapshot/legacy/exact-get facades stay backend-only (no new routes).
     remote_router = create_remote_router(
         metadata=remote_catalog, profiles=remote_catalog,
         verification=remote_catalog, catalog=remote_catalog, mutations=remote_catalog,
-        creation=remote_catalog,
+        creation=remote_catalog, consumers=remote_catalog,
     )
     app.include_router(remote_router)
     app.include_router(ws_router)

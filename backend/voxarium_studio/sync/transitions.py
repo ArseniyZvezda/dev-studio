@@ -4,7 +4,10 @@ I3 of remote-identity/runtime-integration-plan §§3.2–3.3: the bound DocStore
 owns one of these for browser, in-process MCP and remote-apply mutations.
 I4 adds server-owned editor leases and HTTP fencing (studio-design §§5.2–5.3).
 I5 coordinates prepare/drain/fence; I6 retains durable disabled-commit evidence.
-No Enable, transport, automatic recovery or job gate is introduced here.
+I12 adds the separate Enable journal (publication order only; the API owner
+performs the publications). VS-188 adds the pure classification of an
+explicit recovery and its in-place journal phases; executing it is the API
+owner's explicit command. No transport, automatic recovery or job gate here.
 All admission methods run on the owning context's event loop. Thread locks
 and external filesystem writers are not covered by this boundary.
 """
@@ -89,6 +92,39 @@ class BindingChangeError(MutationGateError):
 MAX_BINDING_GENERATION = (1 << 53) - 1
 
 
+# Windows refuses MoveFileEx(REPLACE_EXISTING) while another process (an AV
+# scanner or indexer) briefly holds the just-written target without
+# FILE_SHARE_DELETE: ERROR_ACCESS_DENIED (5) / ERROR_SHARING_VIOLATION (32).
+# Observed for a journal overwritten milliseconds after its previous phase;
+# it surfaced as I6/I12 binding_journal_unavailable -> recovery_required.
+_TRANSIENT_REPLACE_WINERRORS = frozenset({5, 32})
+_REPLACE_ATTEMPTS = 8
+_REPLACE_BACKOFF_SECONDS = 0.01
+_replace_sleep = time.sleep
+
+
+def _os_replace(source: Path, target: Path) -> None:
+    # Path.replace (os.replace): the same seam the I6 fault tests inject into.
+    Path(source).replace(target)
+
+
+def _replace_journal(temporary: Path, path: Path) -> None:
+    """Atomic journal publication, bounded-retried ONLY on a foreign Windows handle.
+
+    os.replace either happened or did not, so repeating the identical rename is
+    safe. Any other error, or the last attempt's, propagates unchanged (≤0.28 s).
+    """
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            _os_replace(temporary, path)
+            return
+        except PermissionError as error:
+            if (getattr(error, "winerror", None) not in _TRANSIENT_REPLACE_WINERRORS
+                    or attempt == _REPLACE_ATTEMPTS - 1):
+                raise
+        _replace_sleep(_REPLACE_BACKOFF_SECONDS * (attempt + 1))
+
+
 def next_binding_generation(generation: int, steps: int = 1) -> int:
     """Checked increments; exhaust BEFORE drain/publication rather than wrap G."""
     if (type(generation) is not int or not 0 <= generation <= MAX_BINDING_GENERATION
@@ -121,6 +157,84 @@ def binding_change_journal_path(root: str | Path, change_id: str) -> Path:
             or any(c not in "0123456789abcdef" for c in change_id)):
         raise BindingChangeError("invalid_change")
     return user_config_dir() / "remote-changes" / root_key(root) / (change_id + ".json")
+
+
+def _validate_journal_row(stored: object, canonical: str, stem: str) -> None:
+    """Strict schema of one stored record (any version); raises ValueError.
+
+    Shared by the reader and, before writing, by the VS-188 recovery writer.
+    """
+    if (not isinstance(stored, dict) or type(stored.get("version")) is not int
+            or stored["version"] not in {1, 2, ENABLE_JOURNAL_VERSION}
+            or stored.get("canonical_root") != canonical
+            or stored.get("change_id") != stem
+            or not isinstance(stored.get("expected"), dict)
+            or not isinstance(stored.get("evidence"), list)):
+        raise ValueError
+    # VS-188: an explicitly recovered record is the original record
+    # plus its recovery; the original part keeps its exact schema.
+    row = _without_recovery(stored)
+    fields = {"version", "phase", "canonical_root", "change_id", "expected", "evidence"}
+    if row["version"] == 1:
+        if set(row) != fields or row["phase"] != "draining":
+            raise ValueError
+    elif row["version"] == ENABLE_JOURNAL_VERSION:
+        _validate_enable_journal(row)
+    else:
+        if (set(row) != fields | {"commit"}
+                or row["phase"] not in {"committing", "config_committed", "completed"}
+                or not isinstance(row["commit"], dict)):
+            raise ValueError
+        commit = row["commit"]
+        if (set(commit) != {"identity_revision", "persistent_id", "url", "enabled",
+                            "config_fingerprint", "private_fingerprint", "binding",
+                            "binding_generation"}
+                or type(commit["identity_revision"]) is not int
+                or commit["identity_revision"] < 1 or commit["enabled"] is not False
+                or type(commit["binding_generation"]) is not int):
+            raise ValueError
+        from ..core.project_identity import ProjectIdentity
+        from .protocol import normalise_url
+        from .bindings import BindingRecord
+        ProjectIdentity.canonical_id(commit["persistent_id"])
+        if commit["url"] and normalise_url(commit["url"]) != commit["url"]:
+            raise ValueError
+        for fingerprint in (commit["config_fingerprint"], commit["private_fingerprint"]):
+            if fingerprint is not None and (not isinstance(fingerprint, str)
+                    or len(fingerprint) != 64
+                    or any(c not in "0123456789abcdef" for c in fingerprint)):
+                raise ValueError
+        if commit["config_fingerprint"] is None:
+            raise ValueError
+        expected = row["expected"]
+        common = {"observation", "from", "to", "operation", "binding_generation", "backend_epoch"}
+        # I15: an explicit legacy migration is the only operation whose
+        # observation may carry identity revision 0 (no project_identity
+        # yet) and which also records its migration evidence.
+        migrate = expected.get("operation") == "migrate"
+        if (set(expected) not in ((common | {"selection", "migration"},) if migrate else
+                                  (common, common | {"selection"}))
+                or not isinstance(expected["observation"], dict)
+                or expected["observation"].get("canonical_root") != row["canonical_root"]
+                or type(expected["observation"].get("identity_revision")) is not int
+                or expected["observation"]["identity_revision"] < (0 if migrate else 1)
+                or commit["identity_revision"] != expected["observation"]["identity_revision"] + 1
+                or expected["to"] != {"persistent_id": commit["persistent_id"],
+                                       "url": commit["url"], "enabled": False}
+                or expected["operation"] not in {"edit_id", "select", "disable", "unbind", "migrate"}
+                or type(expected["binding_generation"]) is not int
+                or not isinstance(expected["backend_epoch"], str)
+                or migrate and (not commit["url"] or commit["binding"] is None)):
+            raise ValueError
+        if commit["binding"] is not None:
+            binding = BindingRecord.model_validate(commit["binding"])
+            if (binding.canonical_root != row["canonical_root"]
+                    or binding.identity_revision != commit["identity_revision"]
+                    or binding.url != commit["url"]
+                    or binding.persistent_id != commit["persistent_id"]
+                    or binding.selection_state != "selected"):
+                raise ValueError
+    _plain_change_evidence(stored)
 
 
 def read_binding_change_journals(root: str | Path) -> tuple[dict, ...]:
@@ -169,68 +283,9 @@ def read_binding_change_journals(root: str | Path) -> tuple[dict, ...]:
             content = path.read_bytes()
             if len(content) > 4 * 1024 * 1024:
                 raise ValueError
-            row = json.loads(content.decode("utf-8"), object_pairs_hook=unique)
-            if (not isinstance(row, dict) or type(row.get("version")) is not int
-                    or row["version"] not in {1, 2}
-                    or row.get("canonical_root") != str(canonical_root(root))
-                    or row.get("change_id") != path.stem
-                    or not isinstance(row.get("expected"), dict)
-                    or not isinstance(row.get("evidence"), list)):
-                raise ValueError
-            fields = {"version", "phase", "canonical_root", "change_id", "expected", "evidence"}
-            if row["version"] == 1:
-                if set(row) != fields or row["phase"] != "draining":
-                    raise ValueError
-            else:
-                if (set(row) != fields | {"commit"}
-                        or row["phase"] not in {"committing", "config_committed", "completed"}
-                        or not isinstance(row["commit"], dict)):
-                    raise ValueError
-                commit = row["commit"]
-                if (set(commit) != {"identity_revision", "persistent_id", "url", "enabled",
-                                    "config_fingerprint", "private_fingerprint", "binding",
-                                    "binding_generation"}
-                        or type(commit["identity_revision"]) is not int
-                        or commit["identity_revision"] < 1 or commit["enabled"] is not False
-                        or type(commit["binding_generation"]) is not int):
-                    raise ValueError
-                from ..core.project_identity import ProjectIdentity
-                from .protocol import normalise_url
-                from .bindings import BindingRecord
-                ProjectIdentity.canonical_id(commit["persistent_id"])
-                if commit["url"] and normalise_url(commit["url"]) != commit["url"]:
-                    raise ValueError
-                for fingerprint in (commit["config_fingerprint"], commit["private_fingerprint"]):
-                    if fingerprint is not None and (not isinstance(fingerprint, str)
-                            or len(fingerprint) != 64
-                            or any(c not in "0123456789abcdef" for c in fingerprint)):
-                        raise ValueError
-                if commit["config_fingerprint"] is None:
-                    raise ValueError
-                expected = row["expected"]
-                if (set(expected) not in (
-                        {"observation", "from", "to", "operation", "binding_generation", "backend_epoch"},
-                        {"observation", "from", "to", "operation", "binding_generation", "backend_epoch", "selection"})
-                        or not isinstance(expected["observation"], dict)
-                        or expected["observation"].get("canonical_root") != row["canonical_root"]
-                        or type(expected["observation"].get("identity_revision")) is not int
-                        or commit["identity_revision"] != expected["observation"]["identity_revision"] + 1
-                        or expected["to"] != {"persistent_id": commit["persistent_id"],
-                                               "url": commit["url"], "enabled": False}
-                        or expected["operation"] not in {"edit_id", "select", "disable", "unbind"}
-                        or type(expected["binding_generation"]) is not int
-                        or not isinstance(expected["backend_epoch"], str)):
-                    raise ValueError
-                if commit["binding"] is not None:
-                    binding = BindingRecord.model_validate(commit["binding"])
-                    if (binding.canonical_root != row["canonical_root"]
-                            or binding.identity_revision != commit["identity_revision"]
-                            or binding.url != commit["url"]
-                            or binding.persistent_id != commit["persistent_id"]
-                            or binding.selection_state != "selected"):
-                        raise ValueError
-            _plain_change_evidence(row)
-            records.append(row)
+            stored = json.loads(content.decode("utf-8"), object_pairs_hook=unique)
+            _validate_journal_row(stored, str(canonical_root(root)), path.stem)
+            records.append(stored)
         if not records:
             raise ValueError
         return tuple(records)
@@ -262,6 +317,9 @@ def publish_binding_change_commit(
         value = _plain_change_evidence(commit)
         if phase not in {"committing", "config_committed", "completed"}:
             raise ValueError
+        if previous is not None and previous["phase"] in RECOVERY_PHASES:
+            # VS-188: an explicitly recovered change never resumes its commit.
+            raise ValueError
         if previous is not None:
             if previous["expected"] != captured:
                 raise ValueError
@@ -283,7 +341,7 @@ def publish_binding_change_commit(
                 raise OSError
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        _replace_journal(temporary, path)
         _fsync_directory(path.parent)
         return row
     except Exception:
@@ -294,6 +352,442 @@ def publish_binding_change_commit(
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+# --- I12: the separate Enable/catch-up journal (studio-design §7.7) ---------
+#
+# A version-3 record under the same per-root remote-changes directory. Phases
+# advance strictly: intent ("enabling") is durable BEFORE the project config
+# is published; "config_committed" and "binding_committed" follow each store;
+# "completed" is written only after the v2 checkpoint exists, and only a
+# completed record is activation evidence. "aborted" is terminal and is used
+# ONLY when the project config is proven unpublished. Anything else is
+# unresolved: blocked recovery_required, never an automatic retry or rollback.
+
+ENABLE_JOURNAL_VERSION = 3
+ENABLE_JOURNAL_PHASES = ("enabling", "config_committed", "binding_committed", "completed", "aborted")
+# VS-188: explicit recovery of ANY version's unresolved record (see below).
+# "recovering" is still unresolved; "recovered" is terminal and is never
+# activation evidence (completed_activation matches "completed" only).
+RECOVERY_PHASES = ("recovering", "recovered")
+TERMINAL_JOURNAL_PHASES = frozenset({"completed", "aborted", "recovered"})
+_ENABLE_EXPECTED = frozenset({"operation", "observation", "to", "snapshot", "binding_generation",
+                              "backend_epoch", "account_id"})
+_ENABLE_COMMIT = frozenset({"identity_revision", "persistent_id", "url", "enabled", "config_fingerprint",
+                            "private_fingerprint", "binding", "binding_generation"})
+
+
+def journal_unresolved(row: Mapping[str, object]) -> bool:
+    """A started change (I5 drain, I6 commit or I12 Enable) that never settled."""
+    return row.get("phase") not in TERMINAL_JOURNAL_PHASES
+
+
+def _hex64(value: object) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+def _validate_enable_journal(row: Mapping[str, object]) -> None:
+    """Strict schema of one I12 record; raises ValueError on any deviation."""
+    from ..core.project_identity import ProjectIdentity
+    from .bindings import BindingRecord
+    from .protocol import normalise_url
+
+    if (set(row) != {"version", "phase", "canonical_root", "change_id", "expected", "evidence", "commit"}
+            or row["phase"] not in ENABLE_JOURNAL_PHASES
+            or not isinstance(row["commit"], dict) or not isinstance(row["expected"], dict)):
+        raise ValueError
+    expected, commit = row["expected"], row["commit"]
+    observation = expected.get("observation")
+    if (set(expected) != _ENABLE_EXPECTED or expected["operation"] != "enable"
+            or not isinstance(observation, dict)
+            or observation.get("canonical_root") != row["canonical_root"]
+            or type(observation.get("identity_revision")) is not int
+            or type(expected["binding_generation"]) is not int
+            or not isinstance(expected["backend_epoch"], str) or not expected["backend_epoch"]
+            or not isinstance(expected["account_id"], str) or not expected["account_id"]
+            or len(expected["account_id"]) > 256):
+        raise ValueError
+    if (set(commit) != _ENABLE_COMMIT or commit["enabled"] is not True
+            or type(commit["identity_revision"]) is not int
+            or commit["identity_revision"] != observation["identity_revision"] + 1
+            or type(commit["binding_generation"]) is not int
+            or commit["binding_generation"] != expected["binding_generation"] + 1
+            or not _hex64(commit["config_fingerprint"]) or not _hex64(commit["private_fingerprint"])
+            or not isinstance(commit["url"], str) or not commit["url"]
+            or normalise_url(commit["url"]) != commit["url"]
+            or ProjectIdentity.canonical_id(commit["persistent_id"]) != commit["persistent_id"]
+            or expected["to"] != {"persistent_id": commit["persistent_id"], "url": commit["url"],
+                                  "enabled": True}):
+        raise ValueError
+    snapshot = expected["snapshot"]
+    binding = BindingRecord.model_validate(commit["binding"])
+    if (not isinstance(snapshot, dict) or set(snapshot) != {"id", "storage_epoch", "seq"}
+            or snapshot["id"] != commit["persistent_id"]
+            or type(snapshot["seq"]) is not int or snapshot["seq"] < 0
+            or binding.canonical_root != row["canonical_root"]
+            or binding.selection_state != "confirmed"
+            or binding.identity_revision != commit["identity_revision"]
+            or binding.url != commit["url"] or binding.persistent_id != commit["persistent_id"]
+            or binding.space_instance_id != snapshot["storage_epoch"]):
+        raise ValueError
+
+
+def publish_enable_journal(
+    root: str | Path, change_id: str, expected: Mapping[str, object],
+    commit: Mapping[str, object], phase: str,
+) -> dict:
+    """Durable nonsecret I12 record under the caller's lifecycle/config ownership.
+
+    The first write must be the intent; later phases only advance, and the
+    captured expected/commit values can never change. Like the I6 journal it
+    is never garbage-collected and never repairs config/private state.
+    """
+    import json
+    import os
+    import tempfile
+    from ..core.application_config import _fsync_directory
+    from ..core.project_scope import canonical_root
+
+    path = binding_change_journal_path(root, change_id)
+    temporary = None
+    try:
+        previous = next((row for row in read_binding_change_journals(root)
+                         if row["change_id"] == change_id), None)
+        captured = _plain_change_evidence(expected)
+        value = _plain_change_evidence(commit)
+        order = ENABLE_JOURNAL_PHASES.index(phase)
+        if previous is None:
+            if phase != "enabling":
+                raise ValueError
+        elif (previous["version"] != ENABLE_JOURNAL_VERSION or previous["expected"] != captured
+                or previous["phase"] in RECOVERY_PHASES
+                or previous["commit"] != value or not journal_unresolved(previous)
+                # Aborted only while nothing can have been published.
+                or phase == "aborted" and previous["phase"] != "enabling"
+                or phase != "aborted" and order <= ENABLE_JOURNAL_PHASES.index(previous["phase"])):
+            raise ValueError
+        row = {"version": ENABLE_JOURNAL_VERSION, "phase": phase,
+               "canonical_root": str(canonical_root(root)), "change_id": change_id,
+               "expected": captured, "commit": value, "evidence": []}
+        _validate_enable_journal(row)
+        encoded = json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 4 * 1024 * 1024:
+            raise ValueError
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
+                                         prefix=".binding-change-", delete=False) as stream:
+            temporary = Path(stream.name)
+            if stream.write(encoded) != len(encoded):
+                raise OSError
+            stream.flush()
+            os.fsync(stream.fileno())
+        _replace_journal(temporary, path)
+        _fsync_directory(path.parent)
+        return row
+    except Exception:
+        raise BindingChangeError("binding_journal_unavailable") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def completed_activation(records: tuple[Mapping, ...], *, persistent_id: str,
+                         identity_revision: int) -> Mapping | None:
+    """The settled change that produced THIS project identity revision, if any.
+
+    The project config is the commit point and every committed change advances
+    its revision, so the record whose commit equals the current (ID, R) is the
+    one that published it; journal order and mtimes are never consulted. An
+    unresolved record refuses (recovery_required) before anything else; two
+    completed records claiming the same (ID, R) are ambiguous and refuse.
+    Aborted Enable records published nothing and are ignored.
+    """
+    if any(journal_unresolved(row) for row in records):
+        raise BindingChangeError("recovery_required")
+    matching = [row for row in records if row["phase"] == "completed"
+                and row["commit"]["persistent_id"] == persistent_id
+                and row["commit"]["identity_revision"] == identity_revision]
+    if len(matching) > 1:
+        raise BindingChangeError("binding_journal_unavailable")
+    return matching[0] if matching else None
+
+
+# --- VS-188: explicit recovery of an unresolved record (studio-design §7, plan §3.5) ---
+#
+# Startup and GET only CLASSIFY (``plan_binding_recovery`` is pure). The API
+# owner executes a plan after an exact confirmation, under the same lock order
+# as I6/I12. Nothing here enables sync, contacts a Remote, pushes, resets a
+# checkpoint or deletes a journal: the record is advanced in place and keeps
+# its expected/commit/evidence.
+#
+# Before the commit point (the project config) a change returns the root to
+# its PREVIOUS destination with sync off. After it, an I6 disabled commit is
+# completed (its target is already sync-off). An I12 Enable is never
+# completed — that would be an automatic Enable: its destination is published
+# again disabled at the next revision, and syncing needs a new Preview+Enable.
+
+RECOVERY_VERSION = 1
+_RECOVERY_KEYS = frozenset({"version", "prior_phase", "from", "to", "binding_from", "binding_to",
+                            "config_fingerprint", "backend_epoch"})
+_RECOVERY_TUPLE = frozenset({"persistent_id", "identity_revision", "url", "enabled"})
+
+
+def _recovery_tuple(value: object) -> dict:
+    """(ID, R, URL, enabled) of one project config; a legacy root has (None, 0)."""
+    from ..core.project_identity import ProjectIdentity
+    from .protocol import normalise_url
+
+    if (not isinstance(value, dict) or set(value) != _RECOVERY_TUPLE
+            or type(value["identity_revision"]) is not int or value["identity_revision"] < 0
+            or type(value["enabled"]) is not bool or not isinstance(value["url"], str)
+            or value["url"] and normalise_url(value["url"]) != value["url"]):
+        raise ValueError
+    if value["persistent_id"] is None:
+        if value["identity_revision"] != 0:
+            raise ValueError
+    elif (ProjectIdentity.canonical_id(value["persistent_id"]) != value["persistent_id"]
+            or value["identity_revision"] < 1):
+        raise ValueError
+    return value
+
+
+def recovery_target(source: Mapping[str, object],
+                    binding: Mapping[str, object] | None) -> tuple[dict, dict | None]:
+    """The previous destination with sync off, and this root's matching private row.
+
+    Same ID and URL. The revision advances exactly once, and only when the
+    config must change (sync was on); a legacy root keeps revision 0. The row
+    keeps its profile and incarnation but is never more than ``selected``.
+    """
+    target = dict(source)
+    target["enabled"] = False
+    if source["enabled"] and source["persistent_id"] is not None:
+        target["identity_revision"] = source["identity_revision"] + 1
+    row = None
+    if binding is not None:
+        row = {**dict(binding), "selection_state": "selected",
+               "identity_revision": target["identity_revision"]}
+    return target, row
+
+
+def _validate_recovery(stored: Mapping[str, object]) -> None:
+    from .bindings import BindingRecord
+
+    recovery = stored.get("recovery")
+    if (not isinstance(recovery, dict) or set(recovery) != _RECOVERY_KEYS
+            or type(recovery["version"]) is not int or recovery["version"] != RECOVERY_VERSION
+            or not isinstance(recovery["prior_phase"], str)
+            or recovery["prior_phase"] in TERMINAL_JOURNAL_PHASES
+            or recovery["prior_phase"] in RECOVERY_PHASES
+            or not _hex64(recovery["config_fingerprint"])
+            or not isinstance(recovery["backend_epoch"], str) or not recovery["backend_epoch"]):
+        raise ValueError
+    source = _recovery_tuple(recovery["from"])
+    _recovery_tuple(recovery["to"])
+    for key in ("binding_from", "binding_to"):
+        if recovery[key] is not None:
+            row = BindingRecord.model_validate(recovery[key])
+            if (row.canonical_root != stored["canonical_root"]
+                    or row.persistent_id != source["persistent_id"] or row.url != source["url"]):
+                raise ValueError
+    if recovery_target(source, recovery["binding_from"]) != (recovery["to"], recovery["binding_to"]):
+        raise ValueError
+
+
+def _without_recovery(stored: Mapping[str, object]) -> dict:
+    """The original record of a recovering/recovered row, at its prior phase."""
+    if stored.get("phase") in RECOVERY_PHASES:
+        _validate_recovery(stored)
+        row = {key: value for key, value in stored.items() if key != "recovery"}
+        row["phase"] = stored["recovery"]["prior_phase"]
+        return row
+    if "recovery" in stored:
+        raise ValueError
+    return dict(stored)
+
+
+def publish_journal_recovery(root: str | Path, change_id: str,
+                             recovery: Mapping[str, object], phase: str) -> dict:
+    """Advance ONE unresolved record to ``recovering``/``recovered`` in place.
+
+    Under the caller's lifecycle/config ownership. ``recovering`` is the
+    durable intent before any config/private write; ``recovered`` is terminal.
+    Expected/commit/evidence are copied unchanged; the record is never removed.
+    """
+    import json
+    import os
+    import tempfile
+    from ..core.application_config import _fsync_directory
+    from ..core.project_scope import canonical_root
+
+    path = binding_change_journal_path(root, change_id)
+    temporary = None
+    try:
+        if phase not in RECOVERY_PHASES:
+            raise ValueError
+        previous = next((row for row in read_binding_change_journals(root)
+                         if row["change_id"] == change_id), None)
+        value = _plain_change_evidence(recovery)
+        if previous is None:
+            raise ValueError
+        if previous["phase"] == "recovering":
+            if previous["recovery"] != value:
+                raise ValueError
+        elif not journal_unresolved(previous) or value["prior_phase"] != previous["phase"]:
+            raise ValueError
+        row = {key: item for key, item in previous.items() if key != "recovery"}
+        row["phase"], row["recovery"] = phase, value
+        canonical = str(canonical_root(root))
+        _validate_journal_row(row, canonical, change_id)
+        encoded = json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 4 * 1024 * 1024:
+            raise ValueError
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
+                                         prefix=".binding-change-", delete=False) as stream:
+            temporary = Path(stream.name)
+            if stream.write(encoded) != len(encoded):
+                raise OSError
+            stream.flush()
+            os.fsync(stream.fileno())
+        _replace_journal(temporary, path)
+        _fsync_directory(path.parent)
+        return row
+    except Exception:
+        raise BindingChangeError("binding_journal_unavailable") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@dataclass(frozen=True)
+class BindingRecovery:
+    """Read-only classification of the one unresolved record of a root.
+
+    ``kind``: ``abort_enable`` (I12 intent proven unpublished → aborted),
+    ``settle`` (previous destination already sync-off: only the record is
+    advanced), ``restore`` (config and/or private row are returned to the
+    previous destination with sync off, through ``recovering``) or
+    ``complete`` (an I6 commit past its commit point is finished).
+    ``available`` False means the root stays blocked with ``code``.
+    """
+
+    change_id: str
+    version: int
+    operation: str | None
+    phase: str
+    outcome: str
+    target: Mapping[str, object]
+    kind: str | None
+    record: Mapping[str, object] = field(repr=False)
+    recovery: Mapping[str, object] | None = field(default=None, repr=False)
+    binding_target: Mapping[str, object] | None = field(default=None, repr=False)
+    available: bool = True
+    code: str | None = None
+
+    def dto(self) -> dict[str, object]:
+        return {"change_id": self.change_id, "operation": self.operation, "phase": self.phase,
+                "outcome": self.outcome,
+                "target": {key: self.target[key] for key in
+                           ("persistent_id", "url", "identity_revision", "enabled")},
+                "available": self.available, "code": self.code}
+
+
+def _commit_tuple(commit: Mapping[str, object]) -> dict:
+    return {"persistent_id": commit["persistent_id"], "identity_revision": commit["identity_revision"],
+            "url": commit["url"], "enabled": commit["enabled"]}
+
+
+def plan_binding_recovery(records: tuple[Mapping, ...], *, config: Mapping[str, object] | None,
+                          binding: Mapping[str, object] | None, config_fingerprint: str | None,
+                          backend_epoch: str) -> BindingRecovery | None:
+    """Classify, never repair: what an explicit recovery of this root would do.
+
+    ``config`` is the current disk tuple (``None`` when unreadable) and
+    ``binding`` this root's current private row (a plain dump). ``None`` means
+    no unresolved record. Every ambiguity is an unavailable plan, not a guess.
+    """
+    unresolved = sorted((row for row in records if journal_unresolved(row)),
+                        key=lambda row: row["change_id"])
+    if not unresolved:
+        return None
+    record = unresolved[0]
+    expected = record["expected"]
+    observation = expected.get("observation") if isinstance(expected, Mapping) else None
+    operation = expected.get("operation") if isinstance(expected, Mapping) else None
+    operation = operation if operation in {"enable", "edit_id", "select", "disable",
+                                           "unbind", "migrate"} else None
+
+    def refused(code: str, target: Mapping[str, object]) -> BindingRecovery:
+        return BindingRecovery(record["change_id"], record["version"], operation, record["phase"],
+                               "previous", target, None, record, available=False, code=code)
+
+    try:
+        source = _recovery_tuple({
+            "persistent_id": observation["persistent_id"],
+            "identity_revision": observation["identity_revision"],
+            "url": observation["url"], "enabled": observation["enabled"]})
+        previous_binding = observation.get("binding")
+    except Exception:
+        return refused("binding_journal_unavailable",
+                       {"persistent_id": None, "identity_revision": 0, "url": "", "enabled": False})
+    shown, _ = recovery_target(source, None)
+    if len(unresolved) > 1:
+        return refused("recovery_ambiguous", shown)
+    if config is None or not _hex64(config_fingerprint):
+        return refused("recovery_conflict", shown)
+    current = dict(config)
+
+    def restore(kind_source: Mapping[str, object], allowed: list) -> BindingRecovery:
+        if binding not in allowed:
+            return refused("recovery_conflict", shown)
+        target, row = recovery_target(kind_source, binding)
+        if target == current and row == binding:
+            kind = ("abort_enable" if record["version"] == ENABLE_JOURNAL_VERSION
+                    and record["phase"] == "enabling" else "settle")
+        else:
+            kind = "restore"
+        recovery = {"version": RECOVERY_VERSION, "prior_phase": record["phase"],
+                    "from": dict(current), "to": target, "binding_from": binding,
+                    "binding_to": row, "config_fingerprint": config_fingerprint,
+                    "backend_epoch": backend_epoch}
+        return BindingRecovery(record["change_id"], record["version"], operation, record["phase"],
+                               "previous", target, kind, record, recovery, row)
+
+    if record["phase"] == "recovering":
+        # Resume OUR OWN recovery: only its exact from/to states are accepted.
+        own = record["recovery"]
+        if current not in (own["from"], own["to"]) or binding not in (own["binding_from"], own["binding_to"]):
+            return refused("recovery_conflict", own["to"])
+        return BindingRecovery(record["change_id"], record["version"], operation, record["phase"],
+                               "previous", own["to"], "restore", record, own, own["binding_to"])
+    commit = record.get("commit")
+    if record["version"] == 2:
+        committed = _commit_tuple(commit)
+        if current == committed:
+            # Past the commit point: finish the confirmed sync-off change.
+            if binding not in (previous_binding, commit["binding"]):
+                return refused("recovery_conflict", committed)
+            return BindingRecovery(record["change_id"], 2, operation, record["phase"], "commit",
+                                   committed, "complete", record, None, commit["binding"])
+    elif record["version"] == ENABLE_JOURNAL_VERSION:
+        enabled = _commit_tuple(commit)
+        if current == enabled:
+            # Enable published its config: back to the same destination, sync off.
+            return restore(enabled, [previous_binding, commit["binding"]])
+        if current == source:
+            return restore(source, [previous_binding, commit["binding"]])
+        return refused("recovery_conflict", shown)
+    if current != source:
+        return refused("recovery_conflict", shown)
+    return restore(source, [previous_binding])
 
 
 def binding_change_evidence_writer(
@@ -397,7 +891,7 @@ def binding_change_evidence_writer(
                         stream.write(encoded)
                         stream.flush()
                         os.fsync(stream.fileno())
-                    temporary.replace(path)
+                    _replace_journal(temporary, path)
                     _fsync_directory(path.parent)
                     return
                 if (not isinstance(previous, dict) or previous.keys() != journal.keys()
@@ -419,7 +913,7 @@ def binding_change_evidence_writer(
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.replace(path)
+            _replace_journal(temporary, path)
             _fsync_directory(path.parent)
         except Exception:
             raise BindingChangeError("binding_journal_unavailable") from None
@@ -637,6 +1131,10 @@ class BindingTransitions:
         self._active = 0
         self._idle = asyncio.Event()
         self._idle.set()
+        # I11: Ctx-owned, memory-only reconcile previews (never durable/shared).
+        self.reconcile_previews = ReconcilePreviews(clock=clock, monotonic=monotonic)
+        # I15: memory-only exact legacy resolutions, one per migration plan.
+        self.migration_resolutions = MigrationResolutions(clock=clock, monotonic=monotonic)
 
     @staticmethod
     def _document_path(path: str) -> str:
@@ -1186,7 +1684,7 @@ class BindingTransitions:
 
     def _expire_change(self) -> None:
         change = self._change
-        if change is not None and change.phase not in {"cancelled", "expired", "paused", "committed"}:
+        if change is not None and change.phase not in {"cancelled", "expired", "paused", "committed", "recovered"}:
             if self._monotonic() >= change.deadline:
                 self.cancel_change(change.change_id, _expired=True)
 
@@ -1226,7 +1724,7 @@ class BindingTransitions:
         """
         self._expire_change()
         if self._change is not None and (
-            self._change.running or self._change.phase not in {"cancelled", "expired", "committed"}
+            self._change.running or self._change.phase not in {"cancelled", "expired", "committed", "recovered"}
         ):
             raise BindingChangeError("change_in_progress")
         if not isinstance(expected_evidence, Mapping):
@@ -1284,6 +1782,30 @@ class BindingTransitions:
         self._require_generation(expected_generation)
         self._require_epoch(expected.get("backend_epoch"))
         return change
+
+    def recovery_admissible(self) -> bool:
+        """VS-188: no live drain/commit of this Ctx may race an explicit recovery."""
+        self._expire_change()
+        change = self._change
+        return change is None or not change.running and change.phase not in {"draining", "sealing"}
+
+    def settle_recovered_change(self) -> dict[str, object] | None:
+        """VS-188: retire this Ctx's in-memory change after an explicit recovery.
+
+        Called only after the durable record is terminal. A blocked/paused/ready
+        change never resumes or commits afterwards (``recovered`` admits nothing
+        and may be replaced by a new prepare). No I/O, await or G change here.
+        """
+        change = self._change
+        if change is None or change.phase in {"cancelled", "expired", "committed", "recovered"}:
+            return None
+        if change.running or change.phase in {"draining", "sealing"}:
+            raise BindingChangeError("change_in_progress")
+        change.phase, change.reason = "recovered", None
+        if change.expiry is not None:
+            change.expiry.cancel()
+        self._change_signal.set()
+        return self._change_dto(change)
 
     def complete_commit(self, change_id: str, generation: int | None = None) -> dict[str, object]:
         """Publish only after both stores and durable completion; no I/O/await."""
@@ -1424,7 +1946,7 @@ class BindingTransitions:
             raise BindingChangeError("unknown_change")
         if change.phase == "committed":
             raise BindingChangeError("already_committed")
-        if change.phase in {"cancelled", "expired", "paused"}:
+        if change.phase in {"cancelled", "expired", "paused", "recovered"}:
             return self._change_dto(change)
         try:
             # A leave/close can already have started while the async drain is
@@ -1494,7 +2016,7 @@ class BindingTransitions:
         if type(timeout) not in (float, int) or not math.isfinite(timeout) or timeout <= 0:
             raise BindingChangeError("invalid_change")
         change = self._get_change(change_id)
-        if change.phase in {"cancelled", "expired", "paused"}:
+        if change.phase in {"cancelled", "expired", "paused", "recovered"}:
             return self._change_dto(change)
         if expected_generation != change.generation or type(expected_generation) is not int:
             raise StaleBindingGeneration(expected_generation, self._generation)
@@ -1726,3 +2248,261 @@ class BindingTransitions:
                 fence._open = False
                 self._snapshot_pending = False
                 self._snapshot_scope.reset(token)
+
+
+# --- I11: read-only reconcile preview (studio-design §5.2/§6, server-design §3.3) ---
+
+RECONCILE_PREVIEW_TTL = 300.0
+MAX_RECONCILE_PREVIEWS = 8
+RECONCILE_COUNT_KEYS = ("upload", "download", "delete_local", "delete_remote", "conflict", "unchanged")
+
+
+class ReconcilePreviewError(MutationGateError):
+    """Fixed local refusal about a temporary preview; never about drafts/bases."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {"preview_not_found", "preview_expired", "preview_stale"}:
+            raise ValueError("unknown_reconcile_preview_error")
+        self.code = code
+        super().__init__(code)
+
+
+def classify_reconcile(
+    local: Mapping[str, str],
+    remote: Mapping[str, tuple[int, str | None]],
+    bases: Mapping[str, tuple[int, str | None]],
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    """Plan what the existing §16.3 engine would do, without doing any of it.
+
+    ``local`` maps path -> wire content hash of the raw Markdown; ``remote``
+    maps path -> (rev, hash or None for a tombstone); ``bases`` are the old v2
+    checkpoint's agreed (rev, hash) and must be empty when they do not belong to
+    this exact incarnation. Mirrors ``SyncService._reconcile`` + ``_push_local``:
+    a remote revision newer than the base is pulled over an untouched file;
+    deleted-there/edited-here and deleted-here/edited-there keep the edit; both
+    sides moved is a conflict (copy + pull). A remote that is behind/missing an
+    agreed base is never silently "unchanged": it is reported as a conflict.
+    """
+    counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+    conflicts: list[str] = []
+    for path in sorted(set(local) | set(remote) | set(bases), key=lambda p: p.encode("utf-8")):
+        mine = local.get(path)
+        remote_rev, theirs = remote.get(path, (0, None))
+        base = bases.get(path)
+        if mine == theirs:
+            if mine is not None:
+                counts["unchanged"] += 1
+            continue
+        base_hash = base[1] if base is not None else None
+        if remote_rev > 0 and (base is None or base[0] < remote_rev):
+            if mine == base_hash:
+                kind = "delete_local" if theirs is None else "download"
+            elif theirs is None:
+                kind = "upload"
+            elif mine is None:
+                kind = "download"
+            else:
+                kind = "conflict"
+        elif mine == base_hash:
+            kind = "conflict"  # Remote is behind or lost an agreed version.
+        else:
+            kind = "delete_remote" if mine is None else "upload"
+        counts[kind] += 1
+        if kind == "conflict":
+            conflicts.append(path)
+    return counts, tuple(conflicts)
+
+
+def reconcile_preview_fingerprint(preview_id: str, expires_at: float,
+                                  evidence: Mapping[str, object]) -> str:
+    """Bind the preview id/TTL to every observed nonsecret component."""
+    import hashlib
+    import json
+    payload = json.dumps({"preview_id": preview_id, "expires_at": expires_at, "evidence": evidence},
+                         sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return hashlib.sha256(b"voxarium-reconcile-preview-v1\0" + payload.encode("utf-8")).hexdigest()
+
+
+def _plain_preview_evidence(evidence: Mapping[str, object]) -> dict:
+    import json
+    return json.loads(json.dumps(evidence, allow_nan=False))
+
+
+@dataclass(frozen=True)
+class ReconcilePreview:
+    preview_id: str
+    fingerprint: str
+    expires_at: float
+    deadline: float
+    counts: Mapping[str, int]
+    conflicts: tuple[str, ...]
+    evidence: Mapping[str, object] = field(repr=False)
+
+    def dto(self) -> dict[str, object]:
+        return {"preview_id": self.preview_id, "fingerprint": self.fingerprint,
+                "counts": dict(self.counts), "conflicts": list(self.conflicts),
+                "expires_at": self.expires_at}
+
+
+class ReconcilePreviews:
+    """Bounded in-memory registry of read-only previews for one Ctx (I11).
+
+    A preview is an observation, not a lock and not permission to overwrite.
+    Expiry, refusal or a stale recheck discards only that temporary entry; no
+    draft, base, checkpoint, queue or configuration is touched. Nothing here
+    is persisted, so a backend restart simply forgets every preview.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.time,
+                 monotonic: Callable[[], float] = time.monotonic,
+                 ttl: float = RECONCILE_PREVIEW_TTL, limit: int = MAX_RECONCILE_PREVIEWS) -> None:
+        if not math.isfinite(ttl) or ttl <= 0 or type(limit) is not int or limit < 1:
+            raise ValueError("invalid_reconcile_preview_bounds")
+        self._clock, self._monotonic = clock, monotonic
+        self.ttl, self.limit = ttl, limit
+        self._previews: dict[str, ReconcilePreview] = {}
+
+    def __len__(self) -> int:
+        self._expire()
+        return len(self._previews)
+
+    def _expire(self) -> None:
+        now = self._monotonic()
+        for preview_id in [k for k, p in self._previews.items() if now >= p.deadline]:
+            del self._previews[preview_id]
+
+    def publish(self, evidence: Mapping[str, object], counts: Mapping[str, int],
+                conflicts: tuple[str, ...]) -> ReconcilePreview:
+        self._expire()
+        plain = _plain_preview_evidence(evidence)  # Detached from the caller.
+        preview_id = uuid4().hex
+        expires_at = self._clock() + self.ttl
+        preview = ReconcilePreview(
+            preview_id, reconcile_preview_fingerprint(preview_id, expires_at, plain),
+            expires_at, self._monotonic() + self.ttl,
+            MappingProxyType({key: int(counts[key]) for key in RECONCILE_COUNT_KEYS}),
+            tuple(conflicts), MappingProxyType(plain),
+        )
+        while len(self._previews) >= self.limit:
+            # Oldest first (insertion order). Eviction only forgets an observation.
+            del self._previews[next(iter(self._previews))]
+        self._previews[preview_id] = preview
+        return preview
+
+    def get(self, preview_id: str) -> ReconcilePreview:
+        preview = self._previews.get(preview_id) if isinstance(preview_id, str) else None
+        if preview is None:
+            raise ReconcilePreviewError("preview_not_found")
+        if self._monotonic() >= preview.deadline:
+            self._previews.pop(preview_id, None)
+            raise ReconcilePreviewError("preview_expired")
+        return preview
+
+    def require(self, preview_id: str, fingerprint: str,
+                evidence: Mapping[str, object]) -> ReconcilePreview:
+        """I12 recheck: the caller's FRESH evidence must reproduce the fingerprint.
+
+        Both the client-presented fingerprint and the recomputed one must equal
+        the stored value. Any mismatch discards this preview (409 repreview);
+        success does not consume it — Enable owns that decision.
+        """
+        preview = self.get(preview_id)
+        fresh = None
+        try:
+            fresh = reconcile_preview_fingerprint(
+                preview_id, preview.expires_at, _plain_preview_evidence(evidence))
+        except (TypeError, ValueError, RecursionError):
+            pass
+        if fresh != preview.fingerprint or fingerprint != preview.fingerprint:
+            self.discard(preview_id)
+            raise ReconcilePreviewError("preview_stale")
+        return preview
+
+    def discard(self, preview_id: str) -> bool:
+        return self._previews.pop(preview_id, None) is not None
+
+    def clear(self) -> None:
+        self._previews.clear()
+
+
+# --- I15: exact legacy resolutions (studio-design §5.2/§9.1, runtime-integration-plan I15) ---
+
+MIGRATION_RESOLUTION_TTL = 300.0
+MAX_MIGRATION_RESOLUTIONS = 8
+
+
+class MigrationResolutionError(MutationGateError):
+    """Fixed local refusal about a temporary resolution; nothing durable changes."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {"resolution_required", "resolution_expired", "resolution_stale"}:
+            raise ValueError("unknown_migration_resolution_error")
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class MigrationResolution:
+    migration_plan_id: str
+    expires_at: float
+    deadline: float
+    evidence: Mapping[str, object] = field(repr=False)
+
+
+class MigrationResolutions:
+    """Bounded in-memory registry of read-only legacy resolutions for one Ctx.
+
+    A resolution binds the root, config bytes, profile revision/credential,
+    legacy selector, catalog ID/incarnation and base evidence it observed. It
+    is an observation for prepare(operation="migrate"), never a lock, consent
+    or a write; a restart forgets it, and a new resolve replaces the old one.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.time,
+                 monotonic: Callable[[], float] = time.monotonic,
+                 ttl: float = MIGRATION_RESOLUTION_TTL,
+                 limit: int = MAX_MIGRATION_RESOLUTIONS) -> None:
+        if not math.isfinite(ttl) or ttl <= 0 or type(limit) is not int or limit < 1:
+            raise ValueError("invalid_migration_resolution_bounds")
+        self._clock, self._monotonic = clock, monotonic
+        self.ttl, self.limit = ttl, limit
+        self._resolutions: dict[str, MigrationResolution] = {}
+
+    def __len__(self) -> int:
+        self._expire()
+        return len(self._resolutions)
+
+    def _expire(self) -> None:
+        now = self._monotonic()
+        for plan_id in [k for k, r in self._resolutions.items() if now >= r.deadline]:
+            del self._resolutions[plan_id]
+
+    def publish(self, migration_plan_id: str, evidence: Mapping[str, object]) -> MigrationResolution:
+        self._expire()
+        if not isinstance(migration_plan_id, str) or not _hex64(migration_plan_id):
+            raise MigrationResolutionError("resolution_stale")
+        plain = _plain_preview_evidence(evidence)  # Detached from the caller.
+        _plain_change_evidence(plain)  # Nonsecret by construction: no key/content fields.
+        resolution = MigrationResolution(migration_plan_id, self._clock() + self.ttl,
+                                         self._monotonic() + self.ttl, MappingProxyType(plain))
+        self._resolutions.pop(migration_plan_id, None)
+        while len(self._resolutions) >= self.limit:
+            del self._resolutions[next(iter(self._resolutions))]
+        self._resolutions[migration_plan_id] = resolution
+        return resolution
+
+    def get(self, migration_plan_id: str) -> MigrationResolution:
+        resolution = (self._resolutions.get(migration_plan_id)
+                      if isinstance(migration_plan_id, str) else None)
+        if resolution is None:
+            raise MigrationResolutionError("resolution_required")
+        if self._monotonic() >= resolution.deadline:
+            self._resolutions.pop(migration_plan_id, None)
+            raise MigrationResolutionError("resolution_expired")
+        return resolution
+
+    def discard(self, migration_plan_id: str) -> bool:
+        return self._resolutions.pop(migration_plan_id, None) is not None
+
+    def clear(self) -> None:
+        self._resolutions.clear()

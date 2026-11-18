@@ -244,7 +244,7 @@ def test_global_save_changes_user_file_without_writing_project(client: TestClien
     project_before = paths.config_file.read_bytes()
     accent = client.get("/api/settings").json()["theme"]["accent"]
     response = client.put("/api/settings/application", json={
-        "theme": {"mode": "light", "font": "inter", "text_size": 17},
+        "theme": {"mode": "light", "mono_font": "fira", "text_size": 17},
         "language": "ru", "show_data_dir": True, "node_cache_enabled": False,
         "updates": {"enabled": False, "check_interval_minutes": 60},
     })
@@ -255,7 +255,7 @@ def test_global_save_changes_user_file_without_writing_project(client: TestClien
     assert config["explorer"]["show_data_dir"] is True
     assert paths.config_file.read_bytes() == project_before
     saved = read_yaml(application_config_file())
-    assert saved["theme"]["font"] == "inter"
+    assert saved["theme"]["mono_font"] == "fira"
     assert "accent" not in saved["theme"]
     assert saved["language"] == "ru"
     assert load_config(paths).theme.text_size == 17

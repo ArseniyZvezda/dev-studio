@@ -241,6 +241,12 @@ class TeamTask(SQLModel, table=True):
     producer_chat_id: str | None = Field(default=None, index=True)
     producer_approved: bool = False
     """Producer drafts cannot run until their plan is approved (§10.11)."""
+    reopen_count: int = 0
+    """How many times a Producer sent this task's Done result back (§10.11).
+
+    Every reopening is counted and never reset: the next one needs a longer justification
+    and weighs more on the session Plan item the task belongs to.
+    """
 
     id: str = Field(default_factory=lambda: new_id("task"), primary_key=True)
     number: int = Field(default=0, index=True, unique=True)
@@ -502,7 +508,12 @@ class AgentChat(SQLModel, table=True):
     producer_plan_version: int = 0
     producer_checklist: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     producer_checklist_revision: str = ""
-    """Session Plan and the board revision it describes; survives approval (§10.11)."""
+    """Session Plan and the board revision it describes; survives approval (§10.11).
+
+    Each item is ``{id, text, done, tasks}``. ``tasks`` keeps every board task ever linked
+    to the item, in any status, as ``{id, display_id, title, status, reopens,
+    justification}`` — a record the item owns, refreshed as the board changes.
+    """
     producer_watch: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     producer_release_pending: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     producer_questions: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))

@@ -31,7 +31,13 @@ def default_orchestrator_models() -> dict[str, dict[str, str]]:
         "claude_code": {"1": "claude-haiku-4-5", "2": "claude-opus-5-5", "3": "claude-fable-5-2"},
         "codex": {"1": "gpt-6.1-terra", "2": "gpt-6.1-sol", "3": "gpt-6-astra"},
         "qwen": {"1": "qwen3-coder-flash", "2": "qwen3-coder-plus", "3": "qwen3.8-max"},
+        "antigravity": {"1": "gemini-3.8-flash-low", "2": "gemini-3.8-flash-high",
+                        "3": "claude-opus-4-6-thinking"},
     }
+
+
+#: Columns a saved table must carry. Later built-ins are filled from the defaults.
+_REQUIRED_ORCHESTRATOR_BACKENDS = frozenset({"claude_code", "codex", "qwen"})
 
 
 def validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
@@ -40,8 +46,12 @@ def validate_orchestrator_models(value: Any) -> dict[str, dict[str, str]]:
     The catalog is advisory: explicit future/custom model ids remain usable.
     Extra backends may supply their own complete three-tier column.
     """
-    if not isinstance(value, dict) or not {"claude_code", "codex", "qwen"} <= value.keys():
+    if not isinstance(value, dict) or not _REQUIRED_ORCHESTRATOR_BACKENDS <= value.keys():
         raise ValueError("Orchestrator models must include every built-in backend")
+    # A built-in backend added after the table was saved gets its default column rather
+    # than invalidating the user's table (§10.11).
+    value = {**{name: tiers for name, tiers in default_orchestrator_models().items()
+                if name not in _REQUIRED_ORCHESTRATOR_BACKENDS}, **value}
     result = {}
     for backend, tiers in value.items():
         if (not isinstance(backend, str) or not backend.strip()
@@ -123,7 +133,8 @@ class ApplicationThemeConfig(BaseModel):
     :attr:`DocsConfig.font_size`, and for the same reason: a default number would silently
     override the app's stylesheet size without the user choosing it."""
 
-    font: Literal["google-sans", "inter", "ibm-plex", "roboto", "system"] = "google-sans"
+    # No `font`: the interface is set in Allo alone (§7, 2026-11-17). A stored `font` from an
+    # older build is dropped like the other retired knobs, and refused on the strict API.
     mono_font: Literal["cascadia", "jetbrains", "fira", "system"] = "jetbrains"
     """JetBrains Mono by default, because that is what the Graphite design is drawn in: a log
     and a commit are read here, not skimmed."""
@@ -230,11 +241,18 @@ class TeamsConfig(BaseModel):
     session, which is why it is bounded and configurable rather than "keep going".
     """
 
+    context_compression_percent: int = Field(default=70, ge=0, le=100)
+    """Compact task history once the latest request fills this share of the window (§10.4).
+
+    The window is the one the runtime last reported for the task's model. Zero disables
+    automatic compression; Compress still works.
+    """
+
     context_compression_tokens: int = Field(default=100_000, ge=0)
-    """Compact task history at this context size between runs (§10.4).
+    """Fallback threshold for a runtime that never reports its context window (§10.4).
 
     Uses the latest request's input/cache tokens, or a character estimate when the
-    backend supplies no usage. Zero disables automatic compression; Compress still works.
+    backend supplies no usage. Zero disables the fallback only.
     """
 
     result_follow_up: bool = True

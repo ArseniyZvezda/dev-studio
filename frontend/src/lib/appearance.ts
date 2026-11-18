@@ -24,7 +24,6 @@ export const DEFAULT_THEME: ThemeConfig = {
   mode: 'dark',
   accent: '#a394e8',
   text_size: null,
-  font: 'google-sans',
   mono_font: 'jetbrains',
   sidebar: 'icons',
   canvas_grid: 'dots',
@@ -79,35 +78,17 @@ export const NODE_TINT = { min: 0, max: 60 }
 
 export interface FontFace<T extends string> extends Choice<T> {
   /**
-   * Google Fonts stylesheet to load when chosen, or null for a face the OS or `index.html`
-   * already provides. Loaded by the store on demand, so a project on the default pays for
-   * nothing it does not use.
+   * Google Fonts stylesheet to load when chosen, or null for a face the OS already provides.
+   * Loaded by the store on demand, so a project on the default pays for nothing it does not
+   * use.
    */
   stylesheet: string | null
 }
 
-export const FONTS: FontFace<ThemeConfig['font']>[] = [
-  { value: 'google-sans', label: 'Google Sans', stylesheet: null },
-  {
-    value: 'inter',
-    label: 'Inter',
-    stylesheet: 'https://fonts.googleapis.com/css2?family=Inter:wght@400..700&display=swap',
-  },
-  {
-    value: 'ibm-plex',
-    label: 'IBM Plex Sans',
-    stylesheet:
-      'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap',
-  },
-  {
-    value: 'roboto',
-    label: 'Roboto',
-    stylesheet:
-      'https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,400..700;1,400..700&display=swap',
-  },
-  choice('system', 'appearance.font.system', { stylesheet: null }),
-]
-
+/*
+ * No interface-font list: the interface is set in Allo alone (§7, 2026-11-17), bundled from
+ * the `allo-font` package in `main.ts`. Only the monospace face is still a choice.
+ */
 export const MONO_FONTS: FontFace<ThemeConfig['mono_font']>[] = [
   { value: 'cascadia', label: 'Cascadia Code', stylesheet: null },
   {
@@ -140,12 +121,9 @@ export const STATUS_PALETTES: Choice<ThemeConfig['status_palette']>[] = [
   choice('accessible', 'appearance.statusPalette.accessible'),
 ]
 
-/** The stylesheet a font choice needs, if any. */
+/** The stylesheet a monospace choice needs, if any. */
 export function fontStylesheet(value: string): string | null {
-  const face =
-    FONTS.find((entry) => entry.value === value) ??
-    MONO_FONTS.find((entry) => entry.value === value)
-  return face?.stylesheet ?? null
+  return MONO_FONTS.find((entry) => entry.value === value)?.stylesheet ?? null
 }
 
 /** The whole theme as the file "Export theme…" hands over — the same shape config.yaml holds. */
@@ -203,7 +181,6 @@ export function parseImportedTheme(text: string): Partial<ThemeConfig> {
     out[key] = value as ThemeConfig[K]
   }
   pick('mode', MODES)
-  pick('font', FONTS)
   pick('mono_font', MONO_FONTS)
   pick('sidebar', SIDEBARS)
   pick('canvas_grid', CANVAS_GRIDS)

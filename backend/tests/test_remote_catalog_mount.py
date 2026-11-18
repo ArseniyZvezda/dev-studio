@@ -204,7 +204,9 @@ async def isolation(studio_home):
             "providers", catalog_runtime.RemoteCatalogRuntime.providers_for))
         monkeypatch.setattr(catalog_verification.CatalogVerificationService, "verify", verification_only(
             "verify", catalog_verification.CatalogVerificationService.verify))
-        monkeypatch.setattr(CatalogService, "list_projects", deny("transport"))
+        # I9: catalog reads are admitted like explicit Verify (same isolation).
+        monkeypatch.setattr(CatalogService, "list_projects", verification_only(
+            "list_projects", CatalogService.list_projects))
         monkeypatch.setattr(CatalogClient, "verify", verification_only("v2_verify", CatalogClient.verify))
         monkeypatch.setattr(catalog_runtime, "datetime", SimpleNamespace(
             now=verification_only("clock", catalog_runtime.datetime.now)))
@@ -406,7 +408,7 @@ async def test_nonbrowser_same_origin_and_explicit_dev_origin_are_admitted(
         headers["origin"] = origin
     async with client_for(app) as client:
         with read_only(monkeypatch, isolation):
-            if method == "POST":
+            if path != BASE:
                 with explicit_verify(isolation):
                     response = await client.request(method, path, json=body, headers=headers)
             else:
@@ -418,8 +420,21 @@ async def test_nonbrowser_same_origin_and_explicit_dev_origin_are_admitted(
         elif method == "POST":
             diagnostic(response, isolation)
         else:
-            error(response, 502, "service_unavailable")
-            assert not isolation.calls and not isolation.requests
+            strict_v2_refusal(response, isolation)
+
+
+def strict_v2_refusal(response, isolation, *, before=()):
+    """I9: GET projects runs its own strict-v2 discovery, read-only.
+
+    The synthetic Remote is v1, so the read stops at the unauthenticated
+    /healthz reply: no /api/v1 request, no key-bearing send, no catalog GET.
+    """
+    error(response, 502, "version_mismatch")
+    assert isolation.requests[:len(before)] == list(before)
+    added = isolation.requests[len(before):]
+    assert [str(r.url) for r in added] == [P1["url"] + "/healthz"]
+    assert "authorization" not in added[0].headers
+    assert isolation.calls["list_projects"] >= 1 and isolation.calls["v2_verify"] >= 1
 
 
 async def test_exact_global_get_uses_persisted_s2_and_never_activates_or_writes(
@@ -604,8 +619,12 @@ async def test_built_spa_cannot_shadow_remote_method_refusals_or_add_mirrors(
         BASE, BASE + "/{profile_id}", BASE + "/{profile_id}/verify", BASE + "/{profile_id}/projects",
         BASE + "/{profile_id}/credential", BASE + "/{profile_id}/recover",
         BASE + "/{profile_id}/projects/operations/{operation_id}/observe",
+        # VS-187 Gate L (dev spec §16.11): census + explicit URL confirmation.
+        BASE + "/{profile_id}/consumers", BASE + "/{profile_id}/consumers/confirmation",
     }
     paths = app.openapi()["paths"]
+    assert set(paths[BASE + "/{profile_id}/consumers"]) == {"get"}
+    assert set(paths[BASE + "/{profile_id}/consumers/confirmation"]) == {"post", "delete"}
     assert set(paths[BASE]) == {"get", "post"}
     assert set(paths[BASE + "/{profile_id}"]) == {"patch", "delete"}
     assert set(paths[BASE + "/{profile_id}/credential"]) == {"put", "delete"}
@@ -646,7 +665,7 @@ async def test_unexpected_service_failure_is_secret_free_typed_no_store(
         error(await client.get(BASE), 502, "service_unavailable")
 
 
-async def test_projects_gate_fails_before_token_providers_transport_or_writes(
+async def test_projects_read_is_strict_v2_read_only_and_never_v1_catalog(
     lightweight, studio_home, monkeypatch, isolation,
 ):
     seed(studio_home)
@@ -654,9 +673,12 @@ async def test_projects_gate_fails_before_token_providers_transport_or_writes(
     app = main.create_app(str(lightweight.root))
     async with client_for(app) as client:
         with read_only(monkeypatch, isolation):
-            response = await client.get(BASE + "/" + P1["profile_id"] + "/projects")
-        error(response, 502, "service_unavailable")
-        assert not isolation.calls and not isolation.requests
+            with explicit_verify(isolation):
+                response = await client.get(BASE + "/" + P1["profile_id"] + "/projects")
+        strict_v2_refusal(response, isolation)
+        assert isolation.calls["providers"] == isolation.calls["list_projects"] == 1
+        assert isolation.calls["verify"] == isolation.calls["clock"] == 0
+        assert not app.state.remote_catalog.runtime._requests
     assert snapshot(studio_home) == before
 
 
@@ -682,9 +704,12 @@ async def test_explicit_verify_is_http_only_and_does_not_activate_or_cache_gets(
                 dict(row, has_token=True, credential_source="stored", verification={"state": "unavailable"})
                 for row in (P1, P2)]}
             assert CANARY not in repeated.text
-            error(await client.get(BASE + "/" + P1["profile_id"] + "/projects"),
-                  502, "service_unavailable")
-            assert isolation.calls == calls and isolation.requests == requests
+            # A v1 Verify success is diagnostic, not a cached catalog permit.
+            with explicit_verify(isolation):
+                response = await client.get(BASE + "/" + P1["profile_id"] + "/projects")
+            strict_v2_refusal(response, isolation, before=requests)
+            assert isolation.calls["verify"] == calls["verify"]
+            assert isolation.calls["clock"] == calls["clock"]
     assert snapshot(studio_home) == before
 
 
