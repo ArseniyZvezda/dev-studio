@@ -1359,3 +1359,854 @@ def test_settings_keep_the_key_out_of_the_project(
     forgotten = client.put("/api/sync", json={"token": ""}).json()
     assert forgotten["has_token"] is False
     assert credentials.load_token("https://studio.example.com") is None
+
+
+# ------------------------------------------------------------------ I16: fresh-project v2 slice
+#
+# remote-identity/runtime-integration-plan §4 I16. Unlike the fixtures above (a synthetic
+# confirmed binding written straight to disk), every step here goes through the real
+# Studio app and its production routes: Create on the catalog, Select by
+# prepare/quiesce/commit, read-only reconcile-preview, Enable, ordinary editor saves,
+# rooms, ID change, disable and restart. What is already proven elsewhere is only
+# referenced, not repeated: Enable's crash matrix/races (test_remote_enable.py), the
+# preview's drift/TTL/copy refusals (test_remote_reconcile_preview.py), every untrusted
+# hello variant (test_an_untrusted_hello_blocks_before_any_sync_or_write), and the
+# room's own seeding rules (test_scoped_room_open_writes_nothing_and_yjs_is_not_persisted).
+#
+# Alice and Bob are two people: two roots AND two personal homes. One home may hold only
+# one working copy per (URL, ID) - a second root is ``duplicate_local_binding`` by design -
+# so each person's requests and every task they spawn see their own
+# ``VOXARIUM_STUDIO_HOME`` through a context variable. Each home holds a synthetic,
+# already usable profile and stored key; this is NOT the first key-entry onboarding (L/C7).
+
+import contextlib  # noqa: E402
+import contextvars  # noqa: E402
+import os  # noqa: E402
+from collections.abc import MutableMapping  # noqa: E402
+
+import httpx  # noqa: E402
+
+from voxarium_studio import main as studio_main  # noqa: E402
+from voxarium_studio.core.paths import HOME_ENV_VAR, user_config_dir  # noqa: E402
+from voxarium_studio.explorer.watcher import FileWatcher  # noqa: E402
+from voxarium_studio.sync import catalog_runtime  # noqa: E402
+from voxarium_studio.sync.catalog_http import CatalogHttpTransport  # noqa: E402
+from voxarium_studio.sync.state import SyncNamespace  # noqa: E402
+
+_I16_HOME: contextvars.ContextVar[str | None] = contextvars.ContextVar("i16_home", default=None)
+I16_ID = "fresh-game"
+
+
+class _PersonEnviron(MutableMapping):  # type: ignore[type-arg]
+    """``os.environ`` whose Studio home is the person's in whose context code runs."""
+
+    def __init__(self, real: Any) -> None:
+        self._real = real
+
+    def __getitem__(self, key: str) -> str:
+        home = _I16_HOME.get()
+        if key == HOME_ENV_VAR and home is not None:
+            return home
+        return self._real[key]
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self._real[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._real[key]
+
+    def __iter__(self) -> Any:
+        return iter(self._real)
+
+    def __len__(self) -> int:
+        return len(self._real)
+
+    def copy(self) -> dict[str, str]:
+        return dict(self.items())
+
+
+@contextlib.contextmanager
+def as_person(person: Any) -> Any:
+    token = _I16_HOME.set(str(person.home))
+    try:
+        yield person
+    finally:
+        _I16_HOME.reset(token)
+
+
+class _PersonTransport(httpx.AsyncBaseTransport):
+    """One person's browser: every request (and task it starts) runs in their home."""
+
+    def __init__(self, person: Any, inner: httpx.AsyncBaseTransport) -> None:
+        self.person, self.inner = person, inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        with as_person(self.person):
+            return await self.inner.handle_async_request(request)
+
+
+def _i16_hashes(person: Any) -> dict[str, str]:
+    """What a read-only command must leave alone: config, private store, journals,
+    checkpoints and Markdown."""
+    with as_person(person):
+        from voxarium_studio.sync.bindings import bindings_file
+        roots = [person.root / ".voxarium_studio" / "config.yaml", bindings_file(),
+                 user_config_dir() / "remote-changes", user_config_dir() / "sync", person.docs_dir]
+    result = {}
+    for root in roots:
+        paths = [root] if root.is_file() else sorted(root.rglob("*")) if root.exists() else []
+        for path in paths:
+            if path.is_file():
+                result[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def _i16_markdown(person: Any) -> dict[str, bytes]:
+    return {str(p.relative_to(person.docs_dir)): p.read_bytes()
+            for p in sorted(person.docs_dir.rglob("*.md")) if p.is_file()}
+
+
+def _i16_binding(person: Any) -> Any:
+    with as_person(person):
+        from voxarium_studio.sync.bindings import RemoteBindings
+        return RemoteBindings().read().get(person.root)
+
+
+@pytest.fixture
+async def fresh_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SimpleNamespace]:
+    monkeypatch.setattr(os, "environ", _PersonEnviron(os.environ))
+    monkeypatch.setattr(FileWatcher, "start", lambda self: None)
+    monkeypatch.setattr(AppContext, "_start_plugin_hooks", lambda self: None)
+    monkeypatch.setattr(sync_service, "RECONNECT_MIN_SECONDS", 0.02)
+    store = Store(":memory:")
+    remote_app = remote.create_app(store=store)
+    calls: list[tuple[str, str]] = []
+
+    @remote_app.middleware("http")
+    async def observe(request: Any, call_next: Any) -> Any:
+        calls.append((request.method, request.url.path))
+        return await call_next(request)
+
+    # Catalog reads reach the Remote app over ASGI; the runner's WebSocket reaches the
+    # same app over loopback TCP. A fresh owned transport per application lifespan.
+    monkeypatch.setattr(catalog_runtime, "CatalogHttpTransport",
+                        lambda: CatalogHttpTransport(transport=httpx.ASGITransport(app=remote_app)))
+    server = uvicorn.Server(uvicorn.Config(remote_app, host="127.0.0.1", port=0,
+                                           log_level="warning", lifespan="off"))
+    serving = asyncio.create_task(server.serve())
+    await eventually(lambda: server.started, what="the remote to listen")
+    url = normalise_url(f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}")
+    connects: list[tuple[str | None, str]] = []
+    real_connect = sync_service.connect
+
+    def counting(address: str, *args: Any, **kwargs: Any) -> Any:
+        connects.append((_I16_HOME.get(), address))
+        return real_connect(address, *args, **kwargs)
+
+    monkeypatch.setattr(sync_service, "connect", counting)
+    people: list[SimpleNamespace] = []
+
+    def person(name: str) -> SimpleNamespace:
+        key = new_token()
+        user = store.add_user(name.title(), hash_token(key))
+        home, root = tmp_path / f"home-{name}", tmp_path / name
+        home.mkdir()
+        root.mkdir()
+        init_project(root)
+        row = {"profile_id": str(uuid.uuid5(PROFILES, f"i16-{name}")), "name": name.title(),
+               "url": url, "revision": 3}
+        (home / "config.yaml").write_text(json.dumps({"remote_servers": [row]}), encoding="utf-8")
+        (home / "remote-keys.json").write_text(json.dumps({"version": 2, "profiles": {
+            row["profile_id"]: {"url": url, "token": key, "revision": 2}}, "legacy": {}}),
+            encoding="utf-8")
+        p = SimpleNamespace(name=name, key=key, user=user, home=home, root=root, row=row, stack=None)
+
+        async def open_app() -> None:
+            stack = AsyncExitStack()
+            with as_person(p):
+                app = studio_main.create_app(str(root))
+                await stack.enter_async_context(app.router.lifespan_context(app))
+            http = await stack.enter_async_context(httpx.AsyncClient(
+                transport=_PersonTransport(p, httpx.ASGITransport(app=app)),
+                base_url="http://127.0.0.1", trust_env=False))
+            scope = (await http.post("/api/projects/open", json={"path": str(root)})).json()
+            p.app, p.http, p.scope, p.stack = app, http, scope, stack
+            p.ctx = app.state.project_registry[scope["project_id"]].ctx
+            p.base = f"/api/projects/{scope['project_id']}/remote"
+            p.docs_dir = Path(p.ctx.docs.directory)
+
+        async def close() -> None:
+            if p.stack is not None:
+                stack, p.stack = p.stack, None
+                with as_person(p):
+                    await stack.aclose()
+
+        async def restart() -> None:
+            await close()
+            await open_app()
+
+        p.open_app, p.close, p.restart = open_app, close, restart
+        p.connects = lambda: [address for home, address in connects if home == str(p.home)]
+        people.append(p)
+        return p
+
+    alice, bob = person("alice"), person("bob")
+    try:
+        for p in (alice, bob):
+            await p.open_app()
+        yield SimpleNamespace(alice=alice, bob=bob, store=store, url=url, calls=calls,
+                              hub=remote_app.state.hub, connects=connects)
+    finally:
+        for p in people:
+            await p.close()
+        server.should_exit = True
+        await serving
+        store.close()
+
+
+async def _i16_observe(p: Any) -> dict[str, Any]:
+    response = await p.http.get(p.base)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _i16_prepare(p: Any, operation: str, persistent_id: str, **extra: Any) -> dict[str, Any]:
+    observation = await _i16_observe(p)
+    response = await p.http.post(p.base + "/prepare", json={
+        "expected_revision": observation["identity_revision"],
+        "config_fingerprint": observation["config_fingerprint"],
+        "persistent_id": persistent_id, "operation": operation, **extra})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _i16_change(p: Any, operation: str, persistent_id: str, **extra: Any) -> dict[str, Any]:
+    """prepare -> quiesce -> commit, exactly as Project Settings drives it (§5.2/§7)."""
+    prepared = await _i16_prepare(p, operation, persistent_id, **extra)
+    change = f"{p.base}/changes/{prepared['change_id']}"
+    gate = p.ctx.docs.transitions
+    response = await p.http.post(change + "/quiesce", json={"expected_generation": gate.generation})
+    assert response.status_code == 200 and response.json()["state"] == "ready", response.text
+    observed = gate.expected_change_evidence(prepared["change_id"])["observation"]
+    response = await p.http.post(change + "/commit", json={
+        "expected_revision": observed["identity_revision"], "expected_generation": gate.generation,
+        "config_fingerprint": observed["config_fingerprint"],
+        "confirmation": {"url": prepared["to"]["url"], "persistent_id": prepared["to"]["persistent_id"]}})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _i16_select(p: Any, store: Store) -> dict[str, Any]:
+    return await _i16_change(p, "select", I16_ID, profile_id=p.row["profile_id"], url=p.row["url"],
+                             catalog_id=I16_ID, catalog_instance_id=store.project(I16_ID).storage_epoch)
+
+
+async def _i16_preview(p: Any) -> dict[str, Any]:
+    observation = await _i16_observe(p)
+    response = await p.http.post(p.base + "/reconcile-preview", json={
+        "expected_revision": observation["identity_revision"],
+        "config_fingerprint": observation["config_fingerprint"]})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _i16_enable(p: Any, shown: dict[str, Any]) -> dict[str, Any]:
+    observation = await _i16_observe(p)
+    response = await p.http.post(p.base + "/enable", json={
+        "expected_revision": observation["identity_revision"],
+        "expected_generation": observation["binding_generation"],
+        "preview_id": shown["preview_id"], "fingerprint": shown["fingerprint"],
+        "confirmation": {"url": p.row["url"], "persistent_id": I16_ID, "action": "reconcile"}})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _i16_local(p: Any, path: str, text: str) -> None:
+    target = p.docs_dir / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(text.encode("utf-8"))
+
+
+def _i16_text(p: Any, path: str) -> str | None:
+    target = p.docs_dir / path
+    return target.read_text(encoding="utf-8") if target.is_file() else None
+
+
+def _i16_fence(p: Any) -> dict[str, Any]:
+    gate = p.ctx.docs.transitions
+    return {"backend_epoch": gate.backend_epoch, "expected_binding_generation": gate.generation}
+
+
+def _i16_settled(p: Any) -> bool:
+    return not p.ctx.sync._dirty.is_set() and not p.ctx.sync._pending
+
+
+async def _i16_editor_save(p: Any, path: str, content: str) -> dict[str, Any]:
+    """An ordinary (non-room) editor: lease, HTTP save under it, close after the save."""
+    client = f"editor-{p.name}-{uuid.uuid4().hex[:6]}"
+    response = await p.http.post(p.base + "/editors", json={
+        **_i16_fence(p), "document_path": path, "client_instance_id": client})
+    assert response.status_code == 201, response.text
+    editor = response.json()
+    response = await p.http.put(f"/api/projects/{p.scope['project_id']}/docs/{path}", json={
+        **_i16_fence(p), "editor_id": editor["editor_id"], "version": 1, "content": content})
+    assert response.status_code == 200, response.text
+    saved = response.json()["last_saved_version"]
+    response = await p.http.request("DELETE", f"{p.base}/editors/{editor['editor_id']}", json={
+        **_i16_fence(p), "client_instance_id": client, "last_saved_version": saved,
+        "version": 1, "dirty": False})
+    assert response.status_code == 200, response.text
+    return editor
+
+
+def _i16_room(p: Any, path: str, client_id: int, client: str) -> tuple[Browser, asyncio.Task[None]]:
+    """The scoped collab socket's handler with a registered room editor lease (I8)."""
+    with as_person(p):
+        gate = p.ctx.docs.transitions
+        lease = gate.register_editor(path, client, gate.backend_epoch, gate.generation)
+        browser = Browser(path, client_id, {
+            "editor_id": lease["editor_id"], "backend_epoch": gate.backend_epoch,
+            "expected_binding_generation": gate.generation, "client_instance_id": client})
+        browser.lease = lease  # type: ignore[attr-defined]
+        return browser, asyncio.create_task(p.ctx.sync.serve_collab(browser))  # type: ignore[arg-type]
+
+
+async def _i16_close_room_lease(p: Any, browser: Browser, sid: str, path: str) -> None:
+    editor_id = browser.scope["editor_id"]
+    lease = p.ctx.docs.transitions._editors[editor_id]
+    captured = {"backend_epoch": browser.scope["backend_epoch"],
+                "expected_binding_generation": browser.scope["expected_binding_generation"],
+                "document_path": path, "client_instance_id": browser.scope["client_instance_id"],
+                "sid": sid, "version": lease.version, "revision": lease.revision}
+    url = f"{p.base}/editors/{editor_id}/materialization"
+    response = await p.http.post(url, json=captured)
+    assert response.status_code == 200, response.text
+    response = await p.http.post(url + "/confirm", json={
+        **captured, "proof_id": response.json()["proof_id"], "content": _i16_text(p, path)})
+    assert response.status_code == 200, response.text
+    response = await p.http.request("DELETE", f"{p.base}/editors/{editor_id}", json={
+        **{k: v for k, v in captured.items() if k != "revision"},
+        "last_saved_version": response.json()["last_saved_version"], "dirty": False})
+    assert response.status_code == 200, response.text
+
+
+async def _i16_enabled_pair(pair: SimpleNamespace) -> tuple[Any, Any]:
+    """Create -> Select x2 -> Preview -> Enable, one person after the other."""
+    alice, bob, store = pair.alice, pair.bob, pair.store
+    _i16_local(alice, "alice.md", "# Alice\n")
+    _i16_local(bob, "bob.md", "# Bob\n")
+    fresh_ids = {p.name: (await _i16_observe(p))["persistent_id"] for p in (alice, bob)}
+
+    # Create is its own explicit catalog command: it selects, enables and connects nothing.
+    before = {p.name: _i16_hashes(p) for p in (alice, bob)}
+    response = await alice.http.post(f"/api/remote/servers/{alice.row['profile_id']}/projects", json={
+        "expected_revision": alice.row["revision"], "id": I16_ID, "display_name": "Fresh game",
+        "operation_id": str(uuid.uuid4())})
+    assert response.status_code == 201 and response.json()["state"] == "created", response.text
+    assert store.project(I16_ID).seq == 0
+    for p in (alice, bob):
+        assert _i16_hashes(p) == before[p.name], "Create is not a Select"
+        observed = await _i16_observe(p)
+        assert observed["persistent_id"] == fresh_ids[p.name] and not observed["enabled"]
+    assert pair.connects == []
+
+    # Select: disabled + selected on both roots; still nothing connects.
+    for p in (alice, bob):
+        result = await _i16_select(p, store)
+        assert result["persistent_id"] == I16_ID and not result["enabled"]
+        assert result["identity_revision"] == 2 and result["state"] == "disabled"
+        row = _i16_binding(p)
+        assert (row.selection_state, row.persistent_id, row.space_instance_id) == (
+            "selected", I16_ID, store.project(I16_ID).storage_epoch)
+    assert pair.connects == [] and alice.ctx.sync._runner is None and bob.ctx.sync._runner is None
+
+    # Preview is read-only (0 writes, GETs only), then Enable connects and catches up.
+    for p, counts in ((alice, {"upload": 1, "download": 0}), (bob, {"upload": 1, "download": 1})):
+        before_preview = _i16_hashes(p)
+        pair.calls.clear()
+        shown = await _i16_preview(p)
+        assert {k: shown["counts"][k] for k in counts} == counts, shown["counts"]
+        assert shown["counts"]["conflict"] == 0
+        assert _i16_hashes(p) == before_preview, "preview writes nothing"
+        assert pair.calls and all(method == "GET" for method, _ in pair.calls), pair.calls
+        assert p.connects() == [] and p.ctx.sync._runner is None
+        result = await _i16_enable(p, shown)
+        assert result["enabled"] and result["identity_revision"] == 3
+        assert _i16_binding(p).selection_state == "confirmed"
+        await eventually(lambda p=p: p.ctx.sync.live, what=f"{p.name} to connect")
+        await eventually(lambda p=p: _i16_settled(p), what=f"{p.name} to settle")
+    await eventually(lambda: _i16_text(alice, "bob.md") == "# Bob\n", what="bob's file at alice")
+    assert _i16_text(bob, "alice.md") == "# Alice\n"
+    assert pair.connects and all(f"/api/v2/sync?space={I16_ID}" in a for _, a in pair.connects)
+    assert not any("/api/v1/" in a for _, a in pair.connects)
+    return alice, bob
+
+
+async def test_i16_fresh_project_create_select_enable_edit_rooms_id_disable_restart(
+    fresh_pair: SimpleNamespace,
+) -> None:
+    pair = fresh_pair
+    alice, bob = await _i16_enabled_pair(pair)
+    store, hub = pair.store, pair.hub
+
+    # --- an ordinary editor save from one root reaches the other
+    await _i16_editor_save(alice, "alice.md", "# Alice\n\nSaved in the editor.\n")
+    await eventually(lambda: _i16_text(bob, "alice.md") == "# Alice\n\nSaved in the editor.\n",
+                     what="alice's editor save at bob")
+
+    # --- a clean room open writes nothing, and its Yjs state is persisted nowhere
+    await eventually(lambda: _i16_settled(bob), what="bob to settle")
+    file = bob.docs_dir / "alice.md"
+    stat, markdown, stored = file.stat(), _i16_markdown(bob), store.doc(I16_ID, "alice.md")
+    writes: list[Any] = []
+    real_write = bob.ctx.docs.write
+
+    async def counted_write(*args: Any, **kwargs: Any) -> Any:
+        writes.append(args)
+        return await real_write(*args, **kwargs)
+
+    bob.ctx.docs.write = counted_write
+    marker = f"i16-yjs-only-{uuid.uuid4().hex}"
+    browser, task = _i16_room(bob, "alice.md", 31, "room-bob")
+    joined = await browser.expect("joined")
+    assert joined["content"] == "# Alice\n\nSaved in the editor.\n" and not joined["dirty"]
+    session_doc = pycrdt.Doc()
+    session_doc["body"] = pycrdt.Text(marker)
+    browser.send(t="seed", update=b64(session_doc.get_update()))
+    await browser.expect("seeded")
+    # Leaving cleanly, as the browser does (I8): prove the unedited snapshot, then close
+    # the lease. A lease left open — or a bare disconnect — would rightly block every
+    # later drain as pending_edits.
+    await _i16_close_room_lease(bob, browser, joined["sid"], "alice.md")
+    browser.hang_up()
+    await task
+    await eventually(lambda: not hub._spaces[I16_ID].rooms, what="the room to empty")
+    await asyncio.sleep(0.1)
+    del bob.ctx.docs.write
+    assert writes == [], "opening a room is not a DocStore write"
+    assert _i16_markdown(bob) == markdown and file.stat().st_mtime_ns == stat.st_mtime_ns
+    assert store.doc(I16_ID, "alice.md") == stored, "the room did not bump the Markdown revision"
+    for scanned in (bob.root, bob.home, alice.root, alice.home):
+        for path in scanned.rglob("*"):
+            if path.is_file():
+                assert marker.encode() not in path.read_bytes(), f"Yjs state persisted in {path}"
+
+    # --- an agent edit concurrent with an ordinary save: a conflict copy, never a loss
+    await _i16_editor_save(alice, "race.md", "# Race base\n")
+    await eventually(lambda: _i16_text(bob, "race.md") == "# Race base\n", what="race base at bob")
+    await eventually(lambda: _i16_settled(bob), what="bob to settle")
+    release, held = asyncio.Event(), asyncio.Event()
+    real_on_change = bob.ctx.sync._on_change
+
+    async def delayed(message: dict[str, Any]) -> None:
+        if message.get("path") == "race.md":
+            held.set()
+            await release.wait()
+        await real_on_change(message)
+
+    bob.ctx.sync._on_change = delayed  # Bob has not applied Alice's save yet...
+    await _i16_editor_save(alice, "race.md", "# Race: alice's editor\n")
+    await asyncio.wait_for(held.wait(), 5)
+    with as_person(bob):  # ...when Bob's agent writes the same document from the old base.
+        await bob.ctx.docs.write("race.md", "# Race: bob's agent\n", author="agent:i16")
+    release.set()
+
+    def both_kept(p: Any) -> bool:
+        copies = sorted(p.docs_dir.glob("race (conflict*).md"))
+        return (_i16_text(p, "race.md") == "# Race: alice's editor\n" and len(copies) == 1
+                and copies[0].read_text(encoding="utf-8") == "# Race: bob's agent\n")
+
+    await eventually(lambda: both_kept(bob), what="bob to keep both versions")
+    await eventually(lambda: both_kept(alice), what="the conflict copy to reach alice")
+    del bob.ctx.sync._on_change
+    conflicts = [e.data["path"] for e in bob.ctx.bus.replay(0) if e.type == EventType.SYNC_CONFLICT]
+    assert conflicts == ["race.md"]
+
+    # --- an ID change of an ENABLED project is never silent: prepare writes nothing; the
+    # commit needs the explicit drain/fence and lands disabled with no selection. The
+    # Remote project is neither renamed, created nor emptied.
+    await eventually(lambda: _i16_settled(bob), what="bob to settle")
+    before_prepare = _i16_hashes(bob)
+    prepared = await _i16_prepare(bob, "edit_id", "bob-renamed")
+    assert prepared["plan"] == {"operation": "edit_id", "enabled": False}
+    assert _i16_hashes(bob) == before_prepare and bob.ctx.sync.live, "prepare alone changes nothing"
+    response = await bob.http.delete(f"{bob.base}/changes/{prepared['change_id']}")
+    assert response.status_code == 200, response.text
+    assert bob.ctx.sync.live and _i16_hashes(bob) == before_prepare, "cancel before fence resumes"
+    bob_markdown = _i16_markdown(bob)
+    server_bob = store.doc(I16_ID, "bob.md")
+    result = await _i16_change(bob, "edit_id", "bob-renamed")
+    assert (result["persistent_id"], result["enabled"], result["identity_revision"]) == (
+        "bob-renamed", False, 4)
+    assert _i16_binding(bob) is None, "edit_id clears the local selection"
+    assert not bob.ctx.sync.live and bob.ctx.sync.status()["state"] == "disabled"
+    with pytest.raises(LookupError):
+        store.project("bob-renamed")
+    assert store.doc(I16_ID, "bob.md") == server_bob, "old server documents stay"
+    assert _i16_markdown(bob) == bob_markdown
+
+    # --- disable: disabled + still selected, rooms closed, Markdown intact
+    await eventually(lambda: _i16_settled(alice), what="alice to settle")
+    old_fence = _i16_fence(alice)
+    response = await alice.http.post(alice.base + "/editors", json={
+        **old_fence, "document_path": "alice.md", "client_instance_id": "late-editor"})
+    assert response.status_code == 201, response.text
+    late = response.json()
+    response = await alice.http.request("DELETE", f"{alice.base}/editors/{late['editor_id']}",
+                                        json={**old_fence, "client_instance_id": "late-editor",
+                                              "last_saved_version": late["last_saved_version"]})
+    assert response.status_code == 200, response.text
+    alice_markdown = _i16_markdown(alice)
+    result = await _i16_change(alice, "disable", I16_ID)
+    assert (result["persistent_id"], result["enabled"], result["identity_revision"]) == (I16_ID, False, 4)
+    assert _i16_binding(alice).selection_state == "selected"
+    assert not alice.ctx.sync.live and alice.ctx.sync.status()["state"] == "disabled"
+    space = hub._spaces.get(I16_ID)
+    assert alice.ctx.sync._sessions == {} and (space is None or not space.rooms)
+    refused_room, task = _i16_room(alice, "alice.md", 41, "after-disable")
+    await task
+    assert refused_room.closed == (CLOSE_COLLAB_UNAVAILABLE, "unavailable"), "no rooms while disabled"
+    # A late callback of the old generation (a save from before the fence) writes nothing.
+    response = await alice.http.put(f"/api/projects/{alice.scope['project_id']}/docs/alice.md", json={
+        **old_fence, "editor_id": late["editor_id"], "version": 2, "content": "# Late\n"})
+    assert response.status_code == 409, response.text
+    assert _i16_markdown(alice) == alice_markdown
+
+    # --- restart: each root stays exactly as it was; nothing auto-enables or reconnects
+    connected_before = len(pair.connects)
+    from voxarium_studio.sync import credentials as credential_owner
+    key_reads: list[str] = []
+    real_load = credential_owner.load_profile_token
+
+    def counted_load(profile_id: str, url: str) -> str | None:
+        key_reads.append(profile_id)
+        return real_load(profile_id, url)
+
+    credential_owner.load_profile_token = counted_load
+    try:
+        for p, expected_id, selection in ((alice, I16_ID, "selected"), (bob, "bob-renamed", None)):
+            markdown = _i16_markdown(p)
+            await p.restart()
+            await asyncio.sleep(0.2)
+            observed = await _i16_observe(p)
+            assert (observed["persistent_id"], observed["enabled"]) == (expected_id, False), observed
+            # The start classifier still refuses a runner (core/context.py, fail-closed),
+            # but GET reports the settled disabled commit as "disabled", not damage.
+            assert (observed["state"], observed["reason"]) == ("disabled", None), observed
+            assert p.ctx.sync.status()["state"] == "blocked", "the runner itself stays refused"
+            row = _i16_binding(p)
+            assert (row.selection_state if row else None) == selection
+            assert _i16_markdown(p) == markdown and p.ctx.sync._runner is None
+        assert len(pair.connects) == connected_before
+        assert key_reads == [], "a restarted disabled root reads no key"
+    finally:
+        credential_owner.load_profile_token = real_load
+
+    # --- after the restart the explicit path back still works: Preview -> Enable
+    shown = await _i16_preview(alice)
+    assert len(pair.connects) == connected_before, "preview opens no socket"
+    enabled = await _i16_enable(alice, shown)
+    assert (enabled["persistent_id"], enabled["enabled"]) == (I16_ID, True), enabled
+    await eventually(lambda: alice.ctx.sync.live, what="alice to reconnect after re-enable")
+    observed = await _i16_observe(alice)
+    assert (observed["state"], observed["enabled"]) == ("connected", True), observed
+
+
+async def test_i16_enabled_restart_stays_enabled_and_rollback_hello_blocks_without_reset(
+    fresh_pair: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair = fresh_pair
+    alice, bob = await _i16_enabled_pair(pair)
+    await _i16_editor_save(alice, "after.md", "# After\n")
+    await eventually(lambda: _i16_text(bob, "after.md") == "# After\n", what="after.md at bob")
+    await eventually(lambda: _i16_settled(bob), what="bob to settle")
+
+    # A completed Enable journal is the restart authority: the rebuilt app reconnects.
+    await bob.restart()
+    await eventually(lambda: bob.ctx.sync.live, what="bob to reconnect after restart")
+    observed = await _i16_observe(bob)
+    assert observed["enabled"] and observed["state"] == "connected" and observed["identity_revision"] == 3
+    await eventually(lambda: _i16_settled(bob), what="bob to settle")
+
+    # The Remote now answers with a hello BELOW the saved cursor (a restored database):
+    # blocked, no retry, and neither cursor/bases nor Markdown are reset.
+    await bob.close()
+    with as_person(bob):
+        state_file = SyncNamespace.for_project(bob.root, url=pair.url, persistent_id=I16_ID).path
+    checkpoint = state_file.read_bytes()
+    assert json.loads(checkpoint)["cursor"] > 0
+    markdown = _i16_markdown(bob)
+    rewrite_hello(monkeypatch, _set(("seq",), 0))
+    before = len(bob.connects())
+    await bob.open_app()
+    await eventually(lambda: bob.ctx.sync._runner is not None and bob.ctx.sync._runner.done(),
+                     what="the terminal stop")
+    status = bob.ctx.sync.status()
+    assert (status["state"], status["message"]) == ("blocked", "cursor_rollback")
+    await asyncio.sleep(0.2)
+    assert len(bob.connects()) == before + 1, "a rollback hello is not retried"
+    assert state_file.read_bytes() == checkpoint
+    assert _i16_markdown(bob) == markdown and not bob.ctx.sync._sessions
+    observed = await _i16_observe(bob)
+    assert observed["state"] == "blocked" and observed["reason"] == "cursor_rollback"
+    assert observed["enabled"], "blocked, not silently disabled or reset"
+    assert alice.ctx.sync.live, "alice is untouched by bob's block"
+
+
+# ------------------------------------------------------------------ VS-188: I5/I6 records → recovery
+#
+# A disabled I6 change (Disable, ID edit, Select) or a drain whose change was
+# cancelled after its fence leaves an unresolved record; before VS-188 the root
+# was blocked forever. Startup and GET only classify it; the explicit
+# POST …/recover returns the root to its previous destination with sync off,
+# or finishes a disabled commit already past its commit point. The I12 Enable
+# matrix is in test_remote_enable.py; this file reuses its real-Remote studio.
+
+from test_remote_enable import (  # noqa: E402
+    Crash as _Crash, binding_row as _row, disk_config as _disk_config, enable as _enable,
+    enable_body as _enable_body, enable_studio as _enable_studio, eventually as _eventually,
+    journals as _journals,
+    journal_files as _journal_files, local as _local, recover as _recover,
+    recovery_body as _recovery_body, refused as _refused, selected as _selected, state as _state,
+)
+
+
+async def _vs188_enabled(s: Any) -> None:
+    await _selected(s)
+    response = await _enable(s, await _enable_body(s))
+    assert response.status_code == 200, response.text
+    await _eventually(lambda: s.ctx.sync.live, what="connected")
+
+
+async def _vs188_quiesced(s: Any, operation: str, persistent_id: str,
+                          **extra: Any) -> tuple[str, dict[str, Any]]:
+    """prepare → quiesce (ready, fenced); returns the commit URL and its exact body."""
+    observed = (await s.http.get(s.base)).json()
+    response = await s.http.post(s.base + "/prepare", json={
+        "expected_revision": observed["identity_revision"],
+        "config_fingerprint": observed["config_fingerprint"],
+        "persistent_id": persistent_id, "operation": operation, **extra})
+    assert response.status_code == 200, response.text
+    prepared = response.json()
+    change = f"{s.base}/changes/{prepared['change_id']}"
+    gate = s.ctx.docs.transitions
+    response = await s.http.post(change + "/quiesce", json={"expected_generation": gate.generation})
+    assert response.status_code == 200 and response.json()["state"] == "ready", response.text
+    return change, {
+        "expected_revision": observed["identity_revision"], "expected_generation": gate.generation,
+        "config_fingerprint": observed["config_fingerprint"],
+        "confirmation": {"url": prepared["to"]["url"], "persistent_id": prepared["to"]["persistent_id"]}}
+
+
+# (owner, phase, when) of the I6 commit's publications.
+_VS188_I6_POINTS = [
+    ("journal", "committing", "before"), ("journal", "committing", "after"),
+    ("config", None, "after"), ("journal", "config_committed", "after"),
+    ("private", None, "after"), ("journal", "completed", "before"),
+]
+
+
+def _vs188_inject(mp: pytest.MonkeyPatch, point: tuple) -> None:
+    from voxarium_studio.core import config as config_owner
+    from voxarium_studio.sync import transitions
+    from voxarium_studio.sync.bindings import RemoteBindings
+
+    owner, phase, when = point
+    if owner == "journal":
+        original = transitions.publish_binding_change_commit
+
+        def journal(root, change_id, expected, commit, current):
+            if current == phase and when == "before":
+                raise _Crash()
+            row = original(root, change_id, expected, commit, current)
+            if current == phase:
+                raise _Crash()
+            return row
+
+        mp.setattr(transitions, "publish_binding_change_commit", journal)
+    elif owner == "config":
+        original_write = config_owner._write_project_document_in_transaction
+
+        def write(paths, payload, **kwargs):
+            original_write(paths, payload, **kwargs)
+            raise _Crash()
+
+        mp.setattr(config_owner, "_write_project_document_in_transaction", write)
+    else:
+        original_save = RemoteBindings._save_in_transaction
+        original_remove = RemoteBindings._remove_in_transaction
+
+        def save(self, record, **kwargs):
+            original_save(self, record, **kwargs)
+            raise _Crash()
+
+        def remove(self, root, **kwargs):
+            original_remove(self, root, **kwargs)
+            raise _Crash()
+
+        mp.setattr(RemoteBindings, "_save_in_transaction", save)
+        mp.setattr(RemoteBindings, "_remove_in_transaction", remove)
+
+
+async def _vs188_select(s: Any, persistent_id: str, storage_epoch: str) -> None:
+    """An explicit Select of another catalog project (I6/I9), committed disabled."""
+    change, body = await _vs188_quiesced(
+        s, "select", persistent_id, profile_id=s.row["profile_id"], url=s.url,
+        catalog_id=persistent_id, catalog_instance_id=storage_epoch)
+    response = await s.http.post(change + "/commit", json=body)
+    assert response.status_code == 200, response.text
+
+
+async def _vs188_works(s: Any, persistent_id: str, path: str) -> None:
+    """Working state on the real Remote: Preview → Enable → catch-up of a local file."""
+    _local(s, path, "# " + path + "\n")
+    response = await _enable(s, await _vs188_enable_body(s, persistent_id))
+    assert response.status_code == 200, response.text
+    await _eventually(lambda: s.ctx.sync.live, what="connected again")
+    await _eventually(lambda: s.store.doc(persistent_id, path) is not None, what="upload")
+
+
+async def _vs188_enable_body(s: Any, persistent_id: str) -> dict[str, Any]:
+    observation = (await s.http.get(s.base)).json()
+    response = await s.http.post(s.base + "/reconcile-preview", json={
+        "expected_revision": observation["identity_revision"],
+        "config_fingerprint": observation["config_fingerprint"]})
+    assert response.status_code == 200, response.text
+    shown = response.json()
+    observation = (await s.http.get(s.base)).json()
+    return {"expected_revision": observation["identity_revision"],
+            "expected_generation": observation["binding_generation"],
+            "preview_id": shown["preview_id"], "fingerprint": shown["fingerprint"],
+            "confirmation": {"url": s.url, "persistent_id": persistent_id, "action": "reconcile"}}
+
+
+@pytest.mark.parametrize("operation", ["disable", "edit_id"])
+@pytest.mark.parametrize("point", _VS188_I6_POINTS, ids=lambda p: "-".join(x for x in p if x))
+async def test_vs188_i6_crash_matrix_recovers_explicitly(project, monkeypatch, studio_home,
+                                                         operation, point):
+    async with _enable_studio(project, monkeypatch, studio_home) as s:
+        await _vs188_enabled(s)
+        target = "selected-id" if operation == "disable" else "renamed-id"
+        change, body = await _vs188_quiesced(s, operation, target)
+        with pytest.MonkeyPatch.context() as mp:
+            _vs188_inject(mp, point)
+            with pytest.raises(_Crash):
+                await s.http.post(change + "/commit", json=body)
+        s.connects.clear()
+        await s.restart()
+        await asyncio.sleep(0.1)
+        # Startup classified only: blocked, no runner, no key lookup, no socket.
+        assert s.connects == [] and s.ctx.sync._runner is None
+        settled_disk = _state(s)
+        observed = (await s.http.get(s.base)).json()
+        for _ in range(3):
+            assert (await s.http.get(s.base)).json()["recovery"] == observed["recovery"]
+        assert _state(s) == settled_disk, "GET never repairs"
+        assert (observed["state"], observed["reason"]) == ("blocked", "recovery_required")
+        shown = observed["recovery"]
+        published = _VS188_I6_POINTS.index(point) >= 2  # the project config is the commit point
+        assert shown["available"] and shown["operation"] == operation
+        assert shown["outcome"] == ("commit" if published else "previous")
+        expected_id = target if published else "selected-id"
+        assert shown["target"] == {"persistent_id": expected_id, "url": s.url,
+                                   "identity_revision": 10, "enabled": False}
+        # Exact confirmation only; refusals write nothing.
+        recovery = _recovery_body(observed)
+        wrong = json.loads(json.dumps(recovery))
+        wrong["confirmation"]["persistent_id"] = "renamed-id" if expected_id == "selected-id" else "selected-id"
+        _refused(await _recover(s, wrong), 409, "confirmation_required")
+        _refused(await _recover(s, {**recovery, "config_fingerprint": "f" * 64}), 409, "stale_binding")
+        assert _state(s) == settled_disk
+        files = _journal_files(s)
+        response = await _recover(s, recovery)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert (result["outcome"], result["persistent_id"], result["identity_revision"],
+                result["enabled"], result["state"]) == (shown["outcome"], expected_id, 10, False, "disabled")
+        assert _disk_config(s)["project_identity"] == {"id": expected_id, "revision": 10}
+        assert _disk_config(s)["sync"] == {"enabled": False, "url": s.url}
+        row = _row(s)
+        if published and operation == "edit_id":
+            assert row is None, "the committed ID edit removed the private selection"
+        else:
+            assert (row.persistent_id, row.selection_state, row.identity_revision) == (
+                "selected-id", "selected", 10)
+        assert _journal_files(s) == files, "records are advanced in place, never deleted"
+        # Idempotent repeat; a restart stays settled and sync-off.
+        after = _state(s)
+        again = await _recover(s, recovery)
+        assert again.status_code == 200, again.text
+        assert _state(s) == after
+        await s.restart()
+        await asyncio.sleep(0.1)
+        observed = (await s.http.get(s.base)).json()
+        assert observed["recovery"] is None and not observed["enabled"]
+        assert s.connects == [] and _state(s) == after
+        # Working again on the real Remote.
+        if expected_id == "renamed-id":
+            created = s.project("renamed-id", "Renamed")
+            await _vs188_select(s, "renamed-id", created.storage_epoch)
+        await _vs188_works(s, expected_id, "after-recovery.md")
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["in-process", "after-restart"])
+async def test_vs188_cancel_after_fence_is_recoverable(project, monkeypatch, studio_home, restart):
+    async with _enable_studio(project, monkeypatch, studio_home) as s:
+        await _vs188_enabled(s)
+        _local(s, "kept.md", "# kept\n")
+        await _eventually(lambda: s.store.doc("selected-id", "kept.md") is not None, what="upload")
+        change, _ = await _vs188_quiesced(s, "disable", "selected-id")
+        response = await s.http.delete(change)
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "paused"
+        # The drain left a version-1 record: before VS-188 this was permanent.
+        records = [row for row in _journals(s) or () if row["version"] == 1]
+        assert len(records) == 1 and records[0]["phase"] == "draining"
+        if restart:
+            s.connects.clear()
+            await s.restart()
+            await asyncio.sleep(0.1)
+            assert s.connects == []
+        observed = (await s.http.get(s.base)).json()
+        assert observed["state"] == "blocked"
+        shown = observed["recovery"]
+        assert shown["available"] and shown["outcome"] == "previous" and shown["operation"] == "disable"
+        assert shown["target"] == {"persistent_id": "selected-id", "url": s.url,
+                                   "identity_revision": 10, "enabled": False}
+        _local(s, "kept.md", "# edited while blocked\n")
+        response = await _recover(s, _recovery_body(observed))
+        assert response.status_code == 200, response.text
+        assert _disk_config(s)["sync"] == {"enabled": False, "url": s.url}
+        assert _row(s).selection_state == "selected" and _row(s).identity_revision == 10
+        assert s.store.doc("selected-id", "kept.md").content == "# kept\n", "recovery never pushes"
+        assert not s.ctx.docs.transitions.binding_quiescing
+        observed = (await s.http.get(s.base)).json()
+        assert (observed["state"], observed["recovery"]) == ("disabled", None)
+        # The kept edit and the old checkpoint reconcile through Preview → Enable.
+        await _vs188_works(s, "selected-id", "next.md")
+        await _eventually(lambda: s.store.doc("selected-id", "kept.md").content
+                          == "# edited while blocked\n", what="the edit made while blocked")
+
+
+async def test_vs188_select_crash_after_config_finishes_the_select(project, monkeypatch, studio_home):
+    async with _enable_studio(project, monkeypatch, studio_home) as s:
+        await _selected(s)
+        other = s.project("other-id", "Other")
+        change, body = await _vs188_quiesced(
+            s, "select", "other-id", profile_id=s.row["profile_id"], url=s.url,
+            catalog_id="other-id", catalog_instance_id=other.storage_epoch)
+        with pytest.MonkeyPatch.context() as mp:
+            _vs188_inject(mp, ("config", None, "after"))
+            with pytest.raises(_Crash):
+                await s.http.post(change + "/commit", json=body)
+        await s.restart()
+        observed = (await s.http.get(s.base)).json()
+        shown = observed["recovery"]
+        assert (shown["operation"], shown["outcome"]) == ("select", "commit")
+        assert shown["target"]["persistent_id"] == "other-id"
+        response = await _recover(s, _recovery_body(observed))
+        assert response.status_code == 200, response.text
+        row = _row(s)
+        assert (row.persistent_id, row.selection_state, row.space_instance_id, row.identity_revision) == (
+            "other-id", "selected", other.storage_epoch, 9)
+        await _vs188_works(s, "other-id", "selected-other.md")

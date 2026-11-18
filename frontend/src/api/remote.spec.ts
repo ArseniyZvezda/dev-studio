@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from './client'
-import { createRemoteApiClient, RemoteApiError, type VerificationDTO, type RemoteServerProfile,
+import { createRemoteApiClient, createRemoteConsumersClient, RemoteApiError, type VerificationDTO, type RemoteServerProfile,
   type CreateRemoteProfileInput, type RenameRemoteProfileInput, type ChangeRemoteProfileUrlInput,
   type RemoteCredentialInput, type RemoteRevisionInput, type RecoverRemoteProfileInput } from './remote'
 import { ProjectSession, StaleProjectResponseError } from '@/session/project-session'
@@ -973,5 +973,83 @@ describe('explicit Remote catalog Create/observe commands (C0/C9)', () => {
       await expect(command.call(createRemoteApiClient())).resolves.toEqual(value)
       expect(fetch).toHaveBeenCalledTimes(1)
     }
+  })
+})
+
+describe('Gate L consumer census client (dev spec §16)', () => {
+  const census = {
+    profile_id: profileId, url: 'https://remote.example', revision: 7, state: 'unknown', confirmed_at: null,
+    bound_roots: ['D:\games\alpha'], active_roots: [], operations: ['verify'],
+  }
+  const known = { ...census, state: 'known', confirmed_at: '2026-11-18T10:00:00Z' }
+
+  it('GETs the census read-only, without a body', async () => {
+    const fetcher = mockReply(census)
+    await expect(createRemoteConsumersClient().profileConsumers(profileId)).resolves.toEqual(census)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const [url, init] = fetcher.mock.calls[0]!
+    expect(url).toBe(`/api/remote/servers/${profileId}/consumers`)
+    expect(init).toMatchObject({ method: 'GET', cache: 'no-store' })
+    expect(init.body).toBeUndefined()
+  })
+
+  it('POSTs exactly the shown URL, projects and revision on confirmation', async () => {
+    const fetcher = mockReply(known)
+    const input = { expected_revision: 7, url: 'https://remote.example', bound_roots: ['D:\games\alpha'] }
+    await expect(createRemoteConsumersClient().confirmProfileConsumers(profileId, input)).resolves.toEqual(known)
+    const [url, init] = fetcher.mock.calls[0]!
+    expect(url).toBe(`/api/remote/servers/${profileId}/consumers/confirmation`)
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual(input)
+  })
+
+  it('DELETEs the confirmation with only the expected revision', async () => {
+    const fetcher = mockReply(census)
+    await expect(createRemoteConsumersClient().withdrawProfileConsumers(profileId, { expected_revision: 7 }))
+      .resolves.toEqual(census)
+    const [url, init] = fetcher.mock.calls[0]!
+    expect(url).toBe(`/api/remote/servers/${profileId}/consumers/confirmation`)
+    expect(init.method).toBe('DELETE')
+    expect(JSON.parse(init.body)).toEqual({ expected_revision: 7 })
+  })
+
+  it.each([
+    [{ expected_revision: 7, url: 'https://remote.example' }],
+    [{ expected_revision: 0, url: 'https://remote.example', bound_roots: [] }],
+    [{ expected_revision: 7, url: '', bound_roots: [] }],
+    [{ expected_revision: 7, url: 'https://remote.example', bound_roots: [1] }],
+    [{ expected_revision: 7, url: 'https://remote.example', bound_roots: [], extra: true }],
+  ])('rejects malformed confirmation input %j before any request', async input => {
+    const fetcher = mockReply(known)
+    await expect(createRemoteConsumersClient().confirmProfileConsumers(profileId, input as never))
+      .rejects.toMatchObject({ status: 422, code: 'invalid_request' })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['other profile', { ...census, profile_id: '22222222-2222-4222-8222-222222222222' }],
+    ['extra field', { ...census, token: 'x' }],
+    ['known without date', { ...census, state: 'known' }],
+    ['bad state', { ...census, state: 'maybe' }],
+    ['bad roots', { ...census, bound_roots: 'D:\games' }],
+    ['bad operation', { ...census, operations: ['sync'] }],
+    ['bad url', { ...census, url: 'remote.example' }],
+  ])('rejects an invalid census (%s)', async (_name, payload) => {
+    mockReply(payload)
+    await expect(createRemoteConsumersClient().profileConsumers(profileId))
+      .rejects.toMatchObject({ status: 502, code: 'invalid_response' })
+  })
+
+  it.each([
+    [409, 'consumer_inventory_changed'], [503, 'consumer_confirmation_unavailable'],
+    [503, 'consumer_lifecycle_unavailable'], [409, 'profile_revision_conflict'], [404, 'profile_not_found'],
+    [409, 'profile_recovery_required'], [503, 'service_unavailable'],
+  ] as const)('preserves %s %s from confirmation without retry', async (status, code) => {
+    const fetcher = mockReply({ code, details: { root: 'D:\games' } }, status)
+    const error = await createRemoteConsumersClient().confirmProfileConsumers(profileId,
+      { expected_revision: 7, url: 'https://remote.example', bound_roots: [] }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(RemoteApiError)
+    expect(error).toMatchObject({ status, code })
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })

@@ -10,6 +10,7 @@ import type { RemoteServerProfile, RemoteVerification } from '@/api/remote'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
 import RemoteProfileMetadataForm, { remoteProfileMetadataState } from './RemoteProfileMetadataForm.vue'
 import RemoteProfileCredentialForm from './RemoteProfileCredentialForm.vue'
+import RemoteProfileDeleteDialog from './RemoteProfileDeleteDialog.vue'
 import { formatDate, t, type MessageKey } from '@/i18n'
 import { useRemoteServersStore } from '@/stores/remote-servers'
 
@@ -18,8 +19,9 @@ const metadata = remoteProfileMetadataState(servers)
 type Binding = Pick<RemoteServerProfile, 'profile_id' | 'revision' | 'url'>
 const confirmation = ref<Binding | null>(null)
 // Separate metadata/key intents capture their own CAS; no implicit Verify or URL edit.
-const editor = ref<{ profile?: RemoteServerProfile } | null>(null)
+const editor = ref<{ profile?: RemoteServerProfile; mode?: 'rename' | 'url' } | null>(null)
 const credentialEditor = ref<RemoteServerProfile | null>(null)
+const deleteEditor = ref<RemoteServerProfile | null>(null)
 const metadataNeedsRefresh = computed(() => metadata.refreshRequired)
 let mounted = false
 
@@ -41,7 +43,7 @@ const credentialKeys: Record<RemoteServerProfile['credential_source'], MessageKe
 }
 const anyBusy = computed(() => metadata.pending > 0 || Object.keys(servers.busy).length > 0)
 const listUnavailable = computed(() => !!servers.error || !servers.loaded)
-const refreshDisabled = computed(() => servers.loading || anyBusy.value || !!confirmation.value || !!editor.value || !!credentialEditor.value)
+const refreshDisabled = computed(() => servers.loading || anyBusy.value || !!confirmation.value || !!editor.value || !!credentialEditor.value || !!deleteEditor.value)
 const addDisabled = computed(() => refreshDisabled.value || listUnavailable.value || metadataNeedsRefresh.value)
 
 function same(a: Binding, b: Binding): boolean {
@@ -53,19 +55,26 @@ function applicable(binding: Binding): boolean {
     && !servers.busy[binding.profile_id]
 }
 function verifyDisabled(profile: RemoteServerProfile): boolean {
-  return !!confirmation.value || !!editor.value || !!credentialEditor.value || metadata.pending > 0 || metadataNeedsRefresh.value || !applicable(profile)
+  return !!confirmation.value || !!editor.value || !!credentialEditor.value || !!deleteEditor.value || metadata.pending > 0 || metadataNeedsRefresh.value || !applicable(profile)
 }
 function openCreate(): void {
   if (mounted && !addDisabled.value) editor.value = {}
 }
 function openRename(profile: RemoteServerProfile): void {
-  if (mounted && !verifyDisabled(profile)) editor.value = { profile: { ...profile } }
+  if (mounted && !verifyDisabled(profile)) editor.value = { profile: { ...profile }, mode: 'rename' }
+}
+function openChangeUrl(profile: RemoteServerProfile): void {
+  if (mounted && !verifyDisabled(profile)) editor.value = { profile: { ...profile }, mode: 'url' }
+}
+function openDelete(profile: RemoteServerProfile): void {
+  if (mounted && !verifyDisabled(profile)) deleteEditor.value = { ...profile }
 }
 function closeEditor(): void { editor.value = null }
 function openCredential(profile: RemoteServerProfile): void {
   if (mounted && !verifyDisabled(profile)) credentialEditor.value = { ...profile }
 }
 function closeCredential(): void { credentialEditor.value = null }
+function closeDelete(): void { deleteEditor.value = null }
 function checked(profile: RemoteServerProfile) {
   const value = servers.lastChecked[profile.profile_id]
   return value && same(value, profile) ? value.result : null
@@ -124,6 +133,7 @@ onBeforeUnmount(() => {
   confirmation.value = null
   editor.value = null
   credentialEditor.value = null
+  deleteEditor.value = null
 })
 </script>
 
@@ -197,6 +207,20 @@ onBeforeUnmount(() => {
             >{{ t('settings.remoteServers.rename') }}</button>
             <button
               type="button"
+              data-testid="remote-change-url"
+              class="rounded-md border border-line px-3 py-1.5 hover:bg-hover disabled:opacity-50"
+              :disabled="verifyDisabled(profile)"
+              @click="openChangeUrl(profile)"
+            >{{ t('settings.remoteServers.changeUrl.open') }}</button>
+            <button
+              type="button"
+              data-testid="remote-delete"
+              class="rounded-md border border-line px-3 py-1.5 text-danger hover:bg-hover disabled:opacity-50"
+              :disabled="verifyDisabled(profile)"
+              @click="openDelete(profile)"
+            >{{ t('settings.remoteServers.delete.open') }}</button>
+            <button
+              type="button"
               data-testid="remote-verify"
               class="shrink-0 rounded-md border border-line px-3 py-1.5 hover:bg-hover disabled:opacity-50"
               :disabled="verifyDisabled(profile)"
@@ -238,9 +262,18 @@ onBeforeUnmount(() => {
       @refresh-required="metadata.refreshRequired = true"
     />
 
+    <RemoteProfileDeleteDialog
+      v-if="deleteEditor"
+      :profile="deleteEditor"
+      @deleted="closeDelete"
+      @close="closeDelete"
+      @refresh-required="metadata.refreshRequired = true"
+    />
+
     <RemoteProfileMetadataForm
       v-if="editor"
       :profile="editor.profile"
+      :mode="editor.mode"
       @saved="closeEditor"
       @close="closeEditor"
       @refresh-required="metadata.refreshRequired = true"

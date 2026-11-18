@@ -54,6 +54,9 @@ def serve(
     port: int = typer.Option(8787, help="Port to listen on."),
     data: Path | None = DataOption,
     log_level: str = typer.Option("info", help="uvicorn log level."),
+    ai_control: bool = typer.Option(
+        False, "--ai-control/--no-ai-control", envvar="VOXARIUM_REMOTE_AI_CONTROL",
+        help="Mount the opt-in AI Control Protocol (ACP/1) under /api/ai/v1. Off by default."),
 ) -> None:
     """Run the server. Put TLS in front of it — keys travel in a header."""
     import uvicorn
@@ -63,7 +66,7 @@ def serve(
     logging.basicConfig(
         level=log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    app = create_app(_data_dir(data))
+    app = create_app(_data_dir(data), ai_control=ai_control)
     uvicorn.run(
         app,
         host=host,

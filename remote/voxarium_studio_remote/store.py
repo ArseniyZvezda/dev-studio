@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from . import protocol
 from .protocol import content_hash
@@ -25,6 +25,12 @@ USER_COLORS = (
     "#0090ff", "#d6409f", "#12a594", "#ffb224", "#6e56cf",
 )
 SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
+# AI control registry beside remote.db (ai-access design §3, R-A0). Kept as a separate
+# file so the strict Documents schema signature never changes when ACP is off.
+AI_CONTROL_DB = "ai-control.db"
+
+CredentialHook = Callable[[str, int], None]
+"""``(user_id, new_credential_version)`` — called inside the credential transaction."""
 
 
 def _now() -> str:
@@ -165,6 +171,14 @@ class Store:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._path = None if str(path) == ":memory:" else Path(path)
+        # R-A0: credential generation changes must invalidate AI control mirrors
+        # *before* the new key is issued (pre-commit hooks; a failure rolls the
+        # credential change back) and close live sockets afterwards (listeners).
+        self._credential_hooks: list[CredentialHook] = []
+        self._credential_listeners: list[CredentialHook] = []
+        self._pending_notices: list[tuple[str, int]] = []
+        self._file_hook = self._path is not None
         self._db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         try:
@@ -180,6 +194,48 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
+
+    def add_credential_hook(self, hook: CredentialHook, *, replaces_file_hook: bool = False) -> None:
+        """Run *hook* inside every rotate/revoke/reactivate/delete transaction.
+
+        Raising aborts the credential change, so no new key is shown. With
+        ``replaces_file_hook`` the in-process AI store owns ``ai-control.db`` and
+        the separate-process fallback below is not used twice.
+        """
+        with self._lock:
+            self._credential_hooks.append(hook)
+            if replaces_file_hook:
+                self._file_hook = False
+
+    def add_credential_listener(self, listener: CredentialHook) -> None:
+        """Called after the credential change committed (e.g. to close sockets)."""
+        with self._lock:
+            self._credential_listeners.append(listener)
+
+    def _credential_changed(self, user_id: str, version: int) -> None:
+        if self._file_hook and self._path is not None:
+            control = self._path.with_name(AI_CONTROL_DB)
+            if control.exists():
+                # A CLI/admin process rotating a key reaches the registry through the
+                # file, so revocation never depends on the server being the writer.
+                from .ai_store import invalidate_user_file
+                invalidate_user_file(control, user_id, version)
+        for hook in list(self._credential_hooks):
+            hook(user_id, version)
+        self._pending_notices.append((user_id, version))
+
+    def _flush_notices(self) -> None:
+        notices, self._pending_notices = self._pending_notices, []
+        for user_id, version in notices:
+            for listener in list(self._credential_listeners):
+                try:
+                    listener(user_id, version)
+                except Exception:  # noqa: BLE001 - a listener must not undo a commit
+                    pass
 
     @contextmanager
     def _tx(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
@@ -198,9 +254,12 @@ class Store:
                     self._db.execute(f"RELEASE {savepoint}")
                 else:
                     self._db.execute("ROLLBACK")
+                    self._pending_notices.clear()
                 raise
             else:
                 self._db.execute(f"RELEASE {savepoint}" if nested else "COMMIT")
+                if not nested:
+                    self._flush_notices()
 
     @staticmethod
     def _user(row: sqlite3.Row) -> UserRow:
@@ -301,7 +360,9 @@ class Store:
                            " WHERE id=?", (token_hash, user_id))
             except sqlite3.IntegrityError:
                 raise UserExists("Credential already exists") from None
-            return self.user(user_id)
+            rotated = self.user(user_id)
+            self._credential_changed(user_id, rotated.credential_version)
+            return rotated
 
     def revoke_user_by_id(self, user_id: str, expected_revision: int,
                           expected_credential_version: int) -> UserRow:
@@ -327,7 +388,9 @@ class Store:
                        " deleted_at=?,credential_version=credential_version+1,"
                        " metadata_revision=metadata_revision+1 WHERE id=?",
                        (stamp, stamp if delete else None, user_id))
-            return self.user(user_id)
+            retired = self.user(user_id)
+            self._credential_changed(user_id, retired.credential_version)
+            return retired
 
     def _legacy_user(self, name: str) -> UserRow:
         with self._lock:

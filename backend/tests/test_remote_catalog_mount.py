@@ -619,8 +619,12 @@ async def test_built_spa_cannot_shadow_remote_method_refusals_or_add_mirrors(
         BASE, BASE + "/{profile_id}", BASE + "/{profile_id}/verify", BASE + "/{profile_id}/projects",
         BASE + "/{profile_id}/credential", BASE + "/{profile_id}/recover",
         BASE + "/{profile_id}/projects/operations/{operation_id}/observe",
+        # VS-187 Gate L (dev spec §16.11): census + explicit URL confirmation.
+        BASE + "/{profile_id}/consumers", BASE + "/{profile_id}/consumers/confirmation",
     }
     paths = app.openapi()["paths"]
+    assert set(paths[BASE + "/{profile_id}/consumers"]) == {"get"}
+    assert set(paths[BASE + "/{profile_id}/consumers/confirmation"]) == {"post", "delete"}
     assert set(paths[BASE]) == {"get", "post"}
     assert set(paths[BASE + "/{profile_id}"]) == {"patch", "delete"}
     assert set(paths[BASE + "/{profile_id}/credential"]) == {"put", "delete"}

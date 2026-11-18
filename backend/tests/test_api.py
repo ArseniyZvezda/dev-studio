@@ -429,8 +429,8 @@ def test_the_theme_defaults_are_the_graphite_design(client: TestClient) -> None:
 
     assert (theme["accent"], theme["mono_font"]) == ("#a394e8", "jetbrains")
     assert theme["text_size"] is None, "unset takes the app's own size"
-    assert (theme["sidebar"], theme["font"]) == ("icons", "google-sans")
-    for gone in ("look", "palette", "surfaces", "radius", "density", "reduce_motion"):
+    assert theme["sidebar"] == "icons"
+    for gone in ("look", "palette", "surfaces", "radius", "density", "reduce_motion", "font"):
         assert gone not in theme, gone
 
 
@@ -442,7 +442,6 @@ def test_the_new_theme_knobs_round_trip_and_are_bounded(client: TestClient) -> N
                 "text_size": 15,
                 "sidebar": "icons",
                 "node_tint": 30,
-                "font": "inter",
                 "mono_font": "jetbrains",
                 "status_palette": "accessible",
                 "canvas_grid": "lines",

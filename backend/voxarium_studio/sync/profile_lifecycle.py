@@ -1,9 +1,11 @@
-"""Application-owned admission seam (dev spec §5.2.1; Studio design S4/S5).
+"""Application-owned admission seam (dev spec §5.2.1, §16.11; Studio design S4/S5).
 
 I1 reads private bindings, but is NOT a legacy disk census or drain implementation.
 Without explicit legacy completeness (gate L), sensitive S2 mutations fail closed,
-even with an empty private store or no open projects. S5 must eventually supply
-bounded, already-drained evidence, never wait for ACKs inside this guard.
+even with an empty private store or no open projects. Gate L's owner is the user:
+only their durable, explicit confirmation of the exact URL (``consumer_confirmations``)
+makes the inventory ``known``. Active consumers are never stopped or drained here;
+they refuse the mutation until the user disables them.
 """
 from __future__ import annotations
 
@@ -16,7 +18,9 @@ from threading import Lock
 from typing import Any
 
 from ..core.application_config import RemoteServerProfile
+from ..core.project_scope import canonical_root
 from .bindings import BindingSnapshot, RemoteBindings
+from .consumer_confirmations import ConsumerConfirmations
 from .profiles import ProfileConsumers, ProfileError
 from .protocol import normalise_url
 
@@ -37,6 +41,32 @@ class BindingInventory:
     bound_roots: tuple[str, ...] = ()
     active_roots: tuple[str, ...] = ()
     drained: bool = False
+
+
+def _display_root(root: str) -> str:
+    if root.startswith("catalog:"):
+        return root
+    return str(canonical_root(root))
+
+
+@dataclass(frozen=True)
+class ConsumerCensus:
+    """What the Studio itself knows about one profile's consumers (§16.11).
+
+    ``state`` is ``known`` only with the user's confirmation of exactly ``url``.
+    ``bound_roots`` are private bindings and resident contexts for the profile or
+    URL; ``active_roots`` are attached runners/enabled legacy contexts;
+    ``operations`` are in-flight catalog Verify/read/Create leases.
+    """
+
+    profile_id: str
+    url: str
+    revision: int
+    state: str
+    confirmed_at: str | None
+    bound_roots: tuple[str, ...]
+    active_roots: tuple[str, ...]
+    operations: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -82,9 +112,13 @@ class ProfileLifecycle:
         self, *, profile_reader: Callable[[str], RemoteServerProfile],
         inventory: Callable[[str], BindingInventory] | None = None,
         binding_reader: Callable[[], BindingSnapshot] | None = None,
+        confirmations: ConsumerConfirmations | None = None,
     ) -> None:
         self._profile_reader = profile_reader
         self._inventory = inventory
+        # Production coverage owner (gate L). An explicit ``inventory`` callback
+        # (tests/future owners) takes precedence; with neither, coverage is unknown.
+        self._confirmations = confirmations
         self._binding_reader = binding_reader or RemoteBindings().read
         self._lock = Lock()
         self._closed = False
@@ -241,6 +275,40 @@ class ProfileLifecycle:
             yield ProfileConsumers(snapshot.active_roots, snapshot.bound_roots,
                                    snapshot.drained, recheck=recheck)
 
+    def _coverage(self, profile_id: str, urls: tuple[str, ...]) -> BindingInventory:
+        if self._inventory is not None:
+            return self._inventory(profile_id)
+        if self._confirmations is not None and self._confirmations.confirmed(urls):
+            # The user confirmed these exact URLs: no other consumers exist beyond
+            # what this process observes below. Local evidence still decides drain.
+            return BindingInventory(state="known", drained=True)
+        return BindingInventory()
+
+    def _collect(self, profile_id: str, urls: tuple[str, ...], private: BindingSnapshot
+                 ) -> tuple[set[str], set[str]]:
+        """Private rows + resident contexts -> bound; enabled contexts + leases -> active."""
+        bound: set[str] = set()
+        # Both selected and confirmed are bindings; no root is opened or
+        # stat'ed to decide whether its saved record may be forgotten.
+        for record in private.records:
+            if record.profile_id == profile_id or record.url in urls:
+                bound.add(record.canonical_root)
+        local_active: set[str] = set()
+        for ctx in tuple(self._contexts.values()):
+            # Starting/failed-cleanup contexts stay registered until stop.
+            # Disabled legacy URLs remain bound. Observation errors fail closed.
+            settings = ctx.config.sync
+            if (getattr(settings, "profile_id", None) == profile_id
+                    or settings.url and self._url(settings.url) in urls):
+                root = str(Path(ctx.paths.root).resolve())
+                bound.add(root)
+                if settings.enabled:
+                    local_active.add(root)
+        for consumer in self._leases.values():
+            if consumer.profile_id == profile_id or consumer.url in urls:
+                local_active.add(consumer.root)
+        return bound, local_active
+
     def _observe_inventory(self, profile_id: str, *, urls: tuple[str, ...], check_profile: bool
                            ) -> tuple[BindingInventory, str | None, ProfileConsumers]:
         """One C5 observation: coverage + private rows + residents/leases (I1).
@@ -252,7 +320,7 @@ class ProfileLifecycle:
         failed = False
         try:
             private = self._binding_reader()
-            inventory = self._inventory(profile_id) if self._inventory is not None else BindingInventory()
+            inventory = self._coverage(profile_id, urls)
             if (not isinstance(private, BindingSnapshot)
                     or not isinstance(inventory, BindingInventory) or inventory.state != "known"
                     or type(inventory.drained) is not bool
@@ -261,27 +329,9 @@ class ProfileLifecycle:
                     or any(not isinstance(root, str) or not root
                            for root in (*inventory.bound_roots, *inventory.active_roots))):
                 raise ValueError
-            bound = set(inventory.bound_roots)
+            bound, local_active = self._collect(profile_id, urls, private)
+            bound.update(inventory.bound_roots)
             active = set(inventory.active_roots)
-            # Both selected and confirmed are bindings; no root is opened or
-            # stat'ed to decide whether its saved record may be forgotten.
-            for record in private.records:
-                if record.profile_id == profile_id or record.url in urls:
-                    bound.add(record.canonical_root)
-            local_active: set[str] = set()
-            for ctx in tuple(self._contexts.values()):
-                # Starting/failed-cleanup contexts stay registered until stop.
-                # Disabled legacy URLs remain bound. Observation errors fail closed.
-                settings = ctx.config.sync
-                if (getattr(settings, "profile_id", None) == profile_id
-                        or settings.url and self._url(settings.url) in urls):
-                    root = str(Path(ctx.paths.root).resolve())
-                    bound.add(root)
-                    if settings.enabled:
-                        local_active.add(root)
-            for consumer in self._leases.values():
-                if consumer.profile_id == profile_id or consumer.url in urls:
-                    local_active.add(consumer.root)
             if check_profile and self._profile(profile_id).url != urls[0]:
                 raise ValueError
             active.update(local_active)
@@ -294,3 +344,94 @@ class ProfileLifecycle:
         if failed:
             raise ProfileError("consumer_lifecycle_unavailable")
         return inventory, private.fingerprint, snapshot
+
+    # --- Gate L: the user's explicit confirmation (dev spec §16.11) -------------
+
+    def _census(self, profile: RemoteServerProfile) -> ConsumerCensus:
+        failed = False
+        try:
+            private = self._binding_reader()
+            if not isinstance(private, BindingSnapshot):
+                raise ValueError
+            bound, active = self._collect(profile.profile_id, (profile.url,), private)
+            # One spelling per working copy for the person reading the list: a
+            # private row (canonical) and its resident context (resolved) coincide.
+            bound = {_display_root(root) for root in bound}
+            active = {_display_root(root) for root in active}
+        except Exception:
+            failed = True
+        if failed:
+            raise ProfileError("consumer_lifecycle_unavailable")
+        confirmed_at = None
+        if self._inventory is None and self._confirmations is not None:
+            try:
+                entry = self._confirmations.read().get(profile.url)
+            except Exception:
+                entry = None  # Missing or corrupt store: simply unknown.
+            confirmed_at = entry.confirmed_at if entry is not None else None
+        try:
+            known = self._coverage(profile.profile_id, (profile.url,)).state == "known"
+        except Exception:
+            known = False
+        operations = sorted({root.removeprefix("catalog:") for root in active
+                             if root.startswith("catalog:")})
+        return ConsumerCensus(
+            profile_id=profile.profile_id, url=profile.url, revision=profile.revision,
+            state="known" if known else "unknown",
+            confirmed_at=confirmed_at, bound_roots=tuple(sorted(bound)),
+            active_roots=tuple(sorted(r for r in active if not r.startswith("catalog:"))),
+            operations=tuple(operations),
+        )
+
+    def census(self, profile_id: str) -> ConsumerCensus:
+        """Read-only: what is shown to the user before they confirm."""
+        with self._critical():
+            return self._census(self._profile(profile_id))
+
+    def _confirmation_owner(self) -> ConsumerConfirmations:
+        if self._confirmations is None or self._inventory is not None:
+            raise ProfileError("consumer_confirmation_unavailable")
+        return self._confirmations
+
+    def confirm(self, profile_id: str, *, expected_revision: int, url: str,
+                bound_roots: tuple[str, ...]) -> ConsumerCensus:
+        """Record the user's explicit confirmation of exactly what they were shown.
+
+        A changed URL or bound set refuses (``consumer_inventory_changed``): the
+        user must look at the new list. Nothing is stopped, unbound or connected.
+        """
+        owner = self._confirmation_owner()
+        with self._critical():
+            profile = self._profile(profile_id)
+            if type(expected_revision) is not int or profile.revision != expected_revision:
+                raise ProfileError("profile_revision_conflict")
+            current = self._census(profile)
+            if (not isinstance(url, str) or url != profile.url
+                    or not isinstance(bound_roots, tuple)
+                    or len(bound_roots) != len(current.bound_roots)
+                    or tuple(sorted(bound_roots)) != current.bound_roots):
+                raise ProfileError("consumer_inventory_changed")
+            failed = False
+            try:
+                owner.confirm(profile.url, current.bound_roots)
+            except Exception:
+                failed = True
+            if failed:
+                raise ProfileError("consumer_confirmation_unavailable")
+            return self._census(profile)
+
+    def withdraw(self, profile_id: str, *, expected_revision: int) -> ConsumerCensus:
+        """Forget the confirmation: later C7 mutations of this URL fail closed again."""
+        owner = self._confirmation_owner()
+        with self._critical():
+            profile = self._profile(profile_id)
+            if type(expected_revision) is not int or profile.revision != expected_revision:
+                raise ProfileError("profile_revision_conflict")
+            failed = False
+            try:
+                owner.withdraw(profile.url)
+            except Exception:
+                failed = True
+            if failed:
+                raise ProfileError("consumer_confirmation_unavailable")
+            return self._census(profile)

@@ -50,7 +50,12 @@ import type {
   ProjectRemoteEditorAckRequest,
   ProjectRemoteCommitRequest,
   ProjectRemotePreview,
+  ProjectRemotePreviewRequest,
   ProjectRemoteEnableRequest,
+  ProjectRemoteRecoverRequest,
+  ProjectRemoteRecoverResult,
+  ProjectRemoteArchiveRequest,
+  ProjectRemoteArchiveResult,
   ProjectRemoteMigrationPlan,
   ProjectRemoteMigrationProfileRequest,
   ProjectRemoteMigrationProfile,
@@ -860,10 +865,16 @@ export function createApiClient(session: ProjectSession = rendererSession) {
       remoteRequest<ProjectRemoteCommitReceipt>('POST', `/changes/${encodeURIComponent(changeId)}/commit`, body),
     cancelRemoteChange: (changeId: string) =>
       remoteRequest<void>('DELETE', `/changes/${encodeURIComponent(changeId)}`),
-    previewRemoteReconciliation: () =>
-      remoteRequest<ProjectRemotePreview>('POST', '/reconcile-preview'),
+    previewRemoteReconciliation: (body: ProjectRemotePreviewRequest) =>
+      remoteRequest<ProjectRemotePreview>('POST', '/reconcile-preview', body),
     enableProjectRemote: (body: ProjectRemoteEnableRequest) =>
       remoteRequest<ProjectRemoteStatus>('POST', '/enable', body),
+    /** Explicit recovery of an interrupted binding change; never enables or transfers (§16.10). */
+    recoverProjectRemote: (body: ProjectRemoteRecoverRequest) =>
+      remoteRequest<ProjectRemoteRecoverResult>('POST', '/recover', body),
+    /** Renames (keeps) a v2 checkpoint of another Remote incarnation; consumes the preview. */
+    archiveProjectRemoteCheckpoint: (body: ProjectRemoteArchiveRequest) =>
+      remoteRequest<ProjectRemoteArchiveResult>('POST', '/checkpoint/archive', body),
     remoteMigration: () => remoteRequest<ProjectRemoteMigrationPlan>('GET', '/migration'),
     selectRemoteMigrationProfile: (planId: string, body: ProjectRemoteMigrationProfileRequest) =>
       remoteRequest<ProjectRemoteMigrationProfile>('POST', `/migration/${encodeURIComponent(planId)}/profile`, body),

@@ -10,8 +10,9 @@ C4 permits explicit HTTP-only Verify, with one owned pool and fresh request
 bindings; no verification history or persistent activation flag is maintained.
 S2 fences are bounded observations, not a multiprocess lease or ABA proof.
 C6 adds only S2 create/rename with exact-row, secret-free response observation.
-C5/I1 adds app-owned consumer/admission fencing and private binding reads, not
-positive legacy completeness (gate L) or S5 drain; sensitive mutations stay closed.
+C5/I1 adds app-owned consumer/admission fencing and private binding reads. Gate L
+(positive legacy completeness) comes only from the user's durable confirmation of
+the exact URL (dev spec §16.11); without it sensitive mutations stay closed.
 C7 exposes explicit S2 credential/URL/delete/recovery commands. Recovery alone
 may inspect a regular pending journal; ordinary reads/admission stay fenced.
 C8 owns lazy durable Create routing/services; neither startup nor metadata GET
@@ -50,7 +51,8 @@ from .catalog_read_service import CatalogReadService
 from .catalog_service import CatalogService
 from .catalog_verification import CatalogVerificationService
 from .profiles import ProfileConsumers, ProfileError, RemoteProfiles
-from .profile_lifecycle import ProfileLifecycle
+from .consumer_confirmations import FILE_NAME as CONFIRMATIONS_FILE, ConsumerConfirmations
+from .profile_lifecycle import ConsumerCensus, ProfileLifecycle
 from . import profiles as profile_store
 
 if TYPE_CHECKING:
@@ -280,6 +282,29 @@ class RemoteCatalogReady:
     create: CatalogCreateRuntime = field(repr=False)
 
 
+class _PinnedConfirmations(ConsumerConfirmations):
+    """Gate L store at the home pinned on start; drift/links are unavailable, never empty."""
+
+    def __init__(self, runtime: RemoteCatalogRuntime) -> None:
+        super().__init__()
+        self._runtime = runtime
+
+    def path(self) -> Path:
+        self._runtime._locating()
+        home = self._runtime._home
+        if home is None:
+            raise ProfileError("profile_recovery_required")
+        path = home / CONFIRMATIONS_FILE
+        try:
+            mode = home.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISDIR(mode):
+                raise ProfileError("profile_recovery_required")
+        return path
+
+
 class RemoteCatalogRuntime:
     """Explicit lifecycle holder, independent of app.state.ctx and project tabs.
 
@@ -294,7 +319,8 @@ class RemoteCatalogRuntime:
 
     def __init__(self) -> None:
         self._state = "new"
-        self.lifecycle = ProfileLifecycle(profile_reader=self._get, binding_reader=self._read_bindings)
+        self.lifecycle = ProfileLifecycle(profile_reader=self._get, binding_reader=self._read_bindings,
+                                          confirmations=_PinnedConfirmations(self))
         self._home: Path | None = None
         self._repo: RemoteProfiles | None = None
         self._readers: S2CatalogReaders | None = None
@@ -578,6 +604,7 @@ class RemoteCatalogRuntime:
                     and type(error.args[0]) is str and error.args[0] in {
                         "profile_not_found", "profile_revision_conflict", "profile_url_collision",
                         "profile_in_use", "profile_consumers_not_drained", "consumer_lifecycle_unavailable",
+                        "consumer_inventory_changed", "consumer_confirmation_unavailable",
                         "credential_clear_confirmation_required", "credential_required",
                         "invalid_profile_metadata", "invalid_server_url", "profile_recovery_required",
                         "profile_recovery_unavailable", "application_store_unavailable",
@@ -612,6 +639,24 @@ class RemoteCatalogRuntime:
         # Only an actual successful S2 recover returning None proves absent
         # metadata. No failed read, missing journal or exception becomes null.
         return None
+
+    # --- Gate L facade (dev spec §16.11) ------------------------------------------
+
+    def consumer_census(self, profile_id: str) -> ConsumerCensus:
+        """Read-only: known bindings for the exact profile URL; never grants consent."""
+        self._admit()
+        return self.lifecycle.census(profile_id)
+
+    def confirm_consumers(self, profile_id: str, *, expected_revision: int, url: str,
+                          bound_roots: tuple[str, ...]) -> ConsumerCensus:
+        """The user's explicit confirmation of what they were shown; nothing else."""
+        self._check_mutation_locations()
+        return self.lifecycle.confirm(profile_id, expected_revision=expected_revision,
+                                      url=url, bound_roots=bound_roots)
+
+    def withdraw_consumers(self, profile_id: str, *, expected_revision: int) -> ConsumerCensus:
+        self._check_mutation_locations()
+        return self.lifecycle.withdraw(profile_id, expected_revision=expected_revision)
 
     def _list(self) -> tuple[RemoteServerProfile, ...]:
         self._check()

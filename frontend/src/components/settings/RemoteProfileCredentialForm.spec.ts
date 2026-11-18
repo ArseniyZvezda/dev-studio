@@ -17,6 +17,15 @@ const otherId = '22222222-2222-4222-8222-222222222222'
 const endpoint = `/api/remote/servers/${id}/credential`
 const secret = 'PERSONAL-KEY-INPUT-AND-ERROR-CANARY'
 const network = vi.fn<typeof fetch>()
+// Gate L census (dev spec §16) is routed separately so credential intents keep exact call counts.
+const consumersNetwork = vi.fn<typeof fetch>()
+const consumersUrl = /^\/api\/remote\/servers\/([0-9a-f-]+)\/consumers(?:\/confirmation)?$/
+function census(profileId = id, overrides: Record<string, unknown> = {}) {
+  return { profile_id: profileId, url: 'https://remote.example/team', revision: 7, state: 'known',
+    confirmed_at: '2026-11-18T10:00:00Z', bound_roots: [], active_roots: [], operations: [], ...overrides }
+}
+const router: typeof fetch = (url, init) => consumersUrl.test(String(url))
+  ? consumersNetwork(url, init) : network(url, init)
 const sockets = vi.fn()
 const piniae: ReturnType<typeof createPinia>[] = []
 const mounted: { app: App; host: HTMLDivElement; active: boolean }[] = []
@@ -52,7 +61,7 @@ async function harness(items = [profile()]) {
   return { pinia, store }
 }
 type Harness = Awaited<ReturnType<typeof harness>>
-function mountForm(context: Harness, initial = profile()) {
+async function mountForm(context: Harness, initial = profile()) {
   const value = shallowRef(initial)
   const saved = vi.fn((...args: unknown[]) => { telemetry.push({ saved: args }) })
   const close = vi.fn((...args: unknown[]) => { telemetry.push({ close: args }) })
@@ -68,6 +77,7 @@ function mountForm(context: Harness, initial = profile()) {
   const view = { app, host, active: true, saved, close, refreshRequired, errors, value }
   mounted.push(view)
   app.mount(host)
+  await flush() // The key intents stay gated until the census GET settles.
   return view
 }
 function unmount(view: typeof mounted[number]) {
@@ -126,7 +136,9 @@ beforeEach(() => {
   consoleCalls.length = 0
   network.mockReset().mockRejectedValue(new Error('Unexpected mocked fetch'))
   sockets.mockReset()
-  vi.stubGlobal('fetch', network)
+  consumersNetwork.mockReset().mockImplementation(async url =>
+    response(census(consumersUrl.exec(String(url))![1])))
+  vi.stubGlobal('fetch', router)
   vi.stubGlobal('WebSocket', sockets)
   window.localStorage.clear()
   window.sessionStorage.clear()
@@ -146,7 +158,7 @@ describe('explicit personal credential intents', () => {
   it.each(['stored', 'environment', 'none'] as const)('opens empty/focused with effective %s source, without network or timers', async source => {
     vi.useFakeTimers()
     const context = await harness([profile({ credential_source: source, has_token: source !== 'none' })])
-    const view = mountForm(context, context.store.items[0])
+    const view = await mountForm(context, context.store.items[0])
     await flush()
     expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label'))
       .toBe(t('settings.remoteServers.credentials.title'))
@@ -168,7 +180,7 @@ describe('explicit personal credential intents', () => {
   it.each(['', ' ', '\t\r\n'])('empty/whitespace %j means keep even for forced submit; never acquires a ticket or DELETEs', async value => {
     const context = await harness()
     const begin = vi.spyOn(context.store, 'beginMutation')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(value); submit(); submit()
     await flush()
     expect(begin).not.toHaveBeenCalled()
@@ -186,7 +198,7 @@ describe('explicit personal credential intents', () => {
     const pending = deferred<Response>()
     const begin = vi.spyOn(context.store, 'beginMutation')
     const apply = vi.spyOn(context.store, 'applyMutation')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     network.mockImplementationOnce(async (url, init) => {
       expect(begin).toHaveBeenCalledExactlyOnceWith(id)
       expect(context.store.busy[id]).toBe('mutation')
@@ -220,7 +232,7 @@ describe('explicit personal credential intents', () => {
     const pending = deferred<Response>()
     const begin = vi.spyOn(context.store, 'beginMutation')
     const removal = vi.spyOn(context.store, 'applyRemoval')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input()
     button('forget').click()
     await flush()
@@ -254,7 +266,7 @@ describe('explicit personal credential intents', () => {
   it.each(['forget-cancel', 'cancel', 'escape', 'unmount'] as const)('cancels Forget via %s without acquiring or dispatching', async action => {
     const context = await harness()
     const begin = vi.spyOn(context.store, 'beginMutation')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); button('forget').click()
     await flush()
     if (action === 'escape') form().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -277,7 +289,7 @@ describe('explicit personal credential intents', () => {
 
   it.each(['cancel', 'escape', 'unmount'] as const)('erases unsent input on %s and never sends it', async action => {
     const context = await harness()
-    const view = mountForm(context)
+    const view = await mountForm(context)
     const node = field()
     input()
     if (action === 'cancel') button('cancel').click()
@@ -297,7 +309,7 @@ describe('explicit personal credential intents', () => {
     const context = await harness()
     const pending = deferred<Response>()
     network.mockReturnValueOnce(pending.promise)
-    const view = mountForm(context)
+    const view = await mountForm(context)
     let confirm: HTMLButtonElement | undefined
     if (intent === 'save') { input(); submit(); submit() }
     else {
@@ -330,7 +342,7 @@ describe('captured CAS and stale intent guards', () => {
     const owner = context.store.beginMutation(id)!
     expect(owner).not.toBeNull()
     const end = vi.spyOn(context.store, 'endMutation')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     await act(intent)
     await flush()
     expect(requests()).toHaveLength(0)
@@ -346,7 +358,7 @@ describe('captured CAS and stale intent guards', () => {
   it('honours an explicitly returned null ticket before fetch, without adjusting shared pending', async () => {
     const context = await harness()
     vi.spyOn(context.store, 'beginMutation').mockReturnValue(null)
-    const view = mountForm(context)
+    const view = await mountForm(context)
     await act('save'); await flush()
     expect(requests()).toHaveLength(0)
     expect(remoteProfileMetadataState(context.store)).toEqual({ pending: 0, refreshRequired: true })
@@ -359,7 +371,7 @@ describe('captured CAS and stale intent guards', () => {
     `${intent}: rejects stale %s before pairing a new ticket with old expected_revision`, async change => {
       const context = await harness()
       const snapshot = profile()
-      const view = mountForm(context, snapshot)
+      const view = await mountForm(context, snapshot)
       // Consent is given before a later binding/loading/latch change, never re-used blindly.
       if (intent === 'forget') { button('forget').click(); await flush() }
       if (change === 'revision') context.store.items[0]!.revision = 8
@@ -396,7 +408,7 @@ describe('captured CAS and stale intent guards', () => {
     const context = await harness()
     const pending = deferred<Response>()
     network.mockReturnValueOnce(pending.promise)
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); submit()
     if (change === 'prop') view.value.value = profile({ profile_id: otherId })
     if (change === 'store') context.store.items = [profile({ revision: 9 })]
@@ -416,7 +428,7 @@ describe('captured CAS and stale intent guards', () => {
     if (kind === 'explicit-false') vi.spyOn(context.store, 'applyMutation').mockReturnValue(false)
     network.mockResolvedValueOnce(response(profile({ revision: kind === 'non-advancing' ? 7 : 8,
       profile_id: kind === 'different-id' ? otherId : id })))
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); submit(); await flush()
     expect(view.saved).not.toHaveBeenCalled()
     expect(view.refreshRequired).toHaveBeenCalledTimes(1)
@@ -435,14 +447,14 @@ describe('safe local errors without retry or implicit verification', () => {
       [409, 'profile_revision_conflict', 'conflict'], [409, 'credential_binding_conflict', 'conflict'],
       [409, 'profile_recovery_required', 'conflict'], [409, 'profile_in_use', 'inUse'],
       [409, 'profile_consumers_not_drained', 'notDrained'], [422, 'invalid_credential', 'invalid'],
-      [503, 'credential_store_unavailable', 'unavailable'], [503, 'consumer_lifecycle_unavailable', 'unavailable'],
+      [503, 'credential_store_unavailable', 'unavailable'],
       [502, 'invalid_response', 'failed'], [401, 'studio_unauthorised', 'failed'],
       [403, 'studio_forbidden', 'failed'], [405, 'method_not_allowed', 'failed'],
     ] as const)(`${intent}: maps %s/%s to localized %s and never echoes details`, async (status, code, key) => {
       vi.useFakeTimers()
       const context = await harness()
       network.mockResolvedValueOnce(response({ code, details: { message: secret, root: secret } }, status))
-      const view = mountForm(context)
+      const view = await mountForm(context)
       const storage = vi.spyOn(Storage.prototype, 'setItem')
       await act(intent); await flush()
       expect(alertText()).toBe(t(`settings.remoteServers.credentials.${key}`))
@@ -468,7 +480,7 @@ describe('safe local errors without retry or implicit verification', () => {
     if (kind === 'malformed-json') network.mockResolvedValueOnce(new Response(secret, { status: 503 }))
     if (kind === 'raw-code') network.mockResolvedValueOnce(response({ code: secret, details: { message: secret } }, 502))
     if (kind === 'raw-body') network.mockResolvedValueOnce(response({ message: secret, token: secret }, 502))
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); submit(); await flush()
     expect(alertText()).toBe(t(`settings.remoteServers.credentials.${kind === 'malformed-json' ? 'unavailable' : 'failed'}`))
     expect(view.saved).not.toHaveBeenCalled()
@@ -481,7 +493,7 @@ describe('safe local errors without retry or implicit verification', () => {
   it('clears immediately and safely handles a synchronously thrown fetch error', async () => {
     const context = await harness()
     network.mockImplementationOnce(() => { throw new Error(secret) })
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); submit()
     expect(field().value).toBe('')
     await flush()
@@ -503,7 +515,7 @@ describe('safe local errors without retry or implicit verification', () => {
       if (kind === 'bad-source') body.credential_source = 'none' // has_token remains true.
       if (kind === 'bad-verification') body.verification = { state: 'unavailable', message: secret }
       network.mockResolvedValueOnce(response(body, kind === 'unexpected-201' ? 201 : kind === 'unexpected-204' ? 204 : 200))
-      const view = mountForm(context)
+      const view = await mountForm(context)
       await act('forget'); await flush()
       expect(apply).not.toHaveBeenCalled()
       expect(view.saved).not.toHaveBeenCalled()
@@ -525,7 +537,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
       const end = vi.spyOn(context.store, 'endMutation')
       const apply = vi.spyOn(context.store, 'applyMutation')
       const dispose = vi.spyOn(context.store, 'dispose')
-      const first = mountForm(context)
+      const first = await mountForm(context)
       await act(intent)
       expect(state).toEqual({ pending: 1, refreshRequired: false })
       if (action === 'cancel') button('cancel').click()
@@ -538,7 +550,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
       expect(await context.store.verify(id)).toBe(false) // No request may bypass the fence.
       network.mockResolvedValueOnce(response({ items: [profile({ revision: 8 })] }))
       expect(await context.store.load()).toBe(false) // Pending GET must not publish a snapshot.
-      const second = mountForm(context)
+      const second = await mountForm(context)
       input(); submit()
       await flush()
       expect(button('submit').disabled).toBe(true)
@@ -555,7 +567,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
       expect(context.store.busy).toEqual({})
       expect(state).toEqual({ pending: 0, refreshRequired: true })
       unmount(second)
-      const third = mountForm(context)
+      const third = await mountForm(context)
       input(); submit(); await flush()
       expect(requests()).toHaveLength(1)
       unmount(third)
@@ -566,7 +578,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
       expect(await context.store.load()).toBe(true)
       expect(state.refreshRequired).toBe(true) // The form/store never owns the parent's refresh latch.
       state.refreshRequired = false // Parent's explicit successful Refresh.
-      const fourth = mountForm(context, context.store.items[0])
+      const fourth = await mountForm(context, context.store.items[0])
       network.mockResolvedValueOnce(response(profile({ revision: 9 })))
       input(); submit(); await flush()
       expect(JSON.parse(String(requests()[1]![1]?.body))).toEqual({ expected_revision: 8, token: secret })
@@ -579,12 +591,12 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
   it('keeps a conflict latch across modal remount and ordinary metadata load until the parent explicitly clears it', async () => {
     const context = await harness()
     network.mockResolvedValueOnce(response({ code: 'profile_revision_conflict', details: {} }, 409))
-    const first = mountForm(context)
+    const first = await mountForm(context)
     input(); submit(); await flush()
     button('cancel').click(); unmount(first)
     network.mockResolvedValueOnce(response({ items: [profile({ revision: 8 })] }))
     expect(await context.store.load()).toBe(true)
-    const second = mountForm(context, context.store.items[0])
+    const second = await mountForm(context, context.store.items[0])
     input(); submit(); await flush()
     expect(requests()).toHaveLength(1)
     expect(second.saved).not.toHaveBeenCalled()
@@ -596,7 +608,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
   it.each(['save', 'forget'] as const)('does not interpret synchronous saved→unmount as abandoned %s', async intent => {
     const context = await harness()
     network.mockResolvedValueOnce(response(profile({ revision: 8 })))
-    const view = mountForm(context)
+    const view = await mountForm(context)
     view.saved.mockImplementation(() => unmount(view))
     await act(intent); await flush()
     expect(view.saved).toHaveBeenCalledExactlyOnceWith()
@@ -611,7 +623,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
     const context = await harness()
     const pending = deferred<Response>()
     network.mockReturnValueOnce(pending.promise)
-    const view = mountForm(context)
+    const view = await mountForm(context)
     await act(intent)
     if (action === 'close') button('cancel').click()
     else unmount(view)
@@ -633,7 +645,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
     const context = await harness()
     const pending = deferred<Response>()
     network.mockReturnValueOnce(pending.promise)
-    const credentialView = mountForm(context)
+    const credentialView = await mountForm(context)
     input(); submit(); unmount(credentialView)
     const host = document.createElement('div')
     document.body.append(host)
@@ -675,7 +687,7 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
     expect(requests()[0]![1]?.method).toBe('PATCH')
     expect(remoteProfileMetadataState(context.store).pending).toBe(1)
     const begin = vi.spyOn(context.store, 'beginMutation')
-    const view = mountForm(context)
+    const view = await mountForm(context)
     input(); submit(); await flush()
     expect(begin).not.toHaveBeenCalled()
     expect(requests()).toHaveLength(1)
@@ -692,12 +704,12 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
     const a = await harness()
     const pending = deferred<Response>()
     network.mockReturnValueOnce(pending.promise)
-    const first = mountForm(a)
+    const first = await mountForm(a)
     input(); submit(); unmount(first)
     const b = await harness([profile({ name: 'B profile' })])
     expect(remoteProfileMetadataState(a.store)).not.toBe(remoteProfileMetadataState(b.store))
     expect(remoteProfileMetadataState(b.store)).toEqual({ pending: 0, refreshRequired: false })
-    const second = mountForm(b, b.store.items[0])
+    const second = await mountForm(b, b.store.items[0])
     network.mockResolvedValueOnce(response(profile({ revision: 8, name: 'B confirmed', credential_source: 'environment' })))
     input(); submit(); await flush()
     pending.resolve(response(profile({ revision: 8, name: 'Late A' })))
@@ -712,5 +724,99 @@ describe('renderer ownership, abandonment and shared metadata latch', () => {
     expect(remoteProfileMetadataState(b.store)).toEqual({ pending: 0, refreshRequired: false })
     expect(requests()).toHaveLength(2)
     safe(a); safe(b)
+  })
+})
+
+describe('Gate L: key intents wait for the user-confirmed consumer census (dev spec §16)', () => {
+  function gate() { return form().querySelector('[data-testid="remote-credential-gate"]') }
+  function panel(testId: string) { return form().querySelector<HTMLElement>(`[data-testid="remote-consumers-${testId}"]`) }
+  function postedConfirmations() {
+    return consumersNetwork.mock.calls.filter(([, init]) => init?.method === 'POST')
+  }
+
+  it('keeps Save and Forget disabled while the census is unknown and sends nothing on forced submit', async () => {
+    const context = await harness()
+    consumersNetwork.mockImplementation(async () => response(census(id, {
+      state: 'unknown', confirmed_at: null, bound_roots: ['D:\games\alpha'],
+    })))
+    const begin = vi.spyOn(context.store, 'beginMutation')
+    await mountForm(context)
+    input()
+    await flush()
+    expect(button('submit').disabled).toBe(true)
+    expect(button('forget').disabled).toBe(true)
+    expect(gate()?.textContent).toBe(t('settings.remoteServers.consumers.required'))
+    submit(); forceClick(button('forget'))
+    await flush()
+    expect(begin).not.toHaveBeenCalled()
+    expect(requests()).toHaveLength(0)
+    expect(postedConfirmations()).toHaveLength(0)
+    expect(field().value).toBe(secret)
+    input('')
+  })
+
+  it('enables Save only after the user confirms exactly the shown URL and projects, then PUTs the key', async () => {
+    const context = await harness()
+    const roots = ['D:\games\alpha', 'D:\games\beta']
+    consumersNetwork.mockImplementation(async (_url, init) => response(census(id, init?.method === 'POST'
+      ? { bound_roots: roots } : { state: 'unknown', confirmed_at: null, bound_roots: roots })))
+    const view = await mountForm(context)
+    input()
+    expect(button('submit').disabled).toBe(true)
+    panel('acknowledge')!.click()
+    await flush()
+    panel('confirm')!.click()
+    await flush()
+    expect(postedConfirmations()).toHaveLength(1)
+    const [url, init] = postedConfirmations()[0]!
+    expect(url).toBe(`/api/remote/servers/${id}/consumers/confirmation`)
+    expect(JSON.parse(String(init?.body))).toEqual({ expected_revision: 7, url: 'https://remote.example/team', bound_roots: roots })
+    expect(String(init?.body)).not.toContain(secret)
+    expect(gate()).toBeNull()
+    expect(button('submit').disabled).toBe(false)
+    network.mockResolvedValueOnce(response(profile({ revision: 8 })))
+    submit(); await flush()
+    expect(requests()).toHaveLength(1)
+    expect(view.saved).toHaveBeenCalledExactlyOnceWith()
+    safe(context)
+  })
+
+  it('warns about syncing projects without stopping them', async () => {
+    const context = await harness()
+    consumersNetwork.mockImplementation(async () => response(census(id, {
+      bound_roots: ['D:\games\alpha'], active_roots: ['D:\games\alpha'],
+    })))
+    await mountForm(context)
+    expect(panel('active-warning')?.textContent?.trim()).toBe(t('settings.remoteServers.consumers.activeWarning'))
+    expect(panel('active')?.textContent?.trim()).toBe(t('settings.remoteServers.consumers.syncing'))
+    expect(consumersNetwork.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true)
+  })
+
+  it('stays gated when the census cannot be read', async () => {
+    const context = await harness()
+    consumersNetwork.mockImplementation(async () => response({ code: 'consumer_lifecycle_unavailable', details: { root: secret } }, 503))
+    await mountForm(context)
+    input()
+    expect(button('submit').disabled).toBe(true)
+    expect(panel('error')?.textContent).toBe(t('settings.remoteServers.consumers.unavailable'))
+    submit(); await flush()
+    expect(requests()).toHaveLength(0)
+    input('')
+    safe(context)
+  })
+
+  it.each(['save', 'forget'] as const)('%s: maps 503 consumer_lifecycle_unavailable to a localized hint and re-reads the census, never re-confirming', async intent => {
+    const context = await harness()
+    network.mockResolvedValueOnce(response({ code: 'consumer_lifecycle_unavailable', details: { message: secret } }, 503))
+    const view = await mountForm(context)
+    consumersNetwork.mockImplementation(async () => response(census(id, { state: 'unknown', confirmed_at: null })))
+    await act(intent); await flush()
+    expect(alertText()).toBe(t('settings.remoteServers.consumers.notConfirmed'))
+    expect(view.refreshRequired).not.toHaveBeenCalled()
+    expect(consumersNetwork).toHaveBeenCalledTimes(2)
+    expect(postedConfirmations()).toHaveLength(0)
+    expect(button('submit').disabled).toBe(true)
+    expect(requests()).toHaveLength(1)
+    safe(context)
   })
 })

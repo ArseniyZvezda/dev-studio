@@ -1,8 +1,10 @@
 """Opt-in personal Remote storage foundation (dev spec §5.2.1).
 
 Not mounted by an API or consumed by RemoteSync. Existing-profile mutations need
-an authoritative consumer guard that holds the lifecycle lock through publication.
-Until S5 provides that guard they fail closed. No network operations live here.
+an authoritative consumer guard that holds the lifecycle lock through publication;
+without one they fail closed. In production that guard is ProfileLifecycle, whose
+coverage is known only after the user's explicit URL confirmation (gate L, dev spec
+§16.11). No network operations live here.
 """
 from __future__ import annotations
 

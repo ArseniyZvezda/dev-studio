@@ -245,3 +245,116 @@ def test_create_requires_canonical_v4_uuid_without_rewriting(store, proposed):
     with pytest.raises(InvalidRequest):
         store.create_user("Good", digest("key"), user_id=proposed)
     assert store.list_users() == []
+
+
+# ------------------------------------------------------------------ R-A0 (VS-191)
+# Credential generation changes notify AI control mirrors *inside* the credential
+# transaction (a failing hook means no new key) and close stale sockets after commit.
+
+
+def _record(store):
+    hooks, listeners = [], []
+    store.add_credential_hook(lambda user_id, version: hooks.append((user_id, version)))
+    store.add_credential_listener(lambda user_id, version: listeners.append((user_id, version)))
+    return hooks, listeners
+
+
+def test_every_generation_change_runs_hook_then_listener_once(store):
+    hooks, listeners = _record(store)
+    user = store.create_user("User", digest("a"))
+    store.update_user(user.id, display_name="Renamed", expected_revision=1)
+    assert hooks == listeners == []  # metadata is not a credential change
+    store.rotate_user(user.id, digest("b"), 2, 1)
+    store.revoke_user_by_id(user.id, 3, 2)
+    store.revoke_user_by_id(user.id, 3, 2)  # completed retry: no bump, no notice
+    store.rotate_user(user.id, digest("c"), 4, 3)  # reactivate
+    store.delete_user(user.id, 5, 4)
+    expected = [(user.id, 2), (user.id, 3), (user.id, 4), (user.id, 5)]
+    assert hooks == expected and listeners == expected
+    assert [version for _, version in hooks] == sorted({version for _, version in hooks})
+
+
+def test_failing_hook_rolls_back_the_credential_change(store):
+    user = store.create_user("User", digest("old"))
+    listeners = []
+    store.add_credential_listener(lambda *args: listeners.append(args))
+
+    def refuse(_user_id, _version):
+        raise RuntimeError("AI mirror invalidation failed")
+
+    store.add_credential_hook(refuse)
+    for change in (lambda: store.rotate_user(user.id, digest("new"), 1, 1),
+                   lambda: store.revoke_user_by_id(user.id, 1, 1),
+                   lambda: store.delete_user(user.id, 1, 1)):
+        with pytest.raises(RuntimeError):
+            change()
+        assert store.user(user.id) == user and store.credential_valid(user.id, 1)
+        assert store.user_by_token_hash(digest("old")) == user
+        assert store.user_by_token_hash(digest("new")) is None
+    assert listeners == []
+
+
+def test_listener_runs_only_after_outer_commit_and_not_on_rollback(store):
+    user = store.create_user("User", digest("old"))
+    other = store.create_user("Other", digest("taken"))
+    seen = []
+    store.add_credential_listener(lambda user_id, version: seen.append(
+        (user_id, version, store.credential_valid(user_id, version))))
+    # Duplicate credential: the update fails before any notice is queued.
+    with pytest.raises(UserExists):
+        store.rotate_user(user.id, digest("taken"), 1, 1)
+    # A notice queued inside an outer transaction that later fails is dropped.
+    with pytest.raises(RuntimeError):
+        with store._tx():
+            store.rotate_user(user.id, digest("inner"), 1, 1)
+            raise RuntimeError("outer failure")
+    assert seen == [] and store.credential_valid(user.id, 1)
+    # Legacy nested CLI path: one notice, delivered after the outer commit is visible.
+    store.add_user("legacy", digest("legacy-old"))
+    legacy = store._legacy_user("legacy")
+    store.set_token_hash("legacy", digest("legacy-new"))
+    assert seen == [(legacy.id, 2, True)]
+    assert store.user(other.id).credential_version == 1
+
+
+def test_listener_failure_never_undoes_a_committed_rotation(store):
+    user = store.create_user("User", digest("old"))
+    store.add_credential_listener(lambda *_: (_ for _ in ()).throw(RuntimeError("socket gone")))
+    rotated = store.rotate_user(user.id, digest("new"), 1, 1)
+    assert rotated.credential_version == 2 and store.credential_valid(user.id, 2)
+
+
+def test_file_store_without_ai_registry_rotates_unchanged(tmp_path):
+    store = Store(tmp_path / "remote.db")
+    try:
+        user = store.create_user("User", digest("old"))
+        assert store.rotate_user(user.id, digest("new"), 1, 1).credential_version == 2
+        assert not (tmp_path / "ai-control.db").exists()
+    finally:
+        store.close()
+
+
+def test_hub_closes_only_old_generation_sockets(store):
+    import asyncio
+    from voxarium_studio_remote.auth import User
+    from voxarium_studio_remote.hub import Hub
+
+    async def scenario():
+        alice = store.create_user("Alice", digest("a"))
+        bob = store.create_user("Bob", digest("b"))
+        store.create_project("p", "Project")
+        hub = Hub(store)
+        old = hub.connect(User.from_row(alice), "p")
+        other = hub.connect(User.from_row(bob), "p")
+        rotated = store.rotate_user(alice.id, digest("a2"), 1, 1)
+        fresh = hub.connect(User.from_row(rotated), "p")
+        assert hub.close_user(alice.id, rotated.credential_version) == 1
+        assert old.closed and not other.closed and not fresh.closed
+        # The writer wakes on the sentinel instead of waiting for the watcher; nothing
+        # queued for the old generation is released.
+        assert old.queue.get_nowait() is None and old.queue.empty()
+        assert hub.close_user(alice.id, rotated.credential_version) == 0
+        with pytest.raises(CredentialInvalid):
+            hub.handle(old, '{"t":"sync","since":0}')
+
+    asyncio.run(scenario())

@@ -14,7 +14,7 @@
 
 import { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 
@@ -44,6 +44,26 @@ interface Member {
 
 let members: Member[] = []
 let relayDocs: Y.Doc[] = []
+
+/** Web Storage written by the code under test when jsdom's own is shadowed. */
+const memoryStorage = new Map<string, string>()
+
+beforeEach(() => {
+  // Node >= 25 defines its own global localStorage, undefined without
+  // --localstorage-file, and it shadows jsdom's here; the API client reads its token
+  // from it. Give it an in-memory one only when the runtime has none.
+  memoryStorage.clear()
+  if (typeof window.localStorage === 'undefined') {
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => memoryStorage.get(key) ?? null,
+      setItem: (key: string, value: string) => { memoryStorage.set(key, String(value)) },
+      removeItem: (key: string) => { memoryStorage.delete(key) },
+      clear: () => memoryStorage.clear(),
+      key: (index: number) => [...memoryStorage.keys()][index] ?? null,
+      get length() { return memoryStorage.size },
+    })
+  }
+})
 
 afterEach(() => {
   for (const member of members) {
@@ -242,6 +262,33 @@ describe('two editors in one room', () => {
     expect(caret?.querySelector('.collab-caret-label')?.textContent).toBe('alice')
     expect(markdownOf(bob, source)).toBe(source)
     expect([alice.sent, bob.sent]).toEqual([0, 0])
+  })
+})
+
+describe('a clean open through real sessions (I16, dev spec §16.4)', () => {
+  it('persists nothing at all: no update, no save request, no local Yjs store', async () => {
+    // Markdown, saved by the backend, is the only persisted form of a room. A Yjs
+    // persistence hook (IndexedDB, Web Storage) or a save on open/close would show here.
+    const requests = vi.fn(async () => new Response(null, { status: 500 }))
+    vi.stubGlobal('fetch', requests)
+    const databases: string[] = []
+    vi.stubGlobal('indexedDB', { open: (name: string) => { databases.push(name); throw new Error('no local Yjs store') } })
+    const stored = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      const { frames, alice, bob } = await leasedRoom(DOCUMENT)
+      await settle(50)
+      expect(markdownOf(alice, DOCUMENT)).toBe(DOCUMENT)
+      expect(markdownOf(bob, DOCUMENT)).toBe(DOCUMENT)
+      for (const member of [alice, bob]) member.session!.close()
+      await settle(50)
+      expect(frames.filter(frame => frame.t === 'update')).toHaveLength(0)
+      expect(requests).not.toHaveBeenCalled()
+      expect(databases).toEqual([])
+      expect(stored).not.toHaveBeenCalled()
+      expect(memoryStorage.size).toBe(0)
+    } finally {
+      stored.mockRestore()
+    }
   })
 })
 

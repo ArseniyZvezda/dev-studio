@@ -2,7 +2,8 @@
 
 S1 deliberately does not activate the v2 sync adapter, resolve legacy names to
 UUIDs, read credentials/bases, or offer an identity mutation. Runtime descriptors
-remain root-based (§5.3.2). Guarded apply and credential metadata come later.
+remain root-based (§5.3.2). The guarded I15 apply lives in api/sync.py; this
+module only adds the strict, read-only v1 base reader it relies on.
 """
 
 from __future__ import annotations
@@ -106,6 +107,79 @@ class _PlanConfigLoader(yaml.SafeLoader):
                 raise yaml.YAMLError("Unhashable config mapping key") from None
 
 
+class LegacyBaseError(ValueError):
+    """The v1 checkpoint exists but cannot be read exactly; never repaired here."""
+
+    def __init__(self, code: str = "legacy_base_invalid") -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def read_legacy_base(paths: ProjectPaths) -> dict | None:
+    """Strict, read-only view of THIS root's v1 checkpoint (§9.2, I15).
+
+    The legacy runner keys ``sync/<sha1(root)>.json`` by the same ``paths.root``
+    and loads it leniently ("starting over" on damage). Migration may not: a
+    present file must have exactly the v1 shape and every base must also be a
+    valid v2 base, otherwise ``legacy_base_invalid`` (no repair, no default).
+    Missing is ``None``. Returns nonsecret values plus the exact-bytes digest;
+    it never writes, moves or deletes the old file.
+    """
+    import json
+    from ..sync.catalog import CatalogError
+    from ..sync.catalog_reads import _path
+    from ..sync.state import STATE_VERSION, SyncState
+
+    path = SyncState.file_for(paths.root)
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            pass
+        raise LegacyBaseError("legacy_base_unavailable") from None
+    except OSError:
+        raise LegacyBaseError("legacy_base_unavailable") from None
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    result = None
+    try:
+        raw = json.loads(content.decode("utf-8"), object_pairs_hook=unique)
+        if (not isinstance(raw, dict) or set(raw) != {"version", "url", "space_id", "cursor", "docs"}
+                or type(raw["version"]) is not int or raw["version"] != STATE_VERSION
+                or not isinstance(raw["url"], str) or not isinstance(raw["space_id"], str)
+                or type(raw["cursor"]) is not int or raw["cursor"] < 0
+                or not isinstance(raw["docs"], dict)):
+            raise ValueError
+        docs = {}
+        for doc_path, entry in raw["docs"].items():
+            _path(doc_path)
+            if (not isinstance(entry, dict) or set(entry) != {"rev", "hash"}
+                    or type(entry["rev"]) is not int or not 1 <= entry["rev"] <= raw["cursor"]
+                    or entry["hash"] is not None and (
+                        not isinstance(entry["hash"], str)
+                        or re.fullmatch(r"[0-9a-f]{64}", entry["hash"]) is None)):
+                raise ValueError
+            docs[doc_path] = (entry["rev"], entry["hash"])
+        result = {"url": raw["url"], "space_id": raw["space_id"], "cursor": raw["cursor"],
+                  "docs": docs, "fingerprint": hashlib.sha256(content).hexdigest()}
+    except (ValueError, TypeError, RecursionError, CatalogError):
+        pass
+    if result is None:
+        raise LegacyBaseError("legacy_base_invalid")
+    return result
+
+
 def identity_migration_plan(paths: ProjectPaths) -> IdentityMigrationPlan:
     """Read exact on-disk config without fallback/default repair (§16.8).
 
@@ -187,7 +261,9 @@ def identity_migration_plan(paths: ProjectPaths) -> IdentityMigrationPlan:
             **base, state="needs_profile" if base.get("legacy_url") else "migration_required",
             reasons=("legacy_resolution_required",),
         )
-    if config.sync.enabled or config.sync.url:
+    if identity is None and (config.sync.enabled or config.sync.url):
+        # With an identity, URL without sync.space is the canonical §4.1 form
+        # (after a migrate/select commit), not a legacy selector gone missing.
         return IdentityMigrationPlan(
             **base, state="migration_required", reasons=("legacy_selector_missing",),
         )

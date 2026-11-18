@@ -7,14 +7,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
-    <!-- UI typeface (`--vxs-font-sans`). Variable 400-700 + italic, latin and
-         cyrillic; `display=swap` so a cold or offline load falls back to the
-         system stack instead of blocking on the network. -->
+    <!-- The UI typeface, Allo, is bundled from `allo-font` (main.ts) and has no Cyrillic.
+         Inter is its Cyrillic fallback in `--vxs-font-sans`: Google serves it split by
+         unicode-range, so only the Cyrillic file is fetched, and only when Russian is on
+         screen. `display=swap` so an offline load falls back to the system stack. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Google+Sans:ital,wght@0,400..700;1,400..700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,100..900;1,100..900&display=swap"
     />
     <title>Voxarium Studio</title>
   </head>

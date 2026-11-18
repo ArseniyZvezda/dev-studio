@@ -368,6 +368,16 @@ describe('project Remote endpoint contracts (studio-design §5.2; future command
   const profile = { config_fingerprint: 'fingerprint', profile_id: 'profile-A', name: 'Personal',
     import_legacy_credential: false, confirmation: { url: 'https://remote.invalid/team' } }
   const resolve = { profile_id: 'profile-A', expected_profile_revision: 3, config_fingerprint: 'fingerprint' }
+  const previewBody = { expected_revision: 2, config_fingerprint: 'fingerprint', backend_epoch: 'captured-backend-A' }
+  const enable = { expected_revision: 2, expected_generation: 7, preview_id: 'preview-A', fingerprint: 'preview-fingerprint',
+    confirmation: { ...commit.confirmation, action: 'reconcile' as const }, config_fingerprint: 'fingerprint',
+    backend_epoch: 'captured-backend-A' }
+  const recover = { change_id: 'a'.repeat(32), expected_revision: 2, config_fingerprint: 'fingerprint',
+    confirmation: { url: 'https://remote.invalid/team', persistent_id: null, action: 'recover' as const },
+    backend_epoch: 'captured-backend-A' }
+  const archive = { expected_revision: 2, expected_generation: 7, preview_id: 'preview-A', fingerprint: 'preview-fingerprint',
+    confirmation: { ...commit.confirmation, action: 'archive_checkpoint' as const }, config_fingerprint: 'fingerprint',
+    backend_epoch: 'captured-backend-A' }
   type Client = ReturnType<typeof createApiClient>
   const calls: [string, string, string, unknown, (client: Client) => Promise<unknown>][] = [
     ['remote GET', 'GET', '', undefined, client => client.projectRemote()],
@@ -385,11 +395,10 @@ describe('project Remote endpoint contracts (studio-design §5.2; future command
       client => client.ackRemoteEditor('change-A', { editor_id: 'editor-A', old_generation: 7, last_saved_version: 42 })],
     ['commit', 'POST', '/changes/change-A/commit', commit, client => client.commitRemoteChange('change-A', commit)],
     ['cancel', 'DELETE', '/changes/change-A', undefined, client => client.cancelRemoteChange('change-A')],
-    ['preview', 'POST', '/reconcile-preview', undefined, client => client.previewRemoteReconciliation()],
-    ['enable', 'POST', '/enable', { expected_revision: 2, expected_generation: 7, preview_id: 'preview-A',
-      confirmation: { ...commit.confirmation, action: 'reconcile' } },
-      client => client.enableProjectRemote({ expected_revision: 2, expected_generation: 7, preview_id: 'preview-A',
-        confirmation: { ...commit.confirmation, action: 'reconcile' } })],
+    ['preview', 'POST', '/reconcile-preview', previewBody, client => client.previewRemoteReconciliation(previewBody)],
+    ['enable', 'POST', '/enable', enable, client => client.enableProjectRemote(enable)],
+    ['recover', 'POST', '/recover', recover, client => client.recoverProjectRemote(recover)],
+    ['archive checkpoint', 'POST', '/checkpoint/archive', archive, client => client.archiveProjectRemoteCheckpoint(archive)],
     ['migration GET', 'GET', '/migration', undefined, client => client.remoteMigration()],
     ['migration profile', 'POST', '/migration/migration-A/profile', profile, client => client.selectRemoteMigrationProfile('migration-A', profile)],
     ['migration resolve', 'POST', '/migration/migration-A/resolve', resolve, client => client.resolveRemoteMigration('migration-A', resolve)],

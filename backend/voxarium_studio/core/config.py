@@ -133,7 +133,8 @@ class ApplicationThemeConfig(BaseModel):
     :attr:`DocsConfig.font_size`, and for the same reason: a default number would silently
     override the app's stylesheet size without the user choosing it."""
 
-    font: Literal["google-sans", "inter", "ibm-plex", "roboto", "system"] = "google-sans"
+    # No `font`: the interface is set in Allo alone (§7, 2026-11-17). A stored `font` from an
+    # older build is dropped like the other retired knobs, and refused on the strict API.
     mono_font: Literal["cascadia", "jetbrains", "fira", "system"] = "jetbrains"
     """JetBrains Mono by default, because that is what the Graphite design is drawn in: a log
     and a commit are read here, not skimmed."""

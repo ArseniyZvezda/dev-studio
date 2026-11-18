@@ -1866,3 +1866,146 @@ class TestI14RealRemoteCredentialGeneration:
             assert alice.sync._runner is None or alice.sync._runner.done()
             assert self.private_rows() == (demoted,)
             await alice.sync.stop()
+
+
+# --- VS-187 Gate L: user confirmation is the only production coverage owner -----
+
+from voxarium_studio.sync.consumer_confirmations import (  # noqa: E402
+    ConfirmationError, ConsumerConfirmations, confirmations_file,
+)
+
+
+class ConfirmedStore(Store):
+    """Same real S2 fixture, but coverage comes from the durable confirmation."""
+
+    def __init__(self, home):
+        self.home = home
+        self.confirmations = ConsumerConfirmations()
+        self.lifecycle = ProfileLifecycle(profile_reader=lambda pid: self.repo.get(pid),
+                                          confirmations=self.confirmations)
+        self.repo = RemoteProfiles(consumer_guard=self.lifecycle.consumer_guard)
+        self.profile = self.repo.create("Synthetic A", URL)
+
+
+@pytest.fixture
+def confirmed_store(studio_home):
+    return ConfirmedStore(studio_home)
+
+
+def test_gate_l_store_missing_is_absent_and_confirm_withdraw_round_trip(studio_home):
+    owner = ConsumerConfirmations()
+    assert owner.read().fingerprint is None and not owner.confirmed((URL,))
+    owner.withdraw(URL)
+    assert not confirmations_file().exists(), "withdrawing nothing writes nothing"
+    entry = owner.confirm(URL, ("b", "a", "a"))
+    assert entry.bound_roots == ("a", "b") and entry.confirmed_at.endswith("Z")
+    assert owner.confirmed((URL,)) and not owner.confirmed((URL, OTHER_URL))
+    assert not owner.confirmed(())
+    owner.confirm(OTHER_URL, ())
+    assert owner.confirmed((URL, OTHER_URL))
+    owner.withdraw(URL)
+    assert not owner.confirmed((URL,)) and owner.confirmed((OTHER_URL,))
+
+
+@pytest.mark.parametrize("raw", (
+    b"{", b"[]", b'{"version":2,"urls":{}}', b'{"version":1,"urls":{},"extra":1}',
+    b'{"version":1,"urls":{"https://one.invalid/deployment/prefix":{"confirmed_at":"yesterday",'
+    b'"bound_roots":[]}}}',
+    b'{"version":1,"urls":{"https://one.invalid/deployment/prefix":{"confirmed_at":'
+    b'"2026-11-18T00:00:00Z","bound_roots":["b","a"]}}}',
+    b'{"version":1,"version":1,"urls":{}}', b"\xff\xfe",
+))
+def test_gate_l_corrupt_store_is_unknown_never_repaired_on_read(studio_home, raw):
+    path = confirmations_file()
+    path.write_bytes(raw)
+    owner = ConsumerConfirmations()
+    with pytest.raises(ConfirmationError):
+        owner.read()
+    assert not owner.confirmed((URL,))
+    assert path.read_bytes() == raw
+
+
+def test_gate_l_directory_in_place_of_store_is_unknown_and_never_replaced(studio_home):
+    confirmations_file().mkdir()
+    owner = ConsumerConfirmations()
+    assert not owner.confirmed((URL,))
+    with pytest.raises(ConfirmationError):
+        owner.confirm(URL, ())
+    assert confirmations_file().is_dir()
+
+
+@pytest.mark.parametrize("kind", MUTATIONS[:4])
+def test_gate_l_production_coverage_is_unknown_until_user_confirms(confirmed_store, kind):
+    s = confirmed_store
+    before = s.snapshot()
+    failure(lambda: s.mutate(kind))
+    assert s.snapshot() == before
+    shown = s.lifecycle.census(s.pid)
+    assert (shown.state, shown.confirmed_at, shown.bound_roots) == ("unknown", None, ())
+    confirmed = s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision, url=URL,
+                                    bound_roots=())
+    assert confirmed.state == "known" and confirmed.confirmed_at
+    s.mutate(kind)  # Real S2 publication now admitted.
+
+
+def test_gate_l_confirmation_requires_exact_url_roots_and_revision(confirmed_store, tmp_path):
+    s = confirmed_store
+    s.lifecycle.register_context(resident(tmp_path / "legacy", enabled=False))
+    shown = s.lifecycle.census(s.pid)
+    from voxarium_studio.core.project_scope import canonical_root
+    root = str(canonical_root(tmp_path / "legacy"))
+    assert shown.bound_roots == (root,) and shown.active_roots == ()
+    for kwargs, code in (
+        (dict(url=URL + "/", bound_roots=(root,)), "consumer_inventory_changed"),
+        (dict(url=URL, bound_roots=()), "consumer_inventory_changed"),
+        (dict(url=URL, bound_roots=(root, root)), "consumer_inventory_changed"),
+        (dict(url=URL, bound_roots=[root]), "consumer_inventory_changed"),
+    ):
+        failure(lambda: s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision, **kwargs), code)
+    failure(lambda: s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision + 1, url=URL,
+                                        bound_roots=(root,)), "profile_revision_conflict")
+    assert not confirmations_file().exists()
+    s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision, url=URL, bound_roots=(root,))
+    stored = json.loads(confirmations_file().read_text(encoding="utf-8"))
+    assert stored["urls"][URL]["bound_roots"] == [root]
+
+
+def test_gate_l_enabled_legacy_context_and_runner_lease_are_active(confirmed_store, tmp_path):
+    s = confirmed_store
+    s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision, url=URL, bound_roots=())
+    lease = s.lifecycle.attach(root=str(tmp_path / "runner"), url=URL, profile_id=s.pid)
+    shown = s.lifecycle.census(s.pid)
+    from voxarium_studio.core.project_scope import canonical_root
+    assert shown.active_roots == (str(canonical_root(tmp_path / "runner")),)
+    failure(lambda: s.mutate("credential"), "profile_consumers_not_drained")
+    lease.release()
+    s.mutate("credential")
+
+
+def test_gate_l_recovery_needs_every_journal_url_confirmed(confirmed_store):
+    s = confirmed_store
+    s.confirmations.confirm(URL, ())
+
+    def attempt():
+        with s.lifecycle.recovery_guard(s.pid, urls=(URL, OTHER_URL)):
+            pass
+    failure(attempt)
+    s.confirmations.confirm(OTHER_URL, ())
+    attempt()
+
+
+def test_gate_l_withdraw_closes_and_revocation_during_guard_is_detected(confirmed_store):
+    s = confirmed_store
+    s.lifecycle.confirm(s.pid, expected_revision=s.profile.revision, url=URL, bound_roots=())
+    with s.lifecycle.consumer_guard(s.pid) as state:
+        s.confirmations.withdraw(URL)  # e.g. another Studio process
+        failure(state.recheck)
+    failure(lambda: s.mutate("credential"))
+    census = s.lifecycle.withdraw(s.pid, expected_revision=s.profile.revision)
+    assert census.state == "unknown"
+
+
+def test_gate_l_explicit_inventory_seam_cannot_be_confirmed_over(store):
+    failure(lambda: store.lifecycle.confirm(store.pid, expected_revision=store.profile.revision,
+                                            url=URL, bound_roots=()),
+            "consumer_confirmation_unavailable")

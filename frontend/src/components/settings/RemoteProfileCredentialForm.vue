@@ -7,17 +7,20 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 
 import { ApiError } from '@/api/client'
-import { createRemoteApiClient, RemoteApiError, type RemoteServerProfile } from '@/api/remote'
+import { createRemoteApiClient, createRemoteConsumersClient, RemoteApiError, type RemoteProfileConsumers as Census,
+  type RemoteServerProfile } from '@/api/remote'
 import ModalDialog from '@/components/ui/ModalDialog.vue'
 import { t, type MessageKey } from '@/i18n'
 import { useRemoteServersStore } from '@/stores/remote-servers'
 import { remoteProfileMetadataState } from './RemoteProfileMetadataForm.vue'
+import RemoteProfileConsumers, { remoteConsumerErrorKey } from './RemoteProfileConsumers.vue'
 
 const props = defineProps<{ profile: RemoteServerProfile }>()
 const emit = defineEmits<{ saved: []; close: []; refreshRequired: [] }>()
 const servers = useRemoteServersStore()
 const metadata = remoteProfileMetadataState(servers)
 const api = createRemoteApiClient()
+const consumersApi = createRemoteConsumersClient()
 // A new prop or a refreshed store must never silently upgrade this intent's CAS.
 const initial = {
   profile_id: props.profile.profile_id, revision: props.profile.revision, url: props.profile.url,
@@ -30,6 +33,12 @@ const busy = ref(false)
 const blocked = ref(false)
 const error = ref<MessageKey | null>(null)
 const disabled = computed(() => busy.value || blocked.value || metadata.pending > 0 || metadata.refreshRequired)
+// Gate L (dev spec §16): a key write needs the user's confirmation of this exact URL's projects.
+const census = ref<Census | null>(null)
+const consumersPanel = ref<{ reload: () => Promise<void> } | null>(null)
+const confirmed = computed(() => census.value?.state === 'known' && census.value.profile_id === initial.profile_id
+  && census.value.url === initial.url)
+const writeDisabled = computed(() => disabled.value || !confirmed.value)
 const sourceKeys: Record<RemoteServerProfile['credential_source'], MessageKey> = {
   stored: 'settings.remoteServers.credential.stored',
   environment: 'settings.remoteServers.credential.environment',
@@ -70,13 +79,14 @@ function stale(): void {
 }
 function showFailure(cause: unknown): void {
   // Never retain or render raw messages, bodies or details, including error codes.
-  if (cause instanceof ApiError && cause.status === 409) {
+  if (cause instanceof RemoteApiError && cause.code === 'consumer_lifecycle_unavailable') {
+    // The confirmation is missing or unreadable: show the census again, never re-confirm.
+    error.value = remoteConsumerErrorKey(cause)
+    void consumersPanel.value?.reload()
+  } else if (cause instanceof ApiError && cause.status === 409) {
     blocked.value = true
     metadata.refreshRequired = true
-    error.value = cause instanceof RemoteApiError && cause.code === 'profile_in_use'
-      ? 'settings.remoteServers.credentials.inUse'
-      : cause instanceof RemoteApiError && cause.code === 'profile_consumers_not_drained'
-        ? 'settings.remoteServers.credentials.notDrained' : 'settings.remoteServers.credentials.conflict'
+    error.value = remoteConsumerErrorKey(cause) ?? 'settings.remoteServers.credentials.conflict'
     emit('refreshRequired')
   } else if (cause instanceof ApiError && cause.status === 422) {
     error.value = 'settings.remoteServers.credentials.invalid'
@@ -87,7 +97,7 @@ function showFailure(cause: unknown): void {
   }
 }
 function askForget(): void {
-  if (!active || disabled.value) return
+  if (!active || writeDisabled.value) return
   clearField()
   error.value = null
   confirmingForget.value = true
@@ -101,6 +111,7 @@ async function mutate(intent: 'save' | 'forget'): Promise<void> {
   // Empty means keep, never DELETE. A form submit cannot confirm Forget.
   if (intent === 'save' ? confirmingForget.value || !credential.value.trim() : !confirmingForget.value) return
   if (metadata.pending > 0 || metadata.refreshRequired) { stale(); return }
+  if (!confirmed.value) return // Never sent before the user confirmed this URL's projects.
   error.value = null
   if (!servers.loaded || servers.loading || servers.error || !same(props.profile)
     || !same(servers.items.find(item => item.profile_id === initial.profile_id))) {
@@ -159,6 +170,15 @@ async function mutate(intent: 'save' | 'forget'): Promise<void> {
           :disabled="disabled || confirmingForget"
         />
       </label>
+      <RemoteProfileConsumers
+        ref="consumersPanel"
+        :profile="initial"
+        :api="consumersApi"
+        :disabled="disabled"
+        @change="census = $event"
+        @refresh-required="stale"
+      />
+      <p v-if="census && !confirmed" data-testid="remote-credential-gate" class="text-small text-muted">{{ t('settings.remoteServers.consumers.required') }}</p>
       <p v-if="error" role="alert" class="text-small text-danger">{{ t(error) }}</p>
       <div v-if="confirmingForget" data-testid="remote-credential-confirmation" class="space-y-3 rounded-md border border-line p-3">
         <h4 class="text-small font-medium">{{ t('settings.remoteServers.credentials.forgetTitle') }}</h4>
@@ -167,19 +187,19 @@ async function mutate(intent: 'save' | 'forget'): Promise<void> {
           <button type="button" data-testid="remote-credential-forget-cancel" class="rounded-md border border-line px-3 py-1.5 hover:bg-hover" @click="cancelForget">
             {{ t('settings.remoteServers.credentials.forgetCancel') }}
           </button>
-          <button type="button" data-testid="remote-credential-forget-confirm" class="rounded-md border border-line px-3 py-1.5 text-danger hover:bg-hover disabled:opacity-50" :disabled="disabled" @click="mutate('forget')">
+          <button type="button" data-testid="remote-credential-forget-confirm" class="rounded-md border border-line px-3 py-1.5 text-danger hover:bg-hover disabled:opacity-50" :disabled="writeDisabled" @click="mutate('forget')">
             {{ t('settings.remoteServers.credentials.forgetConfirm') }}
           </button>
         </div>
       </div>
       <div class="flex flex-wrap justify-end gap-2">
-        <button v-if="!confirmingForget" type="button" data-testid="remote-credential-forget" class="mr-auto rounded-md border border-line px-3 py-1.5 text-danger hover:bg-hover disabled:opacity-50" :disabled="disabled" @click="askForget">
+        <button v-if="!confirmingForget" type="button" data-testid="remote-credential-forget" class="mr-auto rounded-md border border-line px-3 py-1.5 text-danger hover:bg-hover disabled:opacity-50" :disabled="writeDisabled" @click="askForget">
           {{ t('settings.remoteServers.credentials.forget') }}
         </button>
         <button type="button" data-testid="remote-credential-cancel" class="rounded-md border border-line px-3 py-1.5 hover:bg-hover" @click="close">
           {{ t('settings.remoteServers.credentials.cancel') }}
         </button>
-        <button type="submit" data-testid="remote-credential-submit" class="vxs-btn-primary flex items-center gap-2 px-3 py-1.5 disabled:opacity-50" :disabled="disabled || confirmingForget || !credential.trim()">
+        <button type="submit" data-testid="remote-credential-submit" class="vxs-btn-primary flex items-center gap-2 px-3 py-1.5 disabled:opacity-50" :disabled="writeDisabled || confirmingForget || !credential.trim()">
           <Loader2 v-if="busy" class="size-3.5 animate-spin" aria-hidden="true" />
           {{ t(busy ? 'settings.remoteServers.credentials.saving' : 'settings.remoteServers.credentials.save') }}
         </button>

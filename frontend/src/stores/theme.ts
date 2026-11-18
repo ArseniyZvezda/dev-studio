@@ -7,10 +7,11 @@
  * custom properties on `<html>`; nothing is rebuilt and no classes are regenerated,
  * because every utility resolves through `var(--vxs-*)` at runtime.
  *
- * Every knob is an attribute (`data-sidebar`, `data-font`, …) whose values are blocks in
+ * Every knob is an attribute (`data-sidebar`, `data-mono`, …) whose values are blocks in
  * `tokens.css`; the store writes exactly three custom properties of its own — the accent
  * *seed*, the node tint and, when the user has picked one, the text size — plus whatever
- * `custom_tokens` names. A font that is not on the machine is fetched when first selected.
+ * `custom_tokens` names. A monospace face that is not on the machine is fetched when first
+ * selected; the interface face is always Allo, bundled.
  *
  * The seed rather than the accent itself: `:root` points `--vxs-accent` at
  * `--vxs-accent-seed`, so a `custom_tokens` override of `--vxs-accent` still wins — it is
@@ -70,7 +71,6 @@ export const useThemeStore = defineStore('theme', () => {
 
     root.dataset.theme = resolvedMode.value
     root.dataset.sidebar = next.sidebar
-    root.dataset.font = next.font
     root.dataset.mono = next.mono_font
     root.dataset.statusPalette = next.status_palette
 
@@ -90,7 +90,6 @@ export const useThemeStore = defineStore('theme', () => {
     if (next.text_size) root.style.setProperty('--vxs-text-size', `${next.text_size}px`)
     else root.style.removeProperty('--vxs-text-size')
 
-    ensureFontLoaded(next.font)
     ensureFontLoaded(next.mono_font)
 
     // Escape-hatch overrides from config.yaml, e.g. {"--vxs-bg-surface": "#101114"}.

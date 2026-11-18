@@ -22,7 +22,6 @@ import { LOCALES, locale, setLocale, t, type Locale, type MessageKey } from '@/i
 import I18nT from '@/i18n/I18nT.vue'
 import {
   CANVAS_GRIDS,
-  FONTS,
   MODES,
   MONO_FONTS,
   NODE_TINT,
@@ -374,20 +373,6 @@ async function setNodeCache(value: boolean) {
               <div class="flex items-start gap-3">
                 <span class="w-28 shrink-0 pt-1 text-muted">{{ t('settings.appearance.fonts') }}</span>
                 <div class="flex flex-wrap gap-3">
-                  <label class="flex flex-col gap-1">
-                    <span class="text-small text-faint">{{ t('settings.appearance.fontInterface') }}</span>
-                    <select
-                      :value="theme.theme.font"
-                      class="rounded-md border border-line bg-inset px-2 py-1 outline-none focus:border-accent"
-                      @change="
-                        setTheme({ font: ($event.target as HTMLSelectElement).value as ThemeConfig['font'] })
-                      "
-                    >
-                      <option v-for="face in FONTS" :key="face.value" :value="face.value">
-                        {{ face.label }}
-                      </option>
-                    </select>
-                  </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-small text-faint">{{ t('settings.appearance.fontCode') }}</span>
                     <select

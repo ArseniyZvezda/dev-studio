@@ -223,8 +223,9 @@ def test_a_project_that_picked_a_look_loads_and_loses_the_key(project: Path) -> 
         encoding="utf-8",
     )
     theme = load_config(paths).theme
-    assert (theme.mode, theme.accent, theme.font) == ("light", "#6750a4", "roboto")
+    assert (theme.mode, theme.accent) == ("light", "#6750a4")
     assert not hasattr(theme, "look")
+    assert not hasattr(theme, "font"), "the interface face is Allo alone since 2026-11-17"
 
     save_config(paths, load_config(paths))
     assert "\n  look:" not in paths.config_file.read_text(encoding="utf-8")
@@ -244,12 +245,12 @@ def test_a_project_written_before_the_looks_loads_and_loses_the_knobs_they_repla
     paths = ProjectPaths.for_project(project)
     paths.config_file.write_text(
         "theme:\n  mode: light\n  palette: warm\n  surfaces: tonal\n  radius: sharp\n"
-        "  density: compact\n  reduce_motion: true\n  accent: '#58a6ff'\n  font: inter\n",
+        "  density: compact\n  reduce_motion: true\n  accent: '#58a6ff'\n  mono_font: fira\n",
         encoding="utf-8",
     )
     theme = load_config(paths).theme
     assert theme.mode == "light", "the file's mode"
-    assert (theme.accent, theme.font) == ("#58a6ff", "inter"), "what survived the merge is kept"
+    assert (theme.accent, theme.mono_font) == ("#58a6ff", "fira"), "what survived the merge is kept"
     assert not hasattr(theme, "palette")
 
     save_config(paths, load_config(paths))

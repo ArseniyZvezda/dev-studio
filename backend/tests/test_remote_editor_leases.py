@@ -551,10 +551,54 @@ def test_scoped_socket_cleanup_on_exception():
     assert legacy_editor_blockers(state, a) == 0
 
 
+class _AsgiSocket:
+    """Plain ASGI driver for one event socket in the test's own event loop.
+
+    Starlette's TestClient runs the app under an anyio CancelScope. The scoped
+    endpoint's asyncio.TaskGroup on Python 3.12 leaves one ``cancelling()`` request on
+    the task when its receive child ends with WebSocketDisconnect, and TestClient's
+    teardown then re-raises that as CancelledError even though the endpoint returned
+    normally. uvicorn awaits the ASGI task directly, so drive it the same way here
+    (as test_project_events.Socket does) instead of through anyio.
+    """
+
+    def __init__(self, app, path):
+        self.app, self.path = app, path
+        self.incoming, self.outgoing = asyncio.Queue(), asyncio.Queue()
+
+    async def __aenter__(self):
+        scope = {
+            'type': 'websocket', 'asgi': {'version': '3.0'}, 'scheme': 'ws',
+            'path': self.path, 'raw_path': self.path.encode(), 'query_string': b'',
+            'root_path': '', 'headers': [(b'host', b'127.0.0.1')],
+            'client': ('127.0.0.1', 1234), 'server': ('127.0.0.1', 80),
+            'subprotocols': [], 'state': {},
+        }
+        self.task = asyncio.create_task(self.app(scope, self.incoming.get, self.outgoing.put))
+        await self.incoming.put({'type': 'websocket.connect'})
+        assert (await self.receive_message())['type'] == 'websocket.accept'
+        return self
+
+    async def receive_message(self):
+        return await asyncio.wait_for(self.outgoing.get(), 5)
+
+    async def receive_json(self):
+        message = await self.receive_message()
+        assert message['type'] == 'websocket.send', message
+        return json.loads(message['text'])
+
+    async def send_json(self, payload):
+        await self.incoming.put({'type': 'websocket.receive', 'text': json.dumps(payload)})
+
+    async def __aexit__(self, *exc):
+        await self.incoming.put({'type': 'websocket.disconnect', 'code': 1000})
+        # The endpoint must finish by itself, not by being cancelled.
+        await asyncio.wait_for(self.task, 5)
+
+
 @pytest.mark.parametrize('scoped', [False, True])
-def test_actual_event_socket_lifetime_and_selection(tmp_path, monkeypatch, scoped):
+async def test_actual_event_socket_lifetime_and_selection(tmp_path, monkeypatch, scoped):
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
     from voxarium_studio.core.project_scope import ProjectDescriptor
     from voxarium_studio.ws import routes
 
@@ -569,15 +613,17 @@ def test_actual_event_socket_lifetime_and_selection(tmp_path, monkeypatch, scope
     app.state.ctx = a
     app.state.browser_bus = EventBus()
     app.state.project_registry = {'p': ProjectDescriptor('p', 'e', a.paths.root, a)}
-    with TestClient(app) as http:
-        with http.websocket_connect('/ws/projects/p' if scoped else '/ws') as ws:
-            assert ws.receive_json()['type'] == 'system.hello'
-            assert legacy_editor_blockers(app.state, a) == 1
-            app.state.ctx = b
-            assert legacy_editor_blockers(app.state, a) == 1
-            assert legacy_editor_blockers(app.state, b) == (0 if scoped else 1)
-            ws.send_json({'action': 'ping'})
-            assert ws.receive_json()['type'] == 'system.pong'
+    async with _AsgiSocket(app, '/ws/projects/p' if scoped else '/ws') as ws:
+        hello = await ws.receive_json()
+        assert hello['type'] == 'system.hello'
+        if scoped:
+            assert (hello['project_id'], hello['epoch']) == ('p', 'e')
+        assert legacy_editor_blockers(app.state, a) == 1
+        app.state.ctx = b
+        assert legacy_editor_blockers(app.state, a) == 1
+        assert legacy_editor_blockers(app.state, b) == (0 if scoped else 1)
+        await ws.send_json({'action': 'ping'})
+        assert (await ws.receive_json())['type'] == 'system.pong'
     assert legacy_editor_blockers(app.state, a) == 0
     assert legacy_editor_blockers(app.state, b) == 0
 
