@@ -425,6 +425,10 @@ class AgentEvent:
     """``text`` | ``thinking`` | ``tool_use`` | ``tool_result`` | ``system`` | ``result`` |
     ``continued`` | ``rate_limit`` | ``error``.
 
+    Streaming text/thinking may carry ``data.stream_id`` (one provider response) and
+    cumulative ``data.stream_text``. ``text`` remains a delta for plain-text collectors;
+    transcript persistence upserts a single block from the cumulative snapshot (§10.6).
+
     ``rate_limit`` is the account rather than the work: how full the usage window is and,
     once it is spent, when it refills (``data["resets_at"]``, unix epoch seconds).
     Backend-agnostic by intent even though Claude Code is the runtime that reports it — any
@@ -594,6 +598,12 @@ def register_backend(name: str, factory: Callable[[], AgentBackend]) -> None:
 
 
 def get_backend(name: str) -> AgentBackend:
+    if name.startswith("openai_api:"):
+        from ...core.api_backends import connections
+        from .openai_api import OpenAIApiBackend
+        for connection in connections():
+            if connection.backend_id == name:
+                return OpenAIApiBackend(connection)
     factory = _BACKENDS.get(name)
     if factory is None:
         raise KeyError(
@@ -603,4 +613,5 @@ def get_backend(name: str) -> AgentBackend:
 
 
 def available_backends() -> list[str]:
-    return sorted(_BACKENDS)
+    from ...core.api_backends import connections
+    return sorted([*_BACKENDS, *(c.backend_id for c in connections())])

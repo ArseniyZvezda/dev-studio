@@ -18,6 +18,19 @@ async function markup(backend: string | null, model: string | null): Promise<str
 }
 
 describe('model selector', () => {
+  it('offers multiple API connections as distinct labelled choices', async () => {
+    const html = await renderToString(createSSRApp(ModelSelector, {
+      backend: 'openai_api:first', model: 'custom-api-model', options: {
+        ...options, agent_backends: {
+          'openai_api:first': { available: true, reason: '', label: 'First API' },
+          'openai_api:second': { available: true, reason: '', label: 'Second API' },
+        },
+      },
+    }))
+    expect(html).toContain('aria-label="First API" aria-pressed="true"')
+    expect(html).toContain('aria-label="Second API" aria-pressed="false"')
+    expect(html).toContain('value="custom-api-model"')
+  })
   it('shows four icon-only backend buttons and only the selected backend models', async () => {
     const html = await markup('codex', 'gpt-test')
     expect((html.match(/<button\b/g) ?? []).length).toBe(4)

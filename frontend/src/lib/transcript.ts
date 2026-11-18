@@ -364,9 +364,34 @@ export function transcriptRows<M extends TranscriptMessage>(
   messages: M[],
   verbosity: Verbosity,
 ): TranscriptRow<M>[] {
-  return closingSummaries(messages)
+  return closingSummaries(legacyApiBlocks(messages))
     .filter((message) => shows(message, verbosity))
     .map((message) => ({ key: message.id, message }))
+}
+
+/** §10.6: older API runs stored each delta as a separate row. Project those into
+ * complete blocks without rewriting the user's history or merging CLI messages. */
+function legacyApiBlocks<M extends TranscriptMessage>(messages: M[]): M[] {
+  const result: M[] = []
+  let apiMember: string | null = null
+  let previousChunk = false
+  for (const message of messages) {
+    if (message.kind === 'system' && message.text === 'OpenAI API session started') {
+      apiMember = message.member_id
+    } else if (['result', 'error', 'cancelled'].includes(message.kind)
+      || message.role === 'user' || message.role === 'human') {
+      apiMember = null
+    }
+    const chunk = message.member_id === apiMember && message.role === 'assistant'
+      && ['text', 'thinking'].includes(message.kind) && Object.keys(message.data ?? {}).length === 0
+    const previous = result.at(-1)
+    if (chunk && previousChunk && previous?.kind === message.kind
+      && previous.member_id === message.member_id) {
+      result[result.length - 1] = { ...previous, text: previous.text + message.text }
+    } else result.push(message)
+    previousChunk = chunk
+  }
+  return result
 }
 
 /**

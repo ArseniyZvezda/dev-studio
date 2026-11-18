@@ -3057,6 +3057,22 @@
       "description": "Open the last project automatically after signing in to Windows.",
       "desktopOnly": "This setting is available in the Windows desktop application.",
       "saving": "Saving…"
+    },
+    "apiBackends": {
+      "title": "OpenAI API backends",
+      "hint": "Add OpenAI or compatible API connections. Each connection is available in every project. Uses Chat Completions with streaming and tool calling.",
+      "add": "Add API backend",
+      "name": "Name",
+      "url": "API base URL (including /v1)",
+      "key": "API key",
+      "keySaved": "A key is saved. Leave blank to keep it.",
+      "keyOptional": "Optional for local servers that do not require authentication.",
+      "clearKey": "Remove saved API key",
+      "model": "Default model ID",
+      "icon": "Icon",
+      "deleteHint": "Existing agents using this connection will need another backend.",
+      "contextWindow": "Context window (tokens)",
+      "contextWindowHint": "Automatic context compaction starts at 90% of this limit. Leave blank if the window is unknown; automatic compaction is then disabled."
     }
   },
   "appearance": {
@@ -3294,6 +3310,7 @@
     "emptyTasks": "No active tasks",
     "emptyTasksHint": "Active task conversations appear here as work starts.",
     "noProducer": "Producer is not available for this team.",
+    "chatInPopup": "The chat is open in the popup — close it to bring this conversation back here.",
     "previous": "Previous tasks",
     "next": "Next tasks",
     "openTask": "Open task",

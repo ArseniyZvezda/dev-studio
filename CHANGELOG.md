@@ -1,5 +1,20 @@
 # Changelog
 
+## v6.0.0 — 2026-11-17
+
+- Added desktop project tabs and multiple windows, with tab transfer between windows and session restore. Each project keeps its own interface, connections, plugins and agent sessions while sharing one backend; moving a live tab preserves its renderer without reloading.
+- Made desktop window closing leave project work running, with Studio available from the tray after the last window closes. Explicit Quit checks active work across all open projects; reopening a project focuses its existing tab.
+- Refreshed the Studio interface with compact icon navigation, rounded tonal panels, a unified desktop header, project tab strip, bottom status bar and a global background gradient.
+- Replaced Effort Solver's weighted scoring with Orchestrator, which selects model strength and reasoning effort independently. Added global per-backend mappings for three model strengths; Auto model choices use those mappings for tasks, chats and subagents.
+- Kept Producer Plans stable across continuations and aligned tasks with the plan's stages. Refined task sizing guidance to avoid unnecessary fragmentation.
+- Added recent Claude Code and Codex account usage indicators to the status bar, alongside active task counts across resident projects. Missing or stale quota data is shown as unavailable.
+- Improved task remote-control access with connection controls and a popover for opening or copying the session link.
+- Added global Remote server profiles and personal-key management, explicit server verification, and project catalog browsing and creation. Project selection and read-only comparison are separate steps; the new Enable sync flow remains gated pending runtime, editor and credential-security acceptance.
+- Added persistent project identity and guarded Remote binding changes, with checks for unsaved editors, active consumers and duplicate local working copies. Personal server keys remain in the user's local configuration rather than portable project settings.
+- Added a standalone Windows Remote administration tool with SSH deployment, Docker installation, optional Caddy HTTPS setup, and server, user and project administration.
+- Staged Remote 0.2.0 with wire/schema v2 and admin RPC v1. Existing server data require an explicit offline migration; Studio's legacy v1 sync runner is incompatible with the v2 server, and Studio/Android interoperability remains separate acceptance work.
+- Improved Windows installer upgrades and reinstalls, including installed/incoming version labels, preserved installation paths and explicit handling of running Studio processes. Added packaged DevTools shortcuts and expanded English and Russian interface text.
+
 ## v5.7.0 — 2026-11-12
 
 - Added selective import of Claude Code, Codex and Qwen Code memory into project memory, with previews and explicit replacement of conflicting entries.

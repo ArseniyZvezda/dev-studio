@@ -664,6 +664,32 @@ it('upserts newer state and ignores old replay without reordering ordinary messa
   expect(upsertTranscript(feed, ordinary)).toBe(feed)
 })
 
+it('updates one growing API answer and ignores an older streamed snapshot', () => {
+  const first = message({ id: 'state_answer', text: 'Hello', data: { stream_id: 'response' } })
+  const second = { ...first, text: 'Hello world', created_at: '2026-09-04T10:00:01' }
+  const updated = upsertTranscript([first], second)
+  expect(updated).toEqual([second])
+  expect(upsertTranscript(updated, first)).toBe(updated)
+  expect(transcriptBlocks(updated, 'default')).toHaveLength(1)
+})
+
+it('joins legacy API tokens for display without changing history or crossing tool/turn boundaries', () => {
+  const start = () => message({ role: 'system', kind: 'system', text: 'OpenAI API session started' })
+  const a = message({ text: 'Hello' })
+  const space = message({ text: ' ' })
+  const b = message({ text: 'world' })
+  const tool = call('Read')
+  const after = message({ text: 'After tool' })
+  const done = message({ role: 'system', kind: 'result' })
+  const cliA = message({ text: 'CLI one' })
+  const cliB = message({ text: 'CLI two' })
+  const feed = [start(), a, space, b, tool, after, done, cliA, cliB]
+  const text = transcriptRows(feed, 'default').filter(row => row.message.kind === 'text').map(row => row.message.text)
+  expect(text).toEqual(['Hello world', 'After tool', 'CLI one', 'CLI two'])
+  expect(a.text).toBe('Hello')
+  expect(feed).toHaveLength(9)
+})
+
 it('replaces a queued message in place when its delivery arrives, and never the other way', () => {
   const before = message({ created_at: '2026-11-11T10:00:00' })
   const queued = message({ role: 'user', kind: 'note', text: 'use the blue one', created_at: '2026-11-11T10:00:01', data: { delivery: 'queued' } })

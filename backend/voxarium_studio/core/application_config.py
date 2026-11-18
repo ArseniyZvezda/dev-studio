@@ -19,6 +19,7 @@ from .config import (
     AppConfig, ApplicationThemeConfig, ThemeConfig, UpdatesConfig,
     default_orchestrator_models, validate_orchestrator_models,
 )
+from .api_backends import ApiBackendConfig
 from .paths import user_config_dir
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class RemoteServerProfile(BaseModel):
 
 class ApplicationConfig(BaseModel):
     model_config = ConfigDict(hide_input_in_errors=True)
+    api_backends: list[ApiBackendConfig] = Field(default_factory=list)
     remote_servers: list[RemoteServerProfile] = Field(default_factory=list)
     theme: ApplicationThemeConfig = Field(default_factory=ApplicationThemeConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
@@ -142,6 +144,8 @@ class ApplicationConfig(BaseModel):
 
     @model_validator(mode="after")
     def unique_profiles(self) -> ApplicationConfig:
+        if len({p.id for p in self.api_backends}) != len(self.api_backends):
+            raise ValueError("Duplicate API backend ID")
         if (len({p.profile_id for p in self.remote_servers}) != len(self.remote_servers)
                 or len({p.url for p in self.remote_servers}) != len(self.remote_servers)):
             raise ValueError("Remote profile collision")
@@ -288,7 +292,7 @@ def _write_application_profiles(config: ApplicationConfig) -> None:
 def _write_application_config(config: ApplicationConfig) -> None:
     """Overlay owned preferences without discarding future global fields (§5.2)."""
     raw, _ = _load_application_document()
-    for key, value in config.model_dump(mode="json", exclude={"remote_servers"}).items():
+    for key, value in config.model_dump(mode="json", exclude={"remote_servers", "api_backends"}).items():
         if key != "orchestrator_models" and isinstance(value, dict) and isinstance(raw.get(key), dict):
             raw[key] = {**raw[key], **value}
         else:

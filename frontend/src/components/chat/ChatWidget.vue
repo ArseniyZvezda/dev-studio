@@ -2,8 +2,10 @@
 /**
  * Chat with a team member — a floating popup or the two-pane Chats page (§10.9).
  *
- * The floating widget sits beside the routed surface, above the status bar (§6.1).
- * Docking teleports the same instance into the Chats or Producer page (§10.9).
+ * The floating widget sits beside the routed surface, above the status bar (§6.1), and its
+ * corner button is on every page. Docking teleports the same instance into the Chats or the
+ * Producer page (§10.9) — the Producer page only while the popup is closed, so the button
+ * there can lift the conversation out of its slot and back.
  *
  * What the member is told with each message is decided here, because only the component
  * sees all three sources: the route (the section, the Explorer's file), the docs store (the
@@ -49,6 +51,7 @@ import { useTeamsStore } from '@/stores/teams'
 import ConversationPanel from '@/components/teams/ConversationPanel.vue'
 import SessionStatus from '@/components/teams/SessionStatus.vue'
 import { subagents } from '@/lib/subagents'
+import ChatLauncher from './ChatLauncher.vue'
 import ChatList from './ChatList.vue'
 import ChatHeaderChips from './ChatHeaderChips.vue'
 import ProducerControls from './ProducerControls.vue'
@@ -60,8 +63,20 @@ const docs = useDocsStore()
 const route = useRoute()
 // One mounted widget moves into the page so drafts and pending uploads survive (§10.9).
 const fullscreen = computed(() => route.name === 'chats')
-const producerPage = computed(() => route.name === 'producer')
-const docked = computed(() => fullscreen.value || producerPage.value)
+const producerRoute = computed(() => route.name === 'producer')
+/**
+ * The Chats page *is* the widget, so it always holds it. The Producer page holds its
+ * conversation only while the popup is closed: the corner button is on every page, and
+ * there it lifts the same instance out of the page's slot into a popup — over another
+ * member, or this one — and puts it back when the popup is minimised (§10.11).
+ */
+const docked = computed(() => fullscreen.value || (producerRoute.value && !chat.open))
+/**
+ * The Producer workspace's own panel, not merely the route: the floating popup on that
+ * page is an ordinary chat, with the header, the list and the member picker it hides
+ * when the conversation is docked in the page.
+ */
+const producerPage = computed(() => docked.value && producerRoute.value)
 const visible = computed(() => docked.value || chat.open)
 watch(docked, value => chat.pageVisible = value, { immediate: true, flush: 'sync' })
 
@@ -635,45 +650,13 @@ onBeforeUnmount(() => {
       </section>
       </Transition>
 
-      <!-- The round button every website chat has: folds the popup out and back. The primary
-           action's grey with a lit edge rather than an accent fill (`chat-launcher` below),
-           its icon keeping the accent, since an icon is where colour goes. -->
-      <button
-        v-if="!docked"
-        class="chat-launcher pointer-events-auto relative grid size-12 place-items-center rounded-full"
-        :title="chat.open ? t('chat.minimiseChat') : t('chat.label')"
-        :aria-expanded="chat.open"
-        :aria-label="t('chat.label')"
-        @click="chat.toggle()"
-      >
-        <ChevronDown v-if="chat.open" class="size-5" />
-        <MessageCircle v-else class="size-5" />
-        <!-- `vxs-pop`: the count lands on the button when a reply does. -->
-        <span
-          v-if="!chat.open && chat.unreadCount"
-          class="vxs-pop absolute -top-0.5 -right-0.5 grid h-4 min-w-4 place-items-center rounded-pill bg-danger px-1 text-small font-medium text-on-accent"
-        >
-          {{ chat.unreadCount }}
-        </span>
-      </button>
+      <!-- The round button under the popup it folds out of. -->
+      <ChatLauncher v-if="!docked" />
     </div>
   </Teleport>
+  <!-- Where the widget itself is docked inside a page, the button still belongs to the
+       shell's corner, so it can lift the conversation back out. -->
+  <div v-if="docked" class="pointer-events-none absolute right-5 bottom-5 z-40">
+    <ChatLauncher />
+  </div>
 </template>
-
-<style scoped>
-.chat-launcher {
-  background: var(--vxs-accent-gradient);
-  color: var(--vxs-accent);
-  box-shadow:
-    inset 0 0 0 1px var(--vxs-border-strong),
-    var(--vxs-shadow-lg);
-}
-
-/* The ground and the edge each step up, as the primary button's do (`base.css`). */
-.chat-launcher:hover {
-  background: var(--vxs-accent-gradient-hover);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in oklab, var(--vxs-border-strong), var(--vxs-text-primary) 12%),
-    var(--vxs-shadow-lg);
-}
-</style>

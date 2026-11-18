@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppConfig, MemberOptions, OrchestratorModels } from '@/api/types'
 import OrchestratorSettings from './OrchestratorSettings.vue'
 
-const mocks = vi.hoisted(() => ({ memberOptions: vi.fn(), updateApplicationSettings: vi.fn(), updateSettings: vi.fn() }))
+const mocks = vi.hoisted(() => ({ apiBackends: vi.fn().mockResolvedValue([]), memberOptions: vi.fn(), updateApplicationSettings: vi.fn(), updateSettings: vi.fn() }))
 vi.mock('@/api/client', () => ({ api: mocks }))
 const session = reactive({ project: { config: {} as AppConfig } })
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))

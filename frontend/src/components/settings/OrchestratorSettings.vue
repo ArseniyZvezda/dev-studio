@@ -6,6 +6,7 @@ import type { MemberOptions, OrchestratorModels } from '@/api/types'
 import ModelSelector from '@/components/ui/ModelSelector.vue'
 import { t } from '@/i18n'
 import { useSessionStore } from '@/stores/session'
+import { apiConnections } from '@/lib/api-backends'
 
 const session = useSessionStore()
 const options = ref<MemberOptions | null>(null)
@@ -13,9 +14,17 @@ const draft = ref<OrchestratorModels>({})
 const saving = ref(false)
 const error = ref('')
 const strengths = ['1', '2', '3'] as const
-const saved = computed(() => session.project?.config.orchestrator_models ?? {})
+const saved = computed(() => ({
+  ...Object.fromEntries(apiConnections.value.map(c => [
+    `openai_api:${c.id}`, { '1': c.model, '2': c.model, '3': c.model },
+  ])),
+  ...session.project?.config.orchestrator_models ?? {},
+}))
 watch(saved, value => { draft.value = JSON.parse(JSON.stringify(value)) }, { immediate: true })
-const backends = computed(() => Object.keys(options.value?.agent_backends ?? {}))
+const backends = computed(() => [...new Set([
+  ...Object.keys(options.value?.agent_backends ?? {}).filter(id => !id.startsWith('openai_api:')),
+  ...apiConnections.value.map(c => `openai_api:${c.id}`),
+])])
 const dirty = computed(() => JSON.stringify(draft.value) !== JSON.stringify(saved.value))
 const valid = computed(() => backends.value.length > 0 && backends.value.every(backend =>
   strengths.every(strength => {
@@ -53,7 +62,7 @@ async function save() {
       <table class="w-full border-separate border-spacing-2">
         <thead><tr>
           <th scope="col" class="text-left text-small text-muted">{{ t('settings.orchestrator.strength') }}</th>
-          <th v-for="backend in backends" :key="backend" scope="col" class="text-left font-mono text-small">{{ backend }}</th>
+          <th v-for="backend in backends" :key="backend" scope="col" class="text-left font-mono text-small">{{ apiConnections.find(c => `openai_api:${c.id}` === backend)?.name || backend }}</th>
         </tr></thead>
         <tbody><tr v-for="strength in strengths" :key="strength">
           <th scope="row" class="text-left font-mono tabular-nums">{{ strength }}</th>

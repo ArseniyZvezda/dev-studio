@@ -17,6 +17,18 @@ def verbose_only(role: str, kind: str) -> bool:
 
 def compact_state(message, owner_id: str) -> bool:
     """Replace noisy telemetry with one current row, also used as the WS upsert id."""
+    # §10.6: streaming API deltas update one durable text/thinking block. Consumers
+    # outside transcripts still receive delta text (e.g. commit-description collectors).
+    stream_id = message.data.get("stream_id")
+    stream_text = message.data.get("stream_text")
+    if (message.role == "assistant" and message.kind in {"text", "thinking"}
+            and isinstance(stream_id, str) and stream_id
+            and isinstance(stream_text, str)):
+        key = f"stream:{owner_id}:{message.member_id}:{message.kind}:{stream_id}"
+        message.id = "state_" + hashlib.sha256(key.encode()).hexdigest()[:32]
+        message.text = stream_text
+        message.data = {key: value for key, value in message.data.items() if key != "stream_text"}
+        return True
     if message.kind != "system" or message.text not in {
         "thinking_tokens", "commands_changed", "usage_update",
     }:

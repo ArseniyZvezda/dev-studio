@@ -6,6 +6,7 @@ import { t } from '@/i18n'
 import { formatTime } from '@/lib/status'
 import { useSessionStore } from '@/stores/session'
 import { useVcsStore, vcsIndicator } from '@/stores/vcs'
+import { apiConnections } from '@/lib/api-backends'
 
 const session = useSessionStore()
 const vcs = useVcsStore()
@@ -38,8 +39,12 @@ function resetCountdown(reset: number | null): string | null {
 }
 
 // §6.1: the backend's monochrome mark carries readiness; the whole row explains it.
-const agentBackends = computed(() => (['claude_code', 'codex', 'qwen', 'antigravity'] as const).map((id) => {
-  const label = t(`nav.agentBackends.${id}`)
+const agentBackends = computed(() => ([...(['claude_code', 'codex', 'qwen', 'antigravity'] as const),
+  ...apiConnections.value.map(c => `openai_api:${c.id}`),
+]).map((id) => {
+  const label = id === 'claude_code' || id === 'codex' || id === 'qwen' || id === 'antigravity'
+    ? t(`nav.agentBackends.${id}`)
+    : apiConnections.value.find(c => `openai_api:${c.id}` === id)?.name || id
   const info = session.connection === 'open' ? session.status?.agent_backends[id] : undefined
   const reason = info?.reason || t(info
     ? info.available ? 'nav.agentBackends.ready' : 'nav.agentBackends.unavailable'

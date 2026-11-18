@@ -103,6 +103,11 @@ def resolve_model(backend: str, strength: int, config: Any = None) -> str:
         config = load_application_config()
     from ..core.config import validate_orchestrator_models
     mapping = validate_orchestrator_models(config.orchestrator_models)
+    if backend not in mapping and backend.startswith("openai_api:"):
+        from ..core.api_backends import connections
+        connection = next((c for c in connections() if c.backend_id == backend), None)
+        if connection:
+            return connection.model
     try:
         return mapping[backend][str(strength)]
     except KeyError:
