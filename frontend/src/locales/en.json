@@ -2820,7 +2820,9 @@
       "clearKey": "Remove saved API key",
       "model": "Default model ID",
       "icon": "Icon",
-      "deleteHint": "Existing agents using this connection will need another backend."
+      "deleteHint": "Existing agents using this connection will need another backend.",
+      "contextWindow": "Context window (tokens)",
+      "contextWindowHint": "Automatic context compaction starts at 90% of this limit. Leave blank if the window is unknown; automatic compaction is then disabled."
     }
   },
   "appearance": {
@@ -3059,6 +3061,7 @@
     "emptyTasks": "No active tasks",
     "emptyTasksHint": "Active task conversations appear here as work starts.",
     "noProducer": "Producer is not available for this team.",
+    "chatInPopup": "The chat is open in the popup — close it to bring this conversation back here.",
     "previous": "Previous tasks",
     "next": "Next tasks",
     "openTask": "Open task",

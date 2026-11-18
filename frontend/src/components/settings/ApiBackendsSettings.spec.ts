@@ -7,7 +7,7 @@ import { apiConnections } from '@/lib/api-backends'
 const mocks = vi.hoisted(() => ({ apiBackends: vi.fn(), saveApiBackend: vi.fn(), deleteApiBackend: vi.fn() }))
 vi.mock('@/api/client', () => ({ api: mocks }))
 vi.mock('@/i18n', () => ({ t: (key: string) => key }))
-const first = { id: '00000000-0000-4000-8000-000000000001', name: 'First', base_url: 'https://one.test/v1', model: 'model-one', icon: 'code', has_api_key: true }
+const first = { id: '00000000-0000-4000-8000-000000000001', name: 'First', base_url: 'https://one.test/v1', model: 'model-one', context_window: 32768, icon: 'code', has_api_key: true }
 const second = { ...first, id: '00000000-0000-4000-8000-000000000002', name: 'Second', model: 'model-two', icon: 'star' }
 let app: ReturnType<typeof createApp>
 let host: HTMLDivElement
@@ -41,9 +41,10 @@ describe('global API backend settings', () => {
     state.edit(first)
     state.draft.name = 'Renamed'
     state.draft.icon = 'star'
+    state.draft.context_window = 65536
     await state.save()
     expect(mocks.saveApiBackend).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      id: first.id, name: 'Renamed', icon: 'star', api_key: undefined,
+      id: first.id, name: 'Renamed', icon: 'star', context_window: 65536, api_key: undefined,
     }))
   })
   it('replaces and explicitly clears credentials', async () => {

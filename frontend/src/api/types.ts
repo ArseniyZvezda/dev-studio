@@ -1079,6 +1079,7 @@ export interface ApiBackendConnection {
   name: string
   base_url: string
   model: string
+  context_window: number | null
   icon: string | null
   has_api_key: boolean
 }

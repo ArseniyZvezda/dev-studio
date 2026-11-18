@@ -15,6 +15,7 @@ class ApiBackendConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(""))
     model: str = Field(min_length=1, max_length=200)
+    context_window: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
     icon: str | None = Field(default=None, max_length=80)
 
     @field_validator("id")

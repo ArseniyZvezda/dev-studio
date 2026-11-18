@@ -17,7 +17,7 @@ function edit(item?: ApiBackendConnection) {
   error.value = ''
   clearKey.value = false
   draft.value = item ? { ...item, api_key: '' } : {
-    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', icon: null, api_key: '',
+    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', context_window: null, icon: null, api_key: '',
   }
 }
 async function save() {
@@ -72,6 +72,11 @@ async function remove(id: string) {
       <label v-if="draft.has_api_key" class="flex items-center gap-2"><input v-model="clearKey" type="checkbox" :disabled="busy" />{{ t('settings.apiBackends.clearKey') }}</label>
       <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.model') }}</span>
         <input v-model="draft.model" required maxlength="200" class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy" /></label>
+      <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.contextWindow') }}</span>
+        <input type="number" min="1024" max="100000000" step="1" :value="draft.context_window ?? ''"
+          class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy"
+          @input="draft.context_window = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)" />
+        <span class="text-small text-faint">{{ t('settings.apiBackends.contextWindowHint') }}</span></label>
       <div><span class="mb-1 block text-muted">{{ t('settings.apiBackends.icon') }}</span><MemberIconPicker v-model="draft.icon" /></div>
       <div class="flex gap-2">
         <button type="submit" class="vxs-btn-primary px-3 py-1.5" :disabled="busy">{{ t(busy ? 'common.saving' : 'common.save') }}</button>

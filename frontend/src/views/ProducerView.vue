@@ -152,6 +152,11 @@ watch(() => chat.activeChatId, id => {
   }
 })
 watch(() => chat.view, view => {
+  // The page owns its conversation while the widget is docked in it. Once the corner
+  // button has lifted that widget into a floating popup, the popup is in charge: the
+  // page must not answer a "back to all chats" made in the popup by re-opening a
+  // Producer chat inside it (§10.11).
+  if (chat.open) return
   if (!loading.value && !changingChat.value && view === 'list') {
     if (!rendererSession.isLegacy && typeof route.query.chat === 'string') return
     const next = conversations.value[0]
@@ -198,8 +203,12 @@ watch(() => route.query.chat, id => {
         <p v-else-if="!producer" class="p-4 text-muted">{{ t('producerPage.noProducer') }}</p>
         <div class="producer-conversation min-h-0 flex-1" :class="{ hidden: loading || !producer }">
           <ProducerPlan :items="chat.view === 'chat' ? chat.activeChat?.producer_checklist ?? [] : []" />
-          <!-- One persistent widget retains attachments and drafts across page navigation. -->
-          <div id="producer-chat" class="min-h-0 min-w-0" />
+          <!-- One persistent widget retains attachments and drafts across page navigation.
+               The corner button can lift it out into a popup (§10.9), so say where it went
+               rather than leave a blank half of the column. -->
+          <div id="producer-chat" class="min-h-0 min-w-0" :class="chat.open ? 'grid place-items-center p-4 text-center text-small text-faint' : ''">
+            <p v-if="chat.open">{{ t('producerPage.chatInPopup') }}</p>
+          </div>
         </div>
       </section>
       <section class="flex min-h-0 min-w-0 flex-col" :aria-label="t('producerPage.tasks')">

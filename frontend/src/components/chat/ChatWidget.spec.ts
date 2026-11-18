@@ -19,7 +19,12 @@ vi.mock('@/stores/teams', () => ({ useTeamsStore: () => ({
   members: [{ id: 'agent', kind: 'agent', name: 'Developer' } as TeamMember],
   teams: [], memberById: new Map(), busy: false,
 }) }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'home', path: '/', fullPath: '/' }) }))
+// The route the widget reads, reactive so a test can navigate a mounted widget.
+vi.mock('vue-router', async () => {
+  const { reactive } = await import('vue')
+  const route = reactive({ name: 'home', path: '/', fullPath: '/' })
+  return { useRoute: () => route, route }
+})
 // Display children only. AttachmentPicker and the entire actual composer stay mounted.
 vi.mock('@/components/teams/ConversationPanel.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/components/teams/MemberMark.vue', () => ({ default: { template: '<span />' } }))
@@ -32,6 +37,9 @@ vi.mock('./ProducerTaskStatus.vue', () => ({ default: { template: '<span />' } }
 
 const { default: ChatWidget } = await import('./ChatWidget.vue')
 const { useChatStore } = await import('@/stores/chat')
+const { route } = await import('vue-router') as unknown as {
+  route: { name: string; path: string; fullPath: string }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -48,10 +56,10 @@ let pinia: Pinia
 let root: HTMLDivElement
 let chat: ReturnType<typeof useChatStore>
 
-async function mount() {
+async function mount(options: { open?: boolean } = {}) {
   chat = useChatStore()
   chat.view = 'new'
-  chat.open = true
+  chat.open = options.open ?? true
   chat.newMemberId = 'agent'
   app = createApp(ChatWidget).use(pinia)
   app.component('RouterLink', { template: '<span><slot /></span>' })
@@ -80,6 +88,8 @@ beforeEach(() => {
   transport.chats.mockResolvedValue([])
   pinia = createPinia()
   setActivePinia(pinia)
+  Object.assign(route, { name: 'home', path: '/', fullPath: '/' })
+  document.getElementById('producer-chat')?.remove()
   root = document.createElement('div')
   document.body.append(root)
 })
@@ -166,5 +176,40 @@ describe('mounted ChatWidget close guard', () => {
     document.querySelector<HTMLButtonElement>(`button[aria-label="${t('attachments.remove', { name: 'screen.png' })}"]`)!.click()
     await flush()
     expect(await rendererCloseBarrier.prepare()).toBe(true)
+  })
+})
+
+describe('the corner chat button', () => {
+  /** VS-185: the button is on every page — including Producer Mode, whose own slot the
+   * widget leaves as a popup and returns to when that popup closes. */
+  it('lifts the Producer page conversation into a popup, and puts it back', async () => {
+    Object.assign(route, { name: 'producer', path: '/producer', fullPath: '/producer' })
+    const slot = document.createElement('div')
+    slot.id = 'producer-chat'
+    document.body.append(slot)
+    await mount({ open: false })
+
+    // Docked: the widget sits in the workspace's slot, the button in the shell's corner.
+    expect(chat.pageVisible).toBe(true)
+    expect(slot.querySelector('[data-chat-widget]')).not.toBeNull()
+    expect(document.querySelectorAll('.chat-launcher')).toHaveLength(1)
+    expect(root.querySelector('.chat-launcher')).not.toBeNull()
+
+    root.querySelector<HTMLButtonElement>('.chat-launcher')!.click()
+    await flush()
+    expect(chat.open).toBe(true)
+    expect(chat.pageVisible).toBe(false)
+    expect(slot.querySelector('[data-chat-widget]')).toBeNull()
+    // Out of the page panel the same instance is an ordinary chat again: it has the header
+    // the workspace replaces, so the member and the list are reachable from here.
+    expect(root.querySelector('[data-chat-widget]')).not.toBeNull()
+    expect(root.querySelector(`button[title="${t('chat.minimise')}"]`)).not.toBeNull()
+    expect(document.querySelectorAll('.chat-launcher')).toHaveLength(1)
+
+    root.querySelector<HTMLButtonElement>('.chat-launcher')!.click()
+    await flush()
+    expect(chat.open).toBe(false)
+    expect(chat.pageVisible).toBe(true)
+    expect(slot.querySelector('[data-chat-widget]')).not.toBeNull()
   })
 })
