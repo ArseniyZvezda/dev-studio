@@ -379,6 +379,9 @@ async def put_api_backend(connection_id: str, payload: dict[str, Any]) -> dict[s
                 values["api_key"] = existing.api_key
             if "context_window" not in values and existing:
                 values["context_window"] = existing.context_window
+            for field in ("models", "api_mode"):
+                if field not in values and existing:
+                    values[field] = getattr(existing, field)
             connection = ApiBackendConfig.model_validate(values)
             items = [connection if c.id == connection_id else c for c in application.api_backends]
             if existing is None:

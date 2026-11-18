@@ -523,7 +523,7 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     apiBackends: () => request<ApiBackendConnection[]>('GET', '/settings/api-backends', { cache: 'no-store' }),
     saveApiBackend: (body: Omit<ApiBackendConnection, 'has_api_key'> & { api_key?: string }) =>
       request<ApiBackendConnection>('PUT', `/settings/api-backends/${body.id}`, {
-        body: { name: body.name, base_url: body.base_url, model: body.model, icon: body.icon, context_window: body.context_window,
+        body: { name: body.name, base_url: body.base_url, model: body.model, models: body.models, api_mode: body.api_mode, icon: body.icon, context_window: body.context_window,
           ...(body.api_key !== undefined ? { api_key: body.api_key } : {}) },
       }),
     deleteApiBackend: (id: string) => request<{ deleted: boolean }>('DELETE', `/settings/api-backends/${id}`),

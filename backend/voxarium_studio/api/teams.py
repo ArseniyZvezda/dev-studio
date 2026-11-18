@@ -404,8 +404,8 @@ async def member_options(ctx: Ctx) -> dict[str, Any]:
         "common_tools": COMMON_TOOLS,
         "suggested_models": [*SUGGESTED_MODELS, *codex.suggested_models(), *qwen.suggested_models(),
                              *antigravity.suggested_models(),
-                             *[{"id": c.model, "label": c.model, "group": c.name, "backend": c.backend_id}
-                               for c in api_connections()]],
+                             *[{"id": model, "label": model, "group": c.name, "backend": c.backend_id}
+                               for c in api_connections() for model in c.model_ids]],
         "studio_tool_prefix": f"mcp__{SERVER_NAME}__",
     }
 

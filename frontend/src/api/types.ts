@@ -1110,6 +1110,8 @@ export interface ApiBackendConnection {
   name: string
   base_url: string
   model: string
+  models: string[]
+  api_mode: 'auto' | 'chat_completions' | 'responses'
   context_window: number | null
   icon: string | null
   has_api_key: boolean
@@ -2584,7 +2586,7 @@ export interface ContextInventory {
   estimated_tokens: number
   captured_at: string | null
   partial: boolean
-  origin: 'studio' | 'codex_journal' | 'claude_code_journal' | 'qwen_journal' | 'claude_code_runtime' | 'qwen_runtime'
+  origin: 'studio' | 'codex_journal' | 'claude_code_journal' | 'qwen_journal' | 'openai_api_journal' | 'claude_code_runtime' | 'qwen_runtime'
   /** Local JSONL file supplying the journal view (§10.4). */
   journal_path?: string
   basis: 'estimated' | 'runtime'

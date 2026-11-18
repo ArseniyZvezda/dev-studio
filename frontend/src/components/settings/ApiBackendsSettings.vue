@@ -12,12 +12,14 @@ const busy = ref(false)
 const error = ref('')
 const removeTarget = ref<string | null>(null)
 const clearKey = ref(false)
+const modelIds = ref('')
 onMounted(() => loadApiConnections(true))
 function edit(item?: ApiBackendConnection) {
   error.value = ''
   clearKey.value = false
-  draft.value = item ? { ...item, api_key: '' } : {
-    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', context_window: null, icon: null, api_key: '',
+  modelIds.value = (item?.models ?? []).join('\n')
+  draft.value = item ? { ...item, models: [...(item.models ?? [])], api_mode: item.api_mode ?? 'auto', api_key: '' } : {
+    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', models: [], api_mode: 'auto', context_window: null, icon: null, api_key: '',
   }
 }
 async function save() {
@@ -26,6 +28,7 @@ async function save() {
   error.value = ''
   try {
     await api.saveApiBackend({ ...draft.value,
+      models: [...new Set(modelIds.value.split(/\r?\n/).map(id => id.trim()).filter(Boolean))],
       api_key: clearKey.value ? '' : draft.value.api_key || undefined })
     await loadApiConnections(true)
     draft.value = null
@@ -66,12 +69,22 @@ async function remove(id: string) {
         <input v-model="draft.name" required maxlength="120" class="w-full rounded-md border border-line bg-inset px-2 py-1" :disabled="busy" /></label>
       <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.url') }}</span>
         <input v-model="draft.base_url" required type="url" class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy" /></label>
+      <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.apiMode') }}</span>
+        <select v-model="draft.api_mode" class="w-full rounded-md border border-line bg-inset px-2 py-1" :disabled="busy">
+          <option value="auto">{{ t('settings.apiBackends.apiModeAuto') }}</option>
+          <option value="responses">{{ t('settings.apiBackends.apiModeResponses') }}</option>
+          <option value="chat_completions">{{ t('settings.apiBackends.apiModeChat') }}</option>
+        </select>
+        <span class="mt-1 block text-small text-faint">{{ t('settings.apiBackends.apiModeHint') }}</span></label>
       <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.key') }}</span>
         <input v-model="draft.api_key" type="password" autocomplete="new-password" class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy || clearKey" />
         <span class="text-small text-faint">{{ t(draft.has_api_key ? 'settings.apiBackends.keySaved' : 'settings.apiBackends.keyOptional') }}</span></label>
       <label v-if="draft.has_api_key" class="flex items-center gap-2"><input v-model="clearKey" type="checkbox" :disabled="busy" />{{ t('settings.apiBackends.clearKey') }}</label>
       <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.model') }}</span>
         <input v-model="draft.model" required maxlength="200" class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy" /></label>
+      <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.models') }}</span>
+        <textarea v-model="modelIds" rows="4" class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy" />
+        <span class="text-small text-faint">{{ t('settings.apiBackends.modelsHint') }}</span></label>
       <label class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.contextWindow') }}</span>
         <input type="number" min="1024" max="100000000" step="1" :value="draft.context_window ?? ''"
           class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy"

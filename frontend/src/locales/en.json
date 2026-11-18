@@ -3060,7 +3060,14 @@
     },
     "apiBackends": {
       "title": "OpenAI API backends",
-      "hint": "Add OpenAI or compatible API connections. Each connection is available in every project. Uses Chat Completions with streaming and tool calling.",
+      "hint": "Add OpenAI or compatible API connections. Each connection is available in every project, with streaming and tool calling.",
+      "apiMode": "API protocol",
+      "apiModeAuto": "Automatic",
+      "apiModeResponses": "Responses API",
+      "apiModeChat": "Chat Completions",
+      "apiModeHint": "Automatic uses Responses for api.openai.com and Chat Completions for other servers.",
+      "models": "Model IDs for the dropdown",
+      "modelsHint": "One model ID per line. The default model is always included. Available in this backend's model selectors across all projects.",
       "add": "Add API backend",
       "name": "Name",
       "url": "API base URL (including /v1)",
@@ -3362,6 +3369,7 @@
       "codex_journal": "Codex session journal",
       "claude_code_journal": "Claude Code session journal",
       "qwen_journal": "Qwen Code session journal",
+      "openai_api_journal": "OpenAI API session history",
       "claude_code_runtime": "Claude Code /context",
       "qwen_runtime": "Qwen Code /context detail"
     },

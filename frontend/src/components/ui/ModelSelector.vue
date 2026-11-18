@@ -39,13 +39,16 @@ const backends = computed(() => {
 })
 const selectedBackend = computed(() => props.backend || props.inheritedBackend || backends.value[0])
 const models = computed(() => {
+  const connection = apiConnections.value.find(c => `openai_api:${c.id}` === selectedBackend.value)
+  // §10.6: shared global metadata is fresher than a mounted member-options snapshot.
+  if (connection) {
+    return [...new Set([connection.model, ...(connection.models ?? [])])].map(id => ({
+      id, label: id, group: connection.name,
+    }))
+  }
   const entries = (props.options?.suggested_models ?? []).filter(
     entry => !entry.backend || entry.backend === selectedBackend.value,
   )
-  const connection = apiConnections.value.find(c => `openai_api:${c.id}` === selectedBackend.value)
-  if (connection && !entries.some(entry => entry.id === connection.model)) {
-    return [...entries, { id: connection.model, label: connection.model, group: connection.name }]
-  }
   return entries
 })
 const custom = ref(false)

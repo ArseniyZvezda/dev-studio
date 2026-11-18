@@ -3212,7 +3212,14 @@
     },
     "apiBackends": {
       "title": "Бэкэнды OpenAI API",
-      "hint": "Добавляйте подключения к OpenAI или совместимым API. Каждое подключение доступно во всех проектах. Используется Chat Completions с потоковыми ответами и вызовом инструментов.",
+      "hint": "Добавляйте подключения к OpenAI или совместимым API. Каждое подключение доступно во всех проектах, с потоковыми ответами и вызовом инструментов.",
+      "apiMode": "Протокол API",
+      "apiModeAuto": "Автоматически",
+      "apiModeResponses": "Responses API",
+      "apiModeChat": "Chat Completions",
+      "apiModeHint": "Автоматический режим использует Responses для api.openai.com и Chat Completions для остальных серверов.",
+      "models": "ID моделей для выпадающего списка",
+      "modelsHint": "По одному ID модели на строку. Модель по умолчанию включается всегда. Список доступен при выборе моделей этого бэкэнда во всех проектах.",
       "add": "Добавить API-бэкэнд",
       "name": "Название",
       "url": "Базовый URL API (включая /v1)",
@@ -3514,6 +3521,7 @@
       "codex_journal": "Журнал сессии Codex",
       "claude_code_journal": "Журнал сессии Claude Code",
       "qwen_journal": "Журнал сессии Qwen Code",
+      "openai_api_journal": "История сессии OpenAI API",
       "claude_code_runtime": "Claude Code /context",
       "qwen_runtime": "Qwen Code /context detail"
     },

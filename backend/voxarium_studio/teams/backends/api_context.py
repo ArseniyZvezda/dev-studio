@@ -141,7 +141,7 @@ _SUMMARY_INSTRUCTION = (
 
 
 async def compact_history(client, url, headers, model, messages, window, max_message_bytes, usage,
-                          summary_token_limit=None):
+                          summary_token_limit=None, api_mode="chat_completions"):
     """Map/reduce bounded fragments; no original history is replaced on failure.
 
     Even a single enormous tool result is split. Half the window is reserved for input;
@@ -153,6 +153,9 @@ async def compact_history(client, url, headers, model, messages, window, max_mes
     source = [message for i, message in enumerate(messages) if i != latest_user]
     if not source:
         raise ValueError("Context is full but has no earlier history to compact. Reduce the current message, system prompt or MCP tools.")
+    # Summaries use the readable transcript, not opaque encrypted reasoning or its
+    # duplicated output text. The exact original remains in the local archive.
+    source = [{k: v for k, v in message.items() if k != "responses_output"} for message in source]
     text = json.dumps(_without_image_data(source), ensure_ascii=False)
     output_limit = min(4096, max(128, window // 16))
     if summary_token_limit is not None:
@@ -171,8 +174,13 @@ async def compact_history(client, url, headers, model, messages, window, max_mes
             field = "max_completion_tokens" if urlsplit(url).hostname == "api.openai.com" else "max_tokens"
             for attempt in range(2):
                 payload = {**body, field: output_limit}
-                async with client.stream("POST", url, headers=headers, json=payload, timeout=60) as response:
-                    if response.status_code in {400, 422} and attempt == 0:
+                endpoint = url
+                if api_mode == "responses":
+                    from .api_responses import request_body, summary_result
+                    payload = request_body(payload)
+                    endpoint = url.removesuffix("/chat/completions") + "/responses"
+                async with client.stream("POST", endpoint, headers=headers, json=payload, timeout=60) as response:
+                    if response.status_code in {400, 422} and attempt == 0 and api_mode != "responses":
                         field = "max_tokens" if field == "max_completion_tokens" else "max_completion_tokens"
                         continue
                     if response.status_code >= 300:
@@ -184,6 +192,8 @@ async def compact_history(client, url, headers, model, messages, window, max_mes
                             raise ValueError("Context compaction response exceeds the message size limit; the previous history is unchanged.")
                     break
             result = json.loads(raw)
+            if api_mode == "responses":
+                result = summary_result(result)
             stats = result.get("usage") or {}
             cached = (stats.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             usage["input_tokens"] += max(0, stats.get("prompt_tokens", 0) - cached)

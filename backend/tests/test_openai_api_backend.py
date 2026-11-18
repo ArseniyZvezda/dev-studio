@@ -14,7 +14,7 @@ from voxarium_studio.teams.backends.openai_api import OpenAIApiBackend
 
 
 def connection(**kwargs):
-    return ApiBackendConfig(id=str(uuid4()), name="My API", model="test-model", api_key="secret-canary", **kwargs)
+    return ApiBackendConfig(id=str(uuid4()), name="My API", model="test-model", api_key="secret-canary", **{"api_mode": "chat_completions", **kwargs})
 
 
 def request(tmp_path, **kwargs):
@@ -154,6 +154,37 @@ async def test_api_failures_are_final_and_do_not_leak_key(monkeypatch, tmp_path,
     assert "secret-canary" not in str(events)
 
 
+@pytest.mark.parametrize("status,body,diagnostic", [
+    (401, "secret-canary", "HTTP 401"),
+    (429, "secret-canary", "HTTP 429"),
+    (400, "Function tools with reasoning_effort are not supported; use /v1/responses secret-canary",
+     "requires the Responses API"),
+])
+async def test_provider_diagnostic_survives_nested_mcp_groups(monkeypatch, tmp_path, status, body, diagnostic):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def transport():
+        try:
+            yield
+        except Exception as exc:
+            raise ExceptionGroup("secret-canary", [ExceptionGroup("transport", [exc])])
+
+    runtime = OpenAIApiBackend(connection())
+
+    async def tools(req, stack):
+        await stack.enter_async_context(transport())
+        return [], {}
+
+    monkeypatch.setattr(runtime, "_tools", tools)
+    fake_http(monkeypatch, [(status, body)])
+    events = [e async for e in runtime.run(request(tmp_path))]
+    assert events[-1].is_final and events[-1].data["is_error"]
+    assert diagnostic in events[-1].text
+    assert "ExceptionGroup" not in events[-1].text
+    assert "secret-canary" not in str(events)
+
+
 async def test_plan_tool_policy_and_text_only(tmp_path):
     c = OpenAIApiBackend(connection())
     req = request(tmp_path, permission_mode="plan")
@@ -181,6 +212,64 @@ async def test_history_is_bound_to_managed_root_and_connection(monkeypatch, tmp_
     assert len(sent[1][1]["messages"]) == 2
     [e async for e in OpenAIApiBackend(connection()).run(request(tmp_path, resume_session_id=events[-1].session_id, text_only=True))]
     assert len(sent[2][1]["messages"]) == 2
+
+
+@pytest.mark.parametrize("mode,kind", [("chat_completions", "task"), ("responses", "chat")])
+async def test_context_viewer_reads_retained_api_history(monkeypatch, tmp_path, mode, kind):
+    from voxarium_studio.api.session_context import fragment_response, read_context
+    from voxarium_studio.models.task_context import ChatSessionContext, TaskContext
+    from voxarium_studio.teams.context_viewer import fragment_key
+
+    c = connection(api_mode=mode, context_window=16000)
+    args = '{ "path": "hello.txt" }'
+    (tmp_path / "hello.txt").write_text("Exact tool result", encoding="utf-8")
+    if mode == "responses":
+        def completed(*output):
+            return stream({"type": "response.completed", "response": {
+                "status": "completed", "output": output, "usage": {"input_tokens": 10, "output_tokens": 3},
+            }})
+
+        first = completed(
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Reasoning summary"}],
+             "encrypted_content": "encrypted-canary"},
+            {"type": "function_call", "call_id": "call1", "name": "Read", "arguments": args},
+        )
+        last = completed({"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text", "text": "Answer"}]})
+    else:
+        first = stream({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call1",
+                       "function": {"name": "Read", "arguments": args}}]}, "finish_reason": "tool_calls"}]})
+        last = text_stream()
+    sent = fake_http(monkeypatch, [(200, first), (200, last)])
+    owner = runtime_session_owner(tmp_path, kind, "owner")
+    req = request(tmp_path, permission_mode="plan", runtime_key=RuntimeSessionKey(owner))
+    runtime = OpenAIApiBackend(c)
+    events = [e async for e in runtime.run(req)]
+    assert events[-1].data["is_error"] is False
+    session_id = events[-1].session_id
+    snapshot_class = TaskContext if kind == "task" else ChatSessionContext
+    snapshot = snapshot_class(**{f"{kind}_id": owner.owner_id}, backend=c.backend_id,
+                              sources=[{"category": "task", "text": "Studio fallback"}])
+    parts, metrics = await read_context(snapshot, [], None, session_id, project_root=tmp_path)
+    assert metrics["origin"] == "openai_api_journal"
+    assert metrics["window"] == 16000
+    assert metrics["reported"] == 10
+    assert metrics["has_studio_view"]
+    assert [part["text"] for part in parts if part["category"] == "tools"] == [args, "Exact tool result"]
+    assert [part["text"] for part in parts if part["category"] == "thinking"] == (
+        ["Reasoning summary"] if mode == "responses" else []
+    )
+    assert [part["text"] for part in parts if part["category"] == "history"] == ["Answer"]
+    assert "encrypted-canary" not in str(parts)
+    assert len(sent) == 2
+    schema = next(part for part in parts if part["category"] == "tool_definitions")
+    assert json.loads(schema["text"])["name"] == "Read"
+    assert fragment_response(parts, parts.index(schema), fragment_key(schema)) == {"text": schema["text"]}
+    studio, _ = await read_context(snapshot, [], None, session_id, "studio", project_root=tmp_path)
+    assert [part["text"] for part in studio] == ["Studio fallback"]
+
+    other = snapshot_class(**{f"{kind}_id": "other"}, backend=c.backend_id)
+    assert (await read_context(other, [], None, session_id, project_root=tmp_path))[1]["origin"] == "studio"
 
 
 async def test_real_studio_mcp_bridge(tmp_path):

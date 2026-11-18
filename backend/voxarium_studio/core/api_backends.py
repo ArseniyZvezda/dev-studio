@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 from uuid import UUID
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, field_validator
 
 
 class ApiBackendConfig(BaseModel):
@@ -15,6 +16,8 @@ class ApiBackendConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(""))
     model: str = Field(min_length=1, max_length=200)
+    models: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]] = Field(default_factory=list, max_length=200)
+    api_mode: Literal["auto", "chat_completions", "responses"] = "auto"
     context_window: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
     icon: str | None = Field(default=None, max_length=80)
 
@@ -41,6 +44,22 @@ class ApiBackendConfig(BaseModel):
         if not value.strip():
             raise ValueError("Value must not be blank")
         return value.strip()
+
+    @field_validator("models")
+    @classmethod
+    def unique_models(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(value))
+
+    @property
+    def model_ids(self) -> list[str]:
+        return list(dict.fromkeys([self.model, *self.models]))
+
+    @property
+    def effective_api_mode(self) -> str:
+        # §10.6: OpenAI's current reasoning models need Responses for tools.
+        if self.api_mode == "auto":
+            return "responses" if urlsplit(self.base_url).hostname == "api.openai.com" else "chat_completions"
+        return self.api_mode
 
     @property
     def backend_id(self) -> str:

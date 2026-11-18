@@ -180,11 +180,13 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
     if snapshot and summary and summary.created_at > snapshot.captured_at:
         snapshot = journal = None  # A manual compaction invalidated the captured session.
     captured_at = snapshot.captured_at.isoformat() if snapshot else None
+    api_backend = backend.startswith("openai_api:")
     if journal is not None:
         # Claude Code's journal records no window; the run reported it to the Studio.
         window = journal.context_window or _reported_window(messages, snapshot.started_at if snapshot else None)
         return journal.sources, {"reported": journal.reported_tokens, "window": window,
-                                 "origin": f"{backend}_journal", "journal_path": journal.journal_path, "partial": journal.partial,
+                                 "origin": "openai_api_journal" if api_backend else f"{backend}_journal",
+                                 "journal_path": journal.journal_path, "partial": journal.partial,
                                  "has_studio_view": snapshot is not None}
 
     cutoff = snapshot.started_at if snapshot and not snapshot.partial else summary.created_at if summary else None
@@ -257,7 +259,7 @@ def retained_context(snapshot: SessionContext | None, messages: Sequence, journa
                 parts.append(source(category, message.text, name, origin=locator + ".text",
                                     source_kind=kind, source_detail=detail))
     return parts, {"reported": reported, "window": window, "origin": "studio",
-                   "partial": snapshot is None or snapshot.partial,
+                   "partial": snapshot is None or snapshot.partial or api_backend,
                    "captured_at": captured_at, "has_studio_view": snapshot is not None}
 
 
@@ -316,7 +318,8 @@ def present(parts: list[dict], reported: int | None, window: int | None, *,
             preview["text_key"] = fragment_key(part)
         previews.append(preview)
     # Accounting is a display row, never appended to the cached source inventory.
-    if reported is not None and reported > estimated:
+    # The API's measured input predates the reply and any post-turn compaction.
+    if origin != "openai_api_journal" and reported is not None and reported > estimated:
         previews.append({"category": "unattributed", "label": "", "text": "", "tokens": reported - estimated,
                          "id": "unattributed", "truncated": False})
     return {

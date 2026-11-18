@@ -13,7 +13,7 @@ from test_openai_api_backend import request, stream, text_stream
 
 
 def backend(window=65536):
-    return OpenAIApiBackend(ApiBackendConfig(id=str(uuid4()), name="Local", model="local-model", context_window=window))
+    return OpenAIApiBackend(ApiBackendConfig(id=str(uuid4()), name="Local", model="local-model", context_window=window, api_mode="chat_completions"))
 
 
 def fake_provider(monkeypatch, *, completion=None, summary_status=200, summary_text="Goal: finish the task. Completed tool actions must not be repeated. Continue from their results."):
@@ -130,14 +130,23 @@ async def test_legacy_history_resume_and_compaction_failure_preserve_data(monkey
 
 
 async def test_reported_usage_triggers_after_response_and_survives_resume(monkeypatch, tmp_path):
+    from voxarium_studio.api.session_context import read_context
+    from voxarium_studio.models.task_context import ChatSessionContext
+    from voxarium_studio.teams.backends.base import RuntimeSessionKey, runtime_session_owner
+    from voxarium_studio.teams.context_viewer import present
+
     runtime = backend()
     session_id = uuid4().hex
-    req = request(tmp_path, resume_session_id=session_id)
+    key = RuntimeSessionKey(runtime_session_owner(tmp_path, "chat", "viewer"))
+    req = request(tmp_path, resume_session_id=session_id, runtime_key=key)
     path = runtime._history_path(req, session_id)
     # Initial estimate below 90%; the provider's actual usage crosses the threshold.
     history = [{"role": "user", "content": "Prior goal"},
                {"role": "assistant", "content": "history " * 26000}]
     runtime._save(path, history)
+    snapshot = ChatSessionContext(chat_id="viewer", backend=runtime.name)
+    _, legacy = await read_context(snapshot, [], None, session_id, project_root=tmp_path)
+    assert legacy["origin"] == "studio" and legacy["partial"]
 
     def completion(n):
         if n == 1:
@@ -153,11 +162,22 @@ async def test_reported_usage_triggers_after_response_and_survives_resume(monkey
     assert any(e.data.get("context_window") == 65536 for e in events)
     compressed = json.loads(path.read_text(encoding="utf-8"))
     assert "compressed" in compressed["messages"][0]["content"]
+    retained, metrics = await read_context(snapshot, [], None, session_id, project_root=tmp_path)
+    assert metrics["origin"] == "openai_api_journal"
+    assert metrics["reported"] == 60000
+    assert all(part["category"] != "unattributed" for part in present(retained, **metrics)["sources"])
+    assert [part["text"] for part in retained if part["category"] == "summary"] == [compressed["messages"][0]["content"]]
+    assert all(part["text"] != history[1]["content"] for part in retained)
     before = len(sent)
-    again = [e async for e in OpenAIApiBackend(runtime.connection).run(request(tmp_path, resume_session_id=session_id))]
+    follow = request(tmp_path, resume_session_id=session_id, runtime_key=key)
+    follow.system_prompt = "Updated instructions"
+    again = [e async for e in OpenAIApiBackend(runtime.connection).run(follow)]
     assert not again[-1].data["is_error"]
     assert len(sent) == before + 1
     assert "compressed" in sent[-1]["messages"][1]["content"]
+    retained, _ = await read_context(snapshot, [], None, session_id, project_root=tmp_path)
+    assert [part["text"] for part in retained if part["category"] == "system"] == ["Updated instructions"]
+    assert any(part["category"] == "summary" for part in retained)
 
 
 async def test_64k_summaries_are_reduced_again_when_first_pass_is_too_large(monkeypatch, tmp_path):

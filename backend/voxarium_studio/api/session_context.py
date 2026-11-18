@@ -8,9 +8,10 @@ from typing import Any, Literal
 from fastapi import HTTPException
 
 from ..models import AgentChatMessage, AgentMessage, TeamMember
-from ..models.task_context import SessionContext
-from ..teams.backends.base import RuntimeSessionOwner, context_inspector, live_session
+from ..models.task_context import ChatSessionContext, SessionContext, TaskContext
+from ..teams.backends.base import RuntimeSessionOwner, context_inspector, live_session, runtime_session_owner
 from ..teams.context_journals import read_session
+from ..teams.context_openai_api import read_api_context
 from ..teams.context_viewer import (
     captured_runtime_binding,
     fragment_key,
@@ -31,7 +32,16 @@ async def read_context(
     backend = snapshot.backend if snapshot and snapshot.backend else member.agent_backend if member else ""
     journal = None
     binding = captured_runtime_binding(snapshot, project_root)
-    if view == "auto" and binding is not None:
+    if view == "auto" and backend.startswith("openai_api:") and project_root is not None and session_id:
+        if isinstance(snapshot, TaskContext):
+            owner = runtime_session_owner(project_root, "task", snapshot.task_id)
+        elif isinstance(snapshot, ChatSessionContext):
+            owner = runtime_session_owner(project_root, "chat", snapshot.chat_id)
+        else:
+            owner = None
+        if owner is not None:
+            journal = await asyncio.to_thread(read_api_context, backend, session_id, owner)
+    elif view == "auto" and binding is not None:
         notice = {"codex": "instructions_in_prompt", "qwen": "system_prompt_in_message"}.get(backend)
         hint = ""
         if snapshot and notice and any(m.kind == "system" and m.data.get("subtype") == notice
