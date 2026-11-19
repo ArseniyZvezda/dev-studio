@@ -170,10 +170,17 @@ async def _finish_cleanup(task: asyncio.Task[Any]) -> None:
 
 @contextlib.asynccontextmanager
 async def agent_slot(
-    jobs: JobEngine, record: Record, key: str, member_id: str
+    jobs: JobEngine, record: Record, key: str, member_id: str, *, reserved=None,
 ) -> AsyncIterator[AgentSlotLease]:
-    """A suspendable agent slot, with transcript entries around capacity waits."""
-    lease = AgentSlotLease(lambda: _recorded_slot(jobs, record, key, member_id))
+    """A suspendable agent slot, optionally already held at ACP admission."""
+    def acquire():
+        nonlocal reserved
+        if reserved is not None:
+            result, reserved = reserved, None
+            return result
+        return _recorded_slot(jobs, record, key, member_id)
+
+    lease = AgentSlotLease(acquire)
     try:
         await lease.start()
         yield lease

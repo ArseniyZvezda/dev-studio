@@ -10,7 +10,7 @@ import { ApiError } from '@/api/client'
 import { createRemoteApiClient, createRemoteConsumersClient, RemoteApiError, type RemoteProfileConsumers,
   type RemoteServerProfile, type RemoteServers, type VerificationDTO } from '@/api/remote'
 import { t } from '@/i18n'
-import { rendererSession } from '@/session/project-session'
+import { ProjectSession, rendererSession } from '@/session/project-session'
 import { useRemoteServersStore } from '@/stores/remote-servers'
 import RemoteServersSettings from './RemoteServersSettings.vue'
 
@@ -84,7 +84,7 @@ function harness(items: RemoteServerProfile[] = [profile()]) {
   return { pinia, api, store }
 }
 type Harness = ReturnType<typeof harness>
-function mountView(context: Harness) {
+function mountView(context: Pick<Harness, 'pinia'>) {
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp({ render: () => h(RemoteServersSettings) })
@@ -147,6 +147,150 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+it('creates, keys and deletes an unbound profile through the stock forms in a desktop project tab', async () => {
+  // Use the production API clients too. The fake local HTTP server owns the
+  // persisted state independently of Pinia and returns a fresh JSON DTO on GET.
+  const realApi = await vi.importActual<typeof import('@/api/remote')>('@/api/remote')
+  const session = new ProjectSession('vs206-fixture')
+  session.bind({ project_id: 'vs206-fixture', epoch: 'test-epoch' })
+  vi.mocked(createRemoteApiClient).mockImplementation(() => realApi.createRemoteApiClient(session))
+  vi.mocked(createRemoteConsumersClient).mockImplementation(() => realApi.createRemoteConsumersClient(session))
+  const name = 'VS-206 fixture'
+  const url = 'https://vs-206.invalid/team'
+  const fakeKey = 'vs-206-test-key-only'
+  const base = '/api/remote/servers'
+  const target = `${base}/${id}`
+  let saved: RemoteServerProfile | null = null
+  let savedKey: string | null = null
+  let confirmed = false
+  const writes: string[] = []
+  const listReads: RemoteServerProfile[][] = []
+  const unexpected: string[] = []
+  const fakeFetch = vi.fn(async (path: string, init: RequestInit) => {
+    const request = `${init.method} ${path}`
+    const body = init.body === undefined ? undefined : JSON.parse(String(init.body))
+    if (init.method !== 'GET') writes.push(request)
+    const census = (): RemoteProfileConsumers => ({
+      profile_id: id, revision: saved!.revision, url, state: confirmed ? 'known' : 'unknown',
+      confirmed_at: confirmed ? checkedAt : null, bound_roots: [], active_roots: [], operations: [],
+    })
+    const reject = (status: number, code: string) => Response.json({ code, details: {} }, { status })
+    switch (request) {
+      case `GET ${base}`: {
+        const items = saved ? [saved] : []
+        listReads.push(items)
+        return Response.json({ items })
+      }
+      case `POST ${base}`:
+        if (saved || body?.name !== name || body?.url !== url) return reject(422, 'invalid_request')
+        saved = profile({ name, url, revision: 1, has_token: false, credential_source: 'none' })
+        return Response.json(saved, { status: 201 })
+      case `GET ${target}/consumers`:
+        return saved ? Response.json(census()) : reject(404, 'profile_not_found')
+      case `POST ${target}/consumers/confirmation`:
+      case `PUT ${target}/credential`:
+      case `DELETE ${target}`:
+        if (!saved) return reject(404, 'profile_not_found')
+        if (body?.expected_revision !== saved.revision) return reject(409, 'profile_revision_conflict')
+        if (request === `POST ${target}/consumers/confirmation`) {
+          if (body.url !== url || !Array.isArray(body.bound_roots) || body.bound_roots.length) {
+            return reject(409, 'consumer_inventory_changed')
+          }
+          confirmed = true
+          return Response.json(census())
+        }
+        if (!confirmed) return reject(503, 'consumer_lifecycle_unavailable')
+        if (request === `DELETE ${target}`) {
+          saved = null
+          savedKey = null
+          return new Response(null, { status: 204 })
+        }
+        if (typeof body.token !== 'string' || !body.token) return reject(422, 'invalid_request')
+        savedKey = body.token
+        saved = { ...saved, revision: saved.revision + 1, has_token: true, credential_source: 'stored' }
+        return Response.json(saved)
+      default:
+        unexpected.push(request)
+        return Response.json({ detail: 'Not Found' }, { status: 404 })
+    }
+  })
+  vi.stubGlobal('fetch', fakeFetch)
+  const pinia = createPinia()
+  piniae.push(pinia)
+  const { host } = mountView({ pinia })
+  const store = useRemoteServersStore(pinia)
+  function type(testId: string, value: string) {
+    const field = dialog()?.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`)
+    expect(field, testId).toBeTruthy()
+    field!.value = value
+    field!.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  async function refresh(expected: RemoteServerProfile[]) {
+    const previous = listReads.length
+    refreshButton(host).click()
+    await vi.waitFor(() => {
+      expect(listReads).toHaveLength(previous + 1)
+      expect(listReads.at(-1)).toEqual(expected)
+      expect(store.loading).toBe(false)
+      expect(store.items).toEqual(expected)
+    })
+  }
+
+  await vi.waitFor(() => expect(store.loaded).toBe(true))
+  expect(listReads).toEqual([[]])
+  button(host, 'remote-add').click()
+  await flush()
+  type('remote-metadata-name', name)
+  type('remote-metadata-url', url)
+  button(document.body, 'remote-metadata-submit').click()
+  const created = profile({ name, url, revision: 1, has_token: false, credential_source: 'none' })
+  await vi.waitFor(() => expect(saved).toEqual(created))
+  expect(writes).toEqual([`POST ${base}`])
+  await vi.waitFor(() => expect(dialog()).toBeNull())
+  expect(row(host).textContent).toContain(t('settings.remoteServers.credential.missing'))
+  await refresh([created])
+
+  button(row(host), 'remote-credential').click()
+  await vi.waitFor(() => expect(dialog()?.querySelector('[data-testid="remote-consumers"]')?.getAttribute('aria-busy')).toBe('false'))
+  expect(unexpected, dialog()?.textContent ?? 'consumer census request').toEqual([])
+  type('remote-credential-key', fakeKey)
+  await flush()
+  expect(button(document.body, 'remote-credential-submit').disabled).toBe(true)
+  dialog()!.querySelector<HTMLInputElement>('[data-testid="remote-consumers-acknowledge"]')!.click()
+  await flush()
+  button(document.body, 'remote-consumers-confirm').click()
+  await vi.waitFor(() => expect(button(document.body, 'remote-credential-submit').disabled).toBe(false))
+  button(document.body, 'remote-credential-submit').click()
+  const credentialWrite = `PUT ${target}/credential`
+  const withKey = { ...created, revision: 2, has_token: true, credential_source: 'stored' as const }
+  await vi.waitFor(() => expect(writes.filter(request => request === credentialWrite)).toHaveLength(1))
+  expect(savedKey).toBe(fakeKey)
+  expect(saved).toEqual(withKey)
+  await vi.waitFor(() => expect(dialog()).toBeNull())
+  expect(row(host).textContent).toContain(t('settings.remoteServers.credential.stored'))
+  expect(JSON.stringify(store.$state)).not.toContain(fakeKey)
+  await refresh([withKey])
+
+  button(row(host), 'remote-delete').click()
+  await flush()
+  expect(dialog()?.querySelector('[data-testid="remote-delete-url"]')?.textContent).toBe(url)
+  button(document.body, 'remote-delete-review').click()
+  await vi.waitFor(() => expect(button(document.body, 'remote-delete-confirm').disabled).toBe(false))
+  const deleteWrite = `DELETE ${target}`
+  expect(writes).not.toContain(deleteWrite)
+  button(document.body, 'remote-delete-confirm').click()
+  await vi.waitFor(() => expect(writes.filter(request => request === deleteWrite)).toHaveLength(1))
+  expect(saved).toBeNull()
+  expect(savedKey).toBeNull()
+  await vi.waitFor(() => expect(dialog()).toBeNull())
+  expect(host.querySelector(`[data-profile-id="${id}"]`)).toBeNull()
+  await refresh([])
+  expect(host.textContent).toContain(t('settings.remoteServers.empty'))
+  expect(writes).toEqual([`POST ${base}`, `POST ${target}/consumers/confirmation`, credentialWrite, deleteWrite])
+  expect(unexpected).toEqual([])
+  expect(WebSocket).not.toHaveBeenCalled()
 })
 
 describe('personal key action integration', () => {

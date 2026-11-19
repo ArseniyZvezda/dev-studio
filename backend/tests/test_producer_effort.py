@@ -173,24 +173,33 @@ async def test_each_new_task_is_scored_independently(producer, solver):
 
 @pytest.mark.parametrize("override", [None, "specific-model"])
 async def test_producer_auto_shares_model_evaluation_with_task_effort(producer, solver, monkeypatch, override):
-    monkeypatch.setattr(orchestrator_module, "resolve_model", lambda backend, strength: f"selected-{strength}")
+    monkeypatch.setattr(orchestrator_module, "resolve_model", lambda backend, strength: f"{backend}-{strength}")
     chat = await opened(producer)
     await producer.chats.producer.set_effort_mode(chat.id, "auto")
     async with producer.db.session() as session:
         member = await session.get(TeamMember, DEV)
         member.model = "auto"
+        initial_backend = member.agent_backend
         session.add(member)
     task = await producer.teams.create_task(
         team_id=TEAM, assignee_id=DEV, created_by=PRODUCER,
         title="Implement movement", brief="Instructions", producer_chat_id=chat.id, model=override,
     )
-    assert task.model == (override or "selected-2")
+    assert task.model == (override or f"{initial_backend}-2")
     assert task.effort == "xhigh"
+    new_backend = "openai_api:test"
+    worker = orchestrator_module.get_backend(initial_backend)
+    monkeypatch.setattr(orchestrator_module, "get_backend", lambda _: worker)
+    async with producer.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+        member.agent_backend = new_backend
     await allow(producer, task)
     await producer.teams.start_task(task.id)
     await finished(producer, task.id)
     request = next(r for r in ProducerBackend.requests if r.session_key == task.id)
-    assert request.model == request.member.model == task.model
+    saved = await producer.teams._reload(task.id)
+    assert request.member.agent_backend == new_backend
+    assert request.model == request.member.model == saved.model == (override or f"{new_backend}-2")
     assert len(solver.requests) == 1, "the task must not evaluate the same assignment again"
 
 

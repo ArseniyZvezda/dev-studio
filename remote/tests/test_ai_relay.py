@@ -247,10 +247,12 @@ class World:
 
     def mutation(self, sc: Scene, op: str = "task.start", *, payload: dict | None = None,
                  command_id: str | None = None) -> dict:
-        return {"target": sc.target, "grant_id": sc.grant_id, "grant_revision": 1, "op": op,
+        body = {"target": sc.target, "grant_id": sc.grant_id, "grant_revision": 1, "op": op,
                 "resource_id": "task_1", "command_id": command_id or U(), "issued_at": self.clock.wall_ms(),
-                "expected_executor_epoch": sc.epoch, "expected_resource_revision": 1,
-                "payload": {} if payload is None else payload}
+                "expected_executor_epoch": sc.epoch, "payload": {} if payload is None else payload}
+        if op in ("task.edit_draft", "task.start", "chat.send"):
+            body["expected_resource_revision"] = 1
+        return body
 
     def forwarded(self, sc: Scene, body: dict) -> tuple[str, dict]:
         """Requester sends *body*; return (requester request_id, forward frame at the executor)."""
@@ -405,6 +407,40 @@ def test_actor_fields_in_a_request_body_are_refused(w: World, field: str) -> Non
     with closes(4400):
         w.send(sc.rq, "request", body)
     assert w.drain(sc.ex) == []  # nothing reached the executor
+
+
+def test_task_note_schema_accepts_no_resource_revision(w: World) -> None:
+    body = w.mutation(w.scene(), "task.note", payload={"text": "Leave a note"})
+    assert "expected_resource_revision" not in body
+    assert p.check_request(body) == body
+
+
+@pytest.mark.parametrize("revision", [1, None], ids=["integer", "null"])
+def test_task_note_schema_forbids_resource_revision(w: World, revision: int | None) -> None:
+    body = w.mutation(w.scene(), "task.note", payload={"text": "Leave a note"})
+    body["expected_resource_revision"] = revision
+    with pytest.raises(p.AcpError, match="expected_resource_revision forbidden for task.note"):
+        p.check_request(body)
+
+
+def test_task_note_schema_still_requires_command_id(w: World) -> None:
+    body = w.mutation(w.scene(), "task.note", payload={"text": "Leave a note"})
+    del body["command_id"]
+    with pytest.raises(p.AcpError, match="mutation requires command_id"):
+        p.check_request(body)
+
+
+@pytest.mark.parametrize("op,payload", [
+    ("task.edit_draft", {"title": "Updated title"}),
+    ("task.start", {}),
+    ("chat.send", {"text": "Send a message"}),
+], ids=["task.edit_draft", "task.start", "chat.send"])
+def test_edit_start_send_schema_still_requires_resource_revision(w: World, op: str, payload: dict) -> None:
+    body = w.mutation(w.scene(), op, payload=payload)
+    assert p.check_request(body) == body
+    del body["expected_resource_revision"]
+    with pytest.raises(p.AcpError, match="expected_resource_revision required"):
+        p.check_request(body)
 
 
 # ============================================================== 2. per-frame auth
@@ -574,31 +610,96 @@ def test_a_request_reaches_only_the_exact_target_executor(w: World) -> None:
     assert w.one(ex2)["body"]["request"]["target"] == target2
 
 
-def test_offline_executor_is_not_available_and_nothing_is_queued(w: World) -> None:
+def test_pinned_executor_detaching_before_request_is_offline_without_fallback_or_replay(w: World) -> None:
     sc = w.scene()
+    (entry,) = w.ask(sc.rq, "directory.list", {})["result"]["targets"]
+    assert entry["state"] == "online"
+    assert entry["target"] == sc.target and entry["executor_epoch"] == sc.epoch
+    assert entry["grant"]["grant_id"] == sc.grant_id and entry["grant"]["revision"] == 1
+    command = dict(w.mutation(sc), target=entry["target"], grant_id=entry["grant"]["grant_id"],
+                   grant_revision=entry["grant"]["revision"], expected_executor_epoch=entry["executor_epoch"])
+
+    # Another online PC is granted for the same project and resource, but is not the pinned target.
+    other = w.device(sc.executor.person)
+    ex2 = w.connect(other)
+    w.attach(ex2)
+    export2 = w.publish(ex2, persistent_id=sc.export["persistent_id"])
+    w.grant(other, ex2, export2, sc.requester)
+    w.index(ex2, export2, w.rows(command["resource_id"]))
+
+    # §16.12: This is a known failure before dispatch, not an ambiguous delivery.
     w.relay.disconnect(sc.ex)
-    body = w.read(sc)
-    rid = w.send(sc.rq, "request", body)
-    assert w.one(sc.rq) == {"acp": 1, "type": "response", "request_id": rid,
-                            "body": {"state": "rejected", "target": sc.target, "code": "not_available"}}
-    command = w.mutation(sc)
-    rid = w.send(sc.rq, "request", command)
-    answer = w.one(sc.rq)["body"]
-    assert answer == {"state": "rejected", "target": sc.target, "command_id": command["command_id"],
-                      "code": "not_available"}
-    # Coming back online delivers nothing that was asked while offline.
-    ex = w.connect(sc.executor)
-    w.attach(ex, sc.epoch)
-    assert w.drain(ex) == []
+    assert w.ask(sc.rq, "request", command) == {
+        "state": "rejected", "target": sc.target, "command_id": command["command_id"], "code": "offline"}
+    assert w.ask(sc.rq, "request", w.read(sc)) == {
+        "state": "rejected", "target": sc.target, "code": "offline"}
+    assert w.drain(sc.ex) == [CLOSED]
+    assert w.drain(ex2) == []
+    assert w.relay.pending == {}
+    assert not any(row["command_id"] == command["command_id"] and row["outcome"] == "forwarded"
+                   for row in w.ai.audit_rows())
+
+    # Reattaching even with the same epoch must not deliver the rejected work.
+    reattached = w.connect(sc.executor)
+    assert w.attach(reattached, sc.epoch)["state"] == "completed"
+    w.clock.advance(p.RECEIPT_TIMEOUT_SECONDS)
+    w.relay.tick()
+    assert w.drain(reattached) == w.drain(ex2) == w.drain(sc.rq) == []
     assert w.relay.pending == {}
 
 
-def test_expired_lease_counts_as_offline_for_routing(w: World) -> None:
-    sc = w.scene()
-    w.clock.advance(15)
-    w.send(sc.rq, "request", w.read(sc))
-    assert w.one(sc.rq)["body"]["code"] == "not_available"
+@pytest.mark.parametrize("case,code", [
+    ("other_device", "not_available"),
+    ("unknown_export", "not_available"),
+    ("operation_scope", "denied"),
+    ("resource_scope", "not_available"),
+])
+def test_refused_request_does_not_reveal_executor_availability(w: World, case: str, code: str) -> None:
+    sc = w.scene(ops=("view_status",) if case == "operation_scope" else ALL_OPS)
+    caller = sc.rq
+    command = w.mutation(sc)
+    if case == "other_device":
+        caller = w.connect(w.device(sc.requester.person, "android"))
+    elif case == "unknown_export":
+        command["target"] = dict(sc.target, export_id=U())
+    elif case == "resource_scope":
+        # The resource exists, but in a team outside this grant's scope.
+        (resource,) = w.rows(command["resource_id"])
+        w.index(sc.ex, sc.export, [dict(resource, team_id="t2")], index_revision=2)
+
+    online = w.ask(caller, "request", command)
+    assert online == {"state": "rejected", "target": command["target"],
+                      "command_id": command["command_id"], "code": code}
     assert w.drain(sc.ex) == []
+    assert w.relay.pending == {}
+    w.relay.disconnect(sc.ex)
+    assert w.ask(caller, "request", command) == online
+    assert w.relay.pending == {}
+
+
+@pytest.mark.parametrize("expire_during_auth", [False, True], ids=["before-request", "during-authorization"])
+def test_expired_lease_counts_as_offline_for_routing_before_cleanup(
+        w: World, monkeypatch: pytest.MonkeyPatch, expire_during_auth: bool) -> None:
+    sc = w.scene()
+    if expire_during_auth:
+        w.clock.advance(p.LEASE_SECONDS - 1)
+        authorize = w.auth.authorize
+
+        def authorize_then_expire_lease(actor: Actor, body: dict, now_ms: int):
+            authorization = authorize(actor, body, now_ms)
+            w.clock.advance(1)
+            return authorization
+
+        monkeypatch.setattr(w.auth, "authorize", authorize_then_expire_lease)
+    else:
+        w.clock.advance(p.LEASE_SECONDS)
+    # No sweep yet: the lease deadline, not merely presence in the map, decides availability.
+    assert w.relay.executors[sc.executor.registration_id] is sc.ex and not sc.ex.closed
+    command = w.mutation(sc)
+    assert w.ask(sc.rq, "request", command) == {
+        "state": "rejected", "target": sc.target, "command_id": command["command_id"], "code": "offline"}
+    assert w.drain(sc.ex) == []
+    assert w.relay.pending == {}
 
 
 def test_a_response_from_a_connection_that_was_not_asked_is_refused(w: World) -> None:
@@ -678,12 +779,24 @@ def test_receipt_timeout_answers_reads_and_mutations_and_drops_late_responses(w:
     assert outcomes == ["forwarded", "outcome_unknown"]
 
 
-def test_executor_disconnect_fails_pending_requests_at_once(w: World) -> None:
+@pytest.mark.parametrize("mutation", [False, True], ids=["read", "mutation"])
+def test_executor_disconnect_after_forward_fails_pending_requests_at_once(w: World, mutation: bool) -> None:
     sc = w.scene()
-    rid, _ = w.forwarded(sc, w.read(sc))
+    body = w.mutation(sc) if mutation else w.read(sc)
+    rid, forward = w.forwarded(sc, body)
+    assert forward["body"]["request"] == body
+    assert forward["request_id"] in w.relay.pending
+
     w.relay.disconnect(sc.ex)
-    assert w.one(sc.rq) == {"acp": 1, "type": "response", "request_id": rid,
-                            "body": {"state": "rejected", "target": sc.target, "code": "not_available"}}
+    if mutation:
+        expected = {"state": "outcome_unknown", "target": sc.target, "command_id": body["command_id"],
+                    "code": "outcome_unknown"}
+        outcomes = [row["outcome"] for row in w.ai.audit_rows() if row["command_id"] == body["command_id"]]
+        assert outcomes == ["forwarded", "outcome_unknown"]
+    else:
+        expected = {"state": "rejected", "target": sc.target, "code": "not_available"}
+    assert w.one(sc.rq) == {"acp": 1, "type": "response", "request_id": rid, "body": expected}
+    assert w.relay.pending == {}
 
 
 # ============================================================== 6. revoke race
@@ -819,7 +932,7 @@ def test_principal_rate_is_twenty_per_second_burst_forty(w: World) -> None:
         return w.one(rq)["body"]["code"]
 
     for target, grant_id in targets[:5]:
-        assert [request(target, grant_id) for _ in range(8)] == ["not_available"] * 8
+        assert [request(target, grant_id) for _ in range(8)] == ["offline"] * 8
     # 40 requests spent the principal's burst; a fresh export bucket does not help.
     assert request(*targets[5]) == "rate_limited"
     # Another principal is unaffected.
@@ -829,7 +942,7 @@ def test_principal_rate_is_twenty_per_second_burst_forty(w: World) -> None:
                               "op": "resource.list", "payload": {}})
     assert w.one(carol)["body"]["code"] == "not_available"
     w.clock.advance(0.06)  # 20/s → one token (0.05 s is a hair short in float)
-    assert request(*targets[5]) == "not_available"
+    assert request(*targets[5]) == "offline"
 
 
 def test_subscriptions_are_capped_per_source(w: World) -> None:

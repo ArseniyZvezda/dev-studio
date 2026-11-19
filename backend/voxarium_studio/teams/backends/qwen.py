@@ -21,6 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ..backend_usage import record_result_speed
 from ..changes import edit_stat
 from .base import (
     AgentBackend,
@@ -386,7 +387,9 @@ class QwenBackend(AgentBackend):
                     state.errors.append(reason + (f": {stderr}" if stderr else ""))
                     yield AgentEvent(kind="error", text=state.errors[-1],
                                      session_id=state.session_id)
-                yield state.finish(exit_code, round((time.monotonic() - started) * 1000))
+                result = state.finish(exit_code, round((time.monotonic() - started) * 1000))
+                record_result_speed(request.runtime_key, self.name, result.data)
+                yield result
             finally:
                 if process is not None and process.returncode is None:
                     await _kill_tree(process)

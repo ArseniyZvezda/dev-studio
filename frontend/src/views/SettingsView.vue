@@ -17,6 +17,7 @@ import ApiBackendsSettings from '@/components/settings/ApiBackendsSettings.vue'
 import OrchestratorSettings from '@/components/settings/OrchestratorSettings.vue'
 import StartupSettings from '@/components/settings/StartupSettings.vue'
 import RemoteServersSettings from '@/components/settings/RemoteServersSettings.vue'
+import RemoteAiAccessSettings from '@/components/settings/RemoteAiAccessSettings.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import SegmentedControl from '@/components/ui/SegmentedControl.vue'
 import { LOCALES, locale, setLocale, t, type Locale, type MessageKey } from '@/i18n'
@@ -55,6 +56,7 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-orchestrator', titleKey: 'settings.orchestrator.title' },
   { id: 'settings-execution', titleKey: 'settings.execution.title' },
   { id: 'settings-remote-servers', titleKey: 'settings.remoteServers.title' },
+  { id: 'settings-remote-ai', titleKey: 'aiAccess.title' },
   { id: 'settings-updates', titleKey: 'settings.updates.title' },
 ]
 
@@ -575,6 +577,14 @@ async function setNodeCache(value: boolean) {
 
           <section id="settings-remote-servers" class="vxs-enter scroll-mt-4">
             <RemoteServersSettings />
+          </section>
+
+          <section id="settings-remote-ai" class="vxs-enter scroll-mt-4 space-y-3">
+            <h2 class="font-medium">{{ t('aiAccess.title') }}</h2>
+            <RouterLink :to="{ name: 'remote-ai' }" class="text-accent underline">
+              {{ t('aiAccess.openWorkspace') }}
+            </RouterLink>
+            <RemoteAiAccessSettings />
           </section>
 
           <section id="settings-updates" class="vxs-enter scroll-mt-4">

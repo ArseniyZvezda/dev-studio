@@ -65,7 +65,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..backend_usage import record_codex_usage
+from ..backend_usage import record_codex_usage, record_result_speed
 from .base import AgentBackend, AgentEvent, AgentRunRequest, register_backend
 from .cli_stream import _Oversized, _drain, _frames
 from .codex_costs import estimate_cost
@@ -475,13 +475,13 @@ class CodexBackend(AgentBackend):
                     data={"exit_code": exit_code},
                     session_id=session_id,
                 )
+            data = state.result_data(exit_code=exit_code, is_error=failed)
+            data["duration_ms"] = round((time.monotonic() - started_at) * 1000)
+            record_result_speed(request.runtime_key, self.name, data)
             yield AgentEvent(
                 kind="result",
                 text=state.error_text if failed else state.last_message,
-                data={
-                    **state.result_data(exit_code=exit_code, is_error=failed),
-                    "duration_ms": round((time.monotonic() - started_at) * 1000),
-                },
+                data=data,
                 session_id=session_id,
                 is_final=True,
             )

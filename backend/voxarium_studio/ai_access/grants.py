@@ -185,13 +185,18 @@ def _grant(data: dict[str, Any]) -> Grant:
         raise AiAccessError("invalid_grant") from None
 
 
-def _published_export(store: RegistryStore, export_id: str) -> Target:
+def _published_export(
+    store: RegistryStore, export_id: str, *, expected_target: Target | None = None,
+) -> Target:
     export = store.exports.get(export_id)
     if export is None or export.deleted:
-        raise AiAccessError("export_not_found")
+        raise AiAccessError(ErrorCode.STALE_TARGET if expected_target is not None else "export_not_found")
+    target = export_target(export)
+    if expected_target is not None and target != expected_target:
+        raise AiAccessError(ErrorCode.STALE_TARGET)
     if not export_published(store, export):
         raise AiAccessError("export_not_published")
-    return export_target(export)
+    return target
 
 
 def _ids(values: Iterable[str]) -> list[str]:
@@ -206,13 +211,14 @@ def create_grant(
     member_ids: Iterable[str], execution_policy_digest: str, now_ms: int,
     resource_scope: ResourceScope | str = ResourceScope.CREATED_BY_THIS_GRANTEE,
     resource_ids: Iterable[str] = (), expires_at: int | None = None,
-    grant_id: str | None = None,
+    grant_id: str | None = None, expected_target: Target | None = None,
 ) -> GrantRecord:
     """Save explicit consent for one exact grantee device as ``pending`` (§4).
 
     No wildcards: one Remote ``user_id`` + ``registration_id``, at least one team and
     member. Expiry defaults to 24 h and may not exceed 30 days. The target is the
-    export's current, published target. Effective only after a matching ACK.
+    export's current, published target and must match ``expected_target`` if supplied.
+    Effective only after a matching ACK.
     """
     try:
         issued = protocol.check_timestamp(now_ms)
@@ -234,7 +240,7 @@ def create_grant(
         raise AiAccessError("invalid_grant") from None
 
     def change(store: RegistryStore) -> tuple[RegistryStore | None, GrantRecord]:
-        target = _published_export(store, protocol.check_uuid(export_id))
+        target = _published_export(store, protocol.check_uuid(export_id), expected_target=expected_target)
         if chosen in store.grants:
             raise AiAccessError("grant_exists")
         live = sum(1 for record in store.grants.values()
@@ -262,12 +268,14 @@ _UPDATABLE = frozenset({
 
 
 def update_grant(
-    grant_id: str, *, expected_revision: int, now_ms: int, **changes: Any,
+    grant_id: str, *, expected_revision: int, now_ms: int,
+    expected_target: Target | None = None, **changes: Any,
 ) -> GrantRecord:
     """CAS update of one grant: only ``grant.revision`` increments (§4, §6).
 
     ``issued_at`` becomes *now_ms* (a renewed consent). The target must still be the
-    export's current published target — a fenced export needs a new grant.
+    export's current published target and match ``expected_target`` if supplied.
+    A fenced export needs a new grant.
     """
     if set(changes) - _UPDATABLE:
         raise AiAccessError("invalid_grant")
@@ -283,9 +291,12 @@ def update_grant(
         current = record.grant
         if current.revoked_at is not None:
             raise AiAccessError("grant_revoked")
+        target = (_published_export(store, current.target.export_id, expected_target=expected_target)
+                  if expected_target is not None else None)
         if current.revision != expected_revision:
             raise AiAccessConflict()
-        target = _published_export(store, current.target.export_id)
+        if target is None:
+            target = _published_export(store, current.target.export_id)
         if target != current.target:
             raise AiAccessError(ErrorCode.STALE_TARGET)
         data = current.model_dump(mode="json")

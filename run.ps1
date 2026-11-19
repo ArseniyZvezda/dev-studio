@@ -97,8 +97,25 @@ function Stop-PortListener([int]$TargetPort, [string]$Label) {
         $owners = @(Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction Stop |
                     Select-Object -ExpandProperty OwningProcess -Unique)
     } catch {
-        # Get-NetTCPConnection throws when nothing is listening.
-        return $false
+        # Get-NetTCPConnection also throws when the Listen row is absent.
+    }
+    if (-not $owners) {
+        # Windows can expose the accepted socket without exposing the Listen row.
+        # Match only the server side of this exact loopback connection (§2.7).
+        $probe = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $connect = $probe.ConnectAsync('127.0.0.1', $TargetPort)
+            if ($connect.Wait(150) -and $probe.Connected) {
+                $clientPort = $probe.Client.LocalEndPoint.Port
+                $owners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $TargetPort `
+                            -RemoteAddress '127.0.0.1' -RemotePort $clientPort -State Established -ErrorAction Stop |
+                            Select-Object -ExpandProperty OwningProcess -Unique)
+            }
+        } catch {
+            # The port check before launch reports a listener we could not stop.
+        } finally {
+            $probe.Dispose()
+        }
     }
 
     $stopped = $false
@@ -200,12 +217,11 @@ if (-not $Dev -and -not $Desktop -and -not (Test-Path (Join-Path $Root 'backend\
 # --- restart ------------------------------------------------------------------------
 
 Write-Step 'Clearing previous instances'
-if ($Desktop) {
-    if (Test-PortListening $Port) {
-        Write-Host "Port $Port is already occupied."
-        exit 2
-    }
-} elseif (-not (Stop-Everything)) { Write-Note 'nothing was running' }
+if (-not $Desktop -and -not (Stop-Everything)) { Write-Note 'nothing was running' }
+if (Test-PortListening $Port) {
+    Write-Host "Port $Port is already occupied." -ForegroundColor Red
+    exit 2
+}
 
 # --- backend -------------------------------------------------------------------------
 
@@ -218,10 +234,17 @@ if ($Project) { $backendArgs += ('"' + $Project + '"') }
 $backendArgs += @('--host', '127.0.0.1', '--port', "$Port", '--no-open')
 if ($Dev) { $backendArgs += '--dev' }
 
-$backend = Start-Process -FilePath $Python -ArgumentList $backendArgs `
-    -WorkingDirectory $BackendDir -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput (Join-Path $RunDir 'backend.out.log') `
-    -RedirectStandardError  (Join-Path $RunDir 'backend.err.log')
+$launchId = [guid]::NewGuid().ToString()
+$previousLaunchId = $env:VOXARIUM_STUDIO_LAUNCH_ID
+try {
+    $env:VOXARIUM_STUDIO_LAUNCH_ID = $launchId
+    $backend = Start-Process -FilePath $Python -ArgumentList $backendArgs `
+        -WorkingDirectory $BackendDir -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $RunDir 'backend.out.log') `
+        -RedirectStandardError  (Join-Path $RunDir 'backend.err.log')
+} finally {
+    $env:VOXARIUM_STUDIO_LAUNCH_ID = $previousLaunchId
+}
 
 Set-Content -Path (Join-Path $RunDir 'backend.pid') -Value $backend.Id -Encoding utf8
 
@@ -231,12 +254,19 @@ while ((Get-Date) -lt $deadline) {
     if ($backend.HasExited) { break }
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 3
-        if ($response.StatusCode -eq 200) { $healthy = $true; break }
-    } catch { Start-Sleep -Milliseconds 500 }
+        $health = $response.Content | ConvertFrom-Json
+        # §2.7: a response from the previous process cannot complete this restart.
+        if ($health.service -eq 'voxarium_studio' -and $health.status -eq 'ok' -and
+            $health.PSObject.Properties['launch_id'] -and $health.launch_id -eq $launchId) {
+            $healthy = $true
+            break
+        }
+    } catch { }
+    Start-Sleep -Milliseconds 500
 }
 
 if (-not $healthy) {
-    Write-Host "The backend did not answer /healthz on :$Port." -ForegroundColor Red
+    Write-Host "The newly launched backend did not report readiness on :$Port." -ForegroundColor Red
     Show-Log 'backend'
     Stop-Recorded 'backend' | Out-Null
     exit 1

@@ -69,6 +69,33 @@ async def test_auto_model_resume_keeps_concrete_selection_but_new_tasks_evaluate
     assert len(solver.requests) == 2
 
 
+@pytest.mark.parametrize("manual", [False, True])
+async def test_backend_switch_remaps_only_auto_models(teams, wait_for, solver, mapping, manual):
+    await auto_member(teams, effort="low")
+    task = await _run(teams, wait_for)
+    assert task.auto_model_backend == "effort_worker"
+    assert task.auto_model_strength == 2
+    if manual:
+        await teams.teams.update_task(task.id, {"model": task.model})
+    async with teams.db.session() as session:
+        member = await session.get(TeamMember, DEV)
+        member.agent_backend = "effort_worker_qwenlike"
+
+    await teams.teams.request_changes(task.id, "Check the edge case.")
+    await wait_for(task.id, timeout=20)
+    request = Worker.requests[-1]
+    saved = await teams.teams._reload(task.id)
+    assert request.member.agent_backend == "effort_worker_qwenlike"
+    assert request.resume_session_id is None
+    assert request.model == saved.model == (task.model if manual else "effort_worker_qwenlike-strength-2")
+    assert saved.auto_model_backend == (None if manual else "effort_worker_qwenlike")
+    assert saved.auto_model_strength == (None if manual else 2)
+    assert len(solver.requests) == 1
+    assert mapping == ([("effort_worker", 2)] if manual else [
+        ("effort_worker", 2), ("effort_worker_qwenlike", 2),
+    ])
+
+
 @pytest.mark.parametrize("model", ["chosen-model", "auto"])
 async def test_task_model_override_wins_over_member(teams, wait_for, solver, mapping, model):
     await _dev(teams, effort="max")

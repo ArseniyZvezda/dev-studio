@@ -243,6 +243,7 @@ TERMINAL_COMMAND_STATES: frozenset[CommandState] = frozenset({
 
 class ErrorCode(StrEnum):
     NOT_AVAILABLE = "not_available"
+    OFFLINE = "offline"
     DENIED = "denied"
     STALE_TARGET = "stale_target"
     REVISION_CONFLICT = "revision_conflict"
@@ -899,6 +900,10 @@ class ResponseBody(Strict):
     def _outcome(self) -> ResponseBody:
         if self.state is None and self.code is None:
             raise ValueError("response_requires_state_or_code")
+        if self.code == ErrorCode.OFFLINE and (
+            self.state != CommandState.REJECTED or self.result is not None or self.retry_after is not None
+        ):
+            raise ValueError("invalid_offline_response")
         return self
 
 
@@ -1126,10 +1131,15 @@ def encode_frame(frame_type: FrameType, request_id: str, body: Strict) -> bytes:
 
 
 class Capabilities(Strict):
-    """Exact mounted-only DTO ``{acp:1,server_instance_id,ai_control:{versions:[1]}}``."""
+    """Strict discovery envelope, independent of version compatibility."""
 
     class AiControl(Strict):
         versions: list[int] = Field(min_length=1, max_length=16)
+
+        @model_validator(mode="after")
+        def _unique_versions(self) -> Capabilities.AiControl:
+            _unique(self.versions, "duplicate_version")
+            return self
 
     acp: int
     server_instance_id: Uuid
@@ -1178,25 +1188,15 @@ def classify_capabilities(
         return DiscoveryOutcome(DiscoveryKind.AUTH_FAILURE, "auth_failure")
     if status != 200:
         return DiscoveryOutcome(DiscoveryKind.ERROR, "remote_error")
+    # Validate the common envelope even if the peer advertises a future version.
     try:
-        value = parse_json(body or b"")
-    except ProtocolError:
+        parsed = Capabilities.model_validate(parse_json(body or b""))
+    except (ProtocolError, ValidationError):
         return DiscoveryOutcome(DiscoveryKind.ERROR, "invalid_response")
-    if not isinstance(value, dict):
-        return DiscoveryOutcome(DiscoveryKind.ERROR, "invalid_response")
-    # Envelope first: acp integer and a non-empty list of unique integer versions.
-    control = value.get("ai_control")
-    versions = control.get("versions") if isinstance(control, dict) else None
-    if (type(value.get("acp")) is not int or not isinstance(versions, list) or not versions
-            or any(type(v) is not int for v in versions) or len(set(versions)) != len(versions)):
-        return DiscoveryOutcome(DiscoveryKind.ERROR, "invalid_response")
-    if value["acp"] != AICP_VERSION or AICP_VERSION not in versions:
+    versions = parsed.ai_control.versions
+    if parsed.acp != AICP_VERSION or AICP_VERSION not in versions:
         return DiscoveryOutcome(DiscoveryKind.UNSUPPORTED, "incompatible_version")
     if versions != [AICP_VERSION]:
-        return DiscoveryOutcome(DiscoveryKind.ERROR, "invalid_response")
-    try:
-        parsed = Capabilities.model_validate(value)
-    except ValidationError:
         return DiscoveryOutcome(DiscoveryKind.ERROR, "invalid_response")
     return DiscoveryOutcome(DiscoveryKind.SUPPORTED, None, parsed.server_instance_id)
 

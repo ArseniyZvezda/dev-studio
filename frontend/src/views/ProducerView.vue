@@ -241,7 +241,7 @@ watch(() => route.query.chat, id => {
 .producer-workspace { display: grid; grid-template-columns: clamp(480px, calc(26% + 200px), 580px) minmax(0, 1fr); }
 .producer-conversation { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr); }
 .producer-conversation.hidden { display: none; }
-.producer-strip { display: flex; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; padding: 0 0 12px 12px; }
+.producer-strip { display: flex; gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; padding: 0 0 0 12px; }
 /* §10.11: the strip owns the card width independently of the Tasks dialog. */
 .producer-task { flex: 0 0 calc((100% + 200px - 24px) / 2.5 - 100px); min-width: 360px; }
 @media (max-width: 900px) {

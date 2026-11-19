@@ -156,7 +156,7 @@ def request(world: World, grant: dict, op: str = "resource.get", *, resource_id:
         body["resource_id"] = resource_id
     if mutation:
         body.update(command_id=uid(), issued_at=issued_at, expected_executor_epoch=uid())
-    if op in ("task.edit_draft", "task.start", "task.note", "chat.send"):
+    if op in ("task.edit_draft", "task.start", "chat.send"):
         body["expected_resource_revision"] = 1
     if op in ("task.cancel", "chat.cancel"):
         body["expected_run_id"] = uid()

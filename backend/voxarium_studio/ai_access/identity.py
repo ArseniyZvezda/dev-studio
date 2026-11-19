@@ -326,6 +326,13 @@ class Registration(Strict):
 ExportFrameKind = Literal["publish", "unpublish"]
 
 
+class ExportConsent(Strict):
+    """AI-only binding evidence; private, never part of a mirror frame."""
+
+    policy_version: Revision
+    binding_fingerprint: Sha256
+
+
 class ExportRecord(Strict):
     """Private mapping exact canonical root → registration + catalog identity (§3).
 
@@ -350,6 +357,7 @@ class ExportRecord(Strict):
     identity_revision: Revision
     display_name: Title
     policy_digest: Sha256
+    consent: ExportConsent | None = None  # Legacy rows do not imply AI consent from a selected binding.
     enabled: bool = False
     deleted: bool = False
     export_revision: Revision
@@ -877,7 +885,8 @@ def _check_unique_export(store: RegistryStore, candidate: ExportRecord) -> None:
 def create_export(
     *, root: str | Path, registration_id: str, persistent_id: str, storage_epoch: str,
     identity_revision: int, display_name: str, policy_digest: str,
-    export_id: str | None = None,
+    export_id: str | None = None, consent: ExportConsent | None = None,
+    expected_registration: Registration | None = None,
 ) -> ExportRecord:
     """Record a private, disabled, unpublished mapping of one resident working copy (§3).
 
@@ -890,6 +899,8 @@ def create_export(
 
     def change(store: RegistryStore) -> tuple[RegistryStore | None, ExportRecord]:
         registration = store.registrations.get(registration_id)
+        if expected_registration is not None and registration != expected_registration:
+            raise AiAccessError(protocol.ErrorCode.STALE_TARGET)
         if registration is None:
             raise AiAccessError("registration_not_found")
         if chosen in store.exports:
@@ -902,6 +913,7 @@ def create_export(
                 "persistent_id": persistent_id, "storage_epoch": storage_epoch,
                 "identity_revision": identity_revision, "display_name": display_name,
                 "policy_digest": policy_digest, "export_revision": 1,
+                "consent": consent.model_dump(mode="json") if consent is not None else None,
             })
         except (ValidationError, ProtocolError):
             raise AiAccessError("invalid_export") from None
@@ -996,7 +1008,10 @@ def unpublish_frame(export: ExportRecord) -> protocol.ExportUnpublish:
     )
 
 
-def publish_export(export_id: str, *, expected_revision: int) -> protocol.ExportPublish:
+def publish_export(
+    export_id: str, *, expected_revision: int, expected_export: ExportRecord | None = None,
+    expected_registration: Registration | None = None,
+) -> protocol.ExportPublish:
     """Explicit Publish: enable locally, save the frame as pending, return it (§4, §6).
 
     The export is honoured only after :func:`apply_export_ack` with a matching ACK. A
@@ -1005,10 +1020,14 @@ def publish_export(export_id: str, *, expected_revision: int) -> protocol.Export
     export_id = _uuid(export_id)
 
     def change(store: RegistryStore) -> tuple[RegistryStore | None, protocol.ExportPublish]:
+        if expected_export is not None and store.exports.get(export_id) != expected_export:
+            raise AiAccessError(protocol.ErrorCode.STALE_TARGET)
         current = _live_export(store, export_id)
         if current.export_revision != expected_revision:
             raise AiAccessConflict()
         registration = store.registrations.get(current.registration_id)
+        if expected_registration is not None and registration != expected_registration:
+            raise AiAccessError(protocol.ErrorCode.STALE_TARGET)
         if registration is None or not registration.publication_enabled:
             raise AiAccessError("publication_disabled")
         export = current

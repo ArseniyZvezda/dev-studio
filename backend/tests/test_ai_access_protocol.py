@@ -383,6 +383,18 @@ def test_capabilities_outcomes(status: int, body: bytes, redirected: bool,
     assert (outcome.kind, outcome.code, outcome.server_instance_id) == (kind, code, None)
 
 
+@pytest.mark.parametrize("body", [
+    pytest.param(caps(acp=2, server_instance_id="not-a-uuid", ai_control={"versions": [2]}), id="uuid"),
+    pytest.param(caps(acp=2, ai_control={"versions": [2]}, extra=True), id="extra-field"),
+    pytest.param(caps(acp=2, ai_control={"versions": [2], "extra": True}), id="nested-extra-field"),
+    pytest.param(caps(acp=2, ai_control={"versions": [2, 2]}), id="duplicate-versions"),
+    pytest.param(caps(acp=2, ai_control={"versions": list(range(2, 19))}), id="too-many-versions"),
+    pytest.param(caps(acp=2, ai_control={"versions": [2, True]}), id="boolean-version"),
+])
+def test_malformed_future_capabilities_are_not_mislabeled_unsupported(body: bytes) -> None:
+    assert p.classify_capabilities(200, body) == p.DiscoveryOutcome(p.DiscoveryKind.ERROR, "invalid_response")
+
+
 def test_transport_failures_are_unavailable_with_safe_codes() -> None:
     assert p.classify_transport_failure("timeout").kind is p.DiscoveryKind.UNAVAILABLE
     assert p.classify_transport_failure("tls").code == "tls"
@@ -415,17 +427,18 @@ def test_documents_protocol_version_unchanged() -> None:
     assert documents.PROTOCOL_VERSION == 1
 
 
-def test_application_does_not_import_ai_access(tmp_path: Path) -> None:
-    """Nothing is mounted: importing the app never loads the AI-access package."""
+def test_application_import_does_not_load_ai_access_runtime(tmp_path: Path) -> None:
+    """Route and transport types may load; the executor and service are lifespan-owned."""
     env = {**os.environ, "VOXARIUM_STUDIO_HOME": str(tmp_path / "home")}
     code = (
         "import sys, voxarium_studio.main\n"
-        "loaded = sorted(m for m in sys.modules if m.startswith('voxarium_studio.ai_access'))\n"
-        "print('LOADED=' + ','.join(loaded))\n"
+        "runtime = {'service', 'executor'}\n"
+        "prefix = 'voxarium_studio.ai_access.'\n"
+        "loaded = runtime & {m[len(prefix):] for m in sys.modules if m.startswith(prefix)}\n"
+        "assert not loaded, loaded\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=BACKEND, env=env, capture_output=True,
         text=True, timeout=180, check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert "LOADED=\n" in result.stdout

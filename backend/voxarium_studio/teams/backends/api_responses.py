@@ -110,8 +110,17 @@ class ResponseStream:
                     text = summary_result(response)["choices"][0]["message"]["content"]
                     if text:
                         yield {"choices": [{"delta": {"content": text}}]}
-            yield {"choices": [{"delta": {}, "finish_reason":
-                    ("tool_calls" if self.calls else "stop") if kind == "response.completed" else "incomplete"}],
+                finish = "tool_calls" if self.calls else "stop"
+            else:
+                reason = (response.get("incomplete_details") or {}).get("reason")
+                match reason:
+                    case "max_output_tokens":
+                        finish = "length"
+                    case "content_filter":
+                        finish = "content_filter"
+                    case _:
+                        finish = "incomplete"
+            yield {"choices": [{"delta": {}, "finish_reason": finish}],
                    "usage": usage_stats(response), "responses_output": output}
         elif kind == "error":
-            yield {"error": event}
+            yield {"error": event.get("error") or event}

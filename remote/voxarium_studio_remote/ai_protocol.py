@@ -58,7 +58,7 @@ CLOSE_EXECUTOR_CONFLICT = 4409
 CLOSE_OVERLOADED = 4429
 
 ERROR_CODES = frozenset({
-    "not_available", "denied", "stale_target", "revision_conflict", "idempotency_conflict",
+    "not_available", "offline", "denied", "stale_target", "revision_conflict", "idempotency_conflict",
     "busy", "expired", "rate_limited", "outcome_unknown", "resync_required",
     "snapshot_changed", "unsupported", "capacity_exceeded", "duplicate_export",
     "invalid_request",
@@ -549,10 +549,12 @@ def check_request(body: dict) -> dict:
     if "resource_id" in body:
         check_opaque(body["resource_id"])
     if "expected_resource_revision" in body:
+        if op == "task.note":
+            raise AcpError("expected_resource_revision forbidden for task.note")
         check_int(body["expected_resource_revision"], 1)
     if "expected_run_id" in body:
         check_uuid(body["expected_run_id"])
-    if op in ("task.edit_draft", "task.start", "task.note", "chat.send") and "expected_resource_revision" not in body:
+    if op in ("task.edit_draft", "task.start", "chat.send") and "expected_resource_revision" not in body:
         raise AcpError("expected_resource_revision required")
     if op in ("task.cancel", "chat.cancel") and "expected_run_id" not in body:
         raise AcpError("expected_run_id required")

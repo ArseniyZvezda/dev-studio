@@ -40,7 +40,7 @@ from ..core.workspace import (
     workspace_activity,
 )
 from ..teams.backends.base import available_backends, get_backend
-from ..teams.backend_usage import get_usage_limits
+from ..teams.backend_usage import get_token_speeds, get_usage_limits
 from ..vcs import candidate_backends
 from .deps import Ctx
 
@@ -375,13 +375,10 @@ async def put_api_backend(connection_id: str, payload: dict[str, Any]) -> dict[s
             raw, application = _load_application_document()
             existing = next((c for c in application.api_backends if c.id == connection_id), None)
             values = {**payload, "id": connection_id}
-            if "api_key" not in values and existing:
-                values["api_key"] = existing.api_key
-            if "context_window" not in values and existing:
-                values["context_window"] = existing.context_window
-            for field in ("models", "api_mode"):
-                if field not in values and existing:
-                    values[field] = getattr(existing, field)
+            if existing is not None:
+                # Omitted options stay unchanged; explicit empty keys or nulls still clear values.
+                for field in ("base_url", "api_key", "models", "api_mode", "use_limits", "tpm", "context_window", "icon"):
+                    values.setdefault(field, getattr(existing, field))
             connection = ApiBackendConfig.model_validate(values)
             items = [connection if c.id == connection_id else c for c in application.api_backends]
             if existing is None:
@@ -545,13 +542,15 @@ async def _configure_application(ctx: AppContext, application: ApplicationConfig
 @router.get("/status")
 @scoped_router.get("/status")
 async def get_status(ctx: Ctx, request: Request) -> dict[str, Any]:
-    """Health plus agent-backend readiness, shown in Settings before a first agent run."""
+    """Health, agent-backend readiness and recent telemetry for the status bar."""
+    speeds = get_token_speeds(ctx.paths.root)
     backends = {}
     for name in available_backends():
         available, reason = get_backend(name).is_available()
         backends[name] = {
             "available": available, "reason": reason,
             "usage_limits": get_usage_limits(name),
+            "token_speed": speeds.get(name),
         }
 
     # Whether each system's command-line tool is installed — what a commit node needs

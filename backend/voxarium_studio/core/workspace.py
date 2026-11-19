@@ -68,6 +68,10 @@ def initialise_workspace(state: Any, *, browser_bus: EventBus | None = None) -> 
     if getattr(state, "remote_reservations", None) is None:
         state.remote_reservations = ReservationOwner()
     state.ctx.remote_reservations = state.remote_reservations
+    if getattr(state, "ai_access", None) is None:
+        from ..ai_access.service import AiAccessService
+
+        state.ai_access = AiAccessService(state)
     if not hasattr(state, "_failed_project_contexts"):
         state._failed_project_contexts = {}
     lifecycle = getattr(state, "remote_profile_lifecycle", None)
@@ -115,6 +119,9 @@ async def shutdown_workspace(state: Any) -> None:
     # retryable until shutdown actually joins their consumers
     # (runtime-integration-plan §3.1/I2).
     async with state.project_lock:
+        ai_access = getattr(state, "ai_access", None)
+        if ai_access is not None:
+            await ai_access.close()
         desktop_events = getattr(state, "desktop_events", None)
         if desktop_events is not None:
             await desktop_events.close()

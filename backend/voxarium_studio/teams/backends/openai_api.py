@@ -12,6 +12,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from uuid import uuid4
@@ -20,10 +21,12 @@ import httpx
 
 from ...core.api_backends import ApiBackendConfig
 from ...core.paths import ProjectPaths
+from ..backend_usage import record_token_speed
 from ..context_openai_api import api_history_io
 from .base import AgentEvent, AgentRunRequest
 from .api_context import (ContextBudgetError, ContextOverflow, ContextUsage, bounded_text, compact_history, context_diagnostic,
                           emergency_handoff, estimate_tokens, is_context_overflow)
+from .api_tpm import connection_window
 from .mcp_bridge import bridge_servers
 from .api_responses import ResponseStream, request_body as responses_body
 
@@ -38,6 +41,18 @@ _STR = {"type": "string"}
 
 class ApiRunError(ValueError):
     """Deliberately safe runtime diagnostic, preserved through MCP task groups."""
+
+
+class TransientStreamError(ApiRunError):
+    """A provider interruption that can be retried before executing any tools."""
+
+
+_TRANSIENT_STREAM_CODES = {"server_error", "internal_server_error", "rate_limit_exceeded",
+                           "service_unavailable", "overloaded", "timeout"}
+_STREAM_ERROR_CODES = _TRANSIENT_STREAM_CODES | {
+    "response_failed", "invalid_request_error", "invalid_encrypted_content",
+    "insufficient_quota", "model_not_found", "content_filter",
+}
 
 
 def _run_diagnostic(exc):
@@ -68,6 +83,7 @@ class OpenAIApiBackend:
 
     def __init__(self, connection: ApiBackendConfig):
         self.connection = connection
+        self.window = connection_window(connection)
         self.name = connection.backend_id
         self.label = connection.name
         self.icon = connection.icon
@@ -120,11 +136,12 @@ class OpenAIApiBackend:
         try:
             if len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > window * 8:
                 raise ContextOverflow()  # Legacy oversized sessions recover without hundreds of summary calls.
-            async with asyncio.timeout(60):
+            async with asyncio.timeout(None if self.window else 60):
                 compacted = await compact_history(client, self.connection.base_url + "/chat/completions",
                                                  headers, model, messages, window, request.max_message_bytes, usage,
                                                  summary_token_limit=max(128, available // 2),
-                                                 api_mode=self.connection.effective_api_mode)
+                                                 api_mode=self.connection.effective_api_mode,
+                                                 token_window=self.window, tpm=self.connection.tpm)
         except Exception:
             # Cancellation (BaseException) still propagates. MCP task groups may wrap
             # provider errors in ExceptionGroup; recovery must happen inside the stack.
@@ -331,14 +348,15 @@ class OpenAIApiBackend:
             raise ValueError("OpenAI API supports at most 128 tools; disable unneeded MCP servers")
         return schemas, handlers
 
+    def _wire_body(self, body):
+        if self.connection.effective_api_mode == "responses":
+            return responses_body(body)
+        # A connection may change protocols while retaining its local history.
+        return {**body, "messages": [{k: v for k, v in m.items() if k != "responses_output"}
+                                     for m in body["messages"]]}
+
     async def _completion_chunks(self, client, body, headers, max_message_bytes):
         responses = self.connection.effective_api_mode == "responses"
-        if responses:
-            body = responses_body(body)
-        else:
-            # A connection may change protocols while retaining its local history.
-            body = {**body, "messages": [{k: v for k, v in m.items() if k != "responses_output"}
-                                          for m in body["messages"]]}
         endpoint = "/responses" if responses else "/chat/completions"
         decoder = ResponseStream()
         async with client.stream("POST", self.connection.base_url + endpoint, json=body, headers=headers) as response:
@@ -351,6 +369,9 @@ class OpenAIApiBackend:
                 provider_error = error_body.decode("utf-8", errors="replace")
                 if response.status_code in {400, 413, 422, 500} and is_context_overflow(provider_error):
                     raise ContextOverflow()
+                if self.window and response.status_code == 429 and "rate_limit_exceeded" in provider_error:
+                    self.window.cooldown()
+                    raise TransientStreamError("OpenAI API returned HTTP 429 (rate_limit_exceeded)")
                 if (response.status_code == 400 and "Function tools with reasoning_effort" in provider_error
                         and "/v1/responses" in provider_error):
                     raise ApiRunError("This model requires the Responses API for tool calling. Select Responses API in this backend's settings.")
@@ -368,10 +389,20 @@ class OpenAIApiBackend:
                 event = json.loads(raw)
                 for chunk in decoder.chunks(event) if responses else [event]:
                     if chunk.get("error"):
-                        if is_context_overflow(chunk["error"]):
+                        error = chunk["error"]
+                        if is_context_overflow(error):
                             raise ContextOverflow()
-                        raise ApiRunError("OpenAI API stream reported an error")
+                        code = (error.get("code") or error.get("type")) if isinstance(error, dict) else None
+                        if isinstance(code, str) and code in _STREAM_ERROR_CODES:
+                            if self.window and code == "rate_limit_exceeded":
+                                self.window.cooldown()
+                            error_type = TransientStreamError if code in _TRANSIENT_STREAM_CODES else ApiRunError
+                            raise error_type(f"OpenAI API stream reported an error ({code})")
+                        raise ApiRunError("OpenAI API stream reported an error without a recognized code")
                     yield chunk
+                    # Responses has a terminal event. Chat Completions may still send usage after finish_reason.
+                    if responses and any(choice.get("finish_reason") for choice in chunk.get("choices", [])):
+                        return
 
     async def run(self, request: AgentRunRequest):
         session_id = request.resume_session_id
@@ -427,17 +458,24 @@ class OpenAIApiBackend:
                               "compacted": previous_viewer.get("compacted", False)}
                     self._save(history_path, messages, context, viewer=viewer)
                 client = await stack.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30), follow_redirects=False))
+                expanded_output = False
                 for turns in range(1, (request.max_turns or 40) + 1):
-                    for recovery in range(7):
+                    context_retries = stream_retries = 0
+                    force_compaction = False
+                    while True:
                         try:
                             async for event in self._compact_if_needed(client, request, model, messages, schemas,
                                                                        usage, context, history_path, session_id,
-                                                                       force=recovery > 0, window=effective_window, viewer=viewer):
+                                                                       force=force_compaction, window=effective_window, viewer=viewer):
                                 yield event
+                            force_compaction = False
                             request_estimate = estimate_tokens(request.system_prompt, messages, schemas)
                             body = {"model": model, "messages": [{"role": "system", "content": request.system_prompt}, *messages],
                                     "stream": True, "stream_options": {"include_usage": True}}
-                            output_limit = max(64, min(4096, effective_window // 10))
+                            base_output_limit = max(64, min(4096, effective_window // 10))
+                            retry_output_limit = max(base_output_limit, min(
+                                16384, effective_window // 4, effective_window - context.tokens(request_estimate)))
+                            output_limit = retry_output_limit if expanded_output else base_output_limit
                             field = "max_completion_tokens" if self.connection.base_url.startswith("https://api.openai.com/") else "max_tokens"
                             body[field] = output_limit
                             if schemas:
@@ -453,17 +491,26 @@ class OpenAIApiBackend:
                             responses_output = None
                             if viewer is not None:
                                 viewer.pop("reported_tokens", None)
+                            output_tokens = None
+                            body = self._wire_body(body)
+                            if self.window:
+                                reservation = await self.window.reserve_request(body, self.connection.tpm, output_limit)
+                            response_started = time.monotonic()
                             async for chunk in self._completion_chunks(client, body, headers, request.max_message_bytes):
                                 if "responses_output" in chunk:
                                     responses_output = chunk["responses_output"]
                                 stats = chunk.get("usage")
                                 if stats:
+                                    if self.window:
+                                        self.window.observe(reservation, stats, output_limit)
                                     context.observe(stats, request_estimate)
                                     if viewer is not None:
                                         viewer["reported_tokens"] = stats.get("prompt_tokens")
                                     cached = (stats.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
                                     usage["input_tokens"] += max(0, stats.get("prompt_tokens", 0) - cached)
                                     usage["cache_read_input_tokens"] += cached
+                                    if "completion_tokens" in stats:
+                                        output_tokens = stats["completion_tokens"]
                                     usage["output_tokens"] += stats.get("completion_tokens", 0)
                                     yield AgentEvent("system", "usage_update", data={"subtype": "usage_update", "total_tokens": sum(usage.values()), "usage": dict(usage), "context_tokens": stats.get("prompt_tokens", 0),
                                                      **({"context_window": self.connection.context_window} if self.connection.context_window else {})}, session_id=session_id)
@@ -485,10 +532,25 @@ class OpenAIApiBackend:
                                         item["id"] += call.get("id", "")
                                         for key in ("name", "arguments"):
                                             item["function"][key] += call.get("function", {}).get(key, "")
+                            if finish is None:
+                                raise TransientStreamError("OpenAI API stream ended before sending a completion status.")
+                            if finish == "length" and not expanded_output and retry_output_limit > output_limit:
+                                expanded_output = True
+                                yield AgentEvent("continued", f"OpenAI API reached the output limit ({output_limit} tokens). Retrying with up to {retry_output_limit} tokens.",
+                                                 data={"subtype": "api_output_limit_retry"}, session_id=session_id)
+                                continue
+                            if finish == "length":
+                                raise ApiRunError(f"OpenAI API reached the output limit ({output_limit} tokens). Shorten the request or reduce reasoning effort.")
+                            if finish == "content_filter":
+                                raise ApiRunError("OpenAI API stopped the response because of its content filter.")
+                            if finish not in {"stop", "tool_calls"}:
+                                raise ApiRunError("OpenAI API marked the response incomplete without a recognized reason.")
                             break
                         except ContextOverflow:
-                            if recovery == 6 or effective_window <= 1024:
+                            if context_retries == 6 or effective_window <= 1024:
                                 raise ContextBudgetError("The provider still rejects the context after recovery. Check the configured context window or reduce the current instruction and enabled tools; history is preserved.") from None
+                            context_retries += 1
+                            force_compaction = True
                             effective_window = max(1024, effective_window // 2)
                             context.window_limit = effective_window
                             if viewer is not None:
@@ -496,8 +558,17 @@ class OpenAIApiBackend:
                             self._save(history_path, messages, context, viewer=viewer)
                             yield AgentEvent("continued", "Provider rejected the context; reducing its budget and recovering before retrying.",
                                              data={"subtype": "context_overflow_recovery", "context_window": effective_window}, session_id=session_id)
-                    if finish not in {"stop", "tool_calls"}:
-                        raise ApiRunError("OpenAI API response did not complete (stream interrupted or output limit reached)")
+                        except (TransientStreamError, httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError,
+                                httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                            diagnostic = (str(exc) if isinstance(exc, TransientStreamError)
+                                          else "OpenAI API connection interrupted while receiving the response.")
+                            if stream_retries == 2:
+                                raise ApiRunError(f"{diagnostic.rstrip('.')} (retry limit reached).") from None
+                            stream_retries += 1
+                            yield AgentEvent("continued", f"{diagnostic.rstrip('.')}. Retrying the current request.",
+                                             data={"subtype": "api_stream_retry", "attempt": stream_retries}, session_id=session_id)
+                            await asyncio.sleep(2 ** (stream_retries - 1))
+                    record_token_speed(request.runtime_key, self.name, output_tokens, time.monotonic() - response_started)
                     assistant = {"role": "assistant", "content": answer or None}
                     if responses_output is not None:
                         assistant["responses_output"] = responses_output
@@ -539,7 +610,7 @@ class OpenAIApiBackend:
                         messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
                         self._save(history_path, messages, context, viewer=viewer)
                         yield AgentEvent("tool_result", output, data={"tool_use_id": call["id"], "is_error": failed}, session_id=session_id)
-                raise ValueError("OpenAI API agent reached the configured maximum number of turns")
+                raise ApiRunError("OpenAI API agent reached the configured maximum number of turns")
         except asyncio.CancelledError:
             raise
         except Exception as exc:

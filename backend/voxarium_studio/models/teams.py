@@ -350,13 +350,15 @@ class TeamTask(SQLModel, table=True):
     """Run this one task on a model other than the assignee's (§10.3).
 
     Null — the default — means the member's, which is the answer for almost every card: a
-    role is configured once for the work it usually does. What varies underneath it is the
-    *task*, and the same member is right for a one-line fix and for a refactor while only
-    the second is worth an expensive model. Kept on the row rather than chosen at the
-    moment of clicking Start, so a resume, a continuation after a stall and a re-run after
-    review all land on the model the first attempt used — a session that changed model
-    halfway would be one transcript written by two of them.
+    role is configured once for the work it usually does. A concrete Auto result
+    is pinned for resumes and continuations on the same backend. On a backend
+    switch it is recomputed from the saved strength before the next run (§10.11).
     """
+
+    auto_model_strength: int | None = None
+    """Orchestrator's capability level, present only for an Auto selection (§10.11)."""
+    auto_model_backend: str | None = None
+    """Backend that supplied the concrete model for the saved capability level."""
 
     effort: str | None = None
     """Effort for this one task, or null for the assignee's (§10.3).

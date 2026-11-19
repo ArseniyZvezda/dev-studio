@@ -177,7 +177,11 @@ export function setDesktopPageSelector(path: string, key: Selector, value: strin
 export function connectDesktopPageState(router: Router, bridge: DesktopTabsBridge | undefined): void {
   if (rendererSession.isLegacy || !bridge?.reportPage || !bridge.onRestorePage || !bridge.acknowledgePageRestore) return
   let state: Extract<DesktopTabsState, { role: 'project' }> | undefined
-  let revision = 0, reporting = false, reportAgain = false
+  // A page report is the renderer's attestation of a SETTLED page (§5.3.6): main
+  // releases its restore gate on the first one. Reporting during the initial
+  // navigation would attest the transient '/' (the redirect record, never a real
+  // page) and the settling navigation would then race the restore as "stale".
+  let revision = 0, reporting = false, reportAgain = false, routerReady = false
   const tracker = createPageStateTracker(router, () => { void report() })
   currentTracker = tracker
   function accept(value: DesktopTabsState) {
@@ -189,7 +193,7 @@ export function connectDesktopPageState(router: Router, bridge: DesktopTabsBridg
   }
   async function report() {
     reportAgain = true
-    if (reporting || !state) return
+    if (reporting || !state || !routerReady) return
     reporting = true
     try {
       while (reportAgain && state) {
@@ -228,6 +232,8 @@ export function connectDesktopPageState(router: Router, bridge: DesktopTabsBridg
     })()
   })
   void router.isReady().then(async () => {
+    // The initial navigation has settled: reports may now attest a real page.
+    routerReady = true
     accept(await bridge.bootstrap())
     // Chats has no URL-driven selection of its own. Keep only the selected
     // durable conversation, never the popup state, draft or attached Files.

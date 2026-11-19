@@ -152,7 +152,7 @@ class CatalogVerificationService:
         code = None
         cancelled = False
         try:
-            url = _url(snapshot.url)  # Reuse strict prefix + insecure guards.
+            url = _url(snapshot.url)  # Reuse strict endpoint/prefix guards (§16.2).
             health = await self._request(guarded, url + "/healthz")
             if health.status != 200:
                 raise CatalogError("remote_error")

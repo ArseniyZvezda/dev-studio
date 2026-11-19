@@ -315,6 +315,8 @@ def create_app(
             "service": "voxarium_studio",
             # Identifies the Electron-owned process, never an authentication secret (§2.7).
             "desktop_instance": os.environ.get("VOXARIUM_STUDIO_DESKTOP_INSTANCE"),
+            # The launcher verifies that readiness came from this start (§2.7).
+            "launch_id": os.environ.get("VOXARIUM_STUDIO_LAUNCH_ID"),
             "version": build.version,
             "build": build.display,
             "commit": build.commit,

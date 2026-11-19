@@ -11,13 +11,14 @@ import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -56,6 +57,8 @@ from . import skill as studio_skill
 from . import stats as cost_stats_source
 from . import temp as task_temp
 from . import temp_changes
+from ..ai_access.protocol import ErrorCode, ProtocolError, RemoteActor, ResourceKind
+from ..models.ai_access import AiResourceProvenance
 from . import worktree as wt
 from .attachments import AttachmentStore, with_trailer
 from .authoring import ProjectAuthoring
@@ -124,6 +127,21 @@ class _RunOutcome:
     errored: bool
     limit: usage_limits.UsageLimit | None
     final_text: str
+
+
+@dataclass
+class _RemoteTaskStart:
+    owner: Any
+    handle: JobHandle
+    slot: Any
+    locks: list
+    prompt: str
+    run_id: str
+
+    def release(self) -> None:
+        self.owner._path_locks.release(self.locks)
+        self.slot.release()
+        self.owner.jobs.release_reservation(self.handle)
 
 
 class TeamOrchestrator:
@@ -310,6 +328,12 @@ class TeamOrchestrator:
                     query = query.where(TeamTask.id == task_id)
                 candidates = list((await session.exec(query)).all())
                 candidates = [t for t in candidates if not t.producer_chat_id or t.producer_approved]
+                if automatic:
+                    remote_drafts = set((await session.exec(select(AiResourceProvenance.resource_id).where(
+                        AiResourceProvenance.resource_kind == 'task',
+                        AiResourceProvenance.origin_command_id.is_not(None),
+                    ))).all())
+                    candidates = [task for task in candidates if task.id not in remote_drafts]
 
             released: list[str] = []
             for candidate in candidates:
@@ -639,6 +663,203 @@ class TeamOrchestrator:
 
     # ------------------------------------------------------------------ task board
 
+    @staticmethod
+    async def _bump_local_revision(session, kind: ResourceKind, resource_id: str, op: str) -> None:
+        # Do not read/modify/write this counter in an ordinary (non-immediate)
+        # local transaction: concurrent notes and status writes could lose a bump.
+        audit = dict(last_actor_kind='local', last_user_id=None, last_registration_id=None,
+                     last_grant_id=None, last_grant_revision=None, last_command_id=None,
+                     last_op=op, last_at=int(utcnow().timestamp() * 1000))
+        row = AiResourceProvenance.__table__
+        await session.exec(insert(row).values(resource_kind=str(kind), resource_id=resource_id,
+                                               revision=2, **audit).on_conflict_do_update(
+            index_elements=[row.c.resource_kind, row.c.resource_id],
+            set_={**audit, 'revision': row.c.revision + 1},
+        ))
+
+    @property
+    def task_number_lock(self):
+        return self._number_lock
+
+    async def remote_create_task(self, session, *, actor: RemoteActor, team_id: str,
+                                 assignee_id: str, title: str, brief: str,
+                                 write_paths: list[str], summary_locale: str) -> TeamTask:
+        self._require_remote_actor(actor)
+        member = await session.get(TeamMember, assignee_id)
+        if (member is None or member.kind != MemberKind.AGENT or member.team_id != team_id
+                or member.id in self.removing_members or await session.get(Team, team_id) is None):
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        task = TeamTask(number=await self._next_task_number(session), team_id=team_id,
+                        assignee_id=assignee_id, title=title, brief=brief,
+                        write_paths=wt.normalize_write_paths(write_paths, root=self.paths.root),
+                        summary_locale=_summary_locale(summary_locale), status=TaskStatus.TODO,
+                        auto_start=False)
+        session.add(task)
+        return task
+
+    @staticmethod
+    def _require_remote_actor(actor: RemoteActor) -> None:
+        if not isinstance(actor, RemoteActor) or actor.command_id is None:
+            raise ProtocolError(ErrorCode.DENIED)
+
+    async def remote_edit_task(self, session, task_id: str, *, actor: RemoteActor,
+                               title: str | None, brief: str | None, write_paths: list[str] | None) -> TeamTask:
+        self._require_remote_actor(actor)
+        task = await session.get(TeamTask, task_id)
+        if (task is None or task.archived or task.producer_chat_id or task.status != TaskStatus.TODO
+                or self.jobs.is_running(task_id)):
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        if title is not None:
+            task.title = title
+        if brief is not None:
+            task.brief = brief
+        if write_paths is not None:
+            task.write_paths = wt.normalize_write_paths(write_paths, root=self.paths.root)
+        session.add(task)
+        return task
+
+    async def remote_add_task_note(self, session, task_id: str, *, actor: RemoteActor,
+                                   text: str) -> AgentMessage:
+        self._require_remote_actor(actor)
+        task = await session.get(TeamTask, task_id)
+        if task is None or task.archived or task.producer_chat_id:
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        inbox = self._inboxes.get(task_id)
+        message = AgentMessage(task_id=task_id, member_id=task.assignee_id, role='user', kind='note', text=text,
+                               data={'delivery': QUEUED} if inbox is not None and not inbox.closed else {})
+        session.add(message)
+        return message
+
+    async def remote_publish_task_note(self, message: AgentMessage) -> None:
+        inbox = self._inboxes.get(message.task_id)
+        if inbox is not None and not inbox.closed and message.data.get('delivery') == QUEUED:
+            inbox.put(QueuedMessage(id=message.id, text=message.text))
+        await self.remote_publish_task_changed(message.task_id)
+
+    async def remote_publish_task_changed(self, task_id: str) -> None:
+        # TEAM_TASK_UPDATED refreshes the UI, unlike the creation/status trigger events.
+        await self._publish_task_changed(task_id)
+
+    async def remote_reserve_task_start(self, session, task_id: str, *, actor: RemoteActor,
+                                        run_id: str):
+        self._require_remote_actor(actor)
+        task = await session.get(TeamTask, task_id)
+        member = await session.get(TeamMember, task.assignee_id) if task else None
+        if (task is None or member is None or member.kind != MemberKind.AGENT or task.archived
+                or task.producer_chat_id or task.status not in {TaskStatus.TODO, TaskStatus.PENDING}
+                or member.id in self.removing_members):
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        if await self._unmet_dependencies(session, task) or task.limit_reset_at:
+            raise ProtocolError(ErrorCode.BUSY)
+        if task.attachments or task.worktree_path or member.isolate_worktree:
+            # ACP reserves writes in this working copy. Never silently bypass the
+            # assignee's configured worktree isolation.
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        backend_name = task.agent_backend or member.agent_backend
+        model = task.model or (member.model if backend_name == member.agent_backend else '')
+        backend = get_backend(backend_name)
+        if (model == 'auto' or task.auto_model_strength is not None
+                or (not (task.effort or member.effort) and getattr(backend, 'supports_effort', True))):
+            raise ProtocolError(ErrorCode.DENIED)
+        prompt, pictures = await self._opening_turn(session, task)
+        if not task.agent_session_id:
+            pending = await self._notes_since_last_run(session, task)
+            if pending:
+                prompt = '\n\n'.join([prompt, *pending])
+        if pictures or self._solo_holder_id(member) is not None or self.jobs.is_running(task_id):
+            raise ProtocolError(ErrorCode.BUSY)
+        handle = self.jobs.try_reserve(task_id, 'agent_task', member_id=member.id, remote_run_id=run_id)
+        if handle is None:
+            raise ProtocolError(ErrorCode.BUSY)
+        slot = self.jobs.try_reserve_slot('agent')
+        locks = []
+        if slot is None:
+            self.jobs.release_reservation(handle)
+            raise ProtocolError(ErrorCode.BUSY)
+        try:
+            self._path_locks.replace(locks, task.write_paths, root=self.paths.root, owner=self.display_id(task))
+        except (wt.PathBusy, ValueError):
+            slot.release()
+            self.jobs.release_reservation(handle)
+            raise ProtocolError(ErrorCode.BUSY) from None
+        task.status = TaskStatus.IN_PROGRESS
+        task.started_at = utcnow()
+        task.finished_at = None
+        task.error = None
+        task.result_type = None
+        task.auto_start = False
+        task.resume_on_limit = False
+        session.add(task)
+        return _RemoteTaskStart(self, handle, slot, locks, prompt, run_id)
+
+    def remote_dispatch_task(self, reservation, *, before_launch, after_run, deadline) -> JobHandle:
+        entered = False
+        started = False
+
+        async def worker(handle):
+            nonlocal started, entered
+            started = True
+            preparation = asyncio.timeout_at(deadline)
+
+            async def fence() -> bool:
+                entered_now = await before_launch()
+                if entered_now:
+                    preparation.reschedule(None)
+                return entered_now
+
+            async def launch() -> bool:
+                nonlocal entered
+                if not entered:
+                    entered = await fence()
+                return entered
+
+            state = None
+            try:
+                async with preparation:
+                    await self._run_task(handle, handle.id, handle.meta['member_id'], reservation.prompt,
+                                         remote=(reservation, launch))
+            except TimeoutError:
+                if not preparation.expired():
+                    raise
+            except asyncio.CancelledError:
+                state = 'cancelled'
+                raise
+            finally:
+                reservation.release()
+                if state is None:
+                    row = await self.find_task(handle.id)
+                    if not entered and row is not None and row.status == TaskStatus.IN_PROGRESS:
+                        await self._set_task_status(handle.id, TaskStatus.PENDING)
+                        row = None
+                    state = 'completed' if row and row.status not in {TaskStatus.BLOCKED, TaskStatus.PENDING} else 'failed'
+                await after_run(entered, state)
+
+        handle = self.jobs.submit_reserved(reservation.handle, worker)
+        async def finish_abandoned():
+            row = await self.find_task(handle.id)
+            if row is not None and row.status == TaskStatus.IN_PROGRESS:
+                await self._set_task_status(handle.id, TaskStatus.PENDING)
+            await after_run(False, 'cancelled')
+
+        def abandoned(_):
+            if not started:
+                reservation.release()
+                asyncio.create_task(finish_abandoned())
+        handle.task.add_done_callback(abandoned)
+        return handle
+
+    def remote_task_cancel_target(self, task_id: str, run_id: str, *, actor: RemoteActor) -> JobHandle:
+        self._require_remote_actor(actor)
+        handle = self.jobs.get(task_id)
+        if handle is None or handle.meta.get('remote_run_id') != run_id or not self.jobs.is_running(task_id):
+            raise ProtocolError(ErrorCode.REVISION_CONFLICT)
+        return handle
+
+    async def remote_cancel_task(self, handle: JobHandle, *, actor: RemoteActor) -> bool:
+        self._require_remote_actor(actor)
+        return self.jobs.get(handle.id) is handle and await self.jobs.cancel(handle.id)
+
+
     async def create_task(
         self,
         *,
@@ -688,6 +909,8 @@ class TeamOrchestrator:
         solution = None
         solver = None
         solver_message = None
+        auto_model_backend = None
+        auto_model_strength = None
         if producer_chat_id:
             # §10.11: do the model call before opening the numbering transaction. One
             # slow evaluation must not hold the database or block other task creation.
@@ -745,6 +968,8 @@ class TeamOrchestrator:
                     model_policy = model or (assignee.model if selected_backend == assignee.agent_backend else "")
                     if model_policy == "auto":
                         model = resolve_model(selected_backend, solution.model)
+                        auto_model_backend = selected_backend
+                        auto_model_strength = solution.model
                     solver_message = AgentChatMessage(
                         chat_id=producer_chat.id, member_id=producer_chat.member_id,
                         role="assistant", kind="effort_solver", text="",
@@ -786,6 +1011,8 @@ class TeamOrchestrator:
                 auto_start=auto_start and not is_human,
                 agent_backend=agent_backend,
                 model=str(model or "").strip() or None,
+                auto_model_backend=auto_model_backend,
+                auto_model_strength=auto_model_strength,
                 effort=str(effort or "").strip() or None,
                 delegation_depth=depth,
             )
@@ -1416,10 +1643,16 @@ class TeamOrchestrator:
             for override in ("agent_backend", "model", "effort"):
                 if override in fields:
                     fields[override] = str(fields[override] or "").strip() or None
-            if any(key in fields and fields[key] != getattr(task, key) for key in ("agent_backend", "model")):
+            if (
+                any(key in fields and fields[key] != getattr(task, key) for key in ("agent_backend", "model"))
+                or ("model" in fields and task.auto_model_strength is not None)
+            ):
                 if running:
                     raise ValueError("Cancel the running task before changing its model or backend")
                 task.agent_session_id = None
+            if "model" in fields:
+                task.auto_model_backend = None
+                task.auto_model_strength = None
 
             if "depends_on" in fields:
                 fields["depends_on"] = await self._validated_dependencies(
@@ -1471,6 +1704,8 @@ class TeamOrchestrator:
                 changes["auto_start"] = (True, False)
 
             session.add(task)
+            if changes or "model" in fields:
+                await self._bump_local_revision(session, ResourceKind.TASK, task_id, 'edit')
             if fields.get("archived"):
                 # spec §10.4: discard verbose rows but retain compact accounting so
                 # archiving cannot move historical spend to the task's finishing day.
@@ -1628,10 +1863,13 @@ class TeamOrchestrator:
             async with self.jobs.slot("agents"):
                 backend = get_backend(request.member.agent_backend)
                 # §10.11: a member may switch to Auto after the recorded dialogue was
-                # produced. Manual compaction is also a model call: resolve that policy
-                # before summarizing, and keep an already-pinned task model unchanged.
+                # produced. Resolve its current policy before summarizing. A backend
+                # change can remap the model for this call without editing the task
+                # or discarding its session if compression fails.
                 if request.model == "auto":
                     await self._solve_task_selection(task, request, backend)
+                elif (model := self._remap_auto_task_model(task, backend_name)) is not None:
+                    request.model = model
                 request.member = request.member.model_copy(update={"model": request.model})
                 await self._compress_context(backend, request, force=True)
 
@@ -1722,6 +1960,9 @@ class TeamOrchestrator:
             task.agent_session_id = None
             task.remote_control_url = None
             session.add(task)
+        # Consumers of the scoped transcript must invalidate their cursors even
+        # when compaction is not followed by another backend message.
+        await self._publish_task_changed(task_id)
 
     async def _auto_compress(self, backend: Any, request: AgentRunRequest) -> None:
         try:
@@ -2300,6 +2541,7 @@ class TeamOrchestrator:
                 if task and task.status == TaskStatus.IN_PROGRESS:
                     task.status = TaskStatus.PENDING
                     session.add(task)
+                    await self._bump_local_revision(session, ResourceKind.TASK, task_id, 'cancel')
         return cancelled
 
     # ------------------------------------------------------------------ execution
@@ -2336,6 +2578,7 @@ class TeamOrchestrator:
         member_id: str,
         prompt: str,
         images: Sequence[dict[str, Any]] = (),
+        *, remote=None,
     ) -> None:
         async with (
             self._write_paths_guards.setdefault(task_id, asyncio.Lock()),
@@ -2363,7 +2606,8 @@ class TeamOrchestrator:
             resume_session_id = task.agent_session_id
             write_paths = list(task.write_paths)
 
-        await self._set_task_status(task_id, TaskStatus.IN_PROGRESS, started=True)
+        if remote is None:
+            await self._set_task_status(task_id, TaskStatus.IN_PROGRESS, started=True)
 
         launch_root, launch_note = self._launch_root()
         if launch_note:
@@ -2385,7 +2629,7 @@ class TeamOrchestrator:
         )
         workdir = launch_root
         worktree_created: Path | None = None
-        locks: list[wt.PathClaim] = []
+        locks: list[wt.PathClaim] = remote[0].locks if remote else []
         # Open for the whole run, preparation included: a note written while the session is
         # still waiting for a path or a slot is one it should start out knowing (§10.8).
         inbox = self._inboxes[task_id] = Inbox(
@@ -2407,7 +2651,7 @@ class TeamOrchestrator:
                           "Using the shared working copy with write-file locks (§10.5)."),
                     data={"path": str(workdir)},
                 )
-            if member.isolate_worktree and offset is not None and can_isolate_writes:
+            if remote is None and member.isolate_worktree and offset is not None and can_isolate_writes:
                 created = await wt.create_isolated_workspace(
                     self.vcs, self.paths.worktrees, task_id, member_id
                 )
@@ -2430,7 +2674,7 @@ class TeamOrchestrator:
                             stored.worktree_path = str(created.path)
                             session.add(stored)
 
-            if worktree_created is None:
+            if remote is None and worktree_created is None:
                 # §10.5: only explicit writes contend; reading references in a brief is free.
                 loop = asyncio.get_running_loop()
                 queued_at: float | None = None
@@ -2462,6 +2706,17 @@ class TeamOrchestrator:
             self._run_writes[task_id] = locks if worktree_created is None else None
 
             run_backend = task.agent_backend or member.agent_backend
+            if remote is None and (model := self._remap_auto_task_model(task, run_backend)) is not None:
+                # §10.11: the old session belongs to the previous backend, even
+                # when the same model ID is available on the new connection.
+                async with self.db.session() as session:
+                    await session.exec(update(TeamTask).where(TeamTask.id == task_id).values(
+                        model=model, auto_model_backend=run_backend, agent_session_id=None,
+                    ))
+                task.model = model
+                task.auto_model_backend = run_backend
+                task.agent_session_id = resume_session_id = None
+                await self._publish_task_changed(task_id)
             runtime_member = member.model_copy(update={
                 "agent_backend": run_backend,
                 "model": member.model if run_backend == member.agent_backend else "",
@@ -2543,7 +2798,7 @@ class TeamOrchestrator:
                     data=_skills_data(member_skills, required.startup_skills),
                 )
 
-            run_id = new_id("run")
+            run_id = remote[0].run_id if remote else new_id("run")
             toolset = build_toolset(self, member=member, task=task, run_id=run_id)
             async with self._temp_locks.setdefault(task_id, asyncio.Lock()):
                 temp_dir = task_temp.ensure_task_temp(self.paths, task)
@@ -2663,18 +2918,27 @@ class TeamOrchestrator:
 
             # Says so in the transcript when the run has to queue behind `concurrency.agents`:
             # the task already reads In progress, and a silent wait looks like a hang.
-            async with agent_slot(self.jobs, self.record_message, task_id, member_id) as lease:
+            async with agent_slot(self.jobs, self.record_message, task_id, member_id,
+                                  reserved=remote[0].slot if remote else None) as lease:
                 # §10.3, §10.11: one Orchestrator evaluation resolves whichever settings
                 # are Auto, inside the slot as Producer/subagent evaluations are. Failure
                 # raises into the run's error path; no substituted runtime defaults.
-                model_policy = "auto" if member.model == "auto" and run_backend == member.agent_backend else run_model
+                model_policy = (
+                    "auto" if task.auto_model_strength is not None
+                    or (member.model == "auto" and run_backend == member.agent_backend) else run_model
+                )
                 if request.model == "auto" or (request.effort is None and getattr(backend, "supports_effort", True)):
+                    if remote is not None:
+                        raise ProtocolError(ErrorCode.DENIED)
                     await self._solve_task_selection(task, request, backend)
                 request.member = request.member.model_copy(update={"model": request.model})
                 self.subagents.open_run(request, lease, run_id, model_policy=model_policy)
                 try:
-                    limit = await self._consume(backend, request, task_id, member_id)
-                    if limit is None:
+                    if remote is None:
+                        limit = await self._consume(backend, request, task_id, member_id)
+                    else:
+                        limit = await self._consume(backend, request, task_id, member_id, before_launch=remote[1])
+                    if limit is None and remote is None:
                         await self._auto_compress(backend, request)
                 finally:
                     # Workers must be gone before the task releases its write locks,
@@ -2752,8 +3016,15 @@ class TeamOrchestrator:
         except Exception as exc:
             raise RuntimeError(f"Orchestrator could not evaluate this assignment: {exc}") from exc
 
+    @staticmethod
+    def _remap_auto_task_model(task: TeamTask, backend: str) -> str | None:
+        """Reuse the evaluated strength when an Auto task changes backends (§10.11)."""
+        if task.auto_model_strength is None or task.auto_model_backend == backend:
+            return None
+        return resolve_model(backend, task.auto_model_strength)
+
     async def _solve_task_selection(self, task: TeamTask, request: AgentRunRequest, backend: Any) -> None:
-        """Resolve Auto once per task and pin it for resumes/continuations (§10.11).
+        """Resolve Auto once and pin its strength and model for this backend (§10.11).
 
         Explicit effort is never overwritten merely because the model needs selection.
         Backends without effort still need evaluation when their model is Auto.
@@ -2764,6 +3035,12 @@ class TeamOrchestrator:
             selected["model"] = resolve_model(request.member.agent_backend, solution.model)
         if request.effort is None and getattr(backend, "supports_effort", True):
             selected["effort"] = solution.effort_level
+        provenance = {}
+        if "model" in selected:
+            provenance = {
+                "auto_model_backend": request.member.agent_backend,
+                "auto_model_strength": solution.model,
+            }
         # Tokens and cost only: the task's `num_turns` means "a session has worked here" and
         # decides whether a fresh start is handed the saved history (§10.6).
         spent = {key: int(solution.usage.get(key) or 0) for key in (
@@ -2774,11 +3051,13 @@ class TeamOrchestrator:
         async with self.db.session() as session:
             await session.exec(update(TeamTask).where(TeamTask.id == task.id).values(
                 **selected,
+                **provenance,
                 total_cost_usd=TeamTask.total_cost_usd + cost,
                 **{key: getattr(TeamTask, key) + value for key, value in spent.items()},
             ))
-        for key, value in selected.items():
+        for key, value in (selected | provenance).items():
             setattr(task, key, value)
+        for key, value in selected.items():
             setattr(request, key, value)
         # Keep the request's member concrete too: backend adapters and compaction may
         # inspect it in addition to the already-resolved request settings.
@@ -2798,7 +3077,8 @@ class TeamOrchestrator:
         await self._publish_task_changed(task.id)
 
     async def _consume(
-        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str
+        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str,
+        *, before_launch: Callable[[], Awaitable[bool]] | None = None,
     ) -> usage_limits.UsageLimit | None:
         """Drive one run to its end, and say whether the account's usage is what ended it.
 
@@ -2812,7 +3092,7 @@ class TeamOrchestrator:
         inferred from the transcript, because the tool writes the row — and it was cleared
         when this run started, so whatever is there now was reported by this run.
         """
-        outcome = await self._drain(backend, request, task_id, member_id)
+        outcome = await self._drain(backend, request, task_id, member_id, before_launch=before_launch)
         inbox = request.inbox
         asked = False
         # One more message into the same session for as long as there is one to send: a
@@ -2871,6 +3151,7 @@ class TeamOrchestrator:
                 ),
                 task_id,
                 member_id,
+                before_launch=before_launch,
             )
         if outcome.errored:
             return outcome.limit
@@ -2892,6 +3173,7 @@ class TeamOrchestrator:
 
     async def _drain_parent_events(
         self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str,
+        *, before_launch: Callable[[], Awaitable[bool]] | None = None,
     ) -> _RunOutcome:
         """A closing parent turn joins workers and consumes their results (§10.3)."""
         while True:
@@ -2907,7 +3189,7 @@ class TeamOrchestrator:
                 if required.text and required.text not in recovered:
                     recovered = required.prepend(recovered)
                 request = replace(request, recovery_prompt=recovered)
-            outcome = await self._drain_events(backend, request, task_id, member_id)
+            outcome = await self._drain_events(backend, request, task_id, member_id, before_launch=before_launch)
             if outcome.errored:
                 return outcome
             results = await self.subagents.collect_pending(task_id)
@@ -2928,10 +3210,14 @@ class TeamOrchestrator:
                               resume_session_id=saved.agent_session_id)
 
     async def _drain(
-        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str
+        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str,
+        *, before_launch: Callable[[], Awaitable[bool]] | None = None,
     ) -> _RunOutcome:
         """Observe disk writes around each actual session, including failed ones (§10.4)."""
-        await self._auto_compress(backend, request)
+        # Local automatic compaction can itself call the backend. ACP goes through
+        # the same last-mile fence as the initial turn instead of doing that here.
+        if before_launch is None:
+            await self._auto_compress(backend, request)
         task = await self.find_task(task_id)
         if task is not None and task.agent_session_id is None:
             messages = await self._messages_of(task_id)
@@ -2946,7 +3232,7 @@ class TeamOrchestrator:
                             "\n\nCurrent request:\n" + request.prompt),
                 )
         if task and task.worktree_path and Path(task.worktree_path).exists():
-            return await self._drain_parent_events(backend, request, task_id, member_id)
+            return await self._drain_parent_events(backend, request, task_id, member_id, before_launch=before_launch)
 
         async def record(paths: list[str], error: str | None) -> None:
             # Chunk for storage/transport, never truncate the observation as Explorer does.
@@ -2978,7 +3264,7 @@ class TeamOrchestrator:
                 await record([], f"File observation unavailable: {exc}")
             # Observe the whole parent/worker group, including the interval where
             # the parent's CLI has ended and children are still writing (§10.3).
-            return await self._drain_parent_events(backend, request, task_id, member_id)
+            return await self._drain_parent_events(backend, request, task_id, member_id, before_launch=before_launch)
         except asyncio.CancelledError:
             # Cancellation covers preparation too (§10.4). Do not start another disk
             # traversal after Stop; already persisted observations remain available.
@@ -2998,7 +3284,8 @@ class TeamOrchestrator:
                     await record([], f"File observation incomplete: {exc}")
 
     async def _drain_events(
-        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str
+        self, backend: Any, request: AgentRunRequest, task_id: str, member_id: str,
+        *, before_launch: Callable[[], Awaitable[bool]] | None = None,
     ) -> _RunOutcome:
         """Read one ``backend.run`` to its end, recording every event on the task."""
         from .context_viewer import capture_request
@@ -3020,6 +3307,8 @@ class TeamOrchestrator:
         credited_uncached = credited_cached = 0
         credited_input = credited_output = 0
 
+        if before_launch is not None and not await before_launch():
+            return _RunOutcome(errored=True, limit=None, final_text='')
         async for event in backend.run(request):
             if event.data.get("subtype") == "session_recovered":
                 await capture_request(self.db, task_id, replace(
@@ -3358,6 +3647,8 @@ class TeamOrchestrator:
             task = await session.get(TeamTask, task_id)
             if task is not None and task.archived and verbose_only(role, kind):
                 return message
+            if task is not None and kind == 'note':
+                await self._bump_local_revision(session, ResourceKind.TASK, task_id, 'note')
             if state:
                 await session.merge(message)
             else:
@@ -3623,6 +3914,7 @@ class TeamOrchestrator:
                 task.limit_reset_at = None
                 task.limit_resume_at = None
             session.add(task)
+            await self._bump_local_revision(session, ResourceKind.TASK, task_id, 'status')
             assignee_id = task.assignee_id
             team_id = task.team_id
 

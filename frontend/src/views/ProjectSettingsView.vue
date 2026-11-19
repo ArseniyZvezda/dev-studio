@@ -7,6 +7,7 @@ import { api } from '@/api/client'
 import CommitDescriptionSettings from '@/components/settings/CommitDescriptionSettings.vue'
 import SettingsPage from '@/components/settings/SettingsPage.vue'
 import SyncSettings from '@/components/settings/SyncSettings.vue'
+import RemoteAiAccessSettings from '@/components/settings/RemoteAiAccessSettings.vue'
 import { t, type MessageKey } from '@/i18n'
 import I18nT from '@/i18n/I18nT.vue'
 import { ACCENTS } from '@/lib/appearance'
@@ -23,6 +24,7 @@ const SECTIONS: readonly { id: string; titleKey: MessageKey }[] = [
   { id: 'settings-agents', titleKey: 'settings.agents.title' },
   { id: 'settings-tasks', titleKey: 'settings.tasks.title' },
   { id: 'settings-sync', titleKey: 'sync.settings.title' },
+  { id: 'project-remote-ai', titleKey: 'aiAccess.projectTitle' },
   { id: 'settings-project-execution', titleKey: 'projectSettings.maintenance' },
 ]
 
@@ -408,6 +410,11 @@ async function clearCache() {
           <section id="settings-sync" class="vxs-enter scroll-mt-4">
             <h2 class="mb-2 font-medium">{{ t('sync.settings.title') }}</h2>
             <SyncSettings />
+          </section>
+
+          <section id="project-remote-ai" class="vxs-enter scroll-mt-4 space-y-3">
+            <h2 class="font-medium">{{ t('aiAccess.projectTitle') }}</h2>
+            <RemoteAiAccessSettings project />
           </section>
 
           <section id="settings-project-execution" class="vxs-enter scroll-mt-4">

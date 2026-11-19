@@ -1,10 +1,13 @@
-"""Recent account quota telemetry shared by all resident projects (§6.1).
+"""Recent backend telemetry for the status bar (§6.1).
 
-This is not token accounting or a quota probe: adapters feed the CLI frames they
-already consume and, for Claude Code, the CLI's own ``get_usage`` report asked of a
-session that is already running. The Studio never calls a provider itself, and reading
-the status starts nothing. Nothing is persisted, and no raw frames, account identifiers,
-credentials or transcript content are retained. Unknown/stale usage is not zero.
+Account quotas are shared by all resident projects. Output speeds describe actual
+work within a single project and backend connection, and expire independently.
+
+Adapters reuse usage counts and timings from their normal runs. For Claude Code quotas,
+the CLI can also supply a ``get_usage`` report from an already running session. Reading
+status starts no process or provider request. Nothing is persisted, and no raw frames,
+account identifiers, credentials or transcript content are retained. Unknown or stale
+telemetry is not zero.
 """
 
 from __future__ import annotations
@@ -13,8 +16,14 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from ..core.project_scope import canonical_root
+
+if TYPE_CHECKING:
+    from .backends.base import RuntimeSessionKey
 
 
 _MAX_AGE_SECONDS = 15 * 60
@@ -196,3 +205,60 @@ def get_usage_limits(backend: str) -> list[dict[str, Any]]:
             _codex = tuple(sample for sample in _codex if sample.fresh(now, monotonic))
             return [sample.public() for sample in _codex]
     return []
+
+
+# Keep a sample long enough to be seen through the status bar's 15-second poll,
+# but do not imply that a backend is still producing tokens after work goes quiet.
+_SPEED_LIFETIME_SECONDS = 30
+_MAX_SPEED_SAMPLES = 256
+
+
+@dataclass(frozen=True, slots=True)
+class _SpeedSample:
+    rate: float
+    expires_monotonic: float
+
+
+_speeds: dict[tuple[Path, str], _SpeedSample] = {}
+
+
+def record_token_speed(
+    runtime_key: RuntimeSessionKey | None, backend: str, output_tokens: Any, duration_seconds: Any,
+) -> None:
+    """Keep the latest measured output rate, never inferring tokens from text or input usage."""
+    if runtime_key is None or not isinstance(output_tokens, int) or isinstance(output_tokens, bool):
+        return
+    tokens, duration = _number(output_tokens), _number(duration_seconds)
+    if tokens is None or tokens <= 0 or duration is None or duration <= 0:
+        return
+    rate = tokens / duration
+    if not math.isfinite(rate) or rate <= 0:
+        return
+    key = (runtime_key.owner.project_root, backend)
+    with _lock:
+        _speeds.pop(key, None)
+        _speeds[key] = _SpeedSample(rate, time.monotonic() + _SPEED_LIFETIME_SECONDS)
+        if len(_speeds) > _MAX_SPEED_SAMPLES:
+            del _speeds[next(iter(_speeds))]
+
+
+def record_result_speed(runtime_key: RuntimeSessionKey | None, backend: str, data: dict[str, Any]) -> None:
+    """CLI results pair a whole turn/run's usage with its wall duration in milliseconds."""
+    usage = data.get("usage")
+    duration_ms = _number(data.get("duration_ms"))
+    if not data.get("is_error") and isinstance(usage, dict) and duration_ms is not None:
+        record_token_speed(runtime_key, backend, usage.get("output_tokens"), duration_ms / 1000)
+
+
+def get_token_speeds(project_root: Path) -> dict[str, dict[str, float]]:
+    root = canonical_root(project_root)
+    result = {}
+    with _lock:
+        now, monotonic = time.time(), time.monotonic()
+        for key, sample in list(_speeds.items()):
+            remaining = sample.expires_monotonic - monotonic
+            if remaining <= 0:
+                del _speeds[key]
+            elif key[0] == root:
+                result[key[1]] = {"tokens_per_second": sample.rate, "expires_at": now + remaining}
+    return result

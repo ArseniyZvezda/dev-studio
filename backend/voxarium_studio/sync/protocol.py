@@ -81,13 +81,21 @@ def normalise_url(raw: str) -> str:
 
     People paste what they have — ``studio.example.com``, an ``https://`` link, a ``wss://``
     one — so every spelling of one server is folded to one string, which is also the key its
-    token is kept under. A bare host means HTTPS: the address carries a key.
+    token is kept under. A bare DNS hostname means HTTPS; a literal IP defaults
+    to the explicit HTTP-by-IP deployment mode (dev spec §16.2).
     """
     text = (raw or "").strip()
     if not text:
         raise ValueError("A server address is required")
     if "://" not in text:
-        text = f"https://{text}"
+        import ipaddress
+        candidate = urlsplit(f"https://{text}")
+        try:
+            ipaddress.ip_address(candidate.hostname or "")
+            scheme = "http"
+        except ValueError:
+            scheme = "https"
+        text = f"{scheme}://{text}"
     parts = urlsplit(text)
     scheme = {"ws": "http", "wss": "https"}.get(parts.scheme.lower(), parts.scheme.lower())
     if scheme not in {"http", "https"} or not parts.hostname:

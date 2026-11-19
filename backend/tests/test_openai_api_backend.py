@@ -288,3 +288,69 @@ async def test_real_studio_mcp_bridge(tmp_path):
         assert display == "mcp__studio__echo"
         result = await session.call_tool(name, {"text": "real bridge"})
         assert result.content[0].text == "real bridge"
+
+async def test_tpm_shared_window_waits_and_cancellation_spends_nothing():
+    import asyncio
+
+    c = connection(use_limits=True, tpm=100)
+    first = OpenAIApiBackend(c).window
+    second = OpenAIApiBackend(c.model_copy()).window
+    assert second is first
+    entry = await first.reserve(80, c.tpm)
+    waiting = asyncio.create_task(second.reserve(50, c.tpm))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert list(first.entries) == [entry]
+    other = OpenAIApiBackend(connection(use_limits=True)).window
+    assert (await other.reserve(100, 100)).tokens == 100
+
+    waiting = asyncio.create_task(second.reserve(50, c.tpm))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    first.observe(entry, {"prompt_tokens": 30}, 10)
+    assert (await asyncio.wait_for(waiting, 1)).tokens == 50
+    for item in first.entries:
+        item.expires -= 60
+    await first.reserve(100, c.tpm)
+    assert len(first.entries) == 1
+
+
+@pytest.mark.parametrize("mode", ["chat_completions", "responses"])
+async def test_tpm_oversized_request_never_sent(monkeypatch, tmp_path, mode):
+    sent = fake_http(monkeypatch, [])
+    backend = OpenAIApiBackend(connection(use_limits=True, tpm=100, api_mode=mode))
+    events = [event async for event in backend.run(request(tmp_path))]
+    assert not sent
+    assert events[-1].data["is_error"]
+    assert "above the configured TPM of 100" in events[-1].text
+
+
+def test_tpm_settings_round_trip(client):
+    c = connection()
+    url = f"/api/settings/api-backends/{c.id}"
+    body = {"name": "API", "model": "test"}
+    defaults = client.put(url, json=body).json()
+    assert defaults["use_limits"] is False and defaults["tpm"] == 1_000_000
+    settings = {"base_url": "https://provider.test/v1", "icon": "code", "models": ["other"],
+                "api_mode": "responses", "context_window": 65536, "use_limits": True, "tpm": 23000}
+    response = client.put(url, json={**body, **settings, "api_key": "limit-test-key"})
+    assert response.is_success
+    assert response.json()["has_api_key"] is True
+
+    # An unrelated global settings save and a partial edit must preserve the connection.
+    save_application_config(load_application_config())
+    assert client.put(url, json={**body, "name": "Renamed"}).is_success
+    catalogue = client.get("/api/settings/api-backends").json()
+    assert catalogue == [{**body, "name": "Renamed", **settings, "id": c.id, "has_api_key": True}]
+    assert connections()[0].api_key.get_secret_value() == "limit-test-key"
+
+    assert client.put(url, json={**body, "use_limits": False, "icon": None, "api_key": ""}).is_success
+    [saved] = client.get("/api/settings/api-backends").json()
+    assert saved["use_limits"] is False and saved["tpm"] == 23000
+    assert saved["icon"] is None and saved["has_api_key"] is False
+    assert not connections()[0].api_key.get_secret_value()
+    for invalid in [0, -1, 1.5]:
+        assert client.put(url, json={**body, "tpm": invalid}).status_code == 400

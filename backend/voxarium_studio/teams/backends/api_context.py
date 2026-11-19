@@ -141,7 +141,7 @@ _SUMMARY_INSTRUCTION = (
 
 
 async def compact_history(client, url, headers, model, messages, window, max_message_bytes, usage,
-                          summary_token_limit=None, api_mode="chat_completions"):
+                          summary_token_limit=None, api_mode="chat_completions", token_window=None, tpm=0):
     """Map/reduce bounded fragments; no original history is replaced on failure.
 
     Even a single enormous tool result is split. Half the window is reserved for input;
@@ -179,6 +179,8 @@ async def compact_history(client, url, headers, model, messages, window, max_mes
                     from .api_responses import request_body, summary_result
                     payload = request_body(payload)
                     endpoint = url.removesuffix("/chat/completions") + "/responses"
+                if token_window:
+                    reservation = await token_window.reserve_request(payload, tpm, output_limit)
                 async with client.stream("POST", endpoint, headers=headers, json=payload, timeout=60) as response:
                     if response.status_code in {400, 422} and attempt == 0 and api_mode != "responses":
                         field = "max_tokens" if field == "max_completion_tokens" else "max_completion_tokens"
@@ -195,6 +197,8 @@ async def compact_history(client, url, headers, model, messages, window, max_mes
             if api_mode == "responses":
                 result = summary_result(result)
             stats = result.get("usage") or {}
+            if token_window:
+                token_window.observe(reservation, stats, output_limit)
             cached = (stats.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             usage["input_tokens"] += max(0, stats.get("prompt_tokens", 0) - cached)
             usage["cache_read_input_tokens"] += cached

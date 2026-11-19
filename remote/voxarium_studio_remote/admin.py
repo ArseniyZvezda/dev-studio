@@ -7,27 +7,97 @@ import os
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
+import sys
 import tempfile
 import unicodedata
 from uuid import uuid4
 
 import typer
 
-from .admin_transport import AdminError, Connection, Installation, RemoteAdmin, RPCFailure, RPCUnavailable
+from .admin_transport import (
+    CONTAINER, AdminError, Connection, Installation, LegacySchemaError, RemoteAdmin,
+    RPCFailure, RPCUnavailable,
+)
 from .admin_ui import choose, text_input, issue_view
 from .admin_secrets import EphemeralSecret
 from .admin_bundle import default_source, ssh_executable
 
 cli = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
-LOGO = r"""
- __     __  ___   __  __    _    ____  ___ _   _ __  __
- \ \   / / / _ \  \ \/ /   / \  |  _ \|_ _| | | |  \/  |
-  \ \ / / | | | |  \  /   / _ \ | |_) || || | | | |\/| |
-   \ V /  | |_| |  /  \  / ___ \|  _ < | || |_| | |  | |
-    \_/    \___/  /_/\_\/_/   \_\_| \_\___|\___/|_|  |_|
 
-                 VOXARIUM / REMOTE ADMIN
-"""
+# "VOXARIUM" spelled in filled-block (█) glyphs, five rows tall. The gradient
+# is applied per column at print time (echo_logo); the art itself stays plain
+# text so tests and non-colour terminals still see the lettering.
+_GLYPHS = {
+    "V": ("█   █", "█   █", "█   █", " █ █ ", "  █  "),
+    "O": (" ███ ", "█   █", "█   █", "█   █", " ███ "),
+    "X": ("█   █", " █ █ ", "  █  ", " █ █ ", "█   █"),
+    "A": (" ███ ", "█   █", "█████", "█   █", "█   █"),
+    "R": ("████ ", "█   █", "████ ", "█  █ ", "█   █"),
+    "I": ("█████", "  █  ", "  █  ", "  █  ", "█████"),
+    "U": ("█   █", "█   █", "█   █", "█   █", " ███ "),
+    "M": ("█   █", "██ ██", "█ █ █", "█   █", "█   █"),
+}
+LOGO = tuple(" ".join(_GLYPHS[letter][row] for letter in "VOXARIUM") for row in range(5))
+SUBTITLE = "REMOTE ADMIN"
+
+# Blue → purple → pink, sampled left to right across the lettering.
+_GRADIENT = ((50, 110, 255), (155, 60, 255), (255, 70, 190))
+
+
+def _gradient_color(position: float) -> tuple[int, int, int]:
+    scaled = max(0.0, min(1.0, position)) * (len(_GRADIENT) - 1)
+    index = min(int(scaled), len(_GRADIENT) - 2)
+    fraction = scaled - index
+    low, high = _GRADIENT[index], _GRADIENT[index + 1]
+    return tuple(round(low[channel] + (high[channel] - low[channel]) * fraction)
+                 for channel in range(3))
+
+
+def _paint(line: str, width: int) -> str:
+    """True-colour ANSI per column; click strips it again on non-terminals."""
+    painted = []
+    for column, character in enumerate(line):
+        if character == " ":
+            painted.append(character)
+            continue
+        red, green, blue = _gradient_color(column / max(width - 1, 1))
+        painted.append(f"\x1b[38;2;{red};{green};{blue}m{character}")
+    painted.append("\x1b[0m")
+    return "".join(painted)
+
+
+def _supports_logo_color() -> bool:
+    """Use native VT on Windows; Colorama misinterprets 24-bit SGR colours."""
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import msvcrt
+
+        kernel = ctypes.windll.kernel32
+        handle = msvcrt.get_osfhandle(sys.stdout.fileno())
+        mode = ctypes.c_uint()
+        if not kernel.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)):
+            return False
+        return bool(kernel.SetConsoleMode(ctypes.c_void_p(handle), mode.value | 0x0004))
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def echo_logo() -> None:
+    width = max(len(line) for line in LOGO)
+    lines = (*LOGO, SUBTITLE.center(width))
+    if _supports_logo_color():
+        # Bypass Click's Windows Colorama wrapper: its legacy ANSI conversion
+        # parses RGB components as separate SGR commands, including backgrounds.
+        sys.stdout.write("\n".join(_paint(line, width) for line in lines) + "\n\n")
+        sys.stdout.flush()
+    else:
+        for line in lines:
+            typer.echo(line)
+        typer.echo()
 MESSAGES = {
     "en": {
         "settings": "Connection settings", "find": "Find Remote", "install": "Install with Docker",
@@ -40,16 +110,32 @@ MESSAGES = {
         "choice": "Choose", "host": "Server IP or hostname", "username": "SSH username",
         "key": "SSH private key path (contents are never copied)", "port": "SSH port",
         "saved": "Connection settings saved", "missing": "Configure the connection first.",
-        "none": "No Voxarium Remote containers found.", "select": "Select container",
+        "none": "No Voxarium Remote containers found.",
         "invalid": "Invalid choice.", "error": "Error", "source": "Embedded Remote installation files",
-        "domain": "HTTPS domain (empty = SSH tunnel only)", "tunnel": "SSH tunnel only",
+        "domain": "HTTPS domain (optional)", "tunnel": "SSH tunnel only", "no_domain": "Not set",
+        "access": "Access mode", "public_http": "HTTP by IP", "https": "HTTPS by domain",
+        "publish_http": "Enable HTTP by IP",
+        "confirm_http": "Enable public HTTP on {host}? Remote stays on loopback; Caddy will expose it on TCP 80. Keys and data travel without encryption. Existing data is preserved. External/cloud firewalls must allow TCP 80.",
+        "http_warning": "HTTP by IP needs no domain or user SSH connection. Personal keys and data are sent without encryption. TCP 80 must be allowed in any external/cloud firewall.",
         "confirm": "Prepare {host} and install Remote? Missing packages and Docker will be installed, Docker enabled, persistent volumes created. With a domain: Caddy HTTPS and active UFW rules for TCP 80/443 and UDP 443 will be configured. Requires root or passwordless sudo.",
-        "tls": "Automatic preparation: Ubuntu/Debian with systemd. For HTTPS, point the domain's DNS to this server and allow TCP 80/443 in the cloud firewall. Without a domain, Remote stays on 127.0.0.1:8787 for an SSH tunnel.",
-        "trust": "New servers are automatically added to known_hosts on first connection (trust on first use). Changed host keys are rejected. Encrypted keys require ssh-agent; private key contents are never copied.",
+        "tls": "Automatic preparation: Ubuntu/Debian with systemd. HTTP by IP configures Caddy and active UFW for TCP 80. For HTTPS, point the domain's DNS to this server and allow TCP 80/443 in the cloud firewall. Tunnel mode keeps Remote on 127.0.0.1:8787.",
         "stopped": "Container is not running; start it on the server before reading telemetry or users.",
         "connection": "Connection", "cancelled": "Cancelled.",
         "installing": "Preparing server and installing Remote. Package downloads/builds may take several minutes; interruption can leave packages, containers or data on the server.",
         "interrupted": "Installation interrupted: remote state is unknown. Find Remote before retrying; inspect Docker on the server. No rollback was attempted.",
+        "update": "Update", "update_run": "Start update",
+        "confirm_update": "Update Remote on {host}? The image is rebuilt from the embedded files and the container is recreated. The data volume, container name and HTTPS configuration are preserved; expect a short downtime.",
+        "updating": "Updating Remote. Package downloads/builds may take several minutes; if the new build fails its health check, the previous image is restarted automatically.",
+        "update_interrupted": "Update interrupted: remote state is unknown. The previous image may have been restarted; Find Remote before retrying. The data volume was not touched.",
+        "migrate": "Migrate & Update", "migrate_run": "Migrate & Update",
+        "migrate_offer": "The data volume on {host} uses the legacy v1 schema; a plain Update refuses it. Run the offline v1 → v2 migration together with the update?",
+        "migrate_warning": "The service stops while the data is migrated to schema v2. A validated v1 backup is kept inside the data volume; a failed migration or health check restores the v1 data and restarts the previous container. After success, v1 Studio clients can no longer sync: every Studio must speak protocol v2. Backup and recovery files contain credential hashes — protect them like the database.",
+        "migrate_type": "Type MIGRATE to confirm the offline migration and update",
+        "migrating": "Migrating and updating Remote. The service is stopped during the migration; this may take several minutes.",
+        "migrate_interrupted": "Migration/update interrupted: the remote state is unknown. The volume may hold v1 or v2 data. Use Find Remote before any retry and never start the old v1 container on migrated data.",
+        "status_none": "Voxarium Remote installation not found on the server.",
+        "status_unconfigured": "Connection is not configured.",
+        "version_unknown": "version unknown",
     },
     "ru": {
         "settings": "Настройки подключения", "find": "Найти Remote", "install": "Установить через Docker",
@@ -62,16 +148,32 @@ MESSAGES = {
         "choice": "Выберите", "host": "IP или имя сервера", "username": "Пользователь SSH",
         "key": "Путь к приватному SSH-ключу (содержимое не копируется)", "port": "Порт SSH",
         "saved": "Настройки подключения сохранены", "missing": "Сначала настройте подключение.",
-        "none": "Контейнеры Voxarium Remote не найдены.", "select": "Выберите контейнер",
+        "none": "Контейнеры Voxarium Remote не найдены.",
         "invalid": "Неверный выбор.", "error": "Ошибка", "source": "Встроенные файлы установки Remote",
-        "domain": "Домен HTTPS (пусто = только SSH-туннель)", "tunnel": "Только SSH-туннель",
+        "domain": "Домен HTTPS (необязательно)", "tunnel": "Только SSH-туннель", "no_domain": "Не задан",
+        "access": "Режим доступа", "public_http": "HTTP по IP", "https": "HTTPS по домену",
+        "publish_http": "Включить HTTP по IP",
+        "confirm_http": "Включить публичный HTTP на {host}? Remote останется на loopback; Caddy откроет доступ через TCP 80. Ключи и данные передаются без шифрования. Данные сохраняются. Во внешнем/облачном фаерволе должен быть разрешён TCP 80.",
+        "http_warning": "HTTP по IP не требует домена и SSH у пользователей. Личные ключи и данные передаются без шифрования. Во внешнем/облачном фаерволе должен быть разрешён TCP 80.",
         "confirm": "Подготовить {host} и установить Remote? Будут установлены недостающие пакеты и Docker, включена служба Docker, созданы постоянные тома. При указании домена: Caddy HTTPS и правила TCP 80/443 и UDP 443 для активного UFW. Нужны root или sudo без пароля.",
-        "tls": "Автоподготовка: Ubuntu/Debian с systemd. Для HTTPS направьте DNS домена на сервер и разрешите TCP 80/443 в облачном фаерволе. Без домена Remote останется на 127.0.0.1:8787 для SSH-туннеля.",
-        "trust": "Новый сервер автоматически добавляется в known_hosts при первом подключении (доверие при первом использовании). Изменённый ключ сервера отклоняется. Ключ с паролем требует ssh-agent; содержимое приватного ключа не копируется.",
+        "tls": "Автоподготовка: Ubuntu/Debian с systemd. HTTP по IP настраивает Caddy и TCP 80 в активном UFW. Для HTTPS направьте DNS домена на сервер и разрешите TCP 80/443 в облачном фаерволе. Режим туннеля оставляет Remote на 127.0.0.1:8787.",
         "stopped": "Контейнер не запущен; запустите его на сервере для просмотра телеметрии и пользователей.",
         "connection": "Подключение", "cancelled": "Отменено.",
         "installing": "Подготовка сервера и установка Remote. Загрузка пакетов и сборка могут занять несколько минут; прерывание может оставить пакеты, контейнеры или данные на сервере.",
         "interrupted": "Установка прервана: состояние сервера неизвестно. Перед повтором выполните поиск Remote и проверьте Docker на сервере. Откат не выполнялся.",
+        "update": "Обновить", "update_run": "Начать обновление",
+        "confirm_update": "Обновить Remote на {host}? Образ будет пересобран из встроенных файлов, а контейнер пересоздан. Том данных, имя контейнера и настройки HTTPS сохраняются; ожидается короткая остановка сервиса.",
+        "updating": "Обновление Remote. Загрузка пакетов и сборка могут занять несколько минут; если новая сборка не пройдёт проверку здоровья, предыдущий образ будет перезапущен автоматически.",
+        "update_interrupted": "Обновление прервано: состояние сервера неизвестно. Предыдущий образ мог быть перезапущен; перед повтором выполните поиск Remote. Том данных не затрагивался.",
+        "migrate": "Миграция и обновление", "migrate_run": "Мигрировать и обновить",
+        "migrate_offer": "Том данных на {host} использует старую схему v1; обычное обновление отказывается его применять. Выполнить офлайн-миграцию v1 → v2 вместе с обновлением?",
+        "migrate_warning": "На время миграции сервис останавливается, данные переводятся на схему v2. Проверенная резервная копия v1 сохраняется в томе данных; при неудачной миграции или проверке здоровья v1-данные восстанавливаются и перезапускается предыдущий контейнер. После успеха v1-клиенты Studio больше не смогут синхронизироваться: все Studio должны использовать протокол v2. Файлы резервных копий содержат хэши ключей — защищайте их как базу данных.",
+        "migrate_type": "Введите MIGRATE для подтверждения офлайн-миграции и обновления",
+        "migrating": "Миграция и обновление Remote. Сервис остановлен на время миграции; это может занять несколько минут.",
+        "migrate_interrupted": "Миграция/обновление прерваны: состояние сервера неизвестно. Том может содержать данные v1 или v2. Перед повтором выполните поиск Remote и не запускайте старый v1-контейнер на мигрированных данных.",
+        "status_none": "Установка Voxarium Remote не найдена на сервере.",
+        "status_unconfigured": "Подключение не настроено.",
+        "version_unknown": "версия неизвестна",
     },
 }
 
@@ -197,17 +299,47 @@ def configure(current: Connection | None, messages: dict[str, str]) -> Connectio
             show_result(messages["error"], exc, messages, error=True)
 
 
-def select_installation(admin: RemoteAdmin, messages: dict[str, str]) -> Installation | None:
+def single_installation(admin: RemoteAdmin, messages: dict[str, str]) -> Installation | None:
+    """The server runs exactly one Remote; never offer a container picker."""
     installations = admin.discover()
     if not installations:
         show_result(messages["find"], messages["none"], messages)
         return None
-    options = [(str(index), safe_text(f"{item.name} [{item.status}] {item.image} ({item.id[:12]})"))
-               for index, item in enumerate(installations)]
-    selected = choose(messages["select"], options + [("back", messages["back"])], messages["navigation"])
-    if selected in (None, "back"):
-        return None
-    return installations[int(selected)]
+    return primary_installation(installations)
+
+
+def primary_installation(installations: list[Installation]) -> Installation:
+    """The canonical container wins if a legacy host runs several matches."""
+    return next((item for item in installations if item.name == CONTAINER), installations[0])
+
+
+def probe_status(current: Connection | None, messages: dict[str, str]) -> tuple[list[str], str, bool]:
+    """(box lines, colour, installed) for the frame above the main menu.
+
+    Discovery failure is framed, not fatal: the menu must stay usable when the
+    server is unreachable, so the box shows the error instead of raising it.
+    """
+    if current is None:
+        return [messages["status_unconfigured"]], typer.colors.YELLOW, False
+    try:
+        admin = RemoteAdmin(current)
+        installations = admin.discover()
+        if not installations:
+            return [messages["status_none"]], typer.colors.YELLOW, False
+        item = primary_installation(installations)
+        version = admin.version(item)
+        suffix = f"v{version}" if version else messages["version_unknown"]
+        return [safe_text(f"{item.name} [{item.status}] {item.image} · {suffix}")], typer.colors.GREEN, True
+    except (AdminError, OSError, ValueError) as exc:
+        return [safe_text(f"{messages['error']}: {exc}")], typer.colors.RED, False
+
+
+def status_box(lines: list[str], color: str) -> None:
+    width = max(len(line) for line in lines)
+    typer.secho("┌" + "─" * (width + 2) + "┐", fg=color)
+    for line in lines:
+        typer.secho(f"│ {line}{' ' * (width - len(line))} │", fg=color)
+    typer.secho("└" + "─" * (width + 2) + "┘", fg=color)
 
 
 def install_menu(admin: RemoteAdmin, source: Path | None, messages: dict[str, str]) -> None:
@@ -216,30 +348,92 @@ def install_menu(admin: RemoteAdmin, source: Path | None, messages: dict[str, st
     except RuntimeError as exc:
         raise AdminError(str(exc)) from exc
     domain = ""
+    public_http = True
     while True:
         action = choose(messages["install"], [
-            ("domain", f"{messages['domain']}: {safe_text(domain) or messages['tunnel']}"),
+            ("access", f"{messages['access']}: {messages['https'] if domain else messages['public_http'] if public_http else messages['tunnel']}"),
+            ("domain", f"{messages['domain']}: {safe_text(domain) or messages['no_domain']}"),
             ("deploy", messages["deploy"]), ("back", messages["back"])], messages["navigation"])
         if action in (None, "back"):
             return
+        if action == "access":
+            mode = choose(messages["access"], [("public_http", messages["public_http"]),
+                ("tunnel", messages["tunnel"]), ("back", messages["back"])], messages["navigation"])
+            if mode in ("public_http", "tunnel"):
+                public_http = mode == "public_http"
+                domain = ""
+            continue
         if action == "domain":
             value = text_input(messages["domain"], default=domain, hint=messages["editing"])
             if value is not None:
                 domain = value.strip()
             continue
         typer.secho(messages["tls"], fg=typer.colors.YELLOW)
+        if public_http and not domain:
+            typer.secho(messages["http_warning"], fg=typer.colors.YELLOW)
         confirmed = choose(messages["confirm"].format(host=safe_text(admin.connection.host)),
                            [("back", messages["back"]), ("deploy", messages["deploy"])], messages["navigation"])
         if confirmed != "deploy":
             continue
         typer.secho(messages["installing"], fg=typer.colors.CYAN)
         try:
-            output = admin.install(Path(context).expanduser().resolve(), domain=domain or None)
+            output = admin.install(Path(context).expanduser().resolve(), domain=domain or None,
+                                   public_http=public_http and not bool(domain))
         except (KeyboardInterrupt, EOFError, typer.Abort):
             typer.secho(messages["interrupted"], fg=typer.colors.YELLOW, err=True)
             raise typer.Exit(130)
         show_result(messages["install"], output, messages)
         return
+
+
+def update_menu(admin: RemoteAdmin, source: Path | None, messages: dict[str, str]) -> None:
+    """Shown in place of Install when an installation exists: rebuild in place."""
+    try:
+        context = source or default_source()
+    except RuntimeError as exc:
+        raise AdminError(str(exc)) from exc
+    confirmed = choose(messages["confirm_update"].format(host=safe_text(admin.connection.host)),
+                       [("back", messages["back"]), ("update", messages["update_run"])],
+                       messages["navigation"])
+    if confirmed != "update":
+        return
+    typer.secho(messages["updating"], fg=typer.colors.CYAN)
+    try:
+        output = admin.update(Path(context).expanduser().resolve())
+    except (KeyboardInterrupt, EOFError, typer.Abort):
+        typer.secho(messages["update_interrupted"], fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(130)
+    except LegacySchemaError as exc:
+        # The refusal is the designed outcome for a v1 volume; offer the only
+        # supported path forward instead of leaving the operator with a hint.
+        show_result(messages["update"], exc, messages, error=True)
+        migrate_menu(admin, Path(context), messages)
+        return
+    show_result(messages["update"], output, messages)
+
+
+def migrate_menu(admin: RemoteAdmin, context: Path, messages: dict[str, str]) -> None:
+    """Explicit offline v1→v2 migration + update; never entered implicitly.
+
+    Two gates mirror rotate/delete: a choice against the full warning, then a
+    typed word — migration stops the service and, once committed, the volume
+    no longer accepts the v1 binary.
+    """
+    action = choose(messages["migrate_offer"].format(host=safe_text(admin.connection.host)),
+                    [("back", messages["back"]), ("migrate", messages["migrate_run"])],
+                    messages["navigation"])
+    if action != "migrate":
+        return
+    typer.secho(messages["migrate_warning"], fg=typer.colors.YELLOW)
+    if text_input(messages["migrate_type"], hint=messages["editing"]) != "MIGRATE":
+        return
+    typer.secho(messages["migrating"], fg=typer.colors.CYAN)
+    try:
+        output = admin.migrate_update(Path(context).expanduser().resolve())
+    except (KeyboardInterrupt, EOFError, typer.Abort):
+        typer.secho(messages["migrate_interrupted"], fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(130)
+    show_result(messages["migrate"], output, messages)
 
 
 def _target(admin, item, identifier):
@@ -415,20 +609,28 @@ def menu(
         return
     messages = MESSAGES[language]
     config = config or default_config_path()
-    for index, line in enumerate(LOGO.splitlines()):
-        typer.secho(line, fg=typer.colors.BRIGHT_CYAN if index < 5 else typer.colors.BRIGHT_BLUE, bold=True)
-    typer.secho(messages["trust"], fg=typer.colors.YELLOW)
+    echo_logo()
     try:
         current = load_connection(config)
     except (OSError, ValueError) as exc:
         typer.secho(f"{messages['error']}: {safe_text(exc)}", fg=typer.colors.RED, err=True)
         current = None
+    status: tuple[list[str], str, bool] | None = None
     try:
         while True:
             if current:
                 typer.secho(safe_text(f"{messages['connection']}: {current.username}@{current.host}:{current.port}"), fg=typer.colors.CYAN)
-            choice = choose(messages["main"], [(key, messages[key]) for key in
-                            ("settings", "find", "install", "telemetry", "users", "projects", "exit")], messages["navigation"])
+            if status is None:
+                status = probe_status(current, messages)
+            status_box(status[0], status[1])
+            # One deployment per server: with an installation present the entry
+            # becomes Update; Install is only offered on an empty server.
+            deploy = "update" if status[2] else "install"
+            entries = ["settings", "find", deploy]
+            if status[2]:
+                entries.append("publish_http")
+            entries.extend(["telemetry", "users", "projects", "exit"])
+            choice = choose(messages["main"], [(key, messages[key]) for key in entries], messages["navigation"])
             if choice in (None, "exit"):
                 return
             try:
@@ -437,6 +639,7 @@ def menu(
                     if updated is not None:
                         save_connection(config, updated)
                         current = updated
+                        status = None
                         show_result(messages["settings"], messages["saved"], messages)
                     continue
                 if current is None:
@@ -445,21 +648,39 @@ def menu(
                 admin = RemoteAdmin(current)
                 if choice == "install":
                     install_menu(admin, source, messages)
+                    status = None
                     continue
-                while True:
-                    item = select_installation(admin, messages)
-                    if item is None:
-                        break
-                    if choice == "find":
-                        show_result(messages["find"], f"{item.name} [{item.status}] {item.image}", messages)
-                    elif item.status != "running":
-                        show_result(messages[choice], messages["stopped"], messages)
-                    elif choice == "users":
-                        users_menu(admin, item, messages)
-                    elif choice == "projects":
-                        projects_menu(admin, item, messages)
-                    else:
-                        show_result(messages[choice], admin.telemetry(item), messages)
+                if choice == "update":
+                    update_menu(admin, source, messages)
+                    status = None
+                    continue
+                if choice == "publish_http":
+                    confirmed = choose(messages["confirm_http"].format(host=safe_text(current.host)),
+                        [("back", messages["back"]), ("publish_http", messages["publish_http"])], messages["navigation"])
+                    if confirmed == "publish_http":
+                        item = single_installation(admin, messages)
+                        if item is not None:
+                            show_result(messages["publish_http"], admin.publish_http(item), messages)
+                    continue
+                if choice == "find":
+                    item = single_installation(admin, messages)
+                    if item is not None:
+                        version = admin.version(item)
+                        suffix = f"v{version}" if version else messages["version_unknown"]
+                        show_result(messages["find"], f"{item.name} [{item.status}] {item.image} · {suffix}", messages)
+                    status = None
+                    continue
+                item = single_installation(admin, messages)
+                if item is None:
+                    continue
+                if item.status != "running":
+                    show_result(messages[choice], messages["stopped"], messages)
+                elif choice == "users":
+                    users_menu(admin, item, messages)
+                elif choice == "projects":
+                    projects_menu(admin, item, messages)
+                else:
+                    show_result(messages[choice], admin.telemetry(item), messages)
             except (AdminError, OSError, ValueError) as exc:
                 show_result(messages["error"], exc, messages, error=True)
     except (EOFError, KeyboardInterrupt, typer.Abort):
@@ -467,7 +688,22 @@ def menu(
 
 
 def main() -> None:
+    _force_utf8_output()
     cli()
+
+
+def _force_utf8_output() -> None:
+    """Block/box glyphs must survive redirected output on legacy codepages.
+
+    An interactive Windows console is already Unicode, but a redirected stream
+    defaults to the ANSI charmap (cp1251/cp1252), where '█' and '┌' raise
+    UnicodeEncodeError instead of rendering.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
 
 
 if __name__ == "__main__":

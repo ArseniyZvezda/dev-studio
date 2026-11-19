@@ -135,4 +135,39 @@ describe('durable desktop pages (§5.3.6)', () => {
     vi.restoreAllMocks()
     vi.doUnmock('@/api/client'); vi.doUnmock('@/stores/chat'); vi.doUnmock('@/stores/docs')
   })
+
+  it('never attests the transient initial route: reports wait for the settled first navigation', async () => {
+    vi.spyOn(rendererSession, 'projectId', 'get').mockReturnValue('boot')
+    vi.doMock('@/stores/chat', () => ({ useChatStore: () => ({ view: 'list', activeChatId: null }) }))
+    vi.doMock('@/stores/docs', () => ({ useDocsStore: () => ({ open: null }) }))
+    const router = runtime('boot')
+    let release!: () => void
+    router.beforeEach(() => new Promise<boolean>(resolve => { release = () => resolve(true) }))
+    const state: DesktopTabsState = { role: 'project', windowId: '1', windowRevision: 1,
+      binding: { root: 'D:/A', project_id: 'boot', epoch: 'new' },
+      tab: { tabId: 'tab', revision: 1, transferGeneration: 0, ownerWindowId: '1', state: 'ready',
+        project: { root: 'D:/A', project_id: 'boot', epoch: 'new' } } }
+    let stateChanged!: (value: DesktopTabsState) => void
+    const reportPage = vi.fn().mockResolvedValue(undefined)
+    const bridge = { reportPage, acknowledgePageRestore: vi.fn().mockResolvedValue(undefined),
+      bootstrap: async () => state, onRestorePage: () => () => {},
+      onStateChange: (cb: typeof stateChanged) => { stateChanged = cb; return () => {} },
+    } as unknown as DesktopTabsBridge
+    // The initial navigation is in flight (a lazy section chunk still loads), so
+    // currentRoute remains the START location '/'. Main gates its page restore on
+    // the first report: attesting '/' would release the restore into a race with
+    // the settling navigation, which the tracker then judges "stale" (§5.3.6).
+    const initial = router.push('/explorer')
+    connectDesktopPageState(router, bridge)
+    await vi.waitFor(() => expect(typeof release).toBe('function')) // guard reached, navigation in flight
+    stateChanged(state)
+    expect(reportPage).not.toHaveBeenCalled()
+    release()
+    await initial
+    await vi.waitFor(() => expect(reportPage).toHaveBeenCalledTimes(1))
+    expect(reportPage.mock.calls[0][0]).toMatchObject({ tabId: 'tab', tabRevision: 1,
+      transferGeneration: 0, page: { path: '/explorer' } })
+    vi.restoreAllMocks()
+    vi.doUnmock('@/stores/chat'); vi.doUnmock('@/stores/docs')
+  })
 })

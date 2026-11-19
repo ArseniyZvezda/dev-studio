@@ -7,7 +7,9 @@ import { t } from '@/i18n'
 import MemberIconPicker from '@/components/teams/MemberIconPicker.vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
 
-const draft = ref<(Omit<ApiBackendConnection, 'has_api_key'> & { api_key: string; has_api_key?: boolean }) | null>(null)
+const draft = ref<(Omit<ApiBackendConnection, 'has_api_key' | 'tpm'> & {
+  api_key: string; has_api_key?: boolean; tpm: number | ''
+}) | null>(null)
 const busy = ref(false)
 const error = ref('')
 const removeTarget = ref<string | null>(null)
@@ -18,8 +20,8 @@ function edit(item?: ApiBackendConnection) {
   error.value = ''
   clearKey.value = false
   modelIds.value = (item?.models ?? []).join('\n')
-  draft.value = item ? { ...item, models: [...(item.models ?? [])], api_mode: item.api_mode ?? 'auto', api_key: '' } : {
-    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', models: [], api_mode: 'auto', context_window: null, icon: null, api_key: '',
+  draft.value = item ? { ...item, use_limits: item.use_limits ?? false, tpm: item.tpm ?? 1_000_000, models: [...(item.models ?? [])], api_mode: item.api_mode ?? 'auto', api_key: '' } : {
+    id: crypto.randomUUID(), name: '', base_url: 'https://api.openai.com/v1', model: '', models: [], use_limits: false, tpm: 1_000_000, api_mode: 'auto', context_window: null, icon: null, api_key: '',
   }
 }
 async function save() {
@@ -27,10 +29,17 @@ async function save() {
   busy.value = true
   error.value = ''
   try {
-    await api.saveApiBackend({ ...draft.value,
+    const tpm = Number(draft.value.tpm)
+    const saved = await api.saveApiBackend({ ...draft.value,
       models: [...new Set(modelIds.value.split(/\r?\n/).map(id => id.trim()).filter(Boolean))],
+      // An invalid edit hidden by disabling limits must not block saving the other fields.
+      tpm: draft.value.use_limits || (Number.isInteger(tpm) && tpm > 0) ? tpm : undefined,
       api_key: clearKey.value ? '' : draft.value.api_key || undefined })
-    await loadApiConnections(true)
+    // The write already returned the persisted public settings, even if refresh fails.
+    const index = apiConnections.value.findIndex(item => item.id === saved.id)
+    if (index === -1) apiConnections.value.push(saved)
+    else apiConnections.value[index] = saved
+    void loadApiConnections(true)
     draft.value = null
   } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause) }
   finally { busy.value = false }
@@ -40,7 +49,8 @@ async function remove(id: string) {
   error.value = ''
   try {
     await api.deleteApiBackend(id)
-    await loadApiConnections(true)
+    apiConnections.value = apiConnections.value.filter(item => item.id !== id)
+    void loadApiConnections(true)
     removeTarget.value = null
     if (draft.value?.id === id) draft.value = null
   } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause) }
@@ -90,6 +100,11 @@ async function remove(id: string) {
           class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy"
           @input="draft.context_window = ($event.target as HTMLInputElement).value === '' ? null : Number(($event.target as HTMLInputElement).value)" />
         <span class="text-small text-faint">{{ t('settings.apiBackends.contextWindowHint') }}</span></label>
+      <label class="flex items-center gap-2"><input v-model="draft.use_limits" type="checkbox" :disabled="busy" />
+        {{ t('settings.apiBackends.useLimits') }}</label>
+      <label v-if="draft.use_limits" class="block"><span class="mb-1 block text-muted">{{ t('settings.apiBackends.tpm') }}</span>
+        <input v-model.number="draft.tpm" required type="number" min="1" step="1"
+          class="w-full rounded-md border border-line bg-inset px-2 py-1 font-mono" :disabled="busy" /></label>
       <div><span class="mb-1 block text-muted">{{ t('settings.apiBackends.icon') }}</span><MemberIconPicker v-model="draft.icon" /></div>
       <div class="flex gap-2">
         <button type="submit" class="vxs-btn-primary px-3 py-1.5" :disabled="busy">{{ t(busy ? 'common.saving' : 'common.save') }}</button>

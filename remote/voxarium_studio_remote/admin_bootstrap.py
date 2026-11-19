@@ -65,8 +65,8 @@ fi
 '''
 
 
-def port_check(domain: str | None) -> str:
-    ports = "8787|80|443" if domain else "8787"
+def port_check(domain: str | None, *, public_http: bool = False) -> str:
+    ports = "8787|80|443" if domain else "8787|80" if public_http else "8787"
     return "\n".join([
         'listeners=$(run_root ss -H -ltn)',
         f"if printf '%s\\n' \"$listeners\" | awk '$4 ~ /:({ports})$/ {{found=1}} END {{exit !found}}'; then",
@@ -120,18 +120,43 @@ fi
 '''
 
 
-def tls_script(domain: str) -> str:
-    domain = validate_domain(domain)
-    assert domain is not None
-    caddyfile = "{\n    admin off\n}\n" + domain + " {\n    reverse_proxy 127.0.0.1:8787\n}\n"
+def _proxy_commands(caddyfile: str) -> list[str]:
     create = 'umask 022; mkdir -- "$1"; printf "%s\\n" "$2" > "$1/Caddyfile"'
-    return "\n".join([
+    return [
         shlex.join(["run_root", "sh", "-eu", "-c", create, "sh", CADDY_DIRECTORY, caddyfile]),
         shlex.join(["docker_cmd", "run", "--detach", "--name", CADDY_CONTAINER,
                     "--network", "host", "--restart", "unless-stopped",
                     "--mount", f"type=bind,source={CADDY_DIRECTORY},target=/etc/caddy,readonly",
                     "--volume", f"{CADDY_DATA}:/data", "--volume", f"{CADDY_CONFIG}:/config",
                     CADDY_IMAGE]),
+    ]
+
+
+def http_script() -> str:
+    """Explicit public HTTP by IP (dev spec §16.2); the API stays on loopback."""
+    caddyfile = "{\n    admin off\n    auto_https off\n}\n:80 {\n    reverse_proxy 127.0.0.1:8787\n}\n"
+    return "\n".join([
+        *_proxy_commands(caddyfile),
+        "if command -v ufw >/dev/null 2>&1; then",
+        "  firewall=$(run_root env LC_ALL=C ufw status)",
+        "  if printf '%s\\n' \"$firewall\" | grep -q '^Status: active$'; then",
+        "    run_root ufw allow 80/tcp",
+        "  fi", "fi",
+        "http_ready=0",
+        "for attempt in 1 2 3 4 5 6; do",
+        "  if curl --noproxy '*' --fail --silent --show-error --connect-timeout 3 --max-time 5 http://127.0.0.1/healthz >/dev/null; then http_ready=1; break; fi",
+        "  sleep 2", "done",
+        "[ \"$http_ready\" = 1 ] || fail 'Remote is installed, but its HTTP proxy is not ready. Inspect docker logs voxarium-studio-remote-caddy; containers and data were preserved.'",
+        "printf '%s\\n' 'HTTP proxy health check passed (local server check; external firewall must allow TCP 80).'",
+    ])
+
+
+def tls_script(domain: str) -> str:
+    domain = validate_domain(domain)
+    assert domain is not None
+    caddyfile = "{\n    admin off\n}\n" + domain + " {\n    reverse_proxy 127.0.0.1:8787\n}\n"
+    return "\n".join([
+        *_proxy_commands(caddyfile),
         # Only an already-active UFW is changed, and SSH/default policy is untouched.
         "if command -v ufw >/dev/null 2>&1; then",
         "  firewall=$(run_root env LC_ALL=C ufw status)",

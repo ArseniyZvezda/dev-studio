@@ -3,6 +3,7 @@
 import io
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tarfile
@@ -11,7 +12,8 @@ from unittest.mock import Mock
 import pytest
 
 from voxarium_studio_remote.admin_transport import (
-    AdminError, Connection, Installation, LABEL, MAX_CONTEXT_BYTES, RemoteAdmin, _source_archive,
+    AdminError, Connection, Installation, IMAGE, LABEL, LegacySchemaError, MAX_CONTEXT_BYTES,
+    UPDATE_IMAGE, RemoteAdmin, _source_archive,
 )
 
 
@@ -284,6 +286,157 @@ def test_install_failure_preserves_remote_state(source, connection, runner):
     assert runner.call_count == 3  # No destructive rollback or retry.
 
 
+def test_update_requires_existing_installation(source, connection, runner):
+    runner.return_value = result("")  # docker ps finds nothing
+    with pytest.raises(AdminError, match="not installed"):
+        RemoteAdmin(connection).update(source)
+    assert runner.call_count == 1  # Discovery only; nothing was uploaded.
+    assert runner.call_args.kwargs["input"] == b""
+
+
+def test_update_rebuilds_and_preserves_volume(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()), result("Remote updated")]
+    message = RemoteAdmin(connection).update(source)
+    assert "preserved" in message
+    call = runner.call_args
+    command = remote_command(call)
+    assert command[:6] == ["timeout", "--signal=TERM", "--kill-after=10", "900", "sh", "-c"]
+    script = command[-1]
+    assert f"old={ID}" in script
+    assert f"image={UPDATE_IMAGE}-" in script
+    assert 'docker_cmd build --tag "$image"' in script
+    assert 'volume=$(docker_cmd inspect' in script
+    assert 'source=$volume,target=/data,readonly,volume-nocopy' in script
+    assert "cleanup_update()" in script and 'docker_cmd start "$old"' in script
+    assert "volume rm" not in script and "volume create" not in script
+    assert 'docker_cmd tag "$image" "$canonical_image"' in script
+    assert "healthz" in script and 'docker_cmd exec "$candidate"' in script
+    assert call.kwargs["timeout"] == 930
+    with tarfile.open(fileobj=io.BytesIO(call.kwargs["input"])) as archive:
+        assert "Dockerfile" in archive.getnames()
+
+
+def test_update_prefers_canonical_container(source, connection, runner):
+    runner.side_effect = [
+        result(f"{OTHER_ID}\n{ID}"),
+        result("\n".join([inspection(id=OTHER_ID, name="/custom"),
+                          inspection(id=ID, name="/voxarium-studio-remote")])),
+        result("Remote updated"),
+    ]
+    RemoteAdmin(connection).update(source)
+    assert f"old={ID}" in remote_command(runner.call_args)[-1]
+
+
+def test_update_failure_reports_preserved_data(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()),
+                          result(code=1, stderr="did not become healthy; the previous image was restarted")]
+    with pytest.raises(AdminError, match="Update did not complete"):
+        RemoteAdmin(connection).update(source)
+    assert runner.call_count == 3  # No extra destructive retry from the client.
+
+
+def test_update_legacy_volume_raises_typed_error(source, connection, runner):
+    # The script reserves exit 3 for the read-only v1 refusal; the client maps
+    # it to LegacySchemaError so the menu can offer Migrate & Update.
+    runner.side_effect = [result(ID), result(inspection()),
+                          result(code=3, stderr="The data volume uses the legacy v1 schema.")]
+    with pytest.raises(LegacySchemaError, match="legacy v1 schema"):
+        RemoteAdmin(connection).update(source)
+    assert "exit 3" in remote_command(runner.call_args)[-1]
+
+
+def test_update_legacy_exit_is_reserved_in_script(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()), result("Remote updated")]
+    RemoteAdmin(connection).update(source)
+    script = remote_command(runner.call_args)[-1]
+    assert script.count("exit 3") == 1  # only the legacy-schema refusal
+
+
+def test_migrate_update_requires_existing_installation(source, connection, runner):
+    runner.return_value = result("")  # docker ps finds nothing
+    with pytest.raises(AdminError, match="not installed"):
+        RemoteAdmin(connection).migrate_update(source)
+    assert runner.call_count == 1
+    assert runner.call_args.kwargs["input"] == b""
+
+
+def test_migrate_update_runs_offline_migration_with_rollback(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()),
+                          result("Remote updated and migrated to schema v2")]
+    message = RemoteAdmin(connection).migrate_update(source)
+    assert "preserved" in message
+    call = runner.call_args
+    command = remote_command(call)
+    assert command[:6] == ["timeout", "--signal=TERM", "--kill-after=10", "900", "sh", "-c"]
+    script = command[-1]
+    # Offline migration one-shot: no network, backup inside the volume, the
+    # operator-offline assertion is backed by the stopped original container.
+    assert "migration apply --data /data" in script
+    assert "--confirm-offline" in script
+    assert 'backup_db=/data/admin-v1-backup-' in script
+    assert 'recovery_db=/data/admin-v2-recovery-' in script
+    # Cleanup may restore the validated v1 backup, never the volume itself.
+    assert "migration rollback" in script and "--accept-data-loss" in script
+    assert "volume rm" not in script and "volume create" not in script
+    # A v2 (or unreadable) volume is refused before anything is stopped.
+    assert "normal Update instead" in script
+    assert "Could not verify the data schema" in script
+    assert "exit 3" not in script
+    assert call.kwargs["timeout"] == 930
+    with tarfile.open(fileobj=io.BytesIO(call.kwargs["input"])) as archive:
+        assert "Dockerfile" in archive.getnames()
+
+
+def test_migrate_update_backup_names_are_unique_per_invocation(source, connection, runner):
+    ok = [result(ID), result(inspection()), result("migrated")]
+    runner.side_effect = ok + ok
+    client = RemoteAdmin(connection)
+    client.migrate_update(source)
+    first = remote_command(runner.call_args)[-1]
+    client.migrate_update(source)
+    second = remote_command(runner.call_args)[-1]
+    assert re.search(r"backup_db=/data/admin-v1-backup-[0-9a-f]{32}\.db", first)
+    assert re.search(r"backup_db=/data/admin-v1-backup-[0-9a-f]{32}\.db", second)
+    # migration apply/rollback never overwrite an existing backup file, so a
+    # retry after failure must not collide with the previous attempt's file.
+    assert first != second
+
+
+def test_migrate_update_failure_reports_preserved_health(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()),
+                          result(code=1, stderr="Offline migration failed; the data volume was not upgraded.")]
+    with pytest.raises(AdminError, match="Migrate & update did not complete"):
+        RemoteAdmin(connection).migrate_update(source)
+    assert runner.call_count == 3  # No extra destructive retry from the client.
+
+
+def test_run_attaches_remote_exit_code(source, connection, runner):
+    runner.side_effect = [result(ID), result(inspection()), result(code=42, stderr="boom")]
+    with pytest.raises(AdminError) as info:
+        RemoteAdmin(connection).update(source)
+    assert info.value.exit_code == 42
+
+
+def test_version_probe_reads_package_version(connection, runner):
+    runner.return_value = result("0.2.0")
+    assert RemoteAdmin(connection).version(Installation(ID, "name", "running", "image")) == "0.2.0"
+    command = remote_command(runner.call_args)
+    assert command[:3] == ["docker", "exec", ID]
+    assert "__version__" in command[-1]
+
+
+def test_version_is_unknown_for_stopped_or_bad_output(connection, runner):
+    assert RemoteAdmin(connection).version(Installation(ID, "name", "exited", "image")) is None
+    runner.assert_not_called()  # A stopped container is never started for this.
+    runner.return_value = result("rm -rf /")
+    assert RemoteAdmin(connection).version(Installation(ID, "name", "running", "image")) is None
+
+
+def test_version_probe_failure_is_not_fatal(connection, runner):
+    runner.return_value = result(code=1, stderr="docker: not running")
+    assert RemoteAdmin(connection).version(Installation(ID, "name", "running", "image")) is None
+
+
 def test_telemetry_distinguishes_host_and_container(connection, runner):
     runner.side_effect = [result("disk"), result("MemTotal: 2000 kB\nMemAvailable: 500 kB"), result("20MiB / 2GiB"), result("100 /data")]
     output = RemoteAdmin(connection).telemetry(Installation(ID, "name", "running", "image"))
@@ -419,6 +572,38 @@ def test_without_domain_never_opens_firewall(source, connection, runner):
     script = remote_command(runner.call_args)[-1]
     assert "ufw" not in script and "caddy" not in script
     assert "SSH tunnel" in message and "no firewall ports were opened" in message
+
+
+def test_install_public_http_keeps_api_private_and_prints_user_address(source, connection, runner):
+    runner.side_effect = [result(), result(), result("HTTP proxy health check passed")]
+    message = RemoteAdmin(connection).install(source, public_http=True)
+    script = remote_command(runner.call_args)[-1]
+    assert "Studio / Android URL: http://example.com" in message
+    assert "without encryption" in message and "external/cloud firewall" in message
+    assert "--host 127.0.0.1 --port 8787" in script
+    assert ":80 {" in script and "auto_https off" in script
+    assert "ufw allow 80/tcp" in script and "ufw allow 443" not in script
+    assert "reverse_proxy 127.0.0.1:8787" in script
+    assert script.index("Existing Caddy configuration") < script.index("docker_cmd build")
+    assert "docker rm" not in script and "volume rm" not in script
+
+
+def test_publish_existing_http_only_adds_proxy(connection, runner):
+    connection.host = "192.0.2.10"
+    message = RemoteAdmin(connection).publish_http(Installation(ID, "remote", "running", IMAGE))
+    script = remote_command(runner.call_args)[-1]
+    assert "http://192.0.2.10" in message
+    assert "reverse_proxy 127.0.0.1:8787" in script
+    assert script.index("Existing Caddy configuration") < script.index("docker_cmd run")
+    assert "docker_cmd exec " + ID in script
+    assert "docker_cmd stop" not in script and "docker_cmd build" not in script
+    assert "volume rm" not in script and "docker_cmd rm" not in script
+
+
+def test_http_and_https_modes_are_mutually_exclusive(source, connection, runner):
+    with pytest.raises(ValueError):
+        RemoteAdmin(connection).install(source, "remote.example.com", public_http=True)
+    runner.assert_not_called()
 
 
 def test_bundled_ssh_path_is_used_without_path_dependency(connection, runner, monkeypatch):

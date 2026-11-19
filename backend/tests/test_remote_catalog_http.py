@@ -310,7 +310,6 @@ async def test_invalid_request_fails_before_send(method, path, changes):
     "https://user:" + KEY + "@catalog.invalid/api/v2/me",
     BASE + "/api/v2/me?key=" + KEY,
     BASE + "/api/v2/me#" + KEY,
-    "http://catalog.invalid/api/v2/me",
     "https://CATALOG.invalid/deployment/api/v2/me",
     "https://catalog.invalid:443/deployment/api/v2/me",
     "https://catalog.invalid/prefix/../api/v2/me",
@@ -327,10 +326,11 @@ async def test_url_must_be_strict_exact_and_not_retargeted_by_httpx(url):
     assert wire.calls == []
 
 
-async def test_valid_double_slash_prefix_is_preserved_not_normalized():
+@pytest.mark.parametrize("scheme", ["http", "https"])
+async def test_valid_double_slash_prefix_is_preserved_not_normalized(scheme):
     # _url deliberately does not collapse prefix slashes: matching is exact,
     # not an invented canonicalization policy at this lower boundary.
-    url = "https://catalog.invalid/prefix//api/v2/me"
+    url = f"{scheme}://catalog.invalid/prefix//api/v2/me"
     wire = Wire()
     async with CatalogHttpTransport(transport=wire) as client:
         await client.request("GET", url, headers=AUTH, params={}, json=None, follow_redirects=False)

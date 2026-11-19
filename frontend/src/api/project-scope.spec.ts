@@ -19,7 +19,8 @@ const reply = (value: unknown) => new Response(JSON.stringify(value), { headers:
 
 describe('Remote global URL classification (studio-design §5.1/§6, offline S6)', () => {
   const profile = 'c503da2b-f8fe-4fb0-b945-86bc119495b3'
-  const suffixes = ['', '/credential', '/recover', '/verify', '/projects', '/projects/operations/Create_01.a-Z/observe']
+  const suffixes = ['', '/credential', '/recover', '/verify', '/projects', '/consumers', '/consumers/confirmation',
+    '/projects/operations/Create_01.a-Z/observe']
   const paths = ['/remote/servers', ...suffixes.map(suffix => `/remote/servers/${profile}${suffix}`)]
 
   it('keeps only the supported Remote routes global across A/B bindings and tab selection', async () => {
@@ -87,6 +88,8 @@ describe('Remote global URL classification (studio-design §5.1/§6, offline S6)
       ]),
       `/remote/servers/${profile}/%63redential`, `/remote/servers/${profile}/%72ecover`,
       `/remote/servers/${profile}/credential-extra`, `/remote/servers/${profile}/recovery`,
+      `/remote/servers/${profile}/consumers-extra`, `/remote/servers/${profile}/consumers/confirmation-extra`,
+      `/remote/servers/${profile}/%63onsumers`, `/remote/servers/${profile}/consumers/%63onfirmation`,
     ]
     for (const path of similar) {
       expect(isGlobalApiPath(path), path).toBe(false)

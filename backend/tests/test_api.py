@@ -35,6 +35,13 @@ def test_healthz_identifies_the_desktop_owner(client: TestClient, monkeypatch) -
     assert client.get("/healthz").json()["desktop_instance"] == "test-owner"
 
 
+def test_healthz_identifies_the_backend_launch(client: TestClient, monkeypatch) -> None:
+    monkeypatch.delenv("VOXARIUM_STUDIO_LAUNCH_ID", raising=False)
+    assert client.get("/healthz").json()["launch_id"] is None
+    monkeypatch.setenv("VOXARIUM_STUDIO_LAUNCH_ID", "test-launch")
+    assert client.get("/healthz").json()["launch_id"] == "test-launch"
+
+
 # ------------------------------------------------------------------ auth
 
 

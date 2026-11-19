@@ -137,6 +137,11 @@ import type {
   MemberUpdate,
 } from './types'
 
+type ApiBackendWrite = Omit<ApiBackendConnection, 'id' | 'has_api_key' | 'tpm'> & {
+  api_key?: string
+  tpm: number | undefined
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -521,10 +526,14 @@ export function createApiClient(session: ProjectSession = rendererSession) {
     },
     /** The built-in text behind every line the Studio says to an agent, in send order. */
     apiBackends: () => request<ApiBackendConnection[]>('GET', '/settings/api-backends', { cache: 'no-store' }),
-    saveApiBackend: (body: Omit<ApiBackendConnection, 'has_api_key'> & { api_key?: string }) =>
+    saveApiBackend: (body: ApiBackendWrite & { id: string }) =>
       request<ApiBackendConnection>('PUT', `/settings/api-backends/${body.id}`, {
-        body: { name: body.name, base_url: body.base_url, model: body.model, models: body.models, api_mode: body.api_mode, icon: body.icon, context_window: body.context_window,
-          ...(body.api_key !== undefined ? { api_key: body.api_key } : {}) },
+        body: {
+          name: body.name, base_url: body.base_url, model: body.model, models: body.models,
+          api_mode: body.api_mode, icon: body.icon, context_window: body.context_window,
+          use_limits: body.use_limits, tpm: body.tpm,
+          ...(body.api_key !== undefined ? { api_key: body.api_key } : {}),
+        } satisfies ApiBackendWrite,
       }),
     deleteApiBackend: (id: string) => request<{ deleted: boolean }>('DELETE', `/settings/api-backends/${id}`),
     promptSpecs: () => request<Record<string, PromptSpec>>('GET', '/settings/prompts'),

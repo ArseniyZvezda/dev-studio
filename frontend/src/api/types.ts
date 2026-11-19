@@ -1112,6 +1112,8 @@ export interface ApiBackendConnection {
   model: string
   models: string[]
   api_mode: 'auto' | 'chat_completions' | 'responses'
+  use_limits: boolean
+  tpm: number
   context_window: number | null
   icon: string | null
   has_api_key: boolean
@@ -2235,6 +2237,8 @@ export interface StatusInfo {
     reason: string
     /** Account quota consumed, from recent CLI telemetry (§6.1), not context usage. */
     usage_limits?: { window: string; used_percent: number; resets_at: number | null }[]
+    /** Average output tokens per second for the last measured response/run; expiry is Unix seconds. */
+    token_speed?: { tokens_per_second: number; expires_at: number } | null
   }>
   vcs_backends: Record<
     string,

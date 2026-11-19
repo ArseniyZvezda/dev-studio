@@ -218,12 +218,18 @@ function createSessionController({ adapter, registry, bridge, createWindow, getW
           try {
             const tab = await registry.openProject(entry.root, { windowId, create: false });
             ids[index] = tab.tabId;
-            // A real SPA listener/state report, not loadURL completion, makes
-            // restore delivery safe across async i18n/router/plugin bootstrap.
-            bridge.publishState();
-            await waitForPage(tab.tabId);
-            const result = await bridge.restorePage(tab.tabId, entry.page);
-            if (result.status !== 'restored') throw failure(`Project page restore: ${result.status}`, undefined, 'sessionPageFailed');
+            // The snapshot fallback ({path:'/'}) records "no settled page yet",
+            // not a target: '/' is the redirect to the default section, so the
+            // fresh renderer lands there on its own and a restore could only
+            // fail as unavailable. Restore only real saved pages.
+            if (entry.page.path !== '/' || (entry.page.query && Object.keys(entry.page.query).length)) {
+              // A real SPA listener/state report, not loadURL completion, makes
+              // restore delivery safe across async i18n/router/plugin bootstrap.
+              bridge.publishState();
+              await waitForPage(tab.tabId);
+              const result = await bridge.restorePage(tab.tabId, entry.page);
+              if (result.status !== 'restored') throw failure(`Project page restore: ${result.status}`, undefined, 'sessionPageFailed');
+            }
           } catch (error) {
             errors(error, { windowId, root: entry.root });
           }

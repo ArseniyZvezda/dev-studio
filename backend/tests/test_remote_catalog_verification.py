@@ -459,14 +459,15 @@ async def test_successful_secret_echo_is_rejected_before_return_or_auth(version,
     assert_secret_free(caught.value, caplog)
 
 
-async def test_insecure_profile_is_blocked_without_network_or_catalog():
-    service, profiles, credentials, transport = build()
-    insecure = "http://verify.invalid/deployment/prefix"
-    profiles.change(url=insecure)
-    credentials.keys[(PROFILE, insecure)] = KEY
+async def test_public_http_profile_verifies_the_exact_endpoint_and_key(monkeypatch):
+    endpoint = "http://192.0.2.10/deployment/prefix"
+    monkeypatch.setitem(globals(), "BASE", endpoint)
+    service, profiles, credentials, transport = build(*replies(2))
     status = await verify(service)
-    assert_status(status, "insecure_blocked", "insecure_blocked")
-    assert status.user is None and transport.calls == []
+    assert_status(status, "valid", None)
+    assert [call["url"] for call in transport.calls] == [endpoint + "/healthz", endpoint + "/api/v2/me"]
+    assert "Authorization" not in transport.calls[0]["headers"]
+    assert transport.calls[1]["headers"]["Authorization"] == "Bearer " + KEY
 
 
 async def test_verify_does_not_cache_old_identity_or_catalog_permission():

@@ -29,9 +29,13 @@ class JobHandle:
     process: asyncio.subprocess.Process | None = None
     children: set[str] = field(default_factory=set)
     meta: dict[str, Any] = field(default_factory=dict)
+    cancel_requested: bool = False
 
     async def cancel(self) -> None:
         """Kill the child process first, then cancel the task awaiting it."""
+        # A reserved job can be stopped while the admission transaction is pending,
+        # before there is an asyncio task to cancel. The dispatch fence sees this flag.
+        self.cancel_requested = True
         if self.process is not None and self.process.returncode is None:
             with contextlib.suppress(ProcessLookupError, OSError):
                 self.process.kill()
@@ -72,10 +76,36 @@ class ResizableSemaphore:
             await self._condition.wait_for(lambda: self._held < self._limit)
             self._held += 1
 
+    def try_acquire(self) -> bool:
+        if not self.available:
+            return False
+        self._held += 1
+        return True
+
     async def release(self) -> None:
         async with self._condition:
             self._held = max(0, self._held - 1)
             self._condition.notify_all()
+
+
+class ReservedSlot:
+    """An immediately acquired slot; release is idempotent even on failed admission."""
+
+    def __init__(self, semaphore: ResizableSemaphore) -> None:
+        self._semaphore = semaphore
+        self._released = False
+
+    async def __aenter__(self) -> None:
+        if self._released:
+            raise RuntimeError('Slot reservation already released')
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self.release()
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            asyncio.create_task(self._semaphore.release())
 
 
 class JobEngine:
@@ -150,6 +180,26 @@ class JobEngine:
         if job_id in self._jobs:
             raise ValueError(f"Job {job_id!r} is already running")
         handle = self.register(job_id, kind, **meta)
+        return self.submit_reserved(handle, coro_factory)
+
+    def try_reserve_slot(self, resource_class: str) -> ReservedSlot | None:
+        semaphore = self._semaphore(resource_class)
+        return ReservedSlot(semaphore) if semaphore.try_acquire() else None
+
+    def try_reserve(self, job_id: str, kind: str, **meta: Any) -> JobHandle | None:
+        if job_id in self._jobs:
+            return None
+        return self.register(job_id, kind, reserved=True, **meta)
+
+    def release_reservation(self, handle: JobHandle) -> None:
+        if self._jobs.get(handle.id) is handle and handle.task is None:
+            self._jobs.pop(handle.id, None)
+
+    def submit_reserved(self, handle: JobHandle, coro_factory: Callable[[JobHandle], Awaitable[Any]]) -> JobHandle:
+        job_id, kind = handle.id, handle.kind
+        if self._jobs.get(job_id) is not handle or handle.task is not None:
+            raise ValueError('Invalid job reservation')
+        handle.meta.pop('reserved', None)
 
         async def _wrapper() -> Any:
             try:
@@ -171,7 +221,8 @@ class JobEngine:
 
     def is_running(self, job_id: str) -> bool:
         handle = self._jobs.get(job_id)
-        return handle is not None and handle.task is not None and not handle.task.done()
+        return handle is not None and (bool(handle.meta.get('reserved'))
+                                       or (handle.task is not None and not handle.task.done()))
 
     def jobs(self) -> list[JobHandle]:
         return list(self._jobs.values())

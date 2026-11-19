@@ -18,6 +18,8 @@ class ApiBackendConfig(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     models: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]] = Field(default_factory=list, max_length=200)
     api_mode: Literal["auto", "chat_completions", "responses"] = "auto"
+    use_limits: bool = False
+    tpm: int = Field(default=1_000_000, ge=1, strict=True)
     context_window: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
     icon: str | None = Field(default=None, max_length=80)
 

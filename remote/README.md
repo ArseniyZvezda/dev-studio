@@ -18,7 +18,9 @@ relays. The design, the protocol and what is deliberately left out are in
 This source builds Remote **0.2.0 / wire v2 / schema v2 / admin RPC v1** and the extended
 Admin candidate. It is not a production deployment or a combined Studio/Android release.
 Existing v1 data require the explicit **offline** migration described below; starting the
-new server on an old/unknown database refuses rather than migrating it silently.
+new server on an old/unknown database refuses rather than migrating it silently. For
+Admin-deployed Docker installations, Remote Admin performs those offline steps as the
+explicit **Migrate & Update** menu action (never implicitly during Update).
 Studio's v2 declarations are staged: its legacy runner remains wire v1 at `/api/v1/sync`
 and is deliberately rejected by this server. Studio I9–I16/L and Android interop/editor
 gates remain separate acceptance work. Do not use the legacy two-Studio launcher as v2 proof.
@@ -79,10 +81,14 @@ SSH account or an account with non-interactive `sudo -n` rights. Unsupported OS,
 privileges and conflicting services produce a diagnostic rather than being bypassed.
 No interactive sudo password is stored or requested.
 
-In **Install with Docker**:
+In **Install with Docker** (the entry becomes **Update** once an installation is found —
+see below):
 
-1. Optionally enter a public DNS hostname for HTTPS (not a URL or IP). Its A/AAAA records
-   must point to this server. Leave empty for loopback-only access through an SSH tunnel.
+1. Choose the access mode. **HTTP by IP** is selected initially: users need only the
+   server IP and their personal key, with no domain, certificate or SSH tunnel. HTTP sends
+   keys and data without encryption; the installation screen states this before confirmation.
+   For HTTPS, enter a public DNS hostname (not a URL or IP) whose A/AAAA records point to
+   this server. **SSH tunnel only** remains available under **Access mode**.
 2. Choose **Install** and confirm the displayed changes.
 3. The administrator installs missing distribution packages, including `docker.io` if
    Docker is absent, from signed apt repositories; enables/starts Docker and verifies it.
@@ -91,7 +97,9 @@ In **Install with Docker**:
    when necessary.
 4. The embedded build context is transferred over SSH and built on the server. Remote
    runs with a persistent volume and `unless-stopped`, bound to **127.0.0.1:8787**.
-5. With a domain, a dedicated Caddy container and persistent certificate/configuration
+5. In HTTP-by-IP mode, Caddy exposes port **80** and proxies HTTP and WebSocket requests
+   to Remote on loopback. An already active UFW receives only `80/tcp`; SSH and default
+   firewall policy are preserved. With a domain, a dedicated Caddy container and persistent certificate/configuration
    volumes are created. Caddy obtains/renews TLS certificates and proxies Remote. If UFW
    is already active, HTTP/HTTPS rules are added (TCP 80/443 and UDP 443); it is never
    disabled, nor are SSH/default policies changed. External/cloud firewall rules remain
@@ -105,22 +113,42 @@ or prebuilt Docker images. Existing installations, conflicting ports and named d
 volumes are not overwritten. A failure may leave installed packages/services/containers;
 inspect the reported state before retrying. Ctrl+C is not a rollback.
 
-Without a domain, use an SSH tunnel to access Remote; no unauthenticated HTTP port is
-opened publicly. For example, with an SSH client available in your terminal:
+After HTTP-by-IP installation, give users the displayed `http://IP` address and a personal
+key created under **Users**. Studio and Android also accept a bare IP, which uses HTTP;
+bare DNS hostnames still use HTTPS, and explicit schemes are preserved. Remote's existing
+authentication remains required. HTTPS does not fall back to HTTP and redirects are refused.
+The proxy health probe runs on the server; it does not establish reachability through an
+external/cloud firewall. If present, that firewall must permit inbound TCP 80.
+
+For an **existing loopback installation**, choose **Enable HTTP by IP** from the main menu
+and confirm the displayed HTTP warning. This adds the proxy and active UFW rule without
+rebuilding/stopping Remote or replacing its data. Existing proxy configurations, volumes
+and occupied port 80 are preserved and reported instead of being overwritten. Updates keep
+the same loopback API and preserve the separate proxy configuration.
+
+If you deliberately chose **SSH tunnel only**, use a tunnel instead. No public HTTP port is
+opened in that mode. For example, with an SSH client available in your terminal:
 
 ```bash
 ssh -i /path/to/key -L 8787:127.0.0.1:8787 user@server
 ```
 
-Then connect Studio to `http://127.0.0.1:8787` while the tunnel is active. For normal
-public access, configure a domain during installation instead.
+Then connect Studio to `http://127.0.0.1:8787` while the tunnel is active.
 
 ### Menu and connection profiles
 
-The default interface is Russian, with a large logo and coloured menus. Use **Up/Down
-and Enter**, not numbers. **Back/Esc** returns from submenus; Esc at the main menu exits.
-In text fields, Enter applies an edit and Esc discards it. Unsaved connection edits are
-discarded when leaving settings. `--language en` switches to English.
+The default interface is Russian, with a large block-character logo (blue→purple→pink
+gradient) and coloured menus. Use **Up/Down and Enter**, not numbers. **Back/Esc** returns
+from submenus; Esc at the main menu exits. In text fields, Enter applies an edit and Esc
+discards it. Unsaved connection edits are discarded when leaving settings.
+`--language en` switches to English.
+
+Above the main menu a framed status line shows the result of the last discovery: the
+found installation with its container state, image and server version (read from the
+running container; "version unknown" when stopped or unreadable), or — framed in
+yellow/red — that no installation was found, no connection is configured, or discovery
+failed. The status refreshes at startup, after saving connection settings, and after
+Find/Install/Update; it never blocks the menu when the server is unreachable.
 
 **Test connection**, beside **Save connection**, tests SSH authentication and command
 execution with the current unsaved values; it does not install anything or require
@@ -136,9 +164,39 @@ or `${XDG_CONFIG_HOME:-~/.config}/voxarium-remote-admin/connection.json` elsewhe
 `--config <path>` selects a separate profile. Windows files inherit the user's directory
 ACL; POSIX profile files are owner-only.
 
-Discovery includes stopped Docker containers with the Remote image/label. Choose a
-container explicitly; running containers expose host/root-filesystem and container
-RAM/data usage. The v2 Users menu provides UUID/CAS create/edit/rotate/revoke/logical
+Discovery includes stopped Docker containers with the Remote image/label. **One
+installation per server is assumed**: no container picker is shown — Find/Telemetry/
+Users/Projects act on the single discovered container (the canonical
+`voxarium-studio-remote` name wins if several match). Running containers expose
+host/root-filesystem and container RAM/data usage.
+
+When an installation exists, the **Install with Docker** entry becomes **Update**.
+Update is for standard host-network installations created by Remote Admin. For Docker
+Compose or custom Docker deployments, update with the original deployment configuration
+so that ports, network settings and other options are not lost.
+
+Admin builds the replacement image before stopping the service. A read-only schema
+probe detects a v1 data volume and stops the update without downtime; **Update never
+migrates data**. When it reports legacy data, the menu offers **Migrate & Update**: an
+explicit flow (choice plus typing `MIGRATE`) that stops the service only after the new
+image is built, runs the offline v1 → v2 migration in a one-shot container
+(`migration apply --confirm-offline` over the existing `/data` volume), keeps the
+validated v1 backup inside the volume, and only then cuts over to the new build. A
+failed migration or health check restores the v1 backup and restarts the previous
+container; if that restore itself fails, the tool says so explicitly, never starts the
+v1 container on v2 data, and leaves the backup in place. See
+[offline v1 → v2 migration and rollback](#offline-v1--v2-migration-and-rollback) for the
+underlying procedure and manual rollback.
+Docker's legacy-builder deprecation warning by itself does not mean the build failed.
+
+Expect a short outage during the switch. Update uses the existing `/data` volume and
+does not touch Caddy, HTTPS or the firewall. The original container is retained until
+the replacement passes its health check. On failure Admin attempts to restore that same
+container and reports whether Docker restarted it. Before retrying, use **Find Remote**
+to check the container state and check `/healthz` through the usual Remote URL; a running
+container alone does not establish service health.
+
+The v2 Users menu provides UUID/CAS create/edit/rotate/revoke/logical
 delete, including deleted-user inspection; Projects lists exact IDs and edits labels
 without changing identity. Duplicate labels are allowed. Old/incompatible RPC falls back
 to read-only listing: no shell/SQL mutation fallback or automatic installation/upgrade.
@@ -234,6 +292,30 @@ volume implicitly. Confirm the exact container/volume/data path, flush/materiali
 and preserve recovery, then stop Remote and prevent all old/new clients from reconnecting.
 SQLite cannot prove the server is stopped: `--confirm-offline` is the operator's assertion.
 Keep old binaries stopped after migration; deploying a new Admin EXE does not deploy Remote.
+
+### Docker installations: use Migrate & Update
+
+For a Remote-Admin-deployed server the supported path is the menu's **Migrate & Update**
+action; a manual `migration apply` needs the new image on the server, and only Admin's
+build puts it there. The action executes exactly the offline steps below inside a
+one-shot container over the existing `/data` volume, with the original container already
+stopped and renamed. It leaves, inside the volume:
+
+- `admin-v1-backup-<id>.db` — the validated whole-v1 backup (mode 0600) created by
+  `migration apply` before upgrading;
+- `admin-v2-recovery-<id>.db` — only when a rollback ran; the migrated state retained
+  for recovery/export.
+
+Copy the v1 backup out before deleting it, e.g. through a one-shot container:
+
+```bash
+docker run --rm -v voxarium-studio-remote-data:/data --entrypoint cat \
+    voxarium-studio-remote:admin /data/admin-v1-backup-<id>.db > remote-v1-backup.db
+```
+
+After a successful migration the volume is v2: never start the old v1 container or binary
+on it again. A manual rollback follows the `migration rollback` procedure below, in
+another stopped-server window, using the copied-out v1 backup.
 
 Run the new CLI in the offline maintenance environment over the intended data directory:
 

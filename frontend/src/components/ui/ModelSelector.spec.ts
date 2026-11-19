@@ -23,7 +23,7 @@ async function markup(backend: string | null, model: string | null): Promise<str
 describe('model selector', () => {
   it('uses the current API catalogue, deduplicates the default and ignores stale suggestions', async () => {
     apiConnections.value = [{ id: 'first', name: 'First API', base_url: 'https://example.test/v1',
-      model: 'default', models: ['default', 'second'], api_mode: 'responses', context_window: null,
+      model: 'default', models: ['default', 'second'], api_mode: 'responses', use_limits: false, tpm: 1_000_000, context_window: null,
       icon: null, has_api_key: false }]
     const html = await renderToString(createSSRApp(ModelSelector, {
       backend: 'openai_api:first', model: 'second', options: { ...options,

@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from voxarium_studio_remote.admin_bootstrap import (
-    DOCKER_HELPER, PREFLIGHT, bootstrap_script, port_check, tls_script, validate_domain,
+    DOCKER_HELPER, PREFLIGHT, bootstrap_script, http_script, port_check, tls_script, validate_domain,
 )
 
 
@@ -39,7 +39,8 @@ def bash():
 
 
 @pytest.mark.parametrize("script", [PREFLIGHT, DOCKER_HELPER, bootstrap_script(), bootstrap_script("remote.example.com"),
-                                    port_check(None), port_check("remote.example.com"), tls_script("remote.example.com")])
+                                    port_check(None), port_check(None, public_http=True), http_script(),
+                                    port_check("remote.example.com"), tls_script("remote.example.com")])
 def test_generated_shell_syntax(bash, script):
     completed = subprocess.run([bash, "-n"], input=script.encode(), capture_output=True, timeout=10)
     assert completed.returncode == 0, completed.stderr.decode()
@@ -175,8 +176,8 @@ def test_time_limits_and_safe_package_policy():
     assert "curl |" not in script and "usermod" not in script and "chmod" not in script
 
 
-@pytest.mark.parametrize("domain", [None, "remote.example.com"])
-def test_full_deployment_script_syntax(bash, tmp_path, monkeypatch, domain):
+@pytest.mark.parametrize("domain,public_http", [(None, False), ("remote.example.com", False), (None, True)])
+def test_full_deployment_script_syntax(bash, tmp_path, monkeypatch, domain, public_http):
     from voxarium_studio_remote import admin_transport
     key = tmp_path / "key"
     key.write_text("mock")
@@ -189,15 +190,29 @@ def test_full_deployment_script_syntax(bash, tmp_path, monkeypatch, domain):
 
     monkeypatch.setattr(admin_transport, "_source_archive", lambda _: b"tar")
     monkeypatch.setattr(admin_transport.RemoteAdmin, "_run", run)
-    admin_transport.RemoteAdmin(admin_transport.Connection("host", "root", str(key))).install(tmp_path, domain)
+    admin_transport.RemoteAdmin(admin_transport.Connection("host", "root", str(key))).install(tmp_path, domain, public_http=public_http)
     assert len(scripts) == 2
     for script in scripts:
         completed = subprocess.run([bash, "-n"], input=script.encode(), capture_output=True, timeout=10)
         assert completed.returncode == 0, completed.stderr.decode()
 
 
+def test_publish_existing_http_script_syntax(bash, tmp_path, monkeypatch):
+    from voxarium_studio_remote import admin_transport
+    key = tmp_path / "key"
+    key.write_text("mock")
+    scripts = []
+    monkeypatch.setattr(admin_transport.RemoteAdmin, "_run", lambda self, args, **kwargs: scripts.append(args[-1]) or "")
+    target = admin_transport.Installation("a" * 64, "remote", "running", admin_transport.IMAGE)
+    admin_transport.RemoteAdmin(admin_transport.Connection("192.0.2.10", "root", str(key))).publish_http(target)
+    assert len(scripts) == 1
+    completed = subprocess.run([bash, "-n"], input=scripts[0].encode(), capture_output=True, timeout=10)
+    assert completed.returncode == 0, completed.stderr.decode()
+
+
 @pytest.mark.parametrize("active", [True, False])
-def test_tls_only_opens_ports_for_active_ufw(bash, active):
+@pytest.mark.parametrize("public_http", [True, False])
+def test_proxy_only_opens_ports_for_active_ufw(bash, active, public_http):
     harness = r'''
 fail() { echo "$*" >&2; exit 1; }
 command() { if [ "$*" = '-v ufw' ]; then return 0; fi; builtin command "$@"; }
@@ -213,14 +228,15 @@ docker_cmd() { echo 'CADDY CREATED'; }
 curl() { return 0; }
 sleep() { :; }
 '''
-    completed = subprocess.run([bash, "-c", harness + tls_script("remote.example.com")], capture_output=True,
+    script = http_script() if public_http else tls_script("remote.example.com")
+    completed = subprocess.run([bash, "-c", harness + script], capture_output=True,
                                env={**os.environ, "FAKE_UFW": "active" if active else "inactive"}, timeout=10)
     assert completed.returncode == 0, completed.stderr.decode()
     output = completed.stdout.decode()
-    assert "HTTPS certificate and proxy check passed" in output
+    assert ("HTTP proxy health check passed" if public_http else "HTTPS certificate and proxy check passed") in output
     assert ("RULE ufw allow 80/tcp" in output) is active
-    assert ("RULE ufw allow 443/tcp" in output) is active
-    assert ("RULE ufw allow 443/udp" in output) is active
+    assert ("RULE ufw allow 443/tcp" in output) is (active and not public_http)
+    assert ("RULE ufw allow 443/udp" in output) is (active and not public_http)
 
 
 def test_tls_failure_never_claims_certificate_or_removes_resources(bash):

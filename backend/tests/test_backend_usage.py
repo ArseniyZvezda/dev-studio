@@ -12,7 +12,7 @@ import pytest
 from voxarium_studio.models.teams import TeamMember
 from voxarium_studio.teams import backend_usage as usage
 from voxarium_studio.teams.backends import claude_code, codex
-from voxarium_studio.teams.backends.base import AgentRunRequest
+from voxarium_studio.teams.backends.base import AgentRunRequest, RuntimeSessionKey, runtime_session_owner
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +22,69 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(usage, "_claude", {})
     monkeypatch.setattr(usage, "_codex", ())
     monkeypatch.setattr(usage, "_codex_observed_at", 0.0)
+    monkeypatch.setattr(usage, "_speeds", {})
     return clock
+
+
+def test_token_speed_isolated_by_project_and_connection(tmp_path: Path, clock: SimpleNamespace) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    one = RuntimeSessionKey(runtime_session_owner(first, "chat", "same-id"))
+    two = RuntimeSessionKey(runtime_session_owner(second, "chat", "same-id"))
+    usage.record_result_speed(one, "codex", {"duration_ms": 2000, "usage": {
+        "input_tokens": 1000, "cache_read_input_tokens": 400, "output_tokens": 75,
+    }})
+    usage.record_token_speed(two, "codex", 40, 2)
+    usage.record_token_speed(one, "openai_api:a", 100, 2)
+    usage.record_token_speed(one, "openai_api:b", 100, 4)
+    expiry = clock.wall + usage._SPEED_LIFETIME_SECONDS
+    assert usage.get_token_speeds(first) == {
+        "codex": {"tokens_per_second": 37.5, "expires_at": expiry},
+        "openai_api:a": {"tokens_per_second": 50, "expires_at": expiry},
+        "openai_api:b": {"tokens_per_second": 25, "expires_at": expiry},
+    }
+    assert usage.get_token_speeds(second) == {"codex": {"tokens_per_second": 20, "expires_at": expiry}}
+
+    clock.elapsed += usage._SPEED_LIFETIME_SECONDS - 1
+    clock.wall += usage._SPEED_LIFETIME_SECONDS - 1
+    usage.record_token_speed(one, "codex", 30, 2)
+    clock.elapsed += 1
+    # Expiry follows monotonic time even if the system clock was adjusted backwards.
+    clock.wall -= 60
+    assert usage.get_token_speeds(second) == {}
+    assert usage.get_token_speeds(first) == {"codex": {
+        "tokens_per_second": 15, "expires_at": clock.wall + usage._SPEED_LIFETIME_SECONDS - 1,
+    }}
+
+
+@pytest.mark.parametrize("value", [None, False, True, "1", 0, -1, float("nan"), float("inf"), 10**500])
+def test_token_speed_ignores_invalid_values(tmp_path: Path, value: object) -> None:
+    key = RuntimeSessionKey(runtime_session_owner(tmp_path, "task", "test"))
+    usage.record_token_speed(key, "codex", value, 1)
+    usage.record_token_speed(key, "codex", 10, value)
+    assert usage.get_token_speeds(tmp_path) == {}
+
+
+def test_status_reports_only_fresh_token_speed(client, project: Path, clock: SimpleNamespace) -> None:
+    key = RuntimeSessionKey(runtime_session_owner(project, "task", "test"))
+    usage.record_token_speed(key, "codex", 90, 3)
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    backends = response.json()["agent_backends"]
+    assert backends["codex"]["token_speed"] == {
+        "tokens_per_second": 30, "expires_at": clock.wall + usage._SPEED_LIFETIME_SECONDS,
+    }
+    assert backends["qwen"]["token_speed"] is None
+
+    clock.elapsed += usage._SPEED_LIFETIME_SECONDS
+    assert client.get("/api/status").json()["agent_backends"]["codex"]["token_speed"] is None
+
+
+def test_token_speed_ignores_failed_or_unscoped_results(tmp_path: Path) -> None:
+    key = RuntimeSessionKey(runtime_session_owner(tmp_path, "task", "test"))
+    usage.record_result_speed(key, "qwen", {"duration_ms": 2000, "usage": {"input_tokens": 75}})
+    usage.record_result_speed(key, "qwen", {"duration_ms": 1000, "usage": {"output_tokens": 75}, "is_error": True})
+    usage.record_token_speed(None, "qwen", 75, 1)
+    assert usage.get_token_speeds(tmp_path) == {}
 
 
 def claude(fraction: object = 0.5, window: str = "five_hour", reset: object = None) -> dict:

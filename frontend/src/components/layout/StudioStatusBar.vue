@@ -2,7 +2,7 @@
 /** Project-local readiness and connection indicators (§6.1), shared across routes. */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AgentBackendIcon from '@/components/ui/AgentBackendIcon.vue'
-import { t } from '@/i18n'
+import { formatNumber, t } from '@/i18n'
 import { formatTime } from '@/lib/status'
 import { useSessionStore } from '@/stores/session'
 import { useVcsStore, vcsIndicator } from '@/stores/vcs'
@@ -75,13 +75,24 @@ const agentBackends = computed(() => ([...(['claude_code', 'codex', 'qwen', 'ant
       return countdown ? `${remaining}\n${t('nav.agentBackends.resetsIn', { time: countdown })}` : remaining
     }).join('\n')
     : t('nav.agentBackends.limitsUnknown')
+  const speed = info?.token_speed
+  const validSpeed = speed && typeof speed.tokens_per_second === 'number'
+    && Number.isFinite(speed.tokens_per_second) && speed.tokens_per_second > 0
+    && typeof speed.expires_at === 'number' && Number.isFinite(speed.expires_at)
+    && speed.expires_at * 1000 > now.value
+  const speedLabel = validSpeed ? t('nav.agentBackends.tokenSpeed', {
+    rate: formatNumber(speed.tokens_per_second, { notation: 'compact', maximumSignificantDigits: 3 }),
+  }) : null
+  const speedTitle = speedLabel ? t('nav.agentBackends.tokenSpeedDescription', { speed: speedLabel }) : null
   return {
     id,
     label,
     reason,
     usage,
     usageTitle,
-    title: `${label}\n${reason}\n${usageTitle}`,
+    speedLabel,
+    speedTitle,
+    title: [label, reason, usageTitle, speedTitle].filter(Boolean).join('\n'),
     color: !info ? 'var(--vxs-warning)' : info.available ? 'var(--vxs-success)' : 'var(--vxs-danger)',
   }
 }))
@@ -180,6 +191,7 @@ const vcsLine = computed(() =>
     <div v-for="backend in agentBackends" :key="backend.id" class="status-item" :title="backend.title">
       <AgentBackendIcon :backend="backend.id" class="size-3 shrink-0" :style="{ color: backend.color }" />
       {{ backend.label }}<span class="backend-usage text-faint" :aria-label="backend.usageTitle">{{ backend.usage }}</span>
+      <span v-if="backend.speedLabel" class="backend-speed text-faint" :aria-label="backend.speedTitle ?? undefined">{{ backend.speedLabel }}</span>
       <span class="sr-only">{{ backend.reason }}</span>
     </div>
     <RouterLink to="/vcs" class="status-item hover:text-primary" :title="vcsLine.title">
@@ -204,7 +216,7 @@ const vcsLine = computed(() =>
   padding: 4px 12px;
 }
 .status-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.backend-usage { font-variant-numeric: tabular-nums; }
+.backend-usage, .backend-speed { font-variant-numeric: tabular-nums; }
 .connection { margin-inline-start: auto; }
 .connection .vxs-dot-live { animation-duration: 2s; }
 @media (max-width: 600px) {

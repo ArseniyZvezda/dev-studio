@@ -483,7 +483,7 @@ class Relay:
             wait = self._limits.take(key, rate, burst, now)
             if wait is not None:
                 raise p.RequestRejected("rate_limited", retry_after=wait)
-        self.auth.authorize(actor, body, self.wall_ms())
+        grant = self.auth.authorize(actor, body, self.wall_ms()).grant
         if op == "stream.subscribe":
             source = sum(1 for s in self.subscriptions.values()
                          if s.requester.actor.registration_id == actor.registration_id)
@@ -496,13 +496,12 @@ class Relay:
                 raise p.RequestRejected("not_available")
             del self.subscriptions[subscription.id]
         executor = self.executors.get(body["target"]["executor_registration_id"])
+        # Only reveal liveness after authorize() has verified the exact target, grant and scope.
+        now = self.monotonic()
         if executor is None or executor.closed or now >= executor.lease_deadline:
-            # No offline queue: an offline executor is unavailable, never "later".
-            raise p.RequestRejected("not_available")
+            raise p.RequestRejected("offline")
         pending = Pending(str(uuid.uuid4()), connection, request_id, body, executor,
                           now + p.RECEIPT_TIMEOUT_SECONDS, mutation)
-        grant = self.auth.ai.grant(body["grant_id"])
-        assert grant is not None
         sent = self._send(executor, "forward", pending.id, {
             "source": {**actor.source(), "connection_id": connection.id},
             "grant": {"grant_id": grant.grant_id, "revision": grant.revision, "expires_at": grant.expires_at},

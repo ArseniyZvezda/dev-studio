@@ -120,6 +120,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SettingsView.vue'),
   },
   {
+    // A Remote export is not a local project selection.
+    path: '/remote-ai',
+    name: 'remote-ai',
+    component: () => import('@/views/RemoteAiView.vue'),
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

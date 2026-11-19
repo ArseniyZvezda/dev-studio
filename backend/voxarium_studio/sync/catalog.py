@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 from urllib.parse import unquote, urlsplit
 
-from .protocol import is_insecure, normalise_url
+from .protocol import normalise_url
 
 
 # Private expectations for this opt-in contract, NOT the live sync protocol.
@@ -199,8 +199,8 @@ def _url(raw: object) -> str:
             or any(segment in {".", ".."} for segment in path.split("/"))
             or any(ord(c) <= 32 or ord(c) == 127 for c in result)):
         raise CatalogError("invalid_server_url")
-    if is_insecure(result):
-        raise CatalogError("insecure_blocked")
+    # Public HTTP by IP is an explicit deployment mode (dev spec §16.2).
+    # Keep the exact URL/scheme: never downgrade HTTPS or follow a redirect.
     return result
 
 

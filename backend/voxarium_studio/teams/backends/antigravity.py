@@ -25,6 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ..backend_usage import record_result_speed
 from ..changes import edit_stat
 from .base import AgentBackend, AgentEvent, AgentRunRequest, register_backend
 from .cli_stream import _Oversized, _drain, _frames, _kill_tree
@@ -590,7 +591,9 @@ class AntigravityBackend(AgentBackend):
                     "first refused tool: add it to the member's Allowed tools or choose a more "
                     "permissive mode.")
                 yield AgentEvent(kind="error", text=errors[-1], session_id=session_id)
-            yield self._finish(session_id, outcome, errors, turn.last_text, started, process)
+            result = self._finish(session_id, outcome, errors, turn.last_text, started, process)
+            record_result_speed(request.runtime_key, self.name, result.data)
+            yield result
         finally:
             with contextlib.suppress(Exception):
                 if process.stdin is not None:

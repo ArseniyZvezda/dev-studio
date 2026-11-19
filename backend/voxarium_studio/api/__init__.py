@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from ..core.security import require_auth
 from .deps import get_ctx
 from . import (
+    ai_access,
     attachments,
     automations,
     chats,
@@ -25,6 +26,7 @@ from . import (
 )
 
 api_router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+api_router.include_router(ai_access.router)
 api_router.include_router(project.router)
 api_router.include_router(runtime.router)
 api_router.include_router(desktop.router)

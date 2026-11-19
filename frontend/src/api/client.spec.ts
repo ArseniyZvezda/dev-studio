@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DocFolderRenameFrame, DocumentFence } from '@/api/types'
+import type { ApiBackendConnection, DocFolderRenameFrame, DocumentFence } from '@/api/types'
 import { ProjectSession, StaleProjectResponseError } from '@/session/project-session'
 import { setLocale } from '@/i18n'
 
@@ -170,6 +170,35 @@ function scopedClient() {
   session.bind({ project_id: 'runtime-A', epoch: 'runtime-epoch' })
   return { session, client: createApiClient(session) }
 }
+
+describe('global API backend settings transport', () => {
+  const connection = {
+    id: '00000000-0000-4000-8000-000000000001',
+    name: 'Test API', base_url: 'https://provider.test/v1', model: 'default',
+    models: ['other'], api_mode: 'responses', use_limits: true, tpm: 23000,
+    context_window: 65536, icon: 'code', has_api_key: true,
+  } satisfies ApiBackendConnection
+
+  it.each([
+    { action: 'keeping a key', api_key: undefined, use_limits: true, tpm: 23000 },
+    { action: 'replacing a key', api_key: 'new-test-key', use_limits: true, tpm: 23000 },
+    { action: 'clearing a key', api_key: '', use_limits: false, tpm: 23000 },
+    { action: 'disabling limits without a valid TPM edit', api_key: undefined, use_limits: false, tpm: undefined },
+  ])('sends only the writable fields when $action', async ({ api_key, use_limits, tpm }) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(connection)))
+    const { client } = scopedClient()
+    const draft = { ...connection, use_limits, tpm, api_key }
+    await client.saveApiBackend(draft)
+
+    const { id, has_api_key, ...settings } = draft
+    const [url, init] = vi.mocked(fetch).mock.calls[0]!
+    expect(url).toBe(`/api/settings/api-backends/${id}`)
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(String(init?.body))).toStrictEqual(
+      Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined)),
+    )
+  })
+})
 
 const FENCE: DocumentFence = {
   backend_epoch: 'lease-epoch', expected_binding_generation: 7,

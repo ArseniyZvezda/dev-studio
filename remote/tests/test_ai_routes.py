@@ -507,11 +507,12 @@ def test_control_socket_full_round_trip(client: TestClient, store: Store) -> Non
             assert closed_code(second) == 4409
         # The first one is unaffected.
         assert sc.answer(ex, "mirror.get", {"export_id": sc.export_id})["state"] == "completed"
-    # Executor gone: the requester's next request is not available, never queued.
+    # The grant is still live, but the pinned executor is gone before the request.
     with client.websocket_connect(CONTROL, headers=sc.rq_headers) as rq:
         rq.receive_json()
-        sc.request(rq)
-        assert rq.receive_json()["body"]["code"] == "not_available"
+        rid = sc.request(rq)
+        assert rq.receive_json() == {"acp": 1, "type": "response", "request_id": rid,
+                                     "body": {"target": sc.target, "state": "rejected", "code": "offline"}}
 
 
 def test_key_rotation_closes_a_live_control_socket_promptly(client: TestClient, store: Store) -> None:

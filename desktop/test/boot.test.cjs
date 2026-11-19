@@ -965,6 +965,20 @@ test('manifest restart resolves new epoch and restores windows, order, active ta
   assert.deepEqual(f.manifests.at(-1).windows.map(window => window.tabs), manifest.windows.map(window => window.tabs));
 });
 
+test('the unsettled default page is a fallback, not a restore target, and round-trips without error', async t => {
+  const manifest = { version: 1, active_window: 0, windows: [
+    { active_tab: 1, tabs: [{ root: 'D:/A', page: { path: '/' } },
+      { root: 'D:/B', page: { path: '/tasks', query: { task: 'same-task' } } }] }] };
+  const f = await boot({ manifest });
+  t.after(() => f.app.emit('will-quit'));
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.restoredPages, [{ path: '/tasks', query: { task: 'same-task' } }],
+    "'/' carries no saved target: the fresh renderer lands on the default section itself");
+  assert.deepEqual(f.controller.registry.snapshot().tabs.map(tab => tab.project.root), ['D:/A', 'D:/B']);
+  await f.controller.flushSession();
+  assert.deepEqual(f.manifests.at(-1).windows[0].tabs.map(tab => tab.page), manifest.windows[0].tabs.map(tab => tab.page));
+});
+
 test('missing/uninitialised roots and corrupt manifest report their own errors without legacy fallback or create', async t => {
   const manifest = restoredSession();
   const f = await boot({ manifest, missingRoots: ['D:/A', 'D:/B'] });

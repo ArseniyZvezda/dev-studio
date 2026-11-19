@@ -99,20 +99,79 @@ async def test_stream_tools_reasoning_usage_and_resume(monkeypatch, tmp_path):
     assert sent[2][1]["input"][-2:] == [message("Read successfully"), {"role": "user", "content": "Hello"}]
 
 
-@pytest.mark.parametrize("terminal", ["incomplete", "failed", "interrupted"])
-async def test_incomplete_stream_never_executes_tools(monkeypatch, tmp_path, terminal):
+@pytest.mark.parametrize("terminal,diagnostic,attempts", [
+    ("incomplete", "without a recognized reason", 1),
+    ("content_filter", "content filter", 1),
+    ("failed", "response_failed", 1),
+    ("interrupted", "retry limit reached", 3),
+])
+async def test_incomplete_stream_never_executes_tools(monkeypatch, tmp_path, terminal, diagnostic, attempts):
     call = {"id": "fc_one", "type": "function_call", "call_id": "call_one", "name": "Write",
             "arguments": '{"path":"unexpected.txt","content":"must not run"}'}
     wire = events({"type": "response.output_item.done", "output_index": 0, "item": call})
-    if terminal != "interrupted":
+    if terminal == "content_filter":
+        filtered = completed([call], status="incomplete")
+        filtered["response"]["incomplete_details"] = {"reason": "content_filter"}
+        wire += events(filtered)
+    elif terminal != "interrupted":
         wire += events(completed([call], status=terminal))
-    fake_http(monkeypatch, [(200, wire)])
+    sent = fake_http(monkeypatch, [(200, wire)] * attempts)
     req = request(tmp_path)
     req.member.allowed_tools = ["Write"]
     result = [e async for e in OpenAIApiBackend(connection(api_mode="responses")).run(req)]
     assert result[-1].data["is_error"]
+    assert diagnostic in result[-1].text and len(sent) == attempts
     assert not (tmp_path / "unexpected.txt").exists()
     assert not any(e.kind == "tool_use" for e in result)
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+async def test_output_limit_retries_only_the_current_request(monkeypatch, tmp_path, recovers):
+    call = {"id": "fc_one", "type": "function_call", "call_id": "call_one", "name": "Write",
+            "arguments": '{"path":"unexpected.txt","content":"must not run"}'}
+    incomplete = completed([call], status="incomplete")
+    incomplete["response"]["incomplete_details"] = {"reason": "max_output_tokens"}
+    sent = fake_http(monkeypatch, [
+        (200, events({"type": "response.output_item.done", "output_index": 0, "item": call}, incomplete)),
+        (200, events(completed([message("Recovered")]) if recovers else incomplete)),
+    ])
+    req = request(tmp_path, max_turns=1)
+    req.member.allowed_tools = ["Write"]
+    runtime = OpenAIApiBackend(connection(api_mode="responses", context_window=260000))
+    result = [e async for e in runtime.run(req)]
+    first, retry = [body for _, body in sent]
+    assert first["max_output_tokens"] == 4096
+    assert retry == {**first, "max_output_tokens": 16384}
+    assert result[-1].data["is_error"] is not recovers
+    assert result[-1].data["num_turns"] == 1
+    if recovers:
+        assert result[-1].text == "Recovered"
+    else:
+        assert "reached the output limit (16384 tokens)" in result[-1].text
+    assert result[-1].data["usage"]["output_tokens"] == 14
+    assert any(e.kind == "continued" and e.data["subtype"] == "api_output_limit_retry" for e in result)
+    assert not (tmp_path / "unexpected.txt").exists()
+    assert not any(e.kind == "tool_use" for e in result)
+
+
+@pytest.mark.parametrize("code,retry,diagnostic", [
+    ("server_error", True, "Recovered"),
+    ("insufficient_quota", False, "insufficient_quota"),
+    ("secret-canary", False, "without a recognized code"),
+])
+async def test_stream_provider_errors_recover_or_report_safe_diagnostic(monkeypatch, tmp_path, code, retry, diagnostic):
+    failure = completed([], status="failed")
+    failure["response"]["error"] = {"code": code, "message": "private upstream response"}
+    replies = [(200, events(failure))]
+    if retry:
+        replies.append((200, events(completed([message("Recovered")]))))
+    sent = fake_http(monkeypatch, replies)
+    runtime = OpenAIApiBackend(connection(api_mode="responses"))
+    result = [e async for e in runtime.run(request(tmp_path, max_turns=1))]
+    assert len(sent) == 1 + retry
+    assert result[-1].data["is_error"] is not retry
+    assert diagnostic in result[-1].text
+    assert all("private upstream response" not in e.text and "secret-canary" not in e.text for e in result)
 
 
 async def test_images_and_legacy_chat_history(monkeypatch, tmp_path):
@@ -135,6 +194,9 @@ async def test_images_and_legacy_chat_history(monkeypatch, tmp_path):
 
 
 async def test_compaction_uses_responses_and_removes_opaque_state():
+    from voxarium_studio.teams.backends.api_tpm import TokenWindow
+
+    window = TokenWindow()
     sent = []
     def handler(req):
         sent.append((req.url.path, json.loads(req.content)))
@@ -144,7 +206,8 @@ async def test_compaction_uses_responses_and_removes_opaque_state():
         {"type": "reasoning", "encrypted_content": "opaque-secret-state"}]}, {"role": "user", "content": "Continue"}]
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         compacted = await compact_history(client, "https://api.openai.com/v1/chat/completions", {}, "test",
-                                          history, 4096, 100000, usage, api_mode="responses")
+                                          history, 4096, 100000, usage, api_mode="responses", token_window=window, tpm=10000)
+    assert window.entries[0].tokens == 20 + sent[0][1]["max_output_tokens"]
     assert compacted[-1] == history[-1] and "Goal: continue safely" in compacted[0]["content"]
     assert all(path == "/v1/responses" and body["stream"] is False for path, body in sent)
     assert "opaque-secret-state" not in str(sent)

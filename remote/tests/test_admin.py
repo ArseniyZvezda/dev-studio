@@ -1,11 +1,19 @@
 """Menu navigation and side effects; raw keyboard widgets have separate tests."""
 import json
+import subprocess
+from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 from voxarium_studio_remote import admin
 from voxarium_studio_remote.admin_transport import AdminError, Connection, Installation
 
 runner = CliRunner()
+
+@pytest.fixture(autouse=True)
+def no_ssh(monkeypatch):
+    """The status-box probe runs on every menu; it must never reach a network."""
+    monkeypatch.setattr('voxarium_studio_remote.admin_transport.subprocess.run',
+        Mock(return_value=subprocess.CompletedProcess([], 0, b'', b'')))
 
 @pytest.fixture
 def profile(tmp_path):
@@ -48,13 +56,49 @@ def test_broken_profile_and_missing_connection(tmp_path, monkeypatch):
 
 def test_logo_locales_and_escape(tmp_path, monkeypatch):
     assert set(admin.MESSAGES['en']) == set(admin.MESSAGES['ru'])
-    assert len(admin.LOGO.splitlines()) >= 7
+    # The lettering is five rows of filled-block glyphs, never plain ASCII art.
+    assert len(admin.LOGO) == 5
+    assert all(set(line) <= {'█', ' '} for line in admin.LOGO)
+    assert all(len(line) == len(admin.LOGO[0]) for line in admin.LOGO)
     for language in ('ru','en'):
         navigate(monkeypatch, [None])
         result=invoke(tmp_path/'absent', language)
-        assert result.exit_code==0 and 'VOXARIUM' in result.output
+        assert result.exit_code==0 and '█' in result.output and 'REMOTE ADMIN' in result.output
+        assert 'known_hosts' not in result.output  # the yellow trust notice is gone
     assert invoke(tmp_path/'absent', 'bad').exit_code != 0
 
+def test_logo_gradient_spans_blue_to_pink():
+    left = admin._gradient_color(0.0)
+    middle = admin._gradient_color(0.5)
+    right = admin._gradient_color(1.0)
+    assert left[2] > left[0] and right[0] > right[2]      # blue … pink
+    assert middle[0] > left[0] and middle[2] > right[2]   # purple in between
+    for color in (left, middle, right):
+        assert all(0 <= channel <= 255 for channel in color)
+
+
+
+def test_logo_color_output_uses_only_foreground_and_preserves_spaces(monkeypatch):
+    import io
+    import re
+    output = io.StringIO()
+    monkeypatch.setattr(admin.sys, "stdout", output)
+    monkeypatch.setattr(admin, "_supports_logo_color", lambda: True)
+    admin.echo_logo()
+    rendered = output.getvalue()
+    controls = re.findall(r"\x1b\[([0-9;]+)m", rendered)
+    assert controls and all(code == "0" or re.fullmatch(r"38;2;\d+;\d+;\d+", code) for code in controls)
+    plain = re.sub(r"\x1b\[[0-9;]+m", "", rendered).splitlines()
+    assert plain[:5] == list(admin.LOGO)
+    assert plain[5].strip() == admin.SUBTITLE
+
+
+def test_logo_falls_back_without_terminal_color(monkeypatch, capsys):
+    monkeypatch.setattr(admin, "_supports_logo_color", lambda: False)
+    admin.echo_logo()
+    output = capsys.readouterr().out
+    assert "\x1b" not in output
+    assert output.splitlines()[:5] == list(admin.LOGO)
 
 def test_configure_save(profile, monkeypatch):
     path, connection=profile
@@ -91,9 +135,12 @@ class FakeAdmin:
     calls=[]
     def __init__(self, connection): self.connection=connection
     def discover(self): return [Installation('abc','remote','running','image')]
+    def version(self,item): return '0.2.0' if item.status=='running' else None
     def telemetry(self,item): self.calls.append('telemetry'); return 'RAM: 1 GiB'
     def users(self,item): self.calls.append('users'); return 'alice active'
-    def install(self,source,domain=None): self.calls.append('install'); return 'Installed'
+    def install(self,source,domain=None,*,public_http=False): self.calls.append('install'); return 'Installed'
+    def update(self,source): self.calls.append('update'); return 'Updated'
+    def migrate_update(self,source): self.calls.append('migrate_update'); return 'Migrated'
 
 
 @pytest.fixture
@@ -104,31 +151,60 @@ def fake(monkeypatch):
 
 
 def test_discovery_results_and_back(profile, monkeypatch, fake):
-    navigate(monkeypatch, ['find','0','back','back','telemetry','0','back','back','users','0','back','back','exit'])
+    # No container picker: one installation is auto-selected for every action.
+    navigate(monkeypatch, ['find','back','telemetry','back','users','back','exit'])
     result=invoke(profile[0])
     assert result.exit_code==0, result.output
     assert fake.calls==['telemetry','users']
     assert 'alice active' in result.output
 
 
-@pytest.mark.parametrize('back',['back',None])
-def test_container_back_no_side_effect_even_single(profile, monkeypatch, fake, back):
-    navigate(monkeypatch, ['users',back,'exit'])
-    assert invoke(profile[0]).exit_code==0
-    assert fake.calls==[]
+def test_single_container_is_autoselected(profile, monkeypatch, fake):
+    monkeypatch.setattr(fake,'discover',
+        lambda self:[Installation(str(index),str(index),'running','image') for index in range(2)])
+    seen=[]
+    monkeypatch.setattr(fake,'users',lambda self,item:seen.append(item.id) or item.id)
+    navigate(monkeypatch,['users','back','exit'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    # The first discovered container is used without offering a picker.
+    assert seen==['0']
+
+
+def test_status_box_shows_installation_and_version(profile, monkeypatch, fake):
+    navigate(monkeypatch,['exit'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert 'remote [running] image · v0.2.0' in result.output
+    assert '┌' in result.output and '└' in result.output
+
+
+def test_status_box_reports_missing_installation(profile, monkeypatch, fake):
+    monkeypatch.setattr(fake,'discover',lambda self:[])
+    navigate(monkeypatch,['exit'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert 'not found on the server' in result.output
+
+
+def test_status_box_frames_discovery_error(profile, monkeypatch, fake):
+    def fail(self): raise AdminError('SSH failed')
+    monkeypatch.setattr(fake,'discover',fail)
+    navigate(monkeypatch,['exit'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert 'SSH failed' in result.output
 
 
 def test_stopped_and_empty(profile, monkeypatch, fake):
     monkeypatch.setattr(fake,'discover',lambda self:[Installation('abc','remote','exited','image')])
-    navigate(monkeypatch,['users','0','back','back','exit'])
+    navigate(monkeypatch,['users','back','exit'])
     result=invoke(profile[0]); assert result.exit_code==0
     assert 'not running' in result.output and fake.calls==[]
     monkeypatch.setattr(fake,'discover',lambda self:[])
     navigate(monkeypatch,['find','back','exit'])
-    assert invoke(profile[0]).exit_code==0
+    result=invoke(profile[0]); assert result.exit_code==0
+    assert 'not found' in result.output
 
 
 def test_install_back_and_confirmation(profile, monkeypatch, fake, tmp_path):
+    monkeypatch.setattr(fake,'discover',lambda self:[])
     navigate(monkeypatch,['install','domain','deploy','back','deploy','deploy','back','exit'],['remote.example.com'])
     result=invoke(profile[0])
     assert result.exit_code==0, result.output
@@ -136,18 +212,93 @@ def test_install_back_and_confirmation(profile, monkeypatch, fake, tmp_path):
 
 
 def test_install_escape_no_side_effect(profile, monkeypatch, fake):
+    monkeypatch.setattr(fake,'discover',lambda self:[])
     navigate(monkeypatch,['install','domain',None,'exit'],[None])
     assert invoke(profile[0]).exit_code==0
     assert fake.calls==[]
 
 
 def test_install_interrupt_warns(profile, monkeypatch, fake, tmp_path):
-    def interrupt(self, source, domain=None): raise KeyboardInterrupt
+    monkeypatch.setattr(fake,'discover',lambda self:[])
+    def interrupt(self, source, domain=None, *, public_http=False): raise KeyboardInterrupt
     monkeypatch.setattr(fake,'install',interrupt)
     navigate(monkeypatch,['install','deploy','deploy'])
     result=invoke(profile[0],'en','--source',str(tmp_path))
     assert result.exit_code==130
     assert 'remote state is unknown' in result.output
+
+
+def test_update_replaces_install_when_present(profile, monkeypatch, fake):
+    navigate(monkeypatch,['update','update','back','exit'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert fake.calls==['update']
+    assert 'Updated' in result.output
+
+
+@pytest.mark.parametrize('confirmed',['back',None])
+def test_update_confirmation_cancelled(profile, monkeypatch, fake, confirmed):
+    navigate(monkeypatch,['update',confirmed,'exit'])
+    assert invoke(profile[0]).exit_code==0
+    assert fake.calls==[]
+
+
+def test_update_interrupt_warns(profile, monkeypatch, fake, tmp_path):
+    def interrupt(self, source): raise KeyboardInterrupt
+    monkeypatch.setattr(fake,'update',interrupt)
+    navigate(monkeypatch,['update','update'])
+    result=invoke(profile[0],'en','--source',str(tmp_path))
+    assert result.exit_code==130
+    assert 'Update interrupted' in result.output
+
+
+def _legacy_update(fake, monkeypatch):
+    from voxarium_studio_remote.admin_transport import LegacySchemaError
+    def legacy(self, source):
+        self.calls.append('update')
+        raise LegacySchemaError('Remote command failed (exit 3): The data volume uses the legacy v1 schema.')
+    monkeypatch.setattr(fake,'update',legacy)
+
+
+def test_legacy_schema_offers_migrate_and_update(profile, monkeypatch, fake):
+    _legacy_update(fake, monkeypatch)
+    navigate(monkeypatch,['update','update','back','migrate','back','exit'],['MIGRATE'])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert fake.calls==['update','migrate_update']
+    assert 'legacy v1 schema' in result.output
+    assert 'Migrated' in result.output
+
+
+@pytest.mark.parametrize('typed',[None,'migrate','MIGRATE ',''])
+def test_migration_requires_exact_typed_word(profile, monkeypatch, fake, typed):
+    _legacy_update(fake, monkeypatch)
+    navigate(monkeypatch,['update','update','back','migrate','exit'],[typed])
+    result=invoke(profile[0]); assert result.exit_code==0, result.output
+    assert fake.calls==['update']  # the typed gate never opened
+
+
+@pytest.mark.parametrize('declined',['back',None])
+def test_migration_offer_can_be_declined(profile, monkeypatch, fake, declined):
+    _legacy_update(fake, monkeypatch)
+    navigate(monkeypatch,['update','update','back',declined,'exit'])
+    assert invoke(profile[0]).exit_code==0
+    assert fake.calls==['update']
+
+
+def test_plain_update_never_calls_migrate_transport(profile, monkeypatch, fake):
+    # A successful Update must not touch the migration path at all.
+    navigate(monkeypatch,['update','update','back','exit'])
+    assert invoke(profile[0]).exit_code==0
+    assert fake.calls==['update']
+
+
+def test_migrate_interrupt_warns_about_unknown_data(profile, monkeypatch, fake, tmp_path):
+    _legacy_update(fake, monkeypatch)
+    def interrupt(self, source): raise KeyboardInterrupt
+    monkeypatch.setattr(fake,'migrate_update',interrupt)
+    navigate(monkeypatch,['update','update','back','migrate'],['MIGRATE'])
+    result=invoke(profile[0],'en','--source',str(tmp_path))
+    assert result.exit_code==130
+    assert 'interrupted' in result.output and 'v1 or v2' in result.output
 
 
 def test_errors_return_to_menu(profile, monkeypatch, fake):
@@ -156,13 +307,6 @@ def test_errors_return_to_menu(profile, monkeypatch, fake):
     navigate(monkeypatch,['find','back','exit'])
     result=invoke(profile[0]); assert result.exit_code==0
     assert 'SSH failed' in result.output
-
-
-def test_multiple_container_selection(profile, monkeypatch, fake):
-    monkeypatch.setattr(fake,'discover',lambda self:[Installation(str(i),str(i),'running','image') for i in range(2)])
-    monkeypatch.setattr(fake,'users',lambda self,item:item.id)
-    navigate(monkeypatch,['users','1','back','back','exit'])
-    result=invoke(profile[0]); assert result.exit_code==0
 
 
 def test_output_safety():
@@ -237,13 +381,14 @@ def test_install_uses_embedded_payload_without_source_prompt(profile, monkeypatc
     monkeypatch.setattr(admin, 'default_source', lambda: tmp_path)
     class Installer:
         def __init__(self, connection): self.connection=connection
-        def install(self, source, domain=None):
-            seen.append((source,domain)); return 'Installed'
+        def discover(self): return []
+        def install(self, source, domain=None, *, public_http=False):
+            seen.append((source,domain,public_http)); return 'Installed'
     monkeypatch.setattr(admin,'RemoteAdmin',Installer)
     navigate(monkeypatch,['install','deploy','deploy','back','exit'])
     result=invoke(profile[0])
     assert result.exit_code==0,result.output
-    assert seen==[(tmp_path.resolve(),None)]
+    assert seen==[(tmp_path.resolve(),None,True)]
 
 
 def test_install_domain_is_passed_to_provisioning(profile, monkeypatch, tmp_path):
@@ -251,7 +396,8 @@ def test_install_domain_is_passed_to_provisioning(profile, monkeypatch, tmp_path
     monkeypatch.setattr(admin,'default_source',lambda:tmp_path)
     class Installer:
         def __init__(self, connection): self.connection=connection
-        def install(self, source, domain=None): seen.append(domain); return 'HTTPS ready'
+        def discover(self): return []
+        def install(self, source, domain=None, *, public_http=False): seen.append(domain); return 'HTTPS ready'
     monkeypatch.setattr(admin,'RemoteAdmin',Installer)
     navigate(monkeypatch,['install','domain','deploy','deploy','back','exit'],[' remote.example.com '])
     result=invoke(profile[0]); assert result.exit_code==0,result.output
@@ -262,10 +408,36 @@ def test_install_domain_is_passed_to_provisioning(profile, monkeypatch, tmp_path
 def test_install_menu_has_no_source_path_setting(profile, monkeypatch, tmp_path):
     monkeypatch.setattr(admin,'default_source',lambda:tmp_path)
     def choose(title, choices, hint):
-        assert [key for key,label in choices]==['domain','deploy','back']
+        assert [key for key,label in choices]==['access','domain','deploy','back']
         return 'back'
     monkeypatch.setattr(admin,'choose',choose)
     admin.install_menu(FakeAdmin(profile[1]),None,admin.MESSAGES['en'])
+
+
+@pytest.mark.parametrize('confirm', ['publish_http', 'back', None])
+def test_enable_http_on_existing_server_is_explicit(profile, monkeypatch, fake, confirm):
+    calls=[]
+    monkeypatch.setattr(fake, 'publish_http', lambda self, item: calls.append(item.id) or 'HTTP ready', raising=False)
+    actions=['publish_http', confirm]
+    if confirm == 'publish_http': actions.append('back')
+    actions.append('exit')
+    navigate(monkeypatch, actions)
+    result=invoke(profile[0])
+    assert result.exit_code==0, result.output
+    assert calls == (['abc'] if confirm == 'publish_http' else [])
+
+
+def test_install_tunnel_mode_remains_available(profile, monkeypatch, tmp_path):
+    modes=[]
+    class Installer(FakeAdmin):
+        def discover(self): return []
+        def install(self, source, domain=None, *, public_http=False):
+            modes.append((domain, public_http)); return 'Tunnel ready'
+    monkeypatch.setattr(admin, 'RemoteAdmin', Installer)
+    navigate(monkeypatch, ['install','access','tunnel','deploy','deploy','back','exit'])
+    result=invoke(profile[0], 'en', '--source', str(tmp_path))
+    assert result.exit_code==0, result.output
+    assert modes==[(None,False)]
 
 
 class UUIDAdmin(FakeAdmin):

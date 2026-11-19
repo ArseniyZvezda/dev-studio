@@ -31,7 +31,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from ..backend_usage import record_claude_usage, record_claude_usage_report
+from ..backend_usage import record_claude_usage, record_claude_usage_report, record_result_speed
 from ..changes import edit_stat
 from .base import (
     AgentBackend,
@@ -521,6 +521,7 @@ class ClaudeCodeBackend(AgentBackend):
                                 elif isinstance(message, ResultMessage):
                                     text = getattr(message, "result", "") or ""
                                     data = cost_counter.apply(_result_data(message), session_id)
+                                    record_result_speed(request.runtime_key, self.name, data)
                                     window = _learn_context_window(
                                         getattr(message, "model_usage", None), session_model
                                     )

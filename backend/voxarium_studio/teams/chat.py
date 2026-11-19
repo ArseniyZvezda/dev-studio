@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -51,6 +52,7 @@ from .transcript import compact_state
 
 from ..core.mcp import allowed_tool_names as mcp_allowed_tools
 from ..core.mcp import enabled_servers as project_mcp_servers
+from ..ai_access.protocol import ErrorCode, ProtocolError, RemoteActor, ResourceKind
 from ..models.base import utcnow
 from ..models.teams import AgentChat, AgentChatMessage, MemberKind, Team, TeamMember
 from ..ws.events import EventType
@@ -177,6 +179,23 @@ def title_from(text: str) -> str:
     return first[: TITLE_CHARS - 1].rstrip() + "…"
 
 
+@dataclass
+class _RemoteChatSend:
+    owner: Any
+    handle: Any
+    slot: Any
+    message: AgentChatMessage
+    text: str
+
+    @property
+    def message_id(self) -> str:
+        return self.message.id
+
+    def release(self) -> None:
+        self.slot.release()
+        self.owner.jobs.release_reservation(self.handle)
+
+
 class ChatService:
     """Chats and their turns, over the orchestrator's database, bus, jobs and config.
 
@@ -271,6 +290,7 @@ class ChatService:
                     chat.model = model
                     chat.agent_session_id = None
                     session.add(chat)
+                    await self.orchestrator._bump_local_revision(session, ResourceKind.CHAT, chat_id, 'model')
             await self._publish_chat(chat)
             return chat
 
@@ -298,6 +318,117 @@ class ChatService:
             import claude_agent_sdk  # noqa: F401
         except ImportError as exc:
             raise ValueError("Install the Studio teams extra to use Producer Mode.") from exc
+
+    @staticmethod
+    def _remote_actor(actor: RemoteActor) -> None:
+        if not isinstance(actor, RemoteActor) or actor.command_id is None:
+            raise ProtocolError(ErrorCode.DENIED)
+
+    async def remote_create_chat(self, session, *, actor: RemoteActor, team_id: str,
+                                 member_id: str, title: str, locale: str) -> AgentChat:
+        self._remote_actor(actor)
+        member = await session.get(TeamMember, member_id)
+        if (member is None or member.team_id != team_id or member.kind != MemberKind.AGENT
+                or member_id in self.orchestrator.removing_members):
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        chat = AgentChat(member_id=member_id, title=title, producer_locale=locale)
+        session.add(chat)
+        return chat
+
+    async def remote_publish_chat_changed(self, chat_id: str) -> None:
+        await self._publish_chat_by_id(chat_id)
+
+    async def remote_reserve_chat_send(self, session, chat_id: str, *, actor: RemoteActor,
+                                       run_id: str, text: str):
+        self._remote_actor(actor)
+        chat = await session.get(AgentChat, chat_id)
+        member = await session.get(TeamMember, chat.member_id) if chat else None
+        if (chat is None or member is None or member.kind != MemberKind.AGENT
+                or chat.producer_mode or chat.producer_workspace or self.closing
+                or member.id in self.orchestrator.removing_members):
+            raise ProtocolError(ErrorCode.NOT_AVAILABLE)
+        if (self.jobs.is_running(chat_id) or self.lock(chat_id).locked() or chat_id in self.compacting
+                or chat_id in self._ending or chat_id in self._inboxes):
+            raise ProtocolError(ErrorCode.BUSY)
+        backend = chat.agent_backend or member.agent_backend
+        model = chat.model if chat.model is not None else (member.model if backend == member.agent_backend else '')
+        if model == 'auto':
+            raise ProtocolError(ErrorCode.DENIED)
+        handle = self.jobs.try_reserve(chat_id, JOB_KIND, member_id=member.id, remote_run_id=run_id)
+        if handle is None:
+            raise ProtocolError(ErrorCode.BUSY)
+        slot = self.jobs.try_reserve_slot('agent')
+        if slot is None:
+            self.jobs.release_reservation(handle)
+            raise ProtocolError(ErrorCode.BUSY)
+        try:
+            row = AgentChatMessage(chat_id=chat_id, member_id=member.id, role='user', kind='text', text=text,
+                                   data={'remote_origin': True})
+            chat.last_message_at = row.created_at
+            chat.error = None
+            session.add(chat)
+            session.add(row)
+            return _RemoteChatSend(self, handle, slot, row, text)
+        except BaseException:
+            slot.release()
+            self.jobs.release_reservation(handle)
+            raise
+
+    def remote_dispatch_chat(self, reservation, *, before_launch, after_run, deadline):
+        entered = False
+        started = False
+
+        async def worker(handle):
+            nonlocal started, entered
+            started = True
+            preparation = asyncio.timeout_at(deadline)
+
+            async def fence():
+                nonlocal entered
+                entered = await before_launch()
+                if entered:
+                    preparation.reschedule(None)
+                return entered
+
+            state = None
+            try:
+                async with preparation:
+                    await self._publish_message(reservation.message)
+                    await self._run_turn(handle.id, handle.meta['member_id'],
+                        'Message received through Studio Remote AI Access.\n\n' + reservation.text,
+                        input_at=reservation.message.created_at, remote=(reservation, fence))
+            except TimeoutError:
+                if not preparation.expired():
+                    raise
+            except asyncio.CancelledError:
+                state = 'cancelled'
+                raise
+            finally:
+                reservation.release()
+                if state is None:
+                    row = await self.get_chat(handle.id)
+                    state = 'completed' if row and not row.error else 'failed'
+                await after_run(entered, state)
+
+        handle = self.jobs.submit_reserved(reservation.handle, worker)
+        def abandoned(_):
+            if not started:
+                reservation.release()
+                asyncio.create_task(after_run(False, 'cancelled'))
+        handle.task.add_done_callback(abandoned)
+        return handle
+
+    def remote_chat_cancel_target(self, chat_id: str, run_id: str, *, actor: RemoteActor):
+        self._remote_actor(actor)
+        handle = self.jobs.get(chat_id)
+        if handle is None or handle.meta.get('remote_run_id') != run_id or not self.jobs.is_running(chat_id):
+            raise ProtocolError(ErrorCode.REVISION_CONFLICT)
+        return handle
+
+    async def remote_cancel_chat(self, handle, *, actor: RemoteActor) -> bool:
+        self._remote_actor(actor)
+        return self.jobs.get(handle.id) is handle and await self.jobs.cancel(handle.id)
+
 
     async def create_chat(self, member_id: str, *, title: str = "", producer_mode: bool = False,
                           locale: str = "en") -> AgentChat:
@@ -535,6 +666,7 @@ class ChatService:
             if stored is not None:
                 stored.last_message_at = message.created_at
                 session.add(stored)
+                await self.orchestrator._bump_local_revision(session, ResourceKind.CHAT, chat_id, 'send')
         await self._publish_message(message)
         await self.producer.on_user_message(chat, message)
         return message
@@ -580,7 +712,7 @@ class ChatService:
 
     async def _run_turn(self, chat_id: str, member_id: str, prompt: str, images: list[dict[str, Any]] | None = None,
                         *, input_at: datetime | None = None,
-                        producer_skill_on_resume: bool = False) -> None:
+                        producer_skill_on_resume: bool = False, remote=None) -> None:
         orchestrator = self.orchestrator
         # Before the first await, so "the job is running" and "it takes messages" start
         # together; one a sender opened a moment earlier is adopted rather than replaced.
@@ -733,11 +865,12 @@ class ChatService:
                 inbox=inbox,
             )
 
-            async with agent_slot(self.jobs, self.record, chat_id, member_id):
+            async with agent_slot(self.jobs, self.record, chat_id, member_id,
+                                  reserved=remote[0].slot if remote else None):
                 # What an earlier turn was stopped before delivering goes out with this one
                 # (§10.8). Taken here, with the slot held, so "delivered" is not said of a
                 # turn that was cancelled while it was still waiting to start.
-                earlier = await self._undelivered(chat_id)
+                earlier = await self._undelivered(chat_id) if remote is None else []
                 if earlier:
                     inbox.discard({item.id for item in earlier})
                     prompt = "\n\n".join([*(item.text for item in earlier), prompt])
@@ -745,6 +878,8 @@ class ChatService:
                     request.images = [*(image for item in earlier for image in item.images), *request.images]
                     await self._mark_delivered(earlier)
                 if request.model == "auto":
+                    if remote is not None:
+                        raise ProtocolError(ErrorCode.DENIED)
                     await self._select_auto_model(chat, request, prompt)
                     resume_session_id = request.resume_session_id
                     if not resume_session_id:
@@ -767,7 +902,8 @@ class ChatService:
                     if not request.resume_session_id or producer_skill_on_resume:
                         request.prompt = required.prepend(request.prompt)
                 try:
-                    await self._consume(backend, request, chat_id, member_id, input_at=input_at)
+                    await self._consume(backend, request, chat_id, member_id, input_at=input_at,
+                                        before_launch=remote[1] if remote else None)
                 except Exception as exc:
                     from .producer import context_overflow
                     if not chat.producer_mode or not context_overflow(str(exc)):
@@ -791,7 +927,7 @@ class ChatService:
                 # of the same session (§10.8) — the whole delivery for a backend that cannot
                 # be handed text between tool calls. A turn that failed delivers nothing
                 # more: those messages stay queued and open the next one.
-                while True:
+                while remote is None:
                     fresh = await self.get_chat(chat_id)
                     if fresh is None or fresh.error or not len(inbox):
                         inbox.close()
@@ -870,7 +1006,8 @@ class ChatService:
         await self._store_result_stats(chat.id, solution.usage)
 
     async def _consume(
-        self, backend: Any, request: AgentRunRequest, chat_id: str, member_id: str, *, input_at: datetime | None = None,
+        self, backend: Any, request: AgentRunRequest, chat_id: str, member_id: str, *,
+        input_at: datetime | None = None, before_launch: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         from .context_viewer import capture_request
 
@@ -878,6 +1015,8 @@ class ChatService:
         # §10.11: publish durable live chat usage; results add only the uncredited balance.
         usage = RunUsage()
         credited = usage.counters()
+        if before_launch is not None and not await before_launch():
+            return
         async for event in backend.run(request):
             if event.data.get("subtype") == "session_recovered":
                 await capture_request(self.db, chat_id, replace(
@@ -949,6 +1088,8 @@ class ChatService:
             if chat is not None:
                 chat.last_message_at = message.created_at
                 session.add(chat)
+                if role == 'user' or kind == 'cancelled':
+                    await self.orchestrator._bump_local_revision(session, ResourceKind.CHAT, chat_id, 'send' if role == 'user' else 'cancel')
 
         await self._publish_message(message)
         return message
